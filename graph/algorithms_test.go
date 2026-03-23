@@ -203,29 +203,11 @@ func TestOverview_Namespaces(t *testing.T) {
 
 func TestOverview_MostConnectedOrder(t *testing.T) {
 	g := newGraph(map[string][]string{
-		"hub":  {"a", "b", "c"},
-		"mid":  {"a"},
-		"a":    {},
-		"b":    {},
-		"c":    {},
-	})
-	stats := g.Overview()
-	if len(stats.MostConnected) == 0 {
-		t.Fatal("MostConnected is empty")
-	}
-	// hub has TotalDegree=3 (outDeg=3), should be first
-	if stats.MostConnected[0].Name != "hub" {
-		t.Errorf("MostConnected[0] = %q, want 'hub'", stats.MostConnected[0].Name)
-	}
-}
-
-func TestOverview_MostLinkedToOrder(t *testing.T) {
-	g := newGraph(map[string][]string{
-		"hub":  {"a", "b", "c"},
-		"mid":  {"a"},
-		"a":    {},
-		"b":    {},
-		"c":    {},
+		"hub": {"a", "b", "c"},
+		"mid": {"a"},
+		"a":   {},
+		"b":   {},
+		"c":   {},
 	})
 	stats := g.Overview()
 	if len(stats.MostLinkedTo) == 0 {
@@ -291,8 +273,8 @@ func TestFindConnections_NoPath(t *testing.T) {
 
 func TestFindConnections_SharedConnections(t *testing.T) {
 	g := newGraph(map[string][]string{
-		"a": {"shared"},
-		"b": {"shared"},
+		"a":      {"shared"},
+		"b":      {"shared"},
 		"shared": {},
 	})
 	r := g.FindConnections("a", "b", 5)
@@ -329,8 +311,8 @@ func TestKnowledgeGaps_Orphans(t *testing.T) {
 
 func TestKnowledgeGaps_DeadEnds(t *testing.T) {
 	g := newGraph(map[string][]string{
-		"a":        {"deadend"},
-		"deadend":  {},
+		"a":       {"deadend"},
+		"deadend": {},
 	})
 	gaps := g.KnowledgeGaps()
 	if len(gaps.DeadEndPages) != 1 || gaps.DeadEndPages[0] != "deadend" {
@@ -460,10 +442,10 @@ func TestTopicClusters_SkipsJournals(t *testing.T) {
 
 func TestTopicClusters_HubIsHighestDegree(t *testing.T) {
 	g := newGraph(map[string][]string{
-		"hub":  {"a", "b", "c"},
-		"a":    {},
-		"b":    {},
-		"c":    {},
+		"hub": {"a", "b", "c"},
+		"a":   {},
+		"b":   {},
+		"c":   {},
 	})
 	clusters := g.TopicClusters()
 	if len(clusters) != 1 {

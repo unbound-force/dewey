@@ -17,7 +17,7 @@ func newTestVaultStore(t *testing.T, vaultPath string) (*VaultStore, *store.Stor
 	if err != nil {
 		t.Fatalf("store.New(:memory:) failed: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 
 	vs := NewVaultStore(s, vaultPath, "disk-local")
 	return vs, s
@@ -323,7 +323,7 @@ func copyTestdata(t *testing.T, dst string) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	testdata := filepath.Join(filepath.Dir(thisFile), "testdata")
 
-	filepath.Walk(testdata, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(testdata, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -337,7 +337,9 @@ func copyTestdata(t *testing.T, dst string) {
 			return err
 		}
 		return os.WriteFile(target, data, 0o644)
-	})
+	}); err != nil {
+		t.Fatalf("copy testdata: %v", err)
+	}
 }
 
 // BenchmarkIncrementalStartup measures the time from store.Open() to ready-to-serve
@@ -349,7 +351,9 @@ func BenchmarkIncrementalStartup(b *testing.B) {
 	for i := 0; i < 200; i++ {
 		content := fmt.Sprintf("# Page %d\n\n## Section 1\n\nContent for page %d.\n\n## Section 2\n\nMore content here.", i, i)
 		path := filepath.Join(tmpDir, fmt.Sprintf("page%03d.md", i))
-		os.WriteFile(path, []byte(content), 0o644)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			b.Fatalf("write test file: %v", err)
+		}
 	}
 
 	// First: full index to populate the store.
@@ -364,12 +368,14 @@ func BenchmarkIncrementalStartup(b *testing.B) {
 	if err := vs.FullIndex(c); err != nil {
 		b.Fatalf("FullIndex: %v", err)
 	}
-	s.Close()
+	_ = s.Close()
 
 	// Modify 3 files to simulate incremental changes.
 	for i := 0; i < 3; i++ {
 		path := filepath.Join(tmpDir, fmt.Sprintf("page%03d.md", i))
-		os.WriteFile(path, []byte(fmt.Sprintf("# Modified Page %d\n\nUpdated content.", i)), 0o644)
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("# Modified Page %d\n\nUpdated content.", i)), 0o644); err != nil {
+			b.Fatalf("write modified file: %v", err)
+		}
 	}
 
 	b.ResetTimer()
@@ -388,6 +394,6 @@ func BenchmarkIncrementalStartup(b *testing.B) {
 			b.Fatalf("IncrementalIndex: %v", err)
 		}
 
-		s.Close()
+		_ = s.Close()
 	}
 }

@@ -173,7 +173,7 @@ func TestTokenize(t *testing.T) {
 		{"[[Page Link]]", []string{"page", "link"}},
 		{"key:: value", []string{"key", "value"}},
 		{"#tag content", []string{"tag", "content"}},
-		{"a b", []string{}}, // single chars filtered
+		{"a b", []string{}},                     // single chars filtered
 		{"über cool", []string{"über", "cool"}}, // Unicode support
 	}
 

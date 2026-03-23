@@ -57,7 +57,7 @@ func New(path string) (*Store, error) {
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("set pragma %q: %w", p, err)
 		}
 	}
@@ -70,20 +70,20 @@ func New(path string) (*Store, error) {
 		lockPath := filepath.Join(filepath.Dir(path), ".dewey.lock")
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 		if err != nil {
-			db.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("create lock file: %w", err)
 		}
 		// Acquire exclusive, non-blocking lock to prevent concurrent write corruption (T059).
 		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			lockFile.Close()
-			db.Close()
+			_ = lockFile.Close()
+			_ = db.Close()
 			return nil, fmt.Errorf("another Dewey process is using this database: %w", err)
 		}
 		s.lockFile = lockFile
 	}
 
 	if err := s.migrate(); err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
 	}
 
@@ -94,8 +94,8 @@ func New(path string) (*Store, error) {
 func (s *Store) Close() error {
 	if s.lockFile != nil {
 		// Release the advisory lock before closing the file descriptor.
-		syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
-		s.lockFile.Close()
+		_ = syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
+		_ = s.lockFile.Close()
 	}
 	return s.db.Close()
 }
@@ -195,7 +195,7 @@ func (s *Store) ListPages() ([]*Page, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list pages: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var pages []*Page
 	for rows.Next() {
@@ -304,7 +304,7 @@ func (s *Store) GetBlocksByPage(pageName string) ([]*Block, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get blocks for page %q: %w", pageName, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var blocks []*Block
 	for rows.Next() {
@@ -350,7 +350,7 @@ func (s *Store) GetForwardLinks(pageName string) ([]*Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get forward links for %q: %w", pageName, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var links []*Link
 	for rows.Next() {
@@ -371,7 +371,7 @@ func (s *Store) GetBackwardLinks(pageName string) ([]*Link, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get backward links for %q: %w", pageName, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var links []*Link
 	for rows.Next() {
@@ -484,7 +484,7 @@ func (s *Store) ListSources() ([]*SourceRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list sources: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var sources []*SourceRecord
 	for rows.Next() {

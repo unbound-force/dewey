@@ -60,19 +60,19 @@ func TestGetWhiteboard_Success(t *testing.T) {
 		t.Errorf("name = %v, want %q", parsed["name"], "my-whiteboard")
 	}
 
-	elementCount := parsed["elementCount"].(float64)
+	elementCount, _ := parsed["elementCount"].(float64)
 	if elementCount != 3 {
 		t.Errorf("elementCount = %v, want 3", elementCount)
 	}
 
 	// Should detect embedded page.
-	embeddedPages := parsed["embeddedPages"].([]any)
+	embeddedPages, _ := parsed["embeddedPages"].([]any)
 	if len(embeddedPages) < 1 {
 		t.Error("expected at least 1 embedded page")
 	}
 
 	// Should detect connection.
-	connections := parsed["connections"].([]any)
+	connections, _ := parsed["connections"].([]any)
 	if len(connections) != 1 {
 		t.Errorf("expected 1 connection, got %d", len(connections))
 	}
@@ -111,7 +111,7 @@ func TestGetWhiteboard_EmptyBoard(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["elementCount"] != float64(0) {
 		t.Errorf("elementCount = %v, want 0", parsed["elementCount"])
@@ -139,7 +139,7 @@ func TestListWhiteboards_ViaDataScript(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1", parsed["count"])
@@ -175,7 +175,7 @@ func TestListWhiteboards_Fallback(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1 (only whiteboards/ path)", parsed["count"])

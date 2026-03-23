@@ -21,7 +21,9 @@ func createTestVault(t *testing.T) string {
 
 	for name, content := range files {
 		path := filepath.Join(dir, name)
-		os.MkdirAll(filepath.Dir(path), 0o755)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatalf("write test file %s: %v", name, err)
 		}
@@ -117,7 +119,9 @@ func TestDiskSource_Diff_ModifiedFile(t *testing.T) {
 	ds.SetStoredHashes(hashes)
 
 	// Modify a file.
-	os.WriteFile(filepath.Join(dir, "page1.md"), []byte("# Modified\nNew content."), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "page1.md"), []byte("# Modified\nNew content."), 0o644); err != nil {
+		t.Fatalf("write modified file: %v", err)
+	}
 
 	changes, err := ds.Diff()
 	if err != nil {

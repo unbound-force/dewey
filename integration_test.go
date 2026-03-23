@@ -25,7 +25,9 @@ func TestEndToEnd_InitIndexStatusFlow(t *testing.T) {
 	}
 	for name, content := range testFiles {
 		path := filepath.Join(tmpDir, name)
-		os.MkdirAll(filepath.Dir(path), 0o755)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			t.Fatalf("write test file %s: %v", name, err)
 		}
@@ -63,8 +65,10 @@ func TestEndToEnd_InitIndexStatusFlow(t *testing.T) {
 	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	indexCmd := newIndexCmd()
 	if err := indexCmd.Execute(); err != nil {
@@ -80,7 +84,7 @@ func TestEndToEnd_InitIndexStatusFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open store: %v", err)
 		}
-		defer s.Close()
+		defer func() { _ = s.Close() }()
 
 		pages, err := s.ListPages()
 		if err != nil {
@@ -153,7 +157,9 @@ func TestEndToEnd_SourceAddAndIndex(t *testing.T) {
 
 	// Initialize.
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	sourcesContent := `sources:
   - id: disk-local
     type: disk
@@ -161,11 +167,15 @@ func TestEndToEnd_SourceAddAndIndex(t *testing.T) {
     config:
       path: "."
 `
-	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	// Add a web source.
 	sourceCmd := newSourceCmd()

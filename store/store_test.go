@@ -17,7 +17,7 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("New(:memory:) failed: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -41,7 +41,7 @@ func TestNew_InMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New('') failed: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Verify WAL mode is set.
 	var journalMode string
@@ -787,7 +787,7 @@ func TestNew_CorruptedDatabase_Recovery(t *testing.T) {
 	if err := s1.InsertPage(testPage("test-page")); err != nil {
 		t.Fatalf("InsertPage: %v", err)
 	}
-	s1.Close()
+	_ = s1.Close()
 
 	// Corrupt the database by writing garbage.
 	if err := os.WriteFile(dbPath, []byte("this is not a database"), 0o644); err != nil {
@@ -801,12 +801,12 @@ func TestNew_CorruptedDatabase_Recovery(t *testing.T) {
 	}
 
 	// Recovery: remove the corrupted file and create a fresh one.
-	os.Remove(dbPath)
+	_ = os.Remove(dbPath)
 	s2, err := New(dbPath)
 	if err != nil {
 		t.Fatalf("New after recovery: %v", err)
 	}
-	defer s2.Close()
+	defer func() { _ = s2.Close() }()
 
 	// Verify the fresh store works.
 	if err := s2.InsertPage(testPage("recovered-page")); err != nil {
@@ -831,7 +831,7 @@ func TestStore_WriteFailure_Graceful(t *testing.T) {
 	}
 
 	// Close the database to simulate write failure.
-	s.db.Close()
+	_ = s.db.Close()
 
 	// Writes should fail with an error (not panic).
 	err := s.InsertPage(testPage("after-close"))

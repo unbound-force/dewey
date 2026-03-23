@@ -38,12 +38,12 @@ func TestSearch_BruteForce_Success(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
-	count := parsed["count"].(float64)
+	count, _ := parsed["count"].(float64)
 	if count != 2 {
 		t.Errorf("count = %v, want 2", count)
 	}
 
-	results := parsed["results"].([]any)
+	results, _ := parsed["results"].([]any)
 	if len(results) != 2 {
 		t.Errorf("expected 2 results, got %d", len(results))
 	}
@@ -89,9 +89,9 @@ func TestSearch_BruteForce_LimitRespected(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
-	count := parsed["count"].(float64)
+	count, _ := parsed["count"].(float64)
 	if count != 2 {
 		t.Errorf("count = %v, want 2 (limited)", count)
 	}
@@ -117,14 +117,14 @@ func TestSearch_BruteForce_Compact(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
-	results := parsed["results"].([]any)
+	results, _ := parsed["results"].([]any)
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 
-	r := results[0].(map[string]any)
+	r, _ := results[0].(map[string]any)
 	// Compact mode should NOT have "parsed" field.
 	if _, ok := r["parsed"]; ok {
 		t.Error("compact mode should not include parsed field")
@@ -157,9 +157,9 @@ func TestSearch_Indexed(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
-	count := parsed["count"].(float64)
+	count, _ := parsed["count"].(float64)
 	if count != 1 {
 		t.Errorf("count = %v, want 1", count)
 	}
@@ -204,7 +204,7 @@ func TestFindByTag_ViaDataScript(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["tag"] != "project" {
 		t.Errorf("tag = %v, want %q", parsed["tag"], "project")
@@ -242,7 +242,7 @@ func TestFindByTag_ViaTagSearcher(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["count"] != float64(2) {
 		t.Errorf("count = %v, want 2", parsed["count"])
@@ -315,7 +315,7 @@ func TestQueryProperties_ViaPropertySearcher(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1", parsed["count"])

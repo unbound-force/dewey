@@ -76,9 +76,9 @@ func TestDecisionCheck_IncludeResolved(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
-	decisions := parsed["decisions"].([]any)
+	decisions, _ := parsed["decisions"].([]any)
 	if len(decisions) != 2 {
 		t.Errorf("expected 2 decisions with includeResolved, got %d", len(decisions))
 	}
@@ -156,7 +156,7 @@ func TestDecisionCreate_Success(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["created"] != true {
 		t.Errorf("created = %v, want true", parsed["created"])
@@ -259,7 +259,7 @@ func TestAnalysisHealth_ViaPropertySearcher(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["total"] != float64(1) {
 		t.Errorf("total = %v, want 1", parsed["total"])

@@ -165,7 +165,7 @@ func (o *OllamaEmbedder) doEmbed(ctx context.Context, input any) ([][]float32, e
 	if err != nil {
 		return nil, fmt.Errorf("ollama embed request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Cap response body to 50MB to prevent unbounded memory allocation
 	// from unexpectedly large embedding responses.
@@ -212,7 +212,7 @@ func (o *OllamaEmbedder) checkModelAvailable() bool {
 	if err != nil {
 		return false // Ollama not running or unreachable.
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return false

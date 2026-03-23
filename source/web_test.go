@@ -12,7 +12,7 @@ import (
 func TestWebSource_FetchHTML(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<html><head><title>Test Page</title></head><body><h1>Hello</h1><p>World</p></body></html>`)
+		_, _ = fmt.Fprint(w, `<html><head><title>Test Page</title></head><body><h1>Hello</h1><p>World</p></body></html>`)
 	}))
 	defer server.Close()
 
@@ -51,19 +51,19 @@ func TestWebSource_RobotsCompliance(t *testing.T) {
 	defer server.Close()
 
 	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "User-agent: *\nDisallow: /private/\n")
+		_, _ = fmt.Fprint(w, "User-agent: *\nDisallow: /private/\n")
 	})
 	mux.HandleFunc("/private/secret", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<html><body>Secret</body></html>`)
+		_, _ = fmt.Fprint(w, `<html><body>Secret</body></html>`)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<html><body><a href="%s/private/secret">Secret</a><a href="%s/public">Public</a></body></html>`, server.URL, server.URL)
+		_, _ = fmt.Fprintf(w, `<html><body><a href="%s/private/secret">Secret</a><a href="%s/public">Public</a></body></html>`, server.URL, server.URL)
 	})
 	mux.HandleFunc("/public", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<html><body>Public content</body></html>`)
+		_, _ = fmt.Fprint(w, `<html><body>Public content</body></html>`)
 	})
 
 	ws := NewWebSource("web-test", "test", []string{server.URL + "/"}, 1, 10*time.Millisecond, "")
@@ -91,17 +91,17 @@ func TestWebSource_RateLimit(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/html")
 		if r.URL.Path == "/" {
-			fmt.Fprintf(w, `<html><body><a href="/page2">Link</a></body></html>`)
+			_, _ = fmt.Fprintf(w, `<html><body><a href="/page2">Link</a></body></html>`)
 			return
 		}
-		fmt.Fprint(w, `<html><body>Page</body></html>`)
+		_, _ = fmt.Fprint(w, `<html><body>Page</body></html>`)
 	}))
 	defer server.Close()
 
 	rateLimit := 50 * time.Millisecond
 	ws := NewWebSource("web-test", "test", []string{server.URL + "/"}, 1, rateLimit, "")
 
-	ws.List()
+	_, _ = ws.List()
 
 	// Verify rate limiting was applied between requests.
 	if len(requestTimes) >= 3 {
@@ -125,7 +125,7 @@ func TestWebSource_DepthLimit(t *testing.T) {
 		// Each page links to the next.
 		depth := strings.Count(r.URL.Path, "/level")
 		nextPath := fmt.Sprintf("/level%d", depth+1)
-		fmt.Fprintf(w, `<html><body>Depth %d <a href="%s">Next</a></body></html>`, depth, nextPath)
+		_, _ = fmt.Fprintf(w, `<html><body>Depth %d <a href="%s">Next</a></body></html>`, depth, nextPath)
 	}))
 	defer server.Close()
 
@@ -192,7 +192,7 @@ func TestWebSource_MaxResponseBody(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<html><body>%s</body></html>`, largeContent)
+		_, _ = fmt.Fprintf(w, `<html><body>%s</body></html>`, largeContent)
 	}))
 	defer server.Close()
 
@@ -217,7 +217,7 @@ func TestWebSource_NonHTMLContentSkip(t *testing.T) {
 		}
 		// Return PDF content type.
 		w.Header().Set("Content-Type", "application/pdf")
-		w.Write([]byte("%PDF-1.4 fake pdf content"))
+		_, _ = w.Write([]byte("%PDF-1.4 fake pdf content"))
 	}))
 	defer server.Close()
 

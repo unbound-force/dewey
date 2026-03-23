@@ -113,9 +113,15 @@ func TestGetAllEmbeddings(t *testing.T) {
 		t.Fatalf("InsertBlock: %v", err)
 	}
 
-	s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk 1")
-	s.InsertEmbedding("block-2", "model-a", []float32{3, 4}, "chunk 2")
-	s.InsertEmbedding("block-1", "model-b", []float32{5, 6}, "chunk 1 model b")
+	if err := s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk 1"); err != nil {
+		t.Fatalf("InsertEmbedding: %v", err)
+	}
+	if err := s.InsertEmbedding("block-2", "model-a", []float32{3, 4}, "chunk 2"); err != nil {
+		t.Fatalf("InsertEmbedding: %v", err)
+	}
+	if err := s.InsertEmbedding("block-1", "model-b", []float32{5, 6}, "chunk 1 model b"); err != nil {
+		t.Fatalf("InsertEmbedding: %v", err)
+	}
 
 	embeddings, err := s.GetAllEmbeddings("model-a")
 	if err != nil {
@@ -145,8 +151,8 @@ func TestDeleteEmbeddingsByBlock(t *testing.T) {
 		t.Fatalf("InsertBlock: %v", err)
 	}
 
-	s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk")
-	s.InsertEmbedding("block-1", "model-b", []float32{3, 4}, "chunk")
+	_ = s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk")
+	_ = s.InsertEmbedding("block-1", "model-b", []float32{3, 4}, "chunk")
 
 	if err := s.DeleteEmbeddingsByBlock("block-1"); err != nil {
 		t.Fatalf("DeleteEmbeddingsByBlock: %v", err)
@@ -176,9 +182,9 @@ func TestDeleteEmbeddingsByModel(t *testing.T) {
 		t.Fatalf("InsertBlock: %v", err)
 	}
 
-	s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk 1")
-	s.InsertEmbedding("block-2", "model-a", []float32{3, 4}, "chunk 2")
-	s.InsertEmbedding("block-1", "model-b", []float32{5, 6}, "chunk 1b")
+	_ = s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk 1")
+	_ = s.InsertEmbedding("block-2", "model-a", []float32{3, 4}, "chunk 2")
+	_ = s.InsertEmbedding("block-1", "model-b", []float32{5, 6}, "chunk 1b")
 
 	if err := s.DeleteEmbeddingsByModel("model-a"); err != nil {
 		t.Fatalf("DeleteEmbeddingsByModel: %v", err)
@@ -218,8 +224,8 @@ func TestCountEmbeddings(t *testing.T) {
 		t.Errorf("CountEmbeddings() = %d, want 0", count)
 	}
 
-	s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk 1")
-	s.InsertEmbedding("block-2", "model-a", []float32{3, 4}, "chunk 2")
+	_ = s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk 1")
+	_ = s.InsertEmbedding("block-2", "model-a", []float32{3, 4}, "chunk 2")
 
 	count, err = s.CountEmbeddings()
 	if err != nil {
@@ -379,8 +385,12 @@ func TestSearchSimilar_Threshold(t *testing.T) {
 	}
 
 	for _, b := range blocks {
-		s.InsertBlock(testBlock(b.uuid, "test-page"))
-		s.InsertEmbedding(b.uuid, "model-a", b.vec, "text")
+		if err := s.InsertBlock(testBlock(b.uuid, "test-page")); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", b.uuid, err)
+		}
+		if err := s.InsertEmbedding(b.uuid, "model-a", b.vec, "text"); err != nil {
+			t.Fatalf("InsertEmbedding(%s): %v", b.uuid, err)
+		}
 	}
 
 	// Search with high threshold — should only return very similar results.
@@ -404,10 +414,14 @@ func TestSearchSimilar_Limit(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		uuid := fmt.Sprintf("block-%d", i)
-		s.InsertBlock(testBlock(uuid, "test-page"))
+		if err := s.InsertBlock(testBlock(uuid, "test-page")); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", uuid, err)
+		}
 		vec := make([]float32, 3)
 		vec[0] = float32(i) * 0.2
-		s.InsertEmbedding(uuid, "model-a", vec, "text")
+		if err := s.InsertEmbedding(uuid, "model-a", vec, "text"); err != nil {
+			t.Fatalf("InsertEmbedding(%s): %v", uuid, err)
+		}
 	}
 
 	results, err := s.SearchSimilar("model-a", []float32{1, 0, 0}, 2, 0.0)
@@ -441,20 +455,32 @@ func TestSearchSimilarFiltered(t *testing.T) {
 	// Create two pages with different source IDs.
 	page1 := testPage("page-disk")
 	page1.SourceID = "disk-local"
-	s.InsertPage(page1)
+	if err := s.InsertPage(page1); err != nil {
+		t.Fatalf("InsertPage(page-disk): %v", err)
+	}
 
 	page2 := testPage("page-github")
 	page2.Name = "page-github"
 	page2.OriginalName = "page-github"
 	page2.SourceID = "github-gaze"
 	page2.SourceDocID = "page-github.md"
-	s.InsertPage(page2)
+	if err := s.InsertPage(page2); err != nil {
+		t.Fatalf("InsertPage(page-github): %v", err)
+	}
 
-	s.InsertBlock(testBlock("block-disk", "page-disk"))
-	s.InsertBlock(testBlock("block-github", "page-github"))
+	if err := s.InsertBlock(testBlock("block-disk", "page-disk")); err != nil {
+		t.Fatalf("InsertBlock(block-disk): %v", err)
+	}
+	if err := s.InsertBlock(testBlock("block-github", "page-github")); err != nil {
+		t.Fatalf("InsertBlock(block-github): %v", err)
+	}
 
-	s.InsertEmbedding("block-disk", "model-a", []float32{1, 0, 0}, "disk content")
-	s.InsertEmbedding("block-github", "model-a", []float32{0.9, 0.1, 0}, "github content")
+	if err := s.InsertEmbedding("block-disk", "model-a", []float32{1, 0, 0}, "disk content"); err != nil {
+		t.Fatalf("InsertEmbedding(block-disk): %v", err)
+	}
+	if err := s.InsertEmbedding("block-github", "model-a", []float32{0.9, 0.1, 0}, "github content"); err != nil {
+		t.Fatalf("InsertEmbedding(block-github): %v", err)
+	}
 
 	// Filter by source_id = "disk-local".
 	filters := SearchFilters{SourceID: "disk-local"}
@@ -527,7 +553,7 @@ func TestCascadeDeleteEmbeddings(t *testing.T) {
 	if err := s.InsertBlock(testBlock("block-1", "test-page")); err != nil {
 		t.Fatalf("InsertBlock: %v", err)
 	}
-	s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk")
+	_ = s.InsertEmbedding("block-1", "model-a", []float32{1, 2}, "chunk")
 
 	// Delete the page — should cascade to blocks and embeddings.
 	if err := s.DeletePage("test-page"); err != nil {

@@ -35,7 +35,7 @@ func TestOllamaEmbedder_Embed(t *testing.T) {
 		resp := embedResponse{
 			Embeddings: [][]float64{{0.1, 0.2, 0.3}},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestOllamaEmbedder_EmbedBatch(t *testing.T) {
 		for i := range inputs {
 			resp.Embeddings[i] = []float64{float64(i) * 0.1, float64(i) * 0.2}
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -134,7 +134,7 @@ func TestOllamaEmbedder_Available_ModelFound(t *testing.T) {
 				{Name: "granite-embedding:30m"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -159,7 +159,7 @@ func TestOllamaEmbedder_Available_ModelNotFound(t *testing.T) {
 				{Name: "llama3:latest"},
 			},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -227,7 +227,7 @@ func TestOllamaEmbedder_Available_Caching(t *testing.T) {
 		resp := tagsResponse{
 			Models: []tagModel{{Name: "granite-embedding:30m"}},
 		}
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 

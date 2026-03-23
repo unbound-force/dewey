@@ -122,7 +122,7 @@ func TestJournalSearch_ViaDataScript(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["query"] != "meeting" {
 		t.Errorf("query = %v, want %q", parsed["query"], "meeting")
@@ -161,7 +161,7 @@ func TestJournalSearch_ViaJournalSearcher(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1", parsed["count"])

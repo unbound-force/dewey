@@ -36,7 +36,7 @@ func TestCall_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"name": "test-page",
 			"uuid": "page-uuid-1",
 		})
@@ -63,7 +63,7 @@ func TestCall_AuthHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`"ok"`))
+		_, _ = w.Write([]byte(`"ok"`))
 	}))
 	defer srv.Close()
 
@@ -82,7 +82,7 @@ func TestCall_NoAuthWhenTokenEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`"ok"`))
+		_, _ = w.Write([]byte(`"ok"`))
 	}))
 	defer srv.Close()
 
@@ -101,7 +101,7 @@ func TestCall_ClientError_NoRetry(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"error":"bad request"}`))
+		_, _ = w.Write([]byte(`{"error":"bad request"}`))
 	}))
 	defer srv.Close()
 
@@ -121,11 +121,11 @@ func TestCall_ServerError_Retries(t *testing.T) {
 		attempts++
 		if attempts <= 2 {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error":"internal"}`))
+			_, _ = w.Write([]byte(`{"error":"internal"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`"recovered"`))
+		_, _ = w.Write([]byte(`"recovered"`))
 	}))
 	defer srv.Close()
 
@@ -197,7 +197,7 @@ func TestNew_EnvVars(t *testing.T) {
 func TestPing_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`null`))
+		_, _ = w.Write([]byte(`null`))
 	}))
 	defer srv.Close()
 
@@ -212,7 +212,7 @@ func TestPing_Error(t *testing.T) {
 	// Use a server that always returns 500.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`"error"`))
+		_, _ = w.Write([]byte(`"error"`))
 	}))
 	defer srv.Close()
 
@@ -227,7 +227,7 @@ func TestGetAllPages_Integration(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode([]map[string]any{
+		_ = json.NewEncoder(w).Encode([]map[string]any{
 			{"name": "page1", "uuid": "uuid1"},
 			{"name": "page2", "uuid": "uuid2"},
 		})
@@ -251,7 +251,7 @@ func TestGetPage_Integration(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"name": "test-page",
 			"uuid": "test-uuid",
 			"id":   42,
@@ -276,7 +276,7 @@ func TestDatascriptQuery_Integration(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`[[{"uuid":"b1","content":"test"}]]`))
+		_, _ = w.Write([]byte(`[[{"uuid":"b1","content":"test"}]]`))
 	}))
 	defer srv.Close()
 

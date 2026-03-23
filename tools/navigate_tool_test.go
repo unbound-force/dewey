@@ -255,7 +255,7 @@ func TestGetLinks_ForwardOnly(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["backlinks"] != nil {
 		t.Error("expected no backlinks for forward-only direction")
@@ -335,7 +335,7 @@ func TestTraverse_PathFound(t *testing.T) {
 	if parsed["pathsFound"] == nil {
 		t.Fatal("expected pathsFound in result")
 	}
-	pathCount := parsed["pathsFound"].(float64)
+	pathCount, _ := parsed["pathsFound"].(float64)
 	if pathCount < 1 {
 		t.Errorf("pathsFound = %v, want >= 1", pathCount)
 	}

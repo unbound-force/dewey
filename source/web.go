@@ -270,7 +270,7 @@ func (ws *WebSource) fetchPage(pageURL string) (doc *Document, rawHTML string, e
 	if err != nil {
 		return nil, "", fmt.Errorf("fetch %q: %w", pageURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("HTTP %d for %q", resp.StatusCode, pageURL)
@@ -354,7 +354,7 @@ func (ws *WebSource) fetchRobotsTxt(domain string) *robotsRules {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return nil // No robots.txt or error — allow all.
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	rules := &robotsRules{}
 	scanner := bufio.NewScanner(resp.Body)

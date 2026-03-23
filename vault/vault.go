@@ -270,7 +270,7 @@ func (c *Client) Watch() error {
 
 	// Add vault root and all subdirectories (recursive).
 	if err := c.addWatcherDirs(c.vaultPath); err != nil {
-		c.watcher.Close()
+		_ = c.watcher.Close()
 		return fmt.Errorf("add directories to watcher: %w", err)
 	}
 
@@ -1111,7 +1111,7 @@ func (c *Client) MoveBlock(_ context.Context, uuid string, targetUUID string, op
 	tgtPage := tgtLookup.page
 	srcContent := srcLookup.block.Content
 	tgtContent := tgtLookup.block.Content
-	samePage := strings.ToLower(srcPage) == strings.ToLower(tgtPage)
+	samePage := strings.EqualFold(srcPage, tgtPage)
 
 	before := false
 	if opts != nil {

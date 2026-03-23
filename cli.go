@@ -242,12 +242,12 @@ sources:
 				if err == nil && !strings.Contains(string(content), ".dewey/") {
 					f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
 					if err == nil {
-						defer f.Close()
+						defer func() { _ = f.Close() }()
 						// Ensure we start on a new line.
 						if len(content) > 0 && content[len(content)-1] != '\n' {
-							f.WriteString("\n")
+							_, _ = f.WriteString("\n")
 						}
-						f.WriteString(".dewey/\n")
+						_, _ = f.WriteString(".dewey/\n")
 					}
 				}
 			}
@@ -323,7 +323,7 @@ func newStatusCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("open store: %w", err)
 				}
-				defer s.Close()
+				defer func() { _ = s.Close() }()
 
 				pages, err := s.ListPages()
 				if err != nil {
@@ -380,30 +380,30 @@ func newStatusCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("marshal JSON: %w", err)
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), string(data))
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data))
 			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "Dewey Index Status")
-				fmt.Fprintf(cmd.OutOrStdout(), "  Path:       %s\n", deweyDir)
-				fmt.Fprintf(cmd.OutOrStdout(), "  Pages:      %d\n", pageCount)
-				fmt.Fprintf(cmd.OutOrStdout(), "  Blocks:     %d\n", blockCount)
-				fmt.Fprintf(cmd.OutOrStdout(), "  Embeddings: %d\n", embeddingCount)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Dewey Index Status")
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Path:       %s\n", deweyDir)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Pages:      %d\n", pageCount)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Blocks:     %d\n", blockCount)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Embeddings: %d\n", embeddingCount)
 				if embeddingModel != "" {
-					fmt.Fprintf(cmd.OutOrStdout(), "  Model:      %s\n", embeddingModel)
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Model:      %s\n", embeddingModel)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  Coverage:   %.1f%%\n", coverage)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Coverage:   %.1f%%\n", coverage)
 
 				if len(sources) > 0 {
-					fmt.Fprintln(cmd.OutOrStdout(), "\nSources")
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "\nSources")
 					for _, src := range sources {
 						lastFetched := "never"
 						if src.LastFetched != "" {
 							lastFetched = src.LastFetched + " ago"
 						}
 						if src.Error != "" {
-							fmt.Fprintf(cmd.OutOrStdout(), "  %-15s %-8s %3d pages  %s  error: %s\n",
+							_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-15s %-8s %3d pages  %s  error: %s\n",
 								src.ID, src.Status, src.PageCount, lastFetched, src.Error)
 						} else {
-							fmt.Fprintf(cmd.OutOrStdout(), "  %-15s %-8s %3d pages  %s\n",
+							_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-15s %-8s %3d pages  %s\n",
 								src.ID, src.Status, src.PageCount, lastFetched)
 						}
 					}
@@ -464,12 +464,12 @@ func findJournalPage(ctx context.Context, c *client.Client, t time.Time) string 
 func ordinalDate(t time.Time) string {
 	day := t.Day()
 	suffix := "th"
-	switch {
-	case day == 1 || day == 21 || day == 31:
+	switch day {
+	case 1, 21, 31:
 		suffix = "st"
-	case day == 2 || day == 22:
+	case 2, 22:
 		suffix = "nd"
-	case day == 3 || day == 23:
+	case 3, 23:
 		suffix = "rd"
 	}
 	return fmt.Sprintf("%s %d%s, %d", t.Format("Jan"), day, suffix, t.Year())
@@ -544,7 +544,7 @@ Fetches content from all configured sources and indexes it.`,
 			if err != nil {
 				return fmt.Errorf("open store: %w", err)
 			}
-			defer s.Close()
+			defer func() { _ = s.Close() }()
 
 			// Build last-fetched times from store.
 			lastFetchedTimes := make(map[string]time.Time)
@@ -608,7 +608,7 @@ Fetches content from all configured sources and indexes it.`,
 							break
 						}
 					}
-					s.InsertSource(&store.SourceRecord{
+					_ = s.InsertSource(&store.SourceRecord{
 						ID:            sourceID,
 						Type:          srcType,
 						Name:          srcName,
@@ -616,8 +616,8 @@ Fetches content from all configured sources and indexes it.`,
 						LastFetchedAt: time.Now().UnixMilli(),
 					})
 				} else {
-					s.UpdateLastFetched(sourceID, time.Now().UnixMilli())
-					s.UpdateSourceStatus(sourceID, "active", "")
+					_ = s.UpdateLastFetched(sourceID, time.Now().UnixMilli())
+					_ = s.UpdateSourceStatus(sourceID, "active", "")
 				}
 			}
 
@@ -626,7 +626,7 @@ Fetches content from all configured sources and indexes it.`,
 				if summary.Error != "" {
 					existingSrc, _ := s.GetSource(summary.SourceID)
 					if existingSrc != nil {
-						s.UpdateSourceStatus(summary.SourceID, "error", summary.Error)
+						_ = s.UpdateSourceStatus(summary.SourceID, "error", summary.Error)
 					}
 				}
 			}

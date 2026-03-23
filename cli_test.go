@@ -354,8 +354,10 @@ func TestStatusCmd_Uninitialized(t *testing.T) {
 
 	// Change to temp dir for the status command.
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newStatusCmd()
 	err := cmd.Execute()
@@ -373,11 +375,15 @@ func TestStatusCmd_TextOutput(t *testing.T) {
 
 	// Initialize.
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newStatusCmd()
 	buf := new(bytes.Buffer)
@@ -405,11 +411,15 @@ func TestStatusCmd_JSONOutput(t *testing.T) {
 
 	// Initialize.
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newStatusCmd()
 	buf := new(bytes.Buffer)
@@ -480,8 +490,10 @@ func TestIndexCmd_Uninitialized(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newIndexCmd()
 	err := cmd.Execute()
@@ -510,7 +522,9 @@ func TestIndexCmd_WithDiskSource(t *testing.T) {
 
 	// Create .dewey/ with sources.yaml.
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 
 	sourcesContent := `sources:
   - id: disk-local
@@ -519,14 +533,20 @@ func TestIndexCmd_WithDiskSource(t *testing.T) {
     config:
       path: "` + tmpDir + `"
 `
-	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
 
 	// Create a test .md file.
-	os.WriteFile(filepath.Join(tmpDir, "test.md"), []byte("# Test\nContent"), 0o644)
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.md"), []byte("# Test\nContent"), 0o644); err != nil {
+		t.Fatalf("write test.md: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newIndexCmd()
 	if err := cmd.Execute(); err != nil {
@@ -541,8 +561,10 @@ func TestSourceAddCmd_Uninitialized(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newSourceCmd()
 	cmd.SetArgs([]string{"add", "github", "--org", "test", "--repos", "repo1"})
@@ -561,7 +583,9 @@ func TestSourceAddCmd_GitHub(t *testing.T) {
 
 	// Initialize.
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	sourcesContent := `sources:
   - id: disk-local
     type: disk
@@ -569,11 +593,15 @@ func TestSourceAddCmd_GitHub(t *testing.T) {
     config:
       path: "."
 `
-	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newSourceCmd()
 	cmd.SetArgs([]string{"add", "github", "--org", "unbound-force", "--repos", "gaze,website"})
@@ -593,7 +621,9 @@ func TestSourceAddCmd_Web(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	sourcesContent := `sources:
   - id: disk-local
     type: disk
@@ -601,11 +631,15 @@ func TestSourceAddCmd_Web(t *testing.T) {
     config:
       path: "."
 `
-	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newSourceCmd()
 	cmd.SetArgs([]string{"add", "web", "--url", "https://pkg.go.dev/std", "--name", "go-stdlib"})
@@ -624,7 +658,9 @@ func TestSourceAddCmd_DuplicateRejection(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 	sourcesContent := `sources:
   - id: disk-local
     type: disk
@@ -639,11 +675,15 @@ func TestSourceAddCmd_DuplicateRejection(t *testing.T) {
       repos:
         - repo1
 `
-	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newSourceCmd()
 	cmd.SetArgs([]string{"add", "github", "--org", "test", "--repos", "repo1"})
@@ -661,12 +701,18 @@ func TestSourceAddCmd_InvalidType(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	deweyDir := filepath.Join(tmpDir, ".dewey")
-	os.MkdirAll(deweyDir, 0o755)
-	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte("sources: []\n"), 0o644)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte("sources: []\n"), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
 
 	oldDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(oldDir)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newSourceCmd()
 	cmd.SetArgs([]string{"add", "ftp"})

@@ -7,37 +7,37 @@ import (
 
 // PageEntity represents a Logseq page.
 type PageEntity struct {
-	ID               int               `json:"id"`
-	UUID             string            `json:"uuid"`
-	Name             string            `json:"name"`
-	OriginalName     string            `json:"originalName"`
-	Journal          bool              `json:"journal?"`
-	JournalDay       int               `json:"journalDay,omitempty"`
-	Namespace        *NamespaceInfo    `json:"namespace,omitempty"`
-	Properties       map[string]any    `json:"properties,omitempty"`
-	PropertiesOrder  []string          `json:"propertiesOrder,omitempty"`
-	CreatedAt        int64             `json:"createdAt,omitempty"`
-	UpdatedAt        int64             `json:"updatedAt,omitempty"`
-	File             *FileInfo         `json:"file,omitempty"`
+	ID              int            `json:"id"`
+	UUID            string         `json:"uuid"`
+	Name            string         `json:"name"`
+	OriginalName    string         `json:"originalName"`
+	Journal         bool           `json:"journal?"`
+	JournalDay      int            `json:"journalDay,omitempty"`
+	Namespace       *NamespaceInfo `json:"namespace,omitempty"`
+	Properties      map[string]any `json:"properties,omitempty"`
+	PropertiesOrder []string       `json:"propertiesOrder,omitempty"`
+	CreatedAt       int64          `json:"createdAt,omitempty"`
+	UpdatedAt       int64          `json:"updatedAt,omitempty"`
+	File            *FileInfo      `json:"file,omitempty"`
 }
 
 // BlockEntity represents a Logseq block (the atomic unit of knowledge).
 type BlockEntity struct {
-	ID              int               `json:"id"`
-	UUID            string            `json:"uuid"`
-	Content         string            `json:"content"`
-	Format          string            `json:"format,omitempty"`
-	Marker          string            `json:"marker,omitempty"` // TODO, DOING, DONE, etc.
-	Priority        string            `json:"priority,omitempty"` // A, B, C
-	Page            *PageRef          `json:"page,omitempty"`
-	Left            *BlockRef         `json:"left,omitempty"`
-	Parent          *BlockRef         `json:"parent,omitempty"`
-	Children        []BlockEntity     `json:"children,omitempty"`
-	Properties      map[string]any    `json:"properties,omitempty"`
-	PropertiesOrder []string          `json:"propertiesOrder,omitempty"`
-	PathRefs        []PageRef         `json:"pathRefs,omitempty"`
-	Refs            []PageRef         `json:"refs,omitempty"`
-	PreBlock        bool              `json:"preBlock,omitempty"`
+	ID              int            `json:"id"`
+	UUID            string         `json:"uuid"`
+	Content         string         `json:"content"`
+	Format          string         `json:"format,omitempty"`
+	Marker          string         `json:"marker,omitempty"`   // TODO, DOING, DONE, etc.
+	Priority        string         `json:"priority,omitempty"` // A, B, C
+	Page            *PageRef       `json:"page,omitempty"`
+	Left            *BlockRef      `json:"left,omitempty"`
+	Parent          *BlockRef      `json:"parent,omitempty"`
+	Children        []BlockEntity  `json:"children,omitempty"`
+	Properties      map[string]any `json:"properties,omitempty"`
+	PropertiesOrder []string       `json:"propertiesOrder,omitempty"`
+	PathRefs        []PageRef      `json:"pathRefs,omitempty"`
+	Refs            []PageRef      `json:"refs,omitempty"`
+	PreBlock        bool           `json:"preBlock,omitempty"`
 }
 
 // UnmarshalJSON handles two Logseq formats for children:
@@ -130,21 +130,21 @@ func (b *BlockRef) UnmarshalJSON(data []byte) error {
 
 // ParsedContent holds structured data extracted from block content.
 type ParsedContent struct {
-	Raw             string   `json:"raw"`
-	Links           []string `json:"links"`           // [[page name]]
-	BlockReferences []string `json:"blockReferences"` // ((uuid))
-	Tags            []string `json:"tags"`            // #tag
+	Raw             string            `json:"raw"`
+	Links           []string          `json:"links"`                // [[page name]]
+	BlockReferences []string          `json:"blockReferences"`      // ((uuid))
+	Tags            []string          `json:"tags"`                 // #tag
 	Properties      map[string]string `json:"properties,omitempty"` // key:: value
-	Marker          string   `json:"marker,omitempty"`    // TODO, DOING, DONE
-	Priority        string   `json:"priority,omitempty"`  // [#A], [#B], [#C]
+	Marker          string            `json:"marker,omitempty"`     // TODO, DOING, DONE
+	Priority        string            `json:"priority,omitempty"`   // [#A], [#B], [#C]
 }
 
 // EnrichedBlock extends BlockEntity with parsed content and ancestor chain.
 type EnrichedBlock struct {
 	BlockEntity
-	Parsed    ParsedContent   `json:"parsed"`
-	Ancestors []BlockSummary  `json:"ancestors,omitempty"` // path from root to this block
-	Siblings  []BlockSummary  `json:"siblings,omitempty"`
+	Parsed    ParsedContent  `json:"parsed"`
+	Ancestors []BlockSummary `json:"ancestors,omitempty"` // path from root to this block
+	Siblings  []BlockSummary `json:"siblings,omitempty"`
 }
 
 // BlockSummary is a lightweight block representation for context.
@@ -165,7 +165,7 @@ type EnrichedPage struct {
 
 // BackLink represents an incoming link from another page.
 type BackLink struct {
-	PageName string       `json:"pageName"`
+	PageName string         `json:"pageName"`
 	Blocks   []BlockSummary `json:"blocks"` // the specific blocks containing the link
 }
 

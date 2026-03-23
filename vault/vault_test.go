@@ -224,7 +224,7 @@ func testWritableVault(t *testing.T) *Client {
 
 	tmpDir := t.TempDir()
 	// Copy testdata to temp.
-	filepath.WalkDir(testdata, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(testdata, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -238,7 +238,9 @@ func testWritableVault(t *testing.T) *Client {
 			return err
 		}
 		return os.WriteFile(target, data, 0o644)
-	})
+	}); err != nil {
+		t.Fatalf("copy testdata: %v", err)
+	}
 
 	c := New(tmpDir)
 	if err := c.Load(); err != nil {
@@ -465,8 +467,8 @@ func TestRenamePageUpdatesLinks(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a page that links to another.
-	c.CreatePage(ctx, "linker", nil, nil)
-	c.AppendBlockInPage(ctx, "linker", "See [[projects/dewey]] for details")
+	_, _ = c.CreatePage(ctx, "linker", nil, nil)
+	_, _ = c.AppendBlockInPage(ctx, "linker", "See [[projects/dewey]] for details")
 
 	// Rename the target.
 	err := c.RenamePage(ctx, "projects/dewey", "tools/dewey")
@@ -648,7 +650,7 @@ func TestWatchFileCreate(t *testing.T) {
 	if err := c.Watch(); err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Create a new file.
 	newPagePath := filepath.Join(c.vaultPath, "watched-create.md")
@@ -688,7 +690,7 @@ func TestWatchFileModify(t *testing.T) {
 	if err := c.Watch(); err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Modify the file.
 	if err := os.WriteFile(testPagePath, []byte("# Modified Content\n\nThis was changed."), 0o644); err != nil {
@@ -736,7 +738,7 @@ func TestWatchFileDelete(t *testing.T) {
 	if err := c.Watch(); err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Delete the file.
 	if err := os.Remove(testPagePath); err != nil {
@@ -764,7 +766,7 @@ func TestConcurrentAccess(t *testing.T) {
 	if err := c.Watch(); err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	// Spawn multiple goroutines that read and write concurrently.
 	const numReaders = 5

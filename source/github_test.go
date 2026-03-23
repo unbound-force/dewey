@@ -41,11 +41,11 @@ func TestGitHubSource_FetchIssues(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/issues") {
-			json.NewEncoder(w).Encode(issues)
+			_ = json.NewEncoder(w).Encode(issues)
 			return
 		}
 		if strings.Contains(r.URL.Path, "/readme") {
-			json.NewEncoder(w).Encode(map[string]string{
+			_ = json.NewEncoder(w).Encode(map[string]string{
 				"content":  "IyBSRUFETUU=", // base64 "# README"
 				"encoding": "base64",
 				"html_url": "https://github.com/test-org/test-repo/blob/main/README.md",
@@ -125,12 +125,12 @@ func TestGitHubSource_RateLimit(t *testing.T) {
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("X-RateLimit-Reset", "1711100000")
 			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+			_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
 			return
 		}
 		// First request succeeds with issues.
 		if strings.Contains(r.URL.Path, "/issues") {
-			json.NewEncoder(w).Encode([]map[string]any{
+			_ = json.NewEncoder(w).Encode([]map[string]any{
 				{"number": 1, "title": "Issue 1", "body": "body", "html_url": "https://example.com/1", "state": "open", "updated_at": "2026-03-22T10:00:00Z", "labels": []any{}},
 			})
 			return
@@ -164,14 +164,14 @@ func TestGitHubSource_AuthHeader(t *testing.T) {
 	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode([]any{})
+		_ = json.NewEncoder(w).Encode([]any{})
 	}))
 	defer server.Close()
 
 	gs := newTestGitHubSource(t, server)
 	gs.token = "secret-token"
 	gs.contentType = []string{"issues"}
-	gs.List()
+	_, _ = gs.List()
 
 	if authHeader != "Bearer secret-token" {
 		t.Errorf("auth header = %q, want %q", authHeader, "Bearer secret-token")
@@ -182,14 +182,14 @@ func TestGitHubSource_NoAuthHeader(t *testing.T) {
 	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader = r.Header.Get("Authorization")
-		json.NewEncoder(w).Encode([]any{})
+		_ = json.NewEncoder(w).Encode([]any{})
 	}))
 	defer server.Close()
 
 	gs := newTestGitHubSource(t, server)
 	gs.token = "" // No token — unauthenticated.
 	gs.contentType = []string{"issues"}
-	gs.List()
+	_, _ = gs.List()
 
 	if authHeader != "" {
 		t.Errorf("auth header should be empty for unauthenticated, got %q", authHeader)
@@ -232,7 +232,7 @@ func TestGitHubSource_SkipsPullsInIssuesEndpoint(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(items)
+		_ = json.NewEncoder(w).Encode(items)
 	}))
 	defer server.Close()
 

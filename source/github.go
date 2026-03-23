@@ -320,16 +320,16 @@ func (gs *GitHubSource) itemToDocument(repo, contentType string, item *githubIte
 
 	// Build content with metadata header.
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s\n\n", item.Title))
+	fmt.Fprintf(&sb, "# %s\n\n", item.Title)
 	if item.State != "" {
-		sb.WriteString(fmt.Sprintf("**State**: %s\n", item.State))
+		fmt.Fprintf(&sb, "**State**: %s\n", item.State)
 	}
 	if len(item.Labels) > 0 {
 		labels := make([]string, len(item.Labels))
 		for i, l := range item.Labels {
 			labels[i] = l.Name
 		}
-		sb.WriteString(fmt.Sprintf("**Labels**: %s\n", strings.Join(labels, ", ")))
+		fmt.Fprintf(&sb, "**Labels**: %s\n", strings.Join(labels, ", "))
 	}
 	sb.WriteString("\n")
 	sb.WriteString(item.Body)
@@ -375,7 +375,7 @@ func (gs *GitHubSource) doRequest(url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("GitHub API request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Cap response body to 10MB to prevent unbounded memory allocation
 	// from malicious or misconfigured API responses.

@@ -74,7 +74,7 @@ type SearchHit struct {
 
 // TagResult holds a block found by tag search, grouped by page.
 type TagResult struct {
-	Page   string             `json:"page"`
+	Page   string              `json:"page"`
 	Blocks []types.BlockEntity `json:"blocks"`
 }
 
@@ -88,7 +88,7 @@ type PropertyResult struct {
 
 // JournalResult holds a journal entry found by search.
 type JournalResult struct {
-	Date    string              `json:"date"`
-	Page    string              `json:"page"`
-	Blocks  []types.BlockEntity `json:"blocks"`
+	Date   string              `json:"date"`
+	Page   string              `json:"page"`
+	Blocks []types.BlockEntity `json:"blocks"`
 }

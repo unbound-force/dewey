@@ -13,6 +13,12 @@ import (
 	"github.com/unbound-force/dewey/types"
 )
 
+// resultText extracts the text content from an MCP result, handling the type assertion safely.
+func resultText(result *mcp.CallToolResult) string {
+	tc, _ := result.Content[0].(*mcp.TextContent)
+	return tc.Text
+}
+
 // mockEmbedder is a test double for embed.Embedder.
 // Returns pre-configured vectors for testing.
 type mockEmbedder struct {
@@ -69,7 +75,7 @@ func newTestStoreWithData(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 
 	// Insert test pages.
 	pages := []*store.Page{
@@ -130,12 +136,12 @@ func TestSemanticSearch_Basic(t *testing.T) {
 		t.Fatalf("SemanticSearch error: %v", err)
 	}
 	if result.IsError {
-		t.Fatalf("SemanticSearch returned error: %s", result.Content[0].(*mcp.TextContent).Text)
+		t.Fatalf("SemanticSearch returned error: %s", resultText(result))
 	}
 
 	// Parse results.
 	var results []types.SemanticSearchResult
-	text := result.Content[0].(*mcp.TextContent).Text
+	text := resultText(result)
 	if err := json.Unmarshal([]byte(text), &results); err != nil {
 		t.Fatalf("unmarshal results: %v", err)
 	}
@@ -170,7 +176,7 @@ func TestSemanticSearch_EmptyIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	e := newMockEmbedder(true)
 	sem := NewSemantic(e, s)
@@ -182,13 +188,13 @@ func TestSemanticSearch_EmptyIndex(t *testing.T) {
 		t.Fatalf("SemanticSearch error: %v", err)
 	}
 	if result.IsError {
-		t.Fatalf("empty index should not be an error: %s", result.Content[0].(*mcp.TextContent).Text)
+		t.Fatalf("empty index should not be an error: %s", resultText(result))
 	}
 
 	// Should return empty array, not error.
 	var results []types.SemanticSearchResult
-	text := result.Content[0].(*mcp.TextContent).Text
-	json.Unmarshal([]byte(text), &results)
+	text := resultText(result)
+	_ = json.Unmarshal([]byte(text), &results)
 	if len(results) != 0 {
 		t.Errorf("expected 0 results for empty index, got %d", len(results))
 	}
@@ -210,7 +216,7 @@ func TestSemanticSearch_EmbedderUnavailable(t *testing.T) {
 		t.Fatal("expected error result when embedder unavailable")
 	}
 
-	text := result.Content[0].(*mcp.TextContent).Text
+	text := resultText(result)
 	if !strings.Contains(text, "embedding model not loaded") {
 		t.Errorf("error message = %q, should mention embedding model", text)
 	}
@@ -246,12 +252,12 @@ func TestSimilar_ByUUID(t *testing.T) {
 		t.Fatalf("Similar error: %v", err)
 	}
 	if result.IsError {
-		t.Fatalf("Similar returned error: %s", result.Content[0].(*mcp.TextContent).Text)
+		t.Fatalf("Similar returned error: %s", resultText(result))
 	}
 
 	var results []types.SemanticSearchResult
-	text := result.Content[0].(*mcp.TextContent).Text
-	json.Unmarshal([]byte(text), &results)
+	text := resultText(result)
+	_ = json.Unmarshal([]byte(text), &results)
 
 	// Should not include the query document itself.
 	for _, r := range results {
@@ -280,7 +286,7 @@ func TestSimilar_ByPage(t *testing.T) {
 		t.Fatalf("Similar error: %v", err)
 	}
 	if result.IsError {
-		t.Fatalf("Similar returned error: %s", result.Content[0].(*mcp.TextContent).Text)
+		t.Fatalf("Similar returned error: %s", resultText(result))
 	}
 }
 
@@ -298,7 +304,7 @@ func TestSimilar_NeitherPageNorUUID(t *testing.T) {
 		t.Fatal("expected error when neither page nor uuid provided")
 	}
 
-	text := result.Content[0].(*mcp.TextContent).Text
+	text := resultText(result)
 	if !strings.Contains(text, "At least one of 'page' or 'uuid' must be provided") {
 		t.Errorf("error message = %q, want 'At least one of...'", text)
 	}
@@ -310,15 +316,15 @@ func TestSimilar_NoEmbeddingFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	// Create page and block but no embedding.
-	s.InsertPage(&store.Page{Name: "test", OriginalName: "test", SourceID: "disk-local", SourceDocID: "test.md", ContentHash: "x", CreatedAt: 1, UpdatedAt: 1})
-	s.InsertBlock(&store.Block{UUID: "block-no-embed", PageName: "test", Content: "content", Position: 0})
+	_ = s.InsertPage(&store.Page{Name: "test", OriginalName: "test", SourceID: "disk-local", SourceDocID: "test.md", ContentHash: "x", CreatedAt: 1, UpdatedAt: 1})
+	_ = s.InsertBlock(&store.Block{UUID: "block-no-embed", PageName: "test", Content: "content", Position: 0})
 
 	// Insert one embedding so the "no embeddings in index" check passes.
-	s.InsertBlock(&store.Block{UUID: "block-with-embed", PageName: "test", Content: "other", Position: 1})
-	s.InsertEmbedding("block-with-embed", "test-model", []float32{1, 0}, "chunk")
+	_ = s.InsertBlock(&store.Block{UUID: "block-with-embed", PageName: "test", Content: "other", Position: 1})
+	_ = s.InsertEmbedding("block-with-embed", "test-model", []float32{1, 0}, "chunk")
 
 	e := newMockEmbedder(true)
 	sem := NewSemantic(e, s)
@@ -330,7 +336,7 @@ func TestSimilar_NoEmbeddingFound(t *testing.T) {
 		t.Fatal("expected error for block with no embedding")
 	}
 
-	text := result.Content[0].(*mcp.TextContent).Text
+	text := resultText(result)
 	if !strings.Contains(text, "No embedding found") {
 		t.Errorf("error message = %q, want 'No embedding found...'", text)
 	}
@@ -342,7 +348,7 @@ func TestSimilar_NoEmbeddingsInIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	e := newMockEmbedder(true)
 	sem := NewSemantic(e, s)
@@ -354,7 +360,7 @@ func TestSimilar_NoEmbeddingsInIndex(t *testing.T) {
 		t.Fatal("expected error when no embeddings in index")
 	}
 
-	text := result.Content[0].(*mcp.TextContent).Text
+	text := resultText(result)
 	if !strings.Contains(text, "No embeddings in index") {
 		t.Errorf("error message = %q, want 'No embeddings in index...'", text)
 	}
@@ -377,12 +383,12 @@ func TestSemanticSearchFiltered_Basic(t *testing.T) {
 		t.Fatalf("SemanticSearchFiltered error: %v", err)
 	}
 	if result.IsError {
-		t.Fatalf("SemanticSearchFiltered returned error: %s", result.Content[0].(*mcp.TextContent).Text)
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
 	}
 
 	var results []types.SemanticSearchResult
-	text := result.Content[0].(*mcp.TextContent).Text
-	json.Unmarshal([]byte(text), &results)
+	text := resultText(result)
+	_ = json.Unmarshal([]byte(text), &results)
 
 	// All results should have source_id = "disk-local".
 	for _, r := range results {
@@ -424,8 +430,8 @@ func TestSemanticSearch_DefaultThreshold(t *testing.T) {
 	}
 
 	var results []types.SemanticSearchResult
-	text := result.Content[0].(*mcp.TextContent).Text
-	json.Unmarshal([]byte(text), &results)
+	text := resultText(result)
+	_ = json.Unmarshal([]byte(text), &results)
 
 	// All embeddings are orthogonal to [0,0,1], so similarity = 0.
 	// Default threshold 0.3 should filter them all out.
@@ -449,8 +455,8 @@ func TestSemanticSearch_ProvenanceMetadata(t *testing.T) {
 	})
 
 	var results []types.SemanticSearchResult
-	text := result.Content[0].(*mcp.TextContent).Text
-	json.Unmarshal([]byte(text), &results)
+	text := resultText(result)
+	_ = json.Unmarshal([]byte(text), &results)
 
 	if len(results) == 0 {
 		t.Fatal("expected at least 1 result")

@@ -1,0 +1,19 @@
+# MegaLinter configuration
+# https://megalinter.io/configuration/
+# Using the Go flavor: oxsecurity/megalinter-go
+
+# Only run these specific linters (whitelist approach)
+ENABLE_LINTERS:
+  - GO_GOLANGCI_LINT
+  - MARKDOWN_MARKDOWNLINT
+  - YAML_YAMLLINT
+  - REPOSITORY_GITLEAKS
+  - REPOSITORY_GIT_DIFF
+
+# Exclude spec templates, opencode config, and testdata from linting
+FILTER_REGEX_EXCLUDE: '(\.specify/templates/|\.opencode/|testdata/)'
+
+# Exclude spec markdown files from markdownlint (they use non-standard formatting)
+MARKDOWN_MARKDOWNLINT_FILTER_REGEX_EXCLUDE: '(\.specify/|\.opencode/|specs/)'
+
+SHOW_ELAPSED_TIME: true

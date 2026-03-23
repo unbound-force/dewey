@@ -203,7 +203,9 @@ func (d *Decision) DecisionCheck(ctx context.Context, req *mcp.CallToolRequest, 
 	if input.IncludeResolved {
 		result["decisions"] = decisions
 	} else {
-		active := append(overdue, open...)
+		active := make([]decisionBlock, 0, len(overdue)+len(open))
+		active = append(active, overdue...)
+		active = append(active, open...)
 		result["decisions"] = active
 	}
 

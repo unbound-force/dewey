@@ -61,13 +61,6 @@ type mockBackend struct {
 	deletePageErr    error
 	renamePageErr    error
 	pingErr          error
-
-	// Capability flags
-	hasDataScript    bool
-	tagSearcher      *mockTagSearcher
-	propertySearcher *mockPropertySearcher
-	journalSearcher  *mockJournalSearcher
-	fullTextSearcher *mockFullTextSearcher
 }
 
 // newMockBackend creates a new mockBackend with initialized maps.

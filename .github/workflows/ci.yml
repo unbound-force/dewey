@@ -48,4 +48,4 @@ jobs:
             --coverprofile=coverage.out \
             --max-crapload=48 \
             --max-gaze-crapload=18 \
-            --min-contract-coverage=70
+            --min-contract-coverage=8

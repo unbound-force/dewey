@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,4 +199,499 @@ func TestReadContentFromArgs_Empty(t *testing.T) {
 	// When stdin is a terminal (not piped), should return empty.
 	// In test context, stdin behavior varies, so we just verify no panic.
 	_ = got
+}
+
+// --- Init command tests ---
+
+// TestInitCmd_CreatesDirectory verifies dewey init creates .dewey/ directory.
+func TestInitCmd_CreatesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
+		t.Fatal(".dewey/ directory was not created")
+	}
+}
+
+// TestInitCmd_DefaultConfig verifies config.yaml has expected content.
+func TestInitCmd_DefaultConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".dewey", "config.yaml")
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+
+	configStr := string(content)
+	if !strings.Contains(configStr, "granite-embedding:30m") {
+		t.Error("config.yaml should contain default embedding model")
+	}
+	if !strings.Contains(configStr, "embedding") {
+		t.Error("config.yaml should contain embedding section")
+	}
+}
+
+// TestInitCmd_DefaultSources verifies sources.yaml has expected content.
+func TestInitCmd_DefaultSources(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	sourcesPath := filepath.Join(tmpDir, ".dewey", "sources.yaml")
+	content, err := os.ReadFile(sourcesPath)
+	if err != nil {
+		t.Fatalf("read sources.yaml: %v", err)
+	}
+
+	sourcesStr := string(content)
+	if !strings.Contains(sourcesStr, "disk-local") {
+		t.Error("sources.yaml should contain disk-local source")
+	}
+	if !strings.Contains(sourcesStr, "type: disk") {
+		t.Error("sources.yaml should contain type: disk")
+	}
+}
+
+// TestInitCmd_Idempotent verifies running init twice does not error.
+func TestInitCmd_Idempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First init.
+	cmd1 := newInitCmd()
+	cmd1.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd1.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Second init should succeed (idempotent).
+	cmd2 := newInitCmd()
+	cmd2.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("second init should not fail: %v", err)
+	}
+}
+
+// TestInitCmd_GitignoreAppend verifies .dewey/ is added to .gitignore.
+func TestInitCmd_GitignoreAppend(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a .gitignore without .dewey/.
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if !strings.Contains(string(content), ".dewey/") {
+		t.Error(".gitignore should contain .dewey/")
+	}
+}
+
+// TestInitCmd_GitignoreAlreadyPresent verifies .dewey/ is not duplicated.
+func TestInitCmd_GitignoreAlreadyPresent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a .gitignore that already has .dewey/.
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(".dewey/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// We need to remove .dewey/ first so init actually runs.
+	// Actually, init will see .dewey/ already exists and return early.
+	// So let's test the gitignore logic separately by not having .dewey/ yet.
+	// The init command checks for .dewey/ existence first.
+	// Since .dewey/ doesn't exist, init will create it and check .gitignore.
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	// Count occurrences — should be exactly 1.
+	count := strings.Count(string(content), ".dewey/")
+	if count != 1 {
+		t.Errorf(".dewey/ appears %d times in .gitignore, want 1", count)
+	}
+}
+
+// --- Status command tests ---
+
+// TestStatusCmd_Uninitialized verifies status fails when .dewey/ doesn't exist.
+func TestStatusCmd_Uninitialized(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Change to temp dir for the status command.
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newStatusCmd()
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("status should fail when not initialized")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("error = %q, want to contain 'not initialized'", err.Error())
+	}
+}
+
+// TestStatusCmd_TextOutput verifies human-readable status output.
+func TestStatusCmd_TextOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initialize.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newStatusCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Dewey Index Status") {
+		t.Error("status output should contain 'Dewey Index Status'")
+	}
+	if !strings.Contains(output, "Pages:") {
+		t.Error("status output should contain 'Pages:'")
+	}
+	if !strings.Contains(output, "Blocks:") {
+		t.Error("status output should contain 'Blocks:'")
+	}
+}
+
+// TestStatusCmd_JSONOutput verifies JSON status output.
+func TestStatusCmd_JSONOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initialize.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newStatusCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --json failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, buf.String())
+	}
+
+	// Verify expected fields.
+	if _, ok := result["pages"]; !ok {
+		t.Error("JSON output missing 'pages' field")
+	}
+	if _, ok := result["blocks"]; !ok {
+		t.Error("JSON output missing 'blocks' field")
+	}
+	if _, ok := result["path"]; !ok {
+		t.Error("JSON output missing 'path' field")
+	}
+}
+
+// TestInitCmd_HasFlags verifies the init subcommand has expected flags.
+func TestInitCmd_HasFlags(t *testing.T) {
+	cmd := newInitCmd()
+	if cmd.Flags().Lookup("vault") == nil {
+		t.Error("init command missing flag --vault")
+	}
+}
+
+// TestStatusCmd_HasFlags verifies the status subcommand has expected flags.
+func TestStatusCmd_HasFlags(t *testing.T) {
+	cmd := newStatusCmd()
+	if cmd.Flags().Lookup("json") == nil {
+		t.Error("status command missing flag --json")
+	}
+}
+
+// TestRootCmd_Help_IncludesNewSubcommands verifies init and status appear in help.
+func TestRootCmd_Help_IncludesNewSubcommands(t *testing.T) {
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute(--help) failed: %v", err)
+	}
+
+	got := buf.String()
+	for _, sub := range []string{"init", "status", "index", "source"} {
+		if !strings.Contains(got, sub) {
+			t.Errorf("help output missing subcommand %q", sub)
+		}
+	}
+}
+
+// --- Index command tests (T058B) ---
+
+// TestIndexCmd_Uninitialized verifies index fails when .dewey/ doesn't exist.
+func TestIndexCmd_Uninitialized(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newIndexCmd()
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("index should fail when not initialized")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("error = %q, want to contain 'not initialized'", err.Error())
+	}
+}
+
+// TestIndexCmd_HasFlags verifies the index subcommand has expected flags.
+func TestIndexCmd_HasFlags(t *testing.T) {
+	cmd := newIndexCmd()
+	if cmd.Flags().Lookup("source") == nil {
+		t.Error("index command missing flag --source")
+	}
+	if cmd.Flags().Lookup("force") == nil {
+		t.Error("index command missing flag --force")
+	}
+}
+
+// TestIndexCmd_WithDiskSource verifies indexing with a disk source.
+func TestIndexCmd_WithDiskSource(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .dewey/ with sources.yaml.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+
+	sourcesContent := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "` + tmpDir + `"
+`
+	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+
+	// Create a test .md file.
+	os.WriteFile(filepath.Join(tmpDir, "test.md"), []byte("# Test\nContent"), 0o644)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newIndexCmd()
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("index failed: %v", err)
+	}
+}
+
+// --- Source add command tests (T058B) ---
+
+// TestSourceAddCmd_Uninitialized verifies source add fails when not initialized.
+func TestSourceAddCmd_Uninitialized(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newSourceCmd()
+	cmd.SetArgs([]string{"add", "github", "--org", "test", "--repos", "repo1"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("source add should fail when not initialized")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Errorf("error = %q, want to contain 'not initialized'", err.Error())
+	}
+}
+
+// TestSourceAddCmd_GitHub verifies adding a GitHub source.
+func TestSourceAddCmd_GitHub(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initialize.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+	sourcesContent := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "."
+`
+	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newSourceCmd()
+	cmd.SetArgs([]string{"add", "github", "--org", "unbound-force", "--repos", "gaze,website"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("source add github failed: %v", err)
+	}
+
+	// Verify source was added to sources.yaml.
+	content, _ := os.ReadFile(filepath.Join(deweyDir, "sources.yaml"))
+	if !strings.Contains(string(content), "github-unbound-force") {
+		t.Error("sources.yaml should contain github-unbound-force")
+	}
+}
+
+// TestSourceAddCmd_Web verifies adding a web source.
+func TestSourceAddCmd_Web(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+	sourcesContent := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "."
+`
+	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newSourceCmd()
+	cmd.SetArgs([]string{"add", "web", "--url", "https://pkg.go.dev/std", "--name", "go-stdlib"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("source add web failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(filepath.Join(deweyDir, "sources.yaml"))
+	if !strings.Contains(string(content), "web-go-stdlib") {
+		t.Error("sources.yaml should contain web-go-stdlib")
+	}
+}
+
+// TestSourceAddCmd_DuplicateRejection verifies duplicate source rejection.
+func TestSourceAddCmd_DuplicateRejection(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+	sourcesContent := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "."
+  - id: github-test
+    type: github
+    name: test
+    config:
+      org: test
+      repos:
+        - repo1
+`
+	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newSourceCmd()
+	cmd.SetArgs([]string{"add", "github", "--org", "test", "--repos", "repo1"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("should reject duplicate source")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error = %q, want to contain 'already exists'", err.Error())
+	}
+}
+
+// TestSourceAddCmd_InvalidType verifies unknown source type rejection.
+func TestSourceAddCmd_InvalidType(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	os.MkdirAll(deweyDir, 0o755)
+	os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte("sources: []\n"), 0o644)
+
+	oldDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(oldDir)
+
+	cmd := newSourceCmd()
+	cmd.SetArgs([]string{"add", "ftp"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("should reject unknown source type")
+	}
+}
+
+// TestFormatDuration verifies the duration formatting helper.
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "30s"},
+		{5 * time.Minute, "5m"},
+		{4 * time.Hour, "4h"},
+		{3 * 24 * time.Hour, "3d"},
+	}
+
+	for _, tt := range tests {
+		got := formatDuration(tt.d)
+		if got != tt.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
 }

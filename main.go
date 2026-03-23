@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -13,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/client"
+	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/vault"
 )
 
@@ -73,6 +77,10 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newAddCmd())
 	rootCmd.AddCommand(newSearchCmd())
 	rootCmd.AddCommand(newVersionCmd())
+	rootCmd.AddCommand(newInitCmd())
+	rootCmd.AddCommand(newStatusCmd())
+	rootCmd.AddCommand(newIndexCmd())
+	rootCmd.AddCommand(newSourceCmd())
 
 	return rootCmd
 }
@@ -116,6 +124,8 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 	}
 
 	var b backend.Backend
+	var srvOpts []serverOption
+
 	switch bt {
 	case "obsidian":
 		vp := vaultPath
@@ -125,11 +135,92 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 		if vp == "" {
 			return fmt.Errorf("--vault or OBSIDIAN_VAULT_PATH required for obsidian backend")
 		}
-		vc := vault.New(vp, vault.WithDailyFolder(dailyFolder))
-		if err := vc.Load(); err != nil {
-			return fmt.Errorf("failed to load vault: %w", err)
+
+		// Initialize persistent store if .dewey/ directory exists.
+		// The store is optional — Dewey works without it (backward compat).
+		var opts []vault.Option
+		opts = append(opts, vault.WithDailyFolder(dailyFolder))
+
+		var persistentStore *store.Store
+		deweyDir := filepath.Join(vp, ".dewey")
+		if _, err := os.Stat(deweyDir); err == nil {
+			dbPath := filepath.Join(deweyDir, "graph.db")
+			s, err := store.New(dbPath)
+			if err != nil {
+				logger.Warn("failed to open persistent store, continuing without persistence",
+					"path", dbPath, "err", err)
+			} else {
+				defer s.Close()
+				persistentStore = s
+				opts = append(opts, vault.WithStore(s))
+				srvOpts = append(srvOpts, WithPersistentStore(s))
+				logger.Info("persistent store opened", "path", dbPath)
+			}
 		}
-		vc.BuildBacklinks()
+
+		// Initialize embedder if configured.
+		// The embedder is optional — Dewey works without Ollama (graceful degradation).
+		embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
+		embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
+		if embedModel == "" {
+			embedModel = "granite-embedding:30m"
+		}
+		if embedEndpoint == "" {
+			embedEndpoint = "http://localhost:11434"
+		}
+
+		embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
+		srvOpts = append(srvOpts, WithEmbedder(embedder))
+
+		if embedder.Available() {
+			logger.Info("embedding model available", "model", embedModel)
+		} else {
+			logger.Warn("embedding model not available, semantic search disabled",
+				"model", embedModel, "endpoint", embedEndpoint)
+		}
+
+		vc := vault.New(vp, opts...)
+
+		// Configure embedder on the vault store for indexing pipeline integration.
+		if vs := vc.Store(); vs != nil {
+			vs.SetEmbedder(embedder)
+		}
+
+		// Use persistent indexing if store is available.
+		if vs := vc.Store(); vs != nil {
+			_ = persistentStore // used via vault.WithStore above
+			if err := vs.ValidateStore(); err != nil {
+				// Corruption detected — fall back to full re-index.
+				logger.Warn("store validation failed, performing full re-index",
+					"err", err)
+				if err := vs.FullIndex(vc); err != nil {
+					return fmt.Errorf("failed to full-index vault: %w", err)
+				}
+			} else {
+				// Incremental index — load from store, re-index only changes.
+				stats, err := vs.IncrementalIndex(vc)
+				if err != nil {
+					logger.Warn("incremental index failed, falling back to full index",
+						"err", err)
+					if err := vs.FullIndex(vc); err != nil {
+						return fmt.Errorf("failed to full-index vault: %w", err)
+					}
+				} else {
+					logger.Info("incremental index complete",
+						"new", stats.New,
+						"changed", stats.Changed,
+						"deleted", stats.Deleted,
+						"unchanged", stats.Unchanged,
+					)
+				}
+			}
+		} else {
+			// No store — use existing in-memory-only behavior.
+			if err := vc.Load(); err != nil {
+				return fmt.Errorf("failed to load vault: %w", err)
+			}
+			vc.BuildBacklinks()
+		}
 
 		// Start file watcher.
 		if err := vc.Watch(); err != nil {
@@ -146,20 +237,42 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 		return fmt.Errorf("unknown backend %q (use logseq or obsidian)", bt)
 	}
 
-	srv := newServer(b, readOnly)
+	srv := newServer(b, readOnly, srvOpts...)
+
+	// Set up signal handling for graceful shutdown (SIGINT, SIGTERM).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if httpAddr != "" {
 		// Streamable HTTP transport — serves multiple clients.
 		handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return srv
 		}, nil)
+
+		httpSrv := &http.Server{
+			Addr:    httpAddr,
+			Handler: handler,
+		}
+
+		// Graceful shutdown: listen for context cancellation in a goroutine.
+		go func() {
+			<-ctx.Done()
+			logger.Info("shutting down HTTP server")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("HTTP server shutdown error", "err", err)
+			}
+		}()
+
 		logger.Info("listening", "addr", httpAddr)
-		if err := http.ListenAndServe(httpAddr, handler); err != nil {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
 	} else {
 		// Default: stdio transport for MCP client integration.
-		if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		// Pass cancellable context so SIGINT/SIGTERM trigger clean shutdown.
+		if err := srv.Run(ctx, &mcp.StdioTransport{}); err != nil {
 			return fmt.Errorf("server error: %w", err)
 		}
 	}

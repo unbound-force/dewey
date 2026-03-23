@@ -3,7 +3,19 @@
 // that are indexed into the knowledge graph.
 package source
 
-import "time"
+import (
+	"os"
+	"time"
+
+	"github.com/charmbracelet/log"
+)
+
+// logger is the package-level structured logger shared across all source files.
+// Consolidates the previously separate githubLogger, webLogger, and managerLogger
+// into a single declaration to reduce duplication.
+var logger = log.NewWithOptions(os.Stderr, log.Options{
+	Prefix: "dewey",
+})
 
 // Source represents a pluggable content origin. Implementations fetch documents
 // from a specific backend (disk, GitHub API, web crawl) and support incremental

@@ -3,6 +3,9 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -712,6 +715,215 @@ func TestInsertPage_JournalFlag(t *testing.T) {
 }
 
 // --- Page with Null Optional Fields ---
+
+// --- Corruption Detection Tests (T026A) ---
+
+func TestMigrate_CorruptedSchemaVersion(t *testing.T) {
+	s := newTestStore(t)
+
+	// Corrupt the schema version with a non-numeric value.
+	if err := s.SetMeta("schema_version", "not-a-number"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	err := s.migrate()
+	if err == nil {
+		t.Fatal("migrate() should fail with corrupted schema_version")
+	}
+}
+
+func TestMigrate_MissingSchemaVersion(t *testing.T) {
+	s := newTestStore(t)
+
+	// Delete the schema_version key.
+	_, err := s.db.Exec(`DELETE FROM metadata WHERE key = 'schema_version'`)
+	if err != nil {
+		t.Fatalf("delete schema_version: %v", err)
+	}
+
+	// Re-running migrate should re-create the schema (treat as fresh).
+	if err := s.migrate(); err != nil {
+		t.Fatalf("migrate() should succeed with missing schema_version: %v", err)
+	}
+
+	// Verify schema_version is restored.
+	version, err := s.GetMeta("schema_version")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if version != "1" {
+		t.Errorf("schema_version = %q, want %q", version, "1")
+	}
+}
+
+func TestMigrate_IncompatibleFutureVersion(t *testing.T) {
+	s := newTestStore(t)
+
+	// Set a future version that the current code doesn't support.
+	if err := s.SetMeta("schema_version", "999"); err != nil {
+		t.Fatalf("SetMeta: %v", err)
+	}
+
+	err := s.migrate()
+	if err == nil {
+		t.Fatal("migrate() should fail for incompatible future version")
+	}
+	if !strings.Contains(err.Error(), "newer than supported") {
+		t.Errorf("error = %q, want to contain 'newer than supported'", err.Error())
+	}
+}
+
+func TestNew_CorruptedDatabase_Recovery(t *testing.T) {
+	// Create a store, corrupt it, then verify a new store can be opened
+	// (simulating the recovery path where the caller discards and re-creates).
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create a valid store.
+	s1, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("first New: %v", err)
+	}
+	if err := s1.InsertPage(testPage("test-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	s1.Close()
+
+	// Corrupt the database by writing garbage.
+	if err := os.WriteFile(dbPath, []byte("this is not a database"), 0o644); err != nil {
+		t.Fatalf("corrupt database: %v", err)
+	}
+
+	// Opening the corrupted database should fail.
+	_, err = New(dbPath)
+	if err == nil {
+		t.Fatal("New should fail with corrupted database")
+	}
+
+	// Recovery: remove the corrupted file and create a fresh one.
+	os.Remove(dbPath)
+	s2, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New after recovery: %v", err)
+	}
+	defer s2.Close()
+
+	// Verify the fresh store works.
+	if err := s2.InsertPage(testPage("recovered-page")); err != nil {
+		t.Fatalf("InsertPage after recovery: %v", err)
+	}
+	got, err := s2.GetPage("recovered-page")
+	if err != nil || got == nil {
+		t.Fatal("recovered page not found")
+	}
+}
+
+// --- Disk Space Exhaustion Tests (T026B) ---
+
+func TestStore_WriteFailure_Graceful(t *testing.T) {
+	// Test that the store handles write failures gracefully.
+	// We simulate this by closing the database and attempting writes.
+	s := newTestStore(t)
+
+	// Insert a page successfully first.
+	if err := s.InsertPage(testPage("before-close")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Close the database to simulate write failure.
+	s.db.Close()
+
+	// Writes should fail with an error (not panic).
+	err := s.InsertPage(testPage("after-close"))
+	if err == nil {
+		t.Fatal("InsertPage should fail after database close")
+	}
+
+	// SetMeta should also fail gracefully.
+	err = s.SetMeta("key", "value")
+	if err == nil {
+		t.Fatal("SetMeta should fail after database close")
+	}
+}
+
+// --- Concurrent Access Tests (T026C) ---
+
+func TestStore_ConcurrentReads(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert test data.
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("concurrent-page-%d", i)
+		if err := s.InsertPage(testPage(name)); err != nil {
+			t.Fatalf("InsertPage(%s): %v", name, err)
+		}
+	}
+
+	// Spawn multiple concurrent readers.
+	done := make(chan bool)
+	const numReaders = 5
+
+	for i := 0; i < numReaders; i++ {
+		go func(id int) {
+			for j := 0; j < 20; j++ {
+				_, err := s.ListPages()
+				if err != nil {
+					t.Errorf("reader %d: ListPages: %v", id, err)
+				}
+				name := fmt.Sprintf("concurrent-page-%d", j%10)
+				_, err = s.GetPage(name)
+				if err != nil {
+					t.Errorf("reader %d: GetPage(%s): %v", id, name, err)
+				}
+			}
+			done <- true
+		}(i)
+	}
+
+	for i := 0; i < numReaders; i++ {
+		<-done
+	}
+}
+
+func TestStore_ConcurrentReadWrite(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert initial data.
+	if err := s.InsertPage(testPage("shared-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	done := make(chan bool)
+
+	// Reader goroutine.
+	go func() {
+		for i := 0; i < 50; i++ {
+			_, _ = s.GetPage("shared-page")
+			_, _ = s.ListPages()
+		}
+		done <- true
+	}()
+
+	// Writer goroutine — update metadata.
+	go func() {
+		for i := 0; i < 50; i++ {
+			_ = s.SetMeta("counter", fmt.Sprintf("%d", i))
+		}
+		done <- true
+	}()
+
+	<-done
+	<-done
+
+	// Verify no corruption.
+	page, err := s.GetPage("shared-page")
+	if err != nil {
+		t.Fatalf("GetPage after concurrent access: %v", err)
+	}
+	if page == nil {
+		t.Fatal("page should still exist after concurrent access")
+	}
+}
 
 func TestInsertPage_NullOptionalFields(t *testing.T) {
 	s := newTestStore(t)

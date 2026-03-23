@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-37 tools across 9 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+40 tools across 10 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 ### Navigate
 
@@ -105,11 +105,19 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 | `list_whiteboards` | Logseq | All whiteboards in the graph |
 | `get_whiteboard` | Logseq | Embedded pages, block references, visual connections |
 
+### Semantic Search
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `dewey_semantic_search` | Both | Find documents semantically similar to a natural language query |
+| `dewey_similar` | Both | Find the most similar documents to a given page or block |
+| `dewey_semantic_search_filtered` | Both | Semantic search with metadata filters (source, properties) |
+
 ### Health
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `health` | Both | Check server status: version, backend, read-only mode, page count |
+| `health` | Both | Check server status: version, backend, read-only mode, page count, embedding status, sources |
 
 ## Install
 
@@ -221,12 +229,50 @@ On startup with the Logseq backend, Dewey checks if your graph directory is git-
 | `LOGSEQ_API_TOKEN` | (required for Logseq) | Bearer token from Logseq settings |
 | `DEWEY_BACKEND` | `logseq` | Backend type: `logseq` or `obsidian` |
 | `OBSIDIAN_VAULT_PATH` | — | Path to Obsidian vault root |
+| `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama embedding model name |
+| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
+| `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub API token for content sources |
+
+## CLI Commands
+
+### dewey init
+
+Initialize a Dewey configuration in the current directory. Creates `.dewey/` with default `config.yaml` and `sources.yaml`.
+
+```bash
+dewey init [--vault PATH]
+```
+
+### dewey index
+
+Build or update the knowledge graph and embedding indexes from all configured sources.
+
+```bash
+dewey index [--source NAME] [--force]
+```
+
+### dewey status
+
+Report index health: page count, block count, embedding coverage, source status.
+
+```bash
+dewey status [--json]
+```
+
+### dewey source add
+
+Add a content source (GitHub or web) to the configuration.
+
+```bash
+dewey source add github --org ORG --repos REPO1,REPO2 [--refresh INTERVAL]
+dewey source add web --url URL [--name NAME] [--depth N] [--refresh INTERVAL]
+```
 
 ## Architecture
 
 ```
 main.go              Entry point — backend routing, MCP server startup
-cli.go               CLI subcommands: journal, add, search
+cli.go               CLI subcommands: journal, add, search, init, index, status, source
 server.go            MCP server setup — conditional tool registration
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
@@ -251,7 +297,21 @@ graph/
 parser/content.go    Regex extraction of [[links]], ((refs)), #tags, properties
 types/
   logseq.go          Shared types with custom JSON unmarshaling
-  tools.go           Input types for all 37 tools
+  tools.go           Input types for all 40 tools
+store/
+  store.go           SQLite persistence (pages, blocks, links, sources)
+  embeddings.go      Vector embedding storage and cosine similarity search
+  migrate.go         Schema migration management
+embed/
+  embed.go           Embedder interface + Ollama implementation
+  chunker.go         Block-to-chunk preparation with heading context
+source/
+  source.go          Source interface definition
+  config.go          Source configuration parsing (YAML)
+  disk.go            Local disk source (file scanning)
+  github.go          GitHub API source (issues, PRs, READMEs)
+  web.go             Web crawl source (HTML-to-text, robots.txt)
+  manager.go         Source orchestration (refresh, failures)
 ```
 
 ## Attribution

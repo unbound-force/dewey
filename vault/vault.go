@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/parser"
+	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
 )
 
@@ -70,6 +71,7 @@ type Client struct {
 	searchIndex *SearchIndex            // inverted index for full-text search
 	mu          sync.RWMutex            // protects all maps above
 	watcher     *fsnotify.Watcher       // file system watcher
+	vaultStore  *VaultStore             // optional persistent store adapter (nil when no .dewey/)
 }
 
 // blockLookup stores a block and its page for UUID-based retrieval.
@@ -86,6 +88,17 @@ func WithDailyFolder(folder string) Option {
 	return func(c *Client) { c.dailyFolder = folder }
 }
 
+// WithStore enables persistent indexing via the given store.Store.
+// When set, the vault client persists index changes to SQLite alongside
+// in-memory updates. Pass nil to disable persistence (default behavior).
+func WithStore(s *store.Store) Option {
+	return func(c *Client) {
+		if s != nil {
+			c.vaultStore = NewVaultStore(s, c.vaultPath, "disk-local")
+		}
+	}
+}
+
 // New creates a new Obsidian vault client. Call Load() to index the vault.
 func New(vaultPath string, opts ...Option) *Client {
 	c := &Client{
@@ -100,6 +113,11 @@ func New(vaultPath string, opts ...Option) *Client {
 		opt(c)
 	}
 	return c
+}
+
+// Store returns the VaultStore adapter, or nil if persistence is not configured.
+func (c *Client) Store() *VaultStore {
+	return c.vaultStore
 }
 
 // Load reads all .md files in the vault and builds the in-memory index.
@@ -329,6 +347,20 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		}
 		c.indexFile(filepath.ToSlash(relPath), string(content), info)
 		c.BuildBacklinks()
+
+		// Persist to store if available (nil check preserves backward compat).
+		if c.vaultStore != nil {
+			pageName := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
+			lowerName := strings.ToLower(pageName)
+			c.mu.RLock()
+			page, ok := c.pages[lowerName]
+			c.mu.RUnlock()
+			if ok {
+				if err := c.vaultStore.PersistPage(page); err != nil {
+					logger.Warn("failed to persist page to store", "file", relPath, "err", err)
+				}
+			}
+		}
 		logger.Info("reindexed", "file", relPath)
 
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
@@ -337,6 +369,13 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		lowerName := strings.ToLower(name)
 		c.removePageFromIndex(lowerName)
 		c.BuildBacklinks()
+
+		// Remove from store if available.
+		if c.vaultStore != nil {
+			if err := c.vaultStore.RemovePage(name); err != nil {
+				logger.Warn("failed to remove page from store", "file", relPath, "err", err)
+			}
+		}
 		logger.Info("removed from index", "file", relPath)
 
 	case event.Op&fsnotify.Rename == fsnotify.Rename:
@@ -345,6 +384,13 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		lowerName := strings.ToLower(name)
 		c.removePageFromIndex(lowerName)
 		c.BuildBacklinks()
+
+		// Remove from store if available.
+		if c.vaultStore != nil {
+			if err := c.vaultStore.RemovePage(name); err != nil {
+				logger.Warn("failed to remove renamed page from store", "file", relPath, "err", err)
+			}
+		}
 		logger.Info("removed from index (rename)", "file", relPath)
 	}
 }

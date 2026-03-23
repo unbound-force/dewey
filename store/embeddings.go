@@ -1,0 +1,345 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/binary"
+	"fmt"
+	"math"
+	"strings"
+	"time"
+)
+
+// Embedding represents a vector embedding for a content block.
+// The vector is stored as a float32 BLOB in SQLite for storage efficiency.
+type Embedding struct {
+	BlockUUID   string
+	ModelID     string
+	Vector      []float32
+	ChunkText   string
+	GeneratedAt int64
+}
+
+// SimilarityResult represents a search result with cosine similarity score.
+// Includes provenance metadata for Observable Quality (Constitution III).
+type SimilarityResult struct {
+	BlockUUID  string  `json:"document_id"`
+	PageName   string  `json:"page"`
+	Content    string  `json:"content"`
+	Similarity float64 `json:"similarity"`
+	Source     string  `json:"source"`
+	SourceID   string  `json:"source_id"`
+	OriginURL  string  `json:"origin_url,omitempty"`
+	IndexedAt  int64   `json:"indexed_at"`
+}
+
+// SearchFilters constrains similarity search results by metadata.
+type SearchFilters struct {
+	SourceType  string
+	SourceID    string
+	HasProperty string
+	HasTag      string
+}
+
+// InsertEmbedding stores a vector embedding for a block. Uses parameterized
+// queries to prevent SQL injection (FR-028). The vector is serialized as
+// a float32 BLOB (4 bytes per float, little-endian).
+func (s *Store) InsertEmbedding(blockUUID, modelID string, vector []float32, chunkText string) error {
+	blob := serializeVector(vector)
+	now := time.Now().UnixMilli()
+
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO embeddings (block_uuid, model_id, vector, chunk_text, generated_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		blockUUID, modelID, blob, chunkText, now,
+	)
+	if err != nil {
+		return fmt.Errorf("insert embedding for block %q: %w", blockUUID, err)
+	}
+	return nil
+}
+
+// GetEmbedding retrieves an embedding by block UUID and model ID.
+// Returns nil if not found.
+func (s *Store) GetEmbedding(blockUUID, modelID string) (*Embedding, error) {
+	var blob []byte
+	e := &Embedding{}
+
+	err := s.db.QueryRow(`
+		SELECT block_uuid, model_id, vector, chunk_text, generated_at
+		FROM embeddings WHERE block_uuid = ? AND model_id = ?`,
+		blockUUID, modelID,
+	).Scan(&e.BlockUUID, &e.ModelID, &blob, &e.ChunkText, &e.GeneratedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get embedding for block %q: %w", blockUUID, err)
+	}
+
+	e.Vector = deserializeVector(blob)
+	return e, nil
+}
+
+// GetAllEmbeddings returns all embeddings for a given model ID.
+// Used by brute-force cosine similarity search to load vectors into memory.
+func (s *Store) GetAllEmbeddings(modelID string) ([]Embedding, error) {
+	rows, err := s.db.Query(`
+		SELECT block_uuid, model_id, vector, chunk_text, generated_at
+		FROM embeddings WHERE model_id = ?`, modelID)
+	if err != nil {
+		return nil, fmt.Errorf("get all embeddings for model %q: %w", modelID, err)
+	}
+	defer rows.Close()
+
+	var embeddings []Embedding
+	for rows.Next() {
+		var blob []byte
+		var e Embedding
+		if err := rows.Scan(&e.BlockUUID, &e.ModelID, &blob, &e.ChunkText, &e.GeneratedAt); err != nil {
+			return nil, fmt.Errorf("scan embedding: %w", err)
+		}
+		e.Vector = deserializeVector(blob)
+		embeddings = append(embeddings, e)
+	}
+	return embeddings, rows.Err()
+}
+
+// DeleteEmbeddingsByBlock removes all embeddings for a given block UUID.
+func (s *Store) DeleteEmbeddingsByBlock(blockUUID string) error {
+	_, err := s.db.Exec(`DELETE FROM embeddings WHERE block_uuid = ?`, blockUUID)
+	if err != nil {
+		return fmt.Errorf("delete embeddings for block %q: %w", blockUUID, err)
+	}
+	return nil
+}
+
+// DeleteEmbeddingsByModel removes all embeddings for a given model ID.
+// Used when the embedding model changes and all vectors need regeneration.
+func (s *Store) DeleteEmbeddingsByModel(modelID string) error {
+	_, err := s.db.Exec(`DELETE FROM embeddings WHERE model_id = ?`, modelID)
+	if err != nil {
+		return fmt.Errorf("delete embeddings for model %q: %w", modelID, err)
+	}
+	return nil
+}
+
+// CountEmbeddings returns the total number of embeddings in the store.
+func (s *Store) CountEmbeddings() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM embeddings`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count embeddings: %w", err)
+	}
+	return count, nil
+}
+
+// CountBlocks returns the total number of blocks in the store.
+func (s *Store) CountBlocks() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM blocks`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count blocks: %w", err)
+	}
+	return count, nil
+}
+
+// SearchSimilar performs brute-force cosine similarity search over all
+// embeddings for a given model. Loads all vectors into memory, computes
+// cosine similarity against the query vector, and returns the top-k
+// results sorted by score above the threshold.
+//
+// Design decision: Brute-force was chosen over ANN indexes because
+// Dewey indexes <10k vectors, making brute-force ~5ms (Decision 2
+// in research.md). The same interface can be backed by HNSW later.
+func (s *Store) SearchSimilar(modelID string, queryVec []float32, limit int, threshold float64) ([]SimilarityResult, error) {
+	embeddings, err := s.GetAllEmbeddings(modelID)
+	if err != nil {
+		return nil, fmt.Errorf("load embeddings: %w", err)
+	}
+
+	return s.rankBySimilarity(embeddings, queryVec, limit, threshold)
+}
+
+// SearchSimilarFiltered performs cosine similarity search with metadata
+// filters. Filters are applied at the SQL level (joining embeddings with
+// pages) before vector comparison to reduce the number of cosine computations.
+func (s *Store) SearchSimilarFiltered(modelID string, queryVec []float32, filters SearchFilters, limit int, threshold float64) ([]SimilarityResult, error) {
+	// Build filtered query joining embeddings → blocks → pages.
+	query := `
+		SELECT e.block_uuid, e.model_id, e.vector, e.chunk_text, e.generated_at
+		FROM embeddings e
+		JOIN blocks b ON e.block_uuid = b.uuid
+		JOIN pages p ON b.page_name = p.name
+		WHERE e.model_id = ?`
+	args := []any{modelID}
+
+	if filters.SourceType != "" {
+		// Source type is stored in the sources table, but pages have source_id.
+		// We filter by prefix convention: source_id starts with type (e.g., "disk-local").
+		// Escape LIKE metacharacters to prevent user input from altering the pattern.
+		query += ` AND p.source_id LIKE ? ESCAPE '\'`
+		args = append(args, escapeLike(filters.SourceType)+"%")
+	}
+	if filters.SourceID != "" {
+		query += ` AND p.source_id = ?`
+		args = append(args, filters.SourceID)
+	}
+	if filters.HasProperty != "" {
+		// Properties are stored as JSON. Use LIKE for key existence check.
+		// Escape LIKE metacharacters in the property name.
+		query += ` AND p.properties LIKE ? ESCAPE '\'`
+		args = append(args, "%"+escapeLike(`"`+filters.HasProperty+`"`)+"%")
+	}
+	if filters.HasTag != "" {
+		// Tags are typically in properties JSON or block content.
+		// Check both properties and block content for the tag.
+		// Escape LIKE metacharacters in the tag value.
+		escaped := escapeLike(filters.HasTag)
+		query += ` AND (p.properties LIKE ? ESCAPE '\' OR b.content LIKE ? ESCAPE '\')`
+		args = append(args, "%"+escaped+"%", "%#"+escaped+"%")
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("filtered embedding query: %w", err)
+	}
+	defer rows.Close()
+
+	var embeddings []Embedding
+	for rows.Next() {
+		var blob []byte
+		var e Embedding
+		if err := rows.Scan(&e.BlockUUID, &e.ModelID, &blob, &e.ChunkText, &e.GeneratedAt); err != nil {
+			return nil, fmt.Errorf("scan filtered embedding: %w", err)
+		}
+		e.Vector = deserializeVector(blob)
+		embeddings = append(embeddings, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate filtered embeddings: %w", err)
+	}
+
+	return s.rankBySimilarity(embeddings, queryVec, limit, threshold)
+}
+
+// rankBySimilarity computes cosine similarity for each embedding against
+// the query vector and returns the top-k results above the threshold.
+func (s *Store) rankBySimilarity(embeddings []Embedding, queryVec []float32, limit int, threshold float64) ([]SimilarityResult, error) {
+	type scored struct {
+		embedding  Embedding
+		similarity float64
+	}
+
+	var candidates []scored
+	for _, e := range embeddings {
+		sim := cosineSimilarity(queryVec, e.Vector)
+		if sim >= threshold {
+			candidates = append(candidates, scored{embedding: e, similarity: sim})
+		}
+	}
+
+	// Sort by similarity descending (insertion sort — small N).
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].similarity > candidates[j-1].similarity; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+
+	// Truncate to limit.
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+
+	// Enrich results with page metadata.
+	results := make([]SimilarityResult, 0, len(candidates))
+	for _, c := range candidates {
+		result := SimilarityResult{
+			BlockUUID:  c.embedding.BlockUUID,
+			Content:    c.embedding.ChunkText,
+			Similarity: c.similarity,
+			IndexedAt:  c.embedding.GeneratedAt,
+		}
+
+		// Look up page metadata for provenance.
+		block, err := s.GetBlock(c.embedding.BlockUUID)
+		if err == nil && block != nil {
+			result.PageName = block.PageName
+			page, err := s.GetPage(block.PageName)
+			if err == nil && page != nil {
+				result.Source = inferSourceType(page.SourceID)
+				result.SourceID = page.SourceID
+				result.IndexedAt = page.UpdatedAt
+			}
+		}
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// cosineSimilarity computes the cosine similarity between two vectors:
+// dot(a,b) / (norm(a) * norm(b)). Returns 0 for zero-length vectors
+// to handle the edge case gracefully.
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+
+	var dot, normA, normB float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+
+	denom := math.Sqrt(normA) * math.Sqrt(normB)
+	if denom == 0 {
+		return 0 // Zero vector — avoid division by zero.
+	}
+
+	return dot / denom
+}
+
+// serializeVector converts a float32 slice to a byte slice (little-endian).
+// Each float32 occupies 4 bytes.
+func serializeVector(vec []float32) []byte {
+	buf := make([]byte, len(vec)*4)
+	for i, v := range vec {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+	return buf
+}
+
+// deserializeVector converts a byte slice back to a float32 slice.
+func deserializeVector(buf []byte) []float32 {
+	if len(buf)%4 != 0 {
+		return nil
+	}
+	vec := make([]float32, len(buf)/4)
+	for i := range vec {
+		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+	}
+	return vec
+}
+
+// escapeLike escapes LIKE metacharacters (%, _, \) so user-supplied values
+// are matched literally. The caller must add ESCAPE '\' to the SQL clause.
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
+// inferSourceType extracts the source type from a source ID.
+// Convention: source IDs are formatted as "type-name" (e.g., "disk-local").
+func inferSourceType(sourceID string) string {
+	for i, c := range sourceID {
+		if c == '-' {
+			return sourceID[:i]
+		}
+	}
+	return sourceID
+}

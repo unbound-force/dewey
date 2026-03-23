@@ -1,0 +1,134 @@
+// Package source provides pluggable content source implementations for Dewey.
+package source
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// SourceConfig represents a single source entry from .dewey/sources.yaml.
+type SourceConfig struct {
+	ID              string         `yaml:"id"`
+	Type            string         `yaml:"type"`
+	Name            string         `yaml:"name"`
+	Config          map[string]any `yaml:"config"`
+	RefreshInterval string         `yaml:"refresh_interval,omitempty"`
+}
+
+// SourcesFile represents the top-level structure of .dewey/sources.yaml.
+type SourcesFile struct {
+	Sources []SourceConfig `yaml:"sources"`
+}
+
+// LoadSourcesConfig reads and parses .dewey/sources.yaml.
+// Returns an empty slice (not error) if the file does not exist.
+func LoadSourcesConfig(path string) ([]SourceConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read sources config: %w", err)
+	}
+
+	var file SourcesFile
+	if err := yaml.Unmarshal(data, &file); err != nil {
+		return nil, fmt.Errorf("parse sources config: %w", err)
+	}
+
+	// Validate each source entry.
+	for i, src := range file.Sources {
+		if err := validateSourceConfig(&src); err != nil {
+			return nil, fmt.Errorf("source %d (%s): %w", i, src.ID, err)
+		}
+	}
+
+	return file.Sources, nil
+}
+
+// SaveSourcesConfig writes the sources configuration to .dewey/sources.yaml.
+func SaveSourcesConfig(path string, sources []SourceConfig) error {
+	file := SourcesFile{Sources: sources}
+	data, err := yaml.Marshal(&file)
+	if err != nil {
+		return fmt.Errorf("marshal sources config: %w", err)
+	}
+
+	header := "# Dewey content sources\n# Each source provides documents for the knowledge graph index.\n\n"
+	if err := os.WriteFile(path, []byte(header+string(data)), 0o644); err != nil {
+		return fmt.Errorf("write sources config: %w", err)
+	}
+	return nil
+}
+
+// validateSourceConfig checks that a source config has all required fields.
+func validateSourceConfig(src *SourceConfig) error {
+	if src.ID == "" {
+		return fmt.Errorf("missing required field: id")
+	}
+	if src.Type == "" {
+		return fmt.Errorf("missing required field: type")
+	}
+	if src.Name == "" {
+		return fmt.Errorf("missing required field: name")
+	}
+
+	switch src.Type {
+	case "disk":
+		// Disk sources require a path in config.
+		if src.Config == nil {
+			src.Config = map[string]any{"path": "."}
+		}
+	case "github":
+		// GitHub sources require org and repos.
+		if src.Config == nil {
+			return fmt.Errorf("github source requires config with 'org' and 'repos'")
+		}
+		if _, ok := src.Config["org"]; !ok {
+			return fmt.Errorf("github source requires 'org' in config")
+		}
+		if _, ok := src.Config["repos"]; !ok {
+			return fmt.Errorf("github source requires 'repos' in config")
+		}
+	case "web":
+		// Web sources require urls.
+		if src.Config == nil {
+			return fmt.Errorf("web source requires config with 'urls'")
+		}
+		if _, ok := src.Config["urls"]; !ok {
+			return fmt.Errorf("web source requires 'urls' in config")
+		}
+	default:
+		return fmt.Errorf("unknown source type: %s", src.Type)
+	}
+
+	return nil
+}
+
+// ParseRefreshInterval converts a refresh interval string to a time.Duration.
+// Supports: "daily", "weekly", "hourly", or Go duration strings (e.g., "1h", "30m").
+// Returns 0 for empty string (no refresh interval).
+func ParseRefreshInterval(interval string) (time.Duration, error) {
+	if interval == "" {
+		return 0, nil
+	}
+
+	switch strings.ToLower(interval) {
+	case "daily":
+		return 24 * time.Hour, nil
+	case "weekly":
+		return 7 * 24 * time.Hour, nil
+	case "hourly":
+		return time.Hour, nil
+	default:
+		d, err := time.ParseDuration(interval)
+		if err != nil {
+			return 0, fmt.Errorf("invalid refresh interval %q: %w", interval, err)
+		}
+		return d, nil
+	}
+}

@@ -21,6 +21,21 @@ archives:
 checksum:
   name_template: checksums.txt
 
+brews:
+  - repository:
+      owner: unbound-force
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    name: dewey
+    homepage: https://github.com/unbound-force/dewey
+    description: Knowledge graph MCP server with persistence, semantic search, and pluggable content sources
+    license: MIT
+    dependencies:
+      - name: ollama
+        type: recommended
+    install: |
+      bin.install "dewey"
+
 changelog:
   sort: asc
   filters:

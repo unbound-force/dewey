@@ -7,14 +7,42 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/backend"
+	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/tools"
 	"github.com/unbound-force/dewey/vault"
 )
 
+// serverConfig holds optional dependencies for the MCP server.
+type serverConfig struct {
+	embedder embed.Embedder
+	store    *store.Store
+}
+
+// serverOption configures the MCP server.
+type serverOption func(*serverConfig)
+
+// WithEmbedder sets the embedding provider for semantic search tools.
+func WithEmbedder(e embed.Embedder) serverOption {
+	return func(c *serverConfig) { c.embedder = e }
+}
+
+// WithPersistentStore sets the SQLite store for semantic search tools.
+func WithPersistentStore(s *store.Store) serverOption {
+	return func(c *serverConfig) { c.store = s }
+}
+
 // newServer creates and configures the MCP server with all tools registered.
 // If readOnly is true, write tools are not registered.
 // Tools requiring DataScript are only registered if the backend supports it.
-func newServer(b backend.Backend, readOnly bool) *mcp.Server {
+// The embedder and persistent store are optional — semantic search tools
+// are always registered but return clear error messages when unavailable.
+func newServer(b backend.Backend, readOnly bool, opts ...serverOption) *mcp.Server {
+	var cfg serverConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	srv := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "dewey",
@@ -254,6 +282,24 @@ func newServer(b backend.Backend, readOnly bool) *mcp.Server {
 		}, whiteboard.GetWhiteboard)
 	}
 
+	// --- Semantic search tools (always registered; return errors when unavailable) ---
+	semantic := tools.NewSemantic(cfg.embedder, cfg.store)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "dewey_semantic_search",
+		Description: "Find documents semantically similar to a natural language query, ranked by cosine similarity. Returns results with provenance metadata.",
+	}, semantic.SemanticSearch)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "dewey_similar",
+		Description: "Given a document (by page name or block UUID), find the most similar documents in the index.",
+	}, semantic.Similar)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "dewey_semantic_search_filtered",
+		Description: "Semantic search constrained by metadata filters (source type, repository, properties).",
+	}, semantic.SemanticSearchFiltered)
+
 	// --- Health tool (all backends) ---
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "health",
@@ -272,13 +318,64 @@ func newServer(b backend.Backend, readOnly bool) *mcp.Server {
 			status = fmt.Sprintf("error: %v", pingErr)
 		}
 
-		data, _ := json.MarshalIndent(map[string]any{
+		result := map[string]any{
 			"status":    status,
 			"version":   version,
 			"backend":   backendType,
 			"readOnly":  readOnly,
 			"pageCount": len(pages),
-		}, "", "  ")
+		}
+
+		// Add Dewey-specific fields per contracts/mcp-tools.md.
+		deweyInfo := map[string]any{}
+		if cfg.store != nil {
+			deweyInfo["persistent"] = true
+
+			embeddingCount, _ := cfg.store.CountEmbeddings()
+			blockCount, _ := cfg.store.CountBlocks()
+			deweyInfo["embeddingCount"] = embeddingCount
+
+			var coverage float64
+			if blockCount > 0 {
+				coverage = float64(embeddingCount) / float64(blockCount)
+			}
+			deweyInfo["embeddingCoverage"] = coverage
+
+			// Include per-source status in health response.
+			storedSources, _ := cfg.store.ListSources()
+			var sourcesInfo []map[string]any
+			for _, src := range storedSources {
+				srcInfo := map[string]any{
+					"id":     src.ID,
+					"type":   src.Type,
+					"status": src.Status,
+				}
+				pc, _ := cfg.store.CountPagesBySource(src.ID)
+				srcInfo["pageCount"] = pc
+				if src.LastFetchedAt > 0 {
+					srcInfo["lastFetched"] = fmt.Sprintf("%d", src.LastFetchedAt)
+				}
+				sourcesInfo = append(sourcesInfo, srcInfo)
+			}
+			deweyInfo["sources"] = sourcesInfo
+		} else {
+			deweyInfo["persistent"] = false
+			deweyInfo["embeddingCount"] = 0
+			deweyInfo["embeddingCoverage"] = 0.0
+			deweyInfo["sources"] = []map[string]any{}
+		}
+
+		if cfg.embedder != nil {
+			deweyInfo["embeddingModel"] = cfg.embedder.ModelID()
+			deweyInfo["embeddingAvailable"] = cfg.embedder.Available()
+		} else {
+			deweyInfo["embeddingModel"] = ""
+			deweyInfo["embeddingAvailable"] = false
+		}
+
+		result["dewey"] = deweyInfo
+
+		data, _ := json.MarshalIndent(result, "", "  ")
 
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},

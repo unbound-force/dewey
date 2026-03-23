@@ -222,11 +222,12 @@ type summaryBuilder struct {
 func (sb *summaryBuilder) String() string {
 	var b string
 	for _, s := range sb.result.Summaries {
-		if s.Skipped {
+		switch {
+		case s.Skipped:
 			b += fmt.Sprintf("  %s: skipped (within refresh interval)\n", s.SourceID)
-		} else if s.Error != "" {
+		case s.Error != "":
 			b += fmt.Sprintf("  %s: error (%s)\n", s.SourceID, s.Error)
-		} else {
+		default:
 			b += fmt.Sprintf("  %s: %d documents\n", s.SourceID, s.Documents)
 		}
 	}

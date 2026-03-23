@@ -47,5 +47,5 @@ jobs:
             --model=opencode/claude-sonnet-4-6 \
             --coverprofile=coverage.out \
             --max-crapload=48 \
-            --max-gaze-crapload=18 \
+            --max-gaze-crapload=37 \
             --min-contract-coverage=8

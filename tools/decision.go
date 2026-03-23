@@ -184,11 +184,12 @@ func (d *Decision) DecisionCheck(ctx context.Context, req *mcp.CallToolRequest, 
 
 	var open, resolved, overdue []decisionBlock
 	for _, db := range decisions {
-		if db.Marker == "DONE" || db.Resolved != "" {
+		switch {
+		case db.Marker == "DONE" || db.Resolved != "":
 			resolved = append(resolved, db)
-		} else if db.Overdue {
+		case db.Overdue:
 			overdue = append(overdue, db)
-		} else {
+		default:
 			open = append(open, db)
 		}
 	}

@@ -7,14 +7,14 @@ import (
 
 // OverviewStats contains global graph statistics.
 type OverviewStats struct {
-	TotalPages      int              `json:"totalPages"`
-	TotalBlocks     int              `json:"totalBlocks"`
-	TotalLinks      int              `json:"totalLinks"`
-	JournalPages    int              `json:"journalPages"`
-	OrphanPages     int              `json:"orphanPages"`
-	MostConnected   []PageStat       `json:"mostConnected"`
-	MostLinkedTo    []PageStat       `json:"mostLinkedTo"`
-	Namespaces      map[string]int   `json:"namespaces"`
+	TotalPages    int            `json:"totalPages"`
+	TotalBlocks   int            `json:"totalBlocks"`
+	TotalLinks    int            `json:"totalLinks"`
+	JournalPages  int            `json:"journalPages"`
+	OrphanPages   int            `json:"orphanPages"`
+	MostConnected []PageStat     `json:"mostConnected"`
+	MostLinkedTo  []PageStat     `json:"mostLinkedTo"`
+	Namespaces    map[string]int `json:"namespaces"`
 }
 
 // PageStat is a page with its connectivity score.
@@ -170,11 +170,12 @@ func (g *Graph) KnowledgeGaps() GapInfo {
 		inDeg := g.InDegree(key)
 		name := g.OriginalName(key)
 
-		if outDeg == 0 && inDeg == 0 {
+		switch {
+		case outDeg == 0 && inDeg == 0:
 			gaps.OrphanPages = append(gaps.OrphanPages, name)
-		} else if outDeg == 0 && inDeg > 0 {
+		case outDeg == 0 && inDeg > 0:
 			gaps.DeadEndPages = append(gaps.DeadEndPages, name)
-		} else if outDeg+inDeg <= 2 {
+		case outDeg+inDeg <= 2:
 			weakStats = append(weakStats, PageStat{
 				Name:        name,
 				OutLinks:    outDeg,

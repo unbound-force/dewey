@@ -1,0 +1,32 @@
+schema: unbound-force
+
+context: |
+  This project follows the Unbound Force org constitution.
+  Four core principles govern all work:
+
+  I. Autonomous Collaboration: Heroes collaborate through
+     well-defined artifacts, not runtime coupling.
+  II. Composability First: Every hero is independently
+      installable and usable alone.
+  III. Observable Quality: Every hero produces
+       machine-parseable output with provenance.
+  IV. Testability: Every component MUST be testable in
+       isolation without requiring external services.
+
+  All changes MUST align with these principles.
+  Constitution violations are CRITICAL severity.
+
+  Full constitution: .specify/memory/constitution.md
+
+rules:
+  proposal:
+    - MUST include Constitution Alignment section
+    - Each principle needs PASS or N/A with justification
+  specs:
+    - Use RFC 2119 language (MUST/SHALL/SHOULD/MAY)
+    - Use Given/When/Then for all scenarios
+  design:
+    - Reference constitution alignment from proposal
+  tasks:
+    - Include verification task for constitution alignment
+# scaffolded by unbound vdev

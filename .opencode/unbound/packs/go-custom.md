@@ -18,3 +18,5 @@ Use the `CR-NNN` prefix for all custom rules. Use `[MUST]`,
 ## Custom Rules
 
 <!-- Add project-specific rules below this line -->
+
+- **CR-001** [MUST] **Override AP-007**: Dewey retains the flat package layout inherited from the graphthulhu fork. Packages live at the repository root level (`store/`, `embed/`, `source/`, `vault/`, `tools/`, etc.) rather than under `internal/` and `cmd/`. The main package files (`main.go`, `cli.go`, `server.go`) remain in the repository root. This deviation from AP-007 is intentional — restructuring the entire codebase to `internal/`/`cmd/` would be a separate concern from the core implementation and would break backward compatibility with the upstream fork. See `plan.md` Complexity Tracking for rationale.

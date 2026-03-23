@@ -2,165 +2,179 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/types"
 )
 
-// runJournal appends a block to today's (or a specified date's) journal page.
-func runJournal(args []string, c *client.Client) {
-	fs := flag.NewFlagSet("journal", flag.ExitOnError)
-	date := fs.String("date", "", "Journal date (YYYY-MM-DD). Default: today")
-	fs.StringVar(date, "d", "", "Journal date (YYYY-MM-DD). Default: today")
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: dewey journal [--date YYYY-MM-DD] CONTENT\n")
-		fmt.Fprintf(os.Stderr, "       echo CONTENT | dewey journal\n\n")
-		fmt.Fprintf(os.Stderr, "Appends a block to a Logseq journal page.\n")
-		fmt.Fprintf(os.Stderr, "Prints the created block UUID on success.\n\n")
-		fs.PrintDefaults()
-	}
-	fs.Parse(args)
+// newJournalCmd creates the `dewey journal` subcommand.
+// Appends a block to today's (or a specified date's) journal page.
+func newJournalCmd() *cobra.Command {
+	var date string
 
-	content := readContent(fs)
-	if content == "" {
-		fs.Usage()
-		os.Exit(1)
+	cmd := &cobra.Command{
+		Use:   "journal [flags] TEXT",
+		Short: "Append block to today's journal",
+		Long: `Appends a block to a Logseq journal page.
+Prints the created block UUID on success.
+
+Content can be provided as arguments or piped via stdin:
+  dewey journal "my note"
+  echo "my note" | dewey journal`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c := client.New("", "")
+			content := readContentFromArgs(args)
+			if content == "" {
+				return fmt.Errorf("no content provided")
+			}
+
+			var t time.Time
+			if date != "" {
+				var err error
+				t, err = time.Parse("2006-01-02", date)
+				if err != nil {
+					return fmt.Errorf("invalid date %q (use YYYY-MM-DD)", date)
+				}
+			} else {
+				t = time.Now()
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			pageName := findJournalPage(ctx, c, t)
+			if pageName == "" {
+				// No existing page found — use ordinal format (most common Logseq default).
+				pageName = ordinalDate(t)
+			}
+
+			block, err := c.AppendBlockInPage(ctx, pageName, content)
+			if err != nil {
+				return fmt.Errorf("journal: %w", err)
+			}
+
+			if block != nil {
+				fmt.Println(block.UUID)
+			}
+			return nil
+		},
 	}
 
-	var t time.Time
-	if *date != "" {
-		var err error
-		t, err = time.Parse("2006-01-02", *date)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dewey journal: invalid date %q (use YYYY-MM-DD)\n", *date)
-			os.Exit(1)
-		}
-	} else {
-		t = time.Now()
-	}
+	cmd.Flags().StringVarP(&date, "date", "d", "", "Journal date (YYYY-MM-DD). Default: today")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	pageName := findJournalPage(ctx, c, t)
-	if pageName == "" {
-		// No existing page found — use ordinal format (most common Logseq default).
-		pageName = ordinalDate(t)
-	}
-
-	block, err := c.AppendBlockInPage(ctx, pageName, content)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dewey journal: %v\n", err)
-		os.Exit(1)
-	}
-
-	if block != nil {
-		fmt.Println(block.UUID)
-	}
+	return cmd
 }
 
-// runAdd appends a block to a named page.
-func runAdd(args []string, c *client.Client) {
-	fs := flag.NewFlagSet("add", flag.ExitOnError)
-	page := fs.String("page", "", "Page name (required)")
-	fs.StringVar(page, "p", "", "Page name (required)")
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: dewey add --page PAGE CONTENT\n")
-		fmt.Fprintf(os.Stderr, "       echo CONTENT | dewey add -p PAGE\n\n")
-		fmt.Fprintf(os.Stderr, "Appends a block to a Logseq page (creates page if needed).\n")
-		fmt.Fprintf(os.Stderr, "Prints the created block UUID on success.\n\n")
-		fs.PrintDefaults()
-	}
-	fs.Parse(args)
+// newAddCmd creates the `dewey add` subcommand.
+// Appends a block to a named page.
+func newAddCmd() *cobra.Command {
+	var page string
 
-	if *page == "" {
-		fmt.Fprintf(os.Stderr, "dewey add: --page is required\n\n")
-		fs.Usage()
-		os.Exit(1)
+	cmd := &cobra.Command{
+		Use:   "add [flags] TEXT",
+		Short: "Append block to a page",
+		Long: `Appends a block to a Logseq page (creates page if needed).
+Prints the created block UUID on success.
+
+Content can be provided as arguments or piped via stdin:
+  dewey add -p "My Page" "content here"
+  echo "content" | dewey add --page "My Page"`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if page == "" {
+				return fmt.Errorf("--page is required")
+			}
+
+			c := client.New("", "")
+			content := readContentFromArgs(args)
+			if content == "" {
+				return fmt.Errorf("no content provided")
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			block, err := c.AppendBlockInPage(ctx, page, content)
+			if err != nil {
+				return fmt.Errorf("add: %w", err)
+			}
+
+			if block != nil {
+				fmt.Println(block.UUID)
+			}
+			return nil
+		},
 	}
 
-	content := readContent(fs)
-	if content == "" {
-		fmt.Fprintf(os.Stderr, "dewey add: no content provided\n\n")
-		fs.Usage()
-		os.Exit(1)
-	}
+	cmd.Flags().StringVarP(&page, "page", "p", "", "Page name (required)")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	block, err := c.AppendBlockInPage(ctx, *page, content)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dewey add: %v\n", err)
-		os.Exit(1)
-	}
-
-	if block != nil {
-		fmt.Println(block.UUID)
-	}
+	return cmd
 }
 
-// runSearch performs full-text search and prints results to stdout.
-func runSearch(args []string, c *client.Client) {
-	fs := flag.NewFlagSet("search", flag.ExitOnError)
-	limit := fs.Int("limit", 10, "Max results")
-	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: dewey search [-limit N] QUERY\n\n")
-		fmt.Fprintf(os.Stderr, "Full-text search across all blocks in the knowledge graph.\n\n")
-		fs.PrintDefaults()
+// newSearchCmd creates the `dewey search` subcommand.
+// Performs full-text search and prints results to stdout.
+func newSearchCmd() *cobra.Command {
+	var limit int
+
+	cmd := &cobra.Command{
+		Use:   "search [flags] QUERY",
+		Short: "Full-text search across the graph",
+		Long:  "Full-text search across all blocks in the knowledge graph.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := strings.Join(args, " ")
+			if query == "" {
+				return fmt.Errorf("query is required")
+			}
+
+			c := client.New("", "")
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			queryLower := strings.ToLower(query)
+			pages, err := c.GetAllPages(ctx)
+			if err != nil {
+				return fmt.Errorf("search: %w", err)
+			}
+
+			found := 0
+			for _, pg := range pages {
+				if found >= limit {
+					break
+				}
+				if pg.Name == "" {
+					continue
+				}
+
+				blocks, err := c.GetPageBlocksTree(ctx, pg.Name)
+				if err != nil {
+					continue
+				}
+
+				printSearchResults(blocks, queryLower, pg.OriginalName, limit, &found)
+			}
+
+			if found == 0 {
+				return fmt.Errorf("no results for %q", query)
+			}
+			return nil
+		},
 	}
-	fs.Parse(args)
 
-	query := strings.Join(fs.Args(), " ")
-	if query == "" {
-		fs.Usage()
-		os.Exit(1)
-	}
+	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	queryLower := strings.ToLower(query)
-	pages, err := c.GetAllPages(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dewey search: %v\n", err)
-		os.Exit(1)
-	}
-
-	found := 0
-	for _, page := range pages {
-		if found >= *limit {
-			break
-		}
-		if page.Name == "" {
-			continue
-		}
-
-		blocks, err := c.GetPageBlocksTree(ctx, page.Name)
-		if err != nil {
-			continue
-		}
-
-		printSearchResults(blocks, queryLower, page.OriginalName, *limit, &found)
-	}
-
-	if found == 0 {
-		fmt.Fprintf(os.Stderr, "no results for %q\n", query)
-		os.Exit(1)
-	}
+	return cmd
 }
 
 // --- Helpers ---
 
-// readContent gets content from positional args or stdin (if piped).
-func readContent(fs *flag.FlagSet) string {
-	if args := fs.Args(); len(args) > 0 {
+// readContentFromArgs gets content from positional args or stdin (if piped).
+func readContentFromArgs(args []string) string {
+	if len(args) > 0 {
 		return strings.Join(args, " ")
 	}
 

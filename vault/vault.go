@@ -4,18 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/parser"
 	"github.com/unbound-force/dewey/types"
 )
+
+// logger is the package-level structured logger for vault operations.
+var logger = log.NewWithOptions(os.Stderr, log.Options{
+	Prefix: "dewey",
+})
 
 // ErrNotSupported is returned for Logseq-specific operations (DataScript queries).
 var ErrNotSupported = fmt.Errorf("operation not supported by obsidian backend")
@@ -57,14 +62,14 @@ type cachedPage struct {
 // Client implements backend.Backend for an Obsidian vault on disk.
 // It reads all .md files on initialization and serves queries from memory.
 type Client struct {
-	vaultPath    string
-	dailyFolder  string // e.g. "daily notes"
-	pages        map[string]*cachedPage // lowercase name → page
-	backlinks    map[string][]backlink  // lowercase target → backlinks
-	blockIndex   map[string]*blockLookup // uuid → block + page
-	searchIndex  *SearchIndex            // inverted index for full-text search
-	mu           sync.RWMutex            // protects all maps above
-	watcher      *fsnotify.Watcher       // file system watcher
+	vaultPath   string
+	dailyFolder string                  // e.g. "daily notes"
+	pages       map[string]*cachedPage  // lowercase name → page
+	backlinks   map[string][]backlink   // lowercase target → backlinks
+	blockIndex  map[string]*blockLookup // uuid → block + page
+	searchIndex *SearchIndex            // inverted index for full-text search
+	mu          sync.RWMutex            // protects all maps above
+	watcher     *fsnotify.Watcher       // file system watcher
 }
 
 // blockLookup stores a block and its page for UUID-based retrieval.
@@ -84,12 +89,12 @@ func WithDailyFolder(folder string) Option {
 // New creates a new Obsidian vault client. Call Load() to index the vault.
 func New(vaultPath string, opts ...Option) *Client {
 	c := &Client{
-		vaultPath:    vaultPath,
-		dailyFolder:  "daily notes",
-		pages:        make(map[string]*cachedPage),
-		backlinks:    make(map[string][]backlink),
-		blockIndex:   make(map[string]*blockLookup),
-		searchIndex:  NewSearchIndex(),
+		vaultPath:   vaultPath,
+		dailyFolder: "daily notes",
+		pages:       make(map[string]*cachedPage),
+		backlinks:   make(map[string][]backlink),
+		blockIndex:  make(map[string]*blockLookup),
+		searchIndex: NewSearchIndex(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -286,7 +291,7 @@ func (c *Client) watchLoop() {
 			if !ok {
 				return // watcher closed
 			}
-			log.Printf("dewey: watcher error: %v\n", err)
+			logger.Error("watcher error", "err", err)
 		}
 	}
 }
@@ -305,7 +310,7 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 
 	relPath, err := filepath.Rel(c.vaultPath, event.Name)
 	if err != nil {
-		log.Printf("dewey: failed to get relative path for %s: %v\n", event.Name, err)
+		logger.Error("failed to get relative path", "file", event.Name, "err", err)
 		return
 	}
 
@@ -314,17 +319,17 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		// File created or modified: re-index it.
 		content, err := os.ReadFile(event.Name)
 		if err != nil {
-			log.Printf("dewey: failed to read %s: %v\n", event.Name, err)
+			logger.Error("failed to read file", "file", event.Name, "err", err)
 			return
 		}
 		info, err := os.Stat(event.Name)
 		if err != nil {
-			log.Printf("dewey: failed to stat %s: %v\n", event.Name, err)
+			logger.Error("failed to stat file", "file", event.Name, "err", err)
 			return
 		}
 		c.indexFile(filepath.ToSlash(relPath), string(content), info)
 		c.BuildBacklinks()
-		log.Printf("dewey: reindexed %s\n", relPath)
+		logger.Info("reindexed", "file", relPath)
 
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
 		// File deleted: remove from index.
@@ -332,7 +337,7 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		lowerName := strings.ToLower(name)
 		c.removePageFromIndex(lowerName)
 		c.BuildBacklinks()
-		log.Printf("dewey: removed %s from index\n", relPath)
+		logger.Info("removed from index", "file", relPath)
 
 	case event.Op&fsnotify.Rename == fsnotify.Rename:
 		// File renamed: treat as remove (new name will trigger Create event).
@@ -340,7 +345,7 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		lowerName := strings.ToLower(name)
 		c.removePageFromIndex(lowerName)
 		c.BuildBacklinks()
-		log.Printf("dewey: removed %s from index (rename)\n", relPath)
+		logger.Info("removed from index (rename)", "file", relPath)
 	}
 }
 
@@ -384,7 +389,7 @@ func (c *Client) Ping(_ context.Context) error {
 func (c *Client) GetAllPages(_ context.Context) ([]types.PageEntity, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	seen := make(map[string]bool)
 	var pages []types.PageEntity
 	for _, page := range c.pages {
@@ -400,7 +405,7 @@ func (c *Client) GetAllPages(_ context.Context) ([]types.PageEntity, error) {
 func (c *Client) GetPage(_ context.Context, nameOrID any) (*types.PageEntity, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	name := fmt.Sprint(nameOrID)
 	page, ok := c.pages[strings.ToLower(name)]
 	if !ok {
@@ -412,7 +417,7 @@ func (c *Client) GetPage(_ context.Context, nameOrID any) (*types.PageEntity, er
 func (c *Client) GetPageBlocksTree(_ context.Context, nameOrID any) ([]types.BlockEntity, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	name := fmt.Sprint(nameOrID)
 	page, ok := c.pages[strings.ToLower(name)]
 	if !ok {
@@ -424,7 +429,7 @@ func (c *Client) GetPageBlocksTree(_ context.Context, nameOrID any) ([]types.Blo
 func (c *Client) GetBlock(_ context.Context, uuid string, opts ...map[string]any) (*types.BlockEntity, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	lookup, ok := c.blockIndex[uuid]
 	if !ok {
 		return nil, nil
@@ -439,7 +444,7 @@ func (c *Client) GetBlock(_ context.Context, uuid string, opts ...map[string]any
 func (c *Client) GetPageLinkedReferences(_ context.Context, nameOrID any) (json.RawMessage, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	name := fmt.Sprint(nameOrID)
 	key := strings.ToLower(name)
 
@@ -779,7 +784,7 @@ func (c *Client) UpdateBlock(_ context.Context, uuid string, content string, opt
 	// The file might have the UUID embedded, so we need to search for it
 	// We'll look for the old content with or without UUID comment
 	oldContentWithUUID := embedUUID(oldContent, uuid)
-	
+
 	var oldInFile, newInFile string
 	if strings.Contains(fileStr, oldContentWithUUID) {
 		// File has UUID embedded
@@ -901,7 +906,7 @@ func (c *Client) DeletePage(_ context.Context, name string) error {
 			break
 		}
 		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
-			log.Printf("dewey: failed to remove empty dir %s: %v", dir, err)
+			logger.Error("failed to remove empty dir", "dir", dir, "err", err)
 		}
 		dir = filepath.Dir(dir)
 	}
@@ -949,7 +954,7 @@ func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 	// Update all [[links]] across the vault — log every error.
 	if errs := c.updateLinksAcrossVaultLocked(oldName, newName); len(errs) > 0 {
 		for _, e := range errs {
-			log.Printf("dewey: link update error during rename: %v", e)
+			logger.Error("link update error during rename", "err", e)
 		}
 	}
 
@@ -969,7 +974,7 @@ func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 			break
 		}
 		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
-			log.Printf("dewey: failed to remove empty dir %s: %v", dir, err)
+			logger.Error("failed to remove empty dir", "dir", dir, "err", err)
 		}
 		dir = filepath.Dir(dir)
 	}
@@ -1209,7 +1214,7 @@ func findBlockByContent(blocks []types.BlockEntity, content string) *types.Block
 func (c *Client) FindBlocksByTag(_ context.Context, tag string, includeChildren bool) ([]backend.TagResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	tagLower := strings.ToLower(tag)
 	var results []backend.TagResult
 
@@ -1254,7 +1259,7 @@ func findTagInBlocks(blocks []types.BlockEntity, tagLower string, matches *[]typ
 func (c *Client) FindByProperty(_ context.Context, key, value, operator string) ([]backend.PropertyResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	var results []backend.PropertyResult
 
 	seen := make(map[string]bool)
@@ -1313,7 +1318,7 @@ func (c *Client) FindByProperty(_ context.Context, key, value, operator string) 
 func (c *Client) SearchJournals(_ context.Context, query, from, to string) ([]backend.JournalResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	queryLower := strings.ToLower(query)
 	var results []backend.JournalResult
 

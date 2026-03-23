@@ -2,15 +2,15 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/vault"
@@ -18,56 +18,96 @@ import (
 
 var version = "dev"
 
+// logger is the application-wide structured logger.
+// Replaces fmt.Fprintf(os.Stderr, ...) per convention pack CS-008.
+var logger = log.NewWithOptions(os.Stderr, log.Options{
+	Prefix: "dewey",
+})
+
 func main() {
-	// Handle top-level help and version flags.
-	if len(os.Args) >= 2 {
-		switch os.Args[1] {
-		case "-h", "-help", "--help", "help":
-			printUsage()
-			return
-		case "-v", "-version", "--version":
-			fmt.Println(version)
-			return
-		}
+	rootCmd := newRootCmd()
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
 	}
-
-	// Route to subcommand if first arg is a known command (not a flag).
-	if len(os.Args) >= 2 && !strings.HasPrefix(os.Args[1], "-") {
-		c := client.New("", "")
-		switch os.Args[1] {
-		case "serve":
-			runServe(os.Args[2:])
-		case "journal":
-			runJournal(os.Args[2:], c)
-		case "add":
-			runAdd(os.Args[2:], c)
-		case "search":
-			runSearch(os.Args[2:], c)
-		case "version":
-			fmt.Println(version)
-		default:
-			fmt.Fprintf(os.Stderr, "dewey: unknown command %q\n\n", os.Args[1])
-			printUsage()
-			os.Exit(1)
-		}
-		return
-	}
-
-	// Default: MCP server (backward compatible).
-	runServe(os.Args[1:])
 }
 
-func runServe(args []string) {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	readOnly := fs.Bool("read-only", false, "Disable all write operations")
-	backendType := fs.String("backend", "", "Backend type: logseq (default) or obsidian")
-	vaultPath := fs.String("vault", "", "Path to Obsidian vault (required for obsidian backend)")
-	dailyFolder := fs.String("daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
-	httpAddr := fs.String("http", "", "HTTP address to listen on (e.g. :8080). Uses streamable HTTP transport instead of stdio.")
-	fs.Parse(args)
+// newRootCmd creates the root cobra command. When invoked without a subcommand,
+// it starts the MCP server (backward compatible with graphthulhu behavior).
+func newRootCmd() *cobra.Command {
+	// Serve flags — declared at root level because the root command
+	// doubles as the serve command for backward compatibility.
+	var readOnly bool
+	var backendType string
+	var vaultPath string
+	var dailyFolder string
+	var httpAddr string
 
+	rootCmd := &cobra.Command{
+		Use:     "dewey",
+		Short:   "Knowledge graph MCP server & CLI",
+		Long:    fmt.Sprintf("dewey %s — Knowledge graph MCP server & CLI", version),
+		Version: version,
+		// SilenceUsage prevents cobra from printing usage on every error.
+		SilenceUsage: true,
+		// SilenceErrors lets us handle error formatting ourselves.
+		SilenceErrors: true,
+		// RunE is the default action: start the MCP server.
+		// This preserves backward compatibility — running `dewey` with no
+		// subcommand starts the server, matching graphthulhu behavior.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return executeServe(readOnly, backendType, vaultPath, dailyFolder, httpAddr)
+		},
+	}
+
+	// Register serve flags on the root command so `dewey --backend obsidian`
+	// works without the `serve` subcommand (backward compatible).
+	rootCmd.Flags().BoolVar(&readOnly, "read-only", false, "Disable all write operations")
+	rootCmd.Flags().StringVar(&backendType, "backend", "", "Backend type: logseq (default) or obsidian")
+	rootCmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (required for obsidian backend)")
+	rootCmd.Flags().StringVar(&dailyFolder, "daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
+	rootCmd.Flags().StringVar(&httpAddr, "http", "", "HTTP address to listen on (e.g. :8080)")
+
+	// Add subcommands.
+	rootCmd.AddCommand(newServeCmd())
+	rootCmd.AddCommand(newJournalCmd())
+	rootCmd.AddCommand(newAddCmd())
+	rootCmd.AddCommand(newSearchCmd())
+	rootCmd.AddCommand(newVersionCmd())
+
+	return rootCmd
+}
+
+// newServeCmd creates the `dewey serve` subcommand.
+func newServeCmd() *cobra.Command {
+	var readOnly bool
+	var backendType string
+	var vaultPath string
+	var dailyFolder string
+	var httpAddr string
+
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start MCP server",
+		Long:  "Start the MCP server with stdio or HTTP transport.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return executeServe(readOnly, backendType, vaultPath, dailyFolder, httpAddr)
+		},
+	}
+
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Disable all write operations")
+	cmd.Flags().StringVar(&backendType, "backend", "", "Backend type: logseq (default) or obsidian")
+	cmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (required for obsidian backend)")
+	cmd.Flags().StringVar(&dailyFolder, "daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
+	cmd.Flags().StringVar(&httpAddr, "http", "", "HTTP address to listen on (e.g. :8080)")
+
+	return cmd
+}
+
+// executeServe contains the shared serve logic used by both the root command
+// and the explicit `serve` subcommand.
+func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr string) error {
 	// Resolve backend from flag or environment.
-	bt := *backendType
+	bt := backendType
 	if bt == "" {
 		bt = os.Getenv("DEWEY_BACKEND")
 	}
@@ -78,82 +118,67 @@ func runServe(args []string) {
 	var b backend.Backend
 	switch bt {
 	case "obsidian":
-		vp := *vaultPath
+		vp := vaultPath
 		if vp == "" {
 			vp = os.Getenv("OBSIDIAN_VAULT_PATH")
 		}
 		if vp == "" {
-			fmt.Fprintf(os.Stderr, "dewey: --vault or OBSIDIAN_VAULT_PATH required for obsidian backend\n")
-			os.Exit(1)
+			return fmt.Errorf("--vault or OBSIDIAN_VAULT_PATH required for obsidian backend")
 		}
-		vc := vault.New(vp, vault.WithDailyFolder(*dailyFolder))
+		vc := vault.New(vp, vault.WithDailyFolder(dailyFolder))
 		if err := vc.Load(); err != nil {
-			fmt.Fprintf(os.Stderr, "dewey: failed to load vault: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to load vault: %w", err)
 		}
 		vc.BuildBacklinks()
-		
+
 		// Start file watcher.
 		if err := vc.Watch(); err != nil {
-			fmt.Fprintf(os.Stderr, "dewey: failed to start watcher: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to start watcher: %w", err)
 		}
 		defer vc.Close()
-		
+
 		b = vc
 	case "logseq":
 		lsClient := client.New("", "")
 		checkGraphVersionControl(lsClient)
 		b = lsClient
 	default:
-		fmt.Fprintf(os.Stderr, "dewey: unknown backend %q (use logseq or obsidian)\n", bt)
-		os.Exit(1)
+		return fmt.Errorf("unknown backend %q (use logseq or obsidian)", bt)
 	}
 
-	srv := newServer(b, *readOnly)
+	srv := newServer(b, readOnly)
 
-	if *httpAddr != "" {
+	if httpAddr != "" {
 		// Streamable HTTP transport — serves multiple clients.
 		handler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 			return srv
 		}, nil)
-		fmt.Fprintf(os.Stderr, "dewey: listening on %s\n", *httpAddr)
-		if err := http.ListenAndServe(*httpAddr, handler); err != nil {
-			fmt.Fprintf(os.Stderr, "dewey: %v\n", err)
-			os.Exit(1)
+		logger.Info("listening", "addr", httpAddr)
+		if err := http.ListenAndServe(httpAddr, handler); err != nil {
+			return fmt.Errorf("server error: %w", err)
 		}
 	} else {
 		// Default: stdio transport for MCP client integration.
 		if err := srv.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-			fmt.Fprintf(os.Stderr, "dewey: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("server error: %w", err)
 		}
+	}
+
+	return nil
+}
+
+// newVersionCmd creates the `dewey version` subcommand.
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			cmd.Println(version)
+		},
 	}
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, "dewey %s — Knowledge graph MCP server & CLI\n\n", version)
-	fmt.Fprintf(os.Stderr, "Usage:\n")
-	fmt.Fprintf(os.Stderr, "  dewey                     Start MCP server (default, Logseq)\n")
-	fmt.Fprintf(os.Stderr, "  dewey serve [flags]        Start MCP server\n")
-	fmt.Fprintf(os.Stderr, "  dewey journal [flags] TEXT Append block to today's journal\n")
-	fmt.Fprintf(os.Stderr, "  dewey add -p PAGE TEXT     Append block to a page\n")
-	fmt.Fprintf(os.Stderr, "  dewey search QUERY         Full-text search across the graph\n")
-	fmt.Fprintf(os.Stderr, "  dewey version              Print version\n")
-	fmt.Fprintf(os.Stderr, "\nServe flags:\n")
-	fmt.Fprintf(os.Stderr, "  --backend logseq|obsidian       Backend type (default: logseq)\n")
-	fmt.Fprintf(os.Stderr, "  --vault PATH                    Obsidian vault path\n")
-	fmt.Fprintf(os.Stderr, "  --daily-folder NAME             Daily notes folder (default: daily notes)\n")
-	fmt.Fprintf(os.Stderr, "  --read-only                     Disable write operations\n")
-	fmt.Fprintf(os.Stderr, "  --http ADDR                     Listen on HTTP (e.g. :8080) instead of stdio\n")
-	fmt.Fprintf(os.Stderr, "\nAll CLI commands read from stdin when no TEXT argument is given.\n")
-	fmt.Fprintf(os.Stderr, "Environment: LOGSEQ_API_URL (default http://127.0.0.1:12315)\n")
-	fmt.Fprintf(os.Stderr, "             LOGSEQ_API_TOKEN\n")
-	fmt.Fprintf(os.Stderr, "             DEWEY_BACKEND   Backend type\n")
-	fmt.Fprintf(os.Stderr, "             OBSIDIAN_VAULT_PATH   Obsidian vault path\n")
-}
-
-// checkGraphVersionControl warns on stderr if the Logseq graph is not git-controlled.
+// checkGraphVersionControl warns if the Logseq graph is not git-controlled.
 // Best-effort: silently skips if Logseq is not running or the API is unreachable.
 func checkGraphVersionControl(c *client.Client) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -166,7 +191,12 @@ func checkGraphVersionControl(c *client.Client) {
 
 	gitDir := filepath.Join(graph.Path, ".git")
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "dewey: WARNING: graph %q at %s is not version controlled\n", graph.Name, graph.Path)
-		fmt.Fprintf(os.Stderr, "dewey: Write operations cannot be undone. Consider: cd %s && git init && git add -A && git commit -m 'initial'\n", graph.Path)
+		logger.Warn("graph is not version controlled",
+			"graph", graph.Name,
+			"path", graph.Path,
+		)
+		logger.Warn("write operations cannot be undone",
+			"suggestion", fmt.Sprintf("cd %s && git init && git add -A && git commit -m 'initial'", graph.Path),
+		)
 	}
 }

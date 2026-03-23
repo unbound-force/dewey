@@ -1,5 +1,14 @@
 # Binary
 dewey
+*.exe
+*.test
+*.out
+
+# Vendor
+vendor/
+
+# Dewey data
+.dewey/
 
 # Goreleaser
 dist/

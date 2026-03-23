@@ -203,6 +203,46 @@ type DecisionDeferInput struct {
 // AnalysisHealthInput has no required params — audits all analysis/strategy pages.
 type AnalysisHealthInput struct{}
 
+// --- Semantic search tool inputs ---
+
+// SemanticSearchInput is the input for the dewey_semantic_search MCP tool.
+type SemanticSearchInput struct {
+	Query     string  `json:"query" jsonschema:"Natural language search query"`
+	Limit     int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
+	Threshold float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
+}
+
+// SimilarInput is the input for the dewey_similar MCP tool.
+type SimilarInput struct {
+	Page  string `json:"page,omitempty" jsonschema:"Page name to find similar documents for"`
+	UUID  string `json:"uuid,omitempty" jsonschema:"Block UUID to find similar blocks for. Takes precedence over page."`
+	Limit int    `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
+}
+
+// SemanticSearchFilteredInput is the input for the dewey_semantic_search_filtered MCP tool.
+type SemanticSearchFilteredInput struct {
+	Query       string  `json:"query" jsonschema:"Natural language search query"`
+	SourceType  string  `json:"source_type,omitempty" jsonschema:"Filter by source type: disk, github, web"`
+	SourceID    string  `json:"source_id,omitempty" jsonschema:"Filter by specific source identifier (e.g., github-gaze)"`
+	HasProperty string  `json:"has_property,omitempty" jsonschema:"Filter to pages with this frontmatter property key"`
+	HasTag      string  `json:"has_tag,omitempty" jsonschema:"Filter to pages with this tag"`
+	Limit       int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
+	Threshold   float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
+}
+
+// SemanticSearchResult represents a single result from semantic search.
+// Includes provenance metadata per Constitution III (Observable Quality).
+type SemanticSearchResult struct {
+	DocumentID string  `json:"document_id"`
+	Page       string  `json:"page"`
+	Content    string  `json:"content"`
+	Similarity float64 `json:"similarity"`
+	Source     string  `json:"source"`
+	SourceID   string  `json:"source_id"`
+	OriginURL  string  `json:"origin_url,omitempty"`
+	IndexedAt  string  `json:"indexed_at"`
+}
+
 // --- Journal tool inputs ---
 
 type JournalRangeInput struct {

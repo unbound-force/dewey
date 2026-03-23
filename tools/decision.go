@@ -152,7 +152,7 @@ func parseDecisionBlock(block types.BlockEntity, today time.Time) (decisionBlock
 			db.Outcome = fmt.Sprint(v)
 		}
 		if v, ok := parsed.Properties["deferred"]; ok {
-			fmt.Sscanf(fmt.Sprint(v), "%d", &db.Deferred)
+			_, _ = fmt.Sscanf(fmt.Sprint(v), "%d", &db.Deferred)
 		}
 		if v, ok := parsed.Properties["deferred-on"]; ok {
 			db.DeferredOn = fmt.Sprint(v)
@@ -300,7 +300,7 @@ func (d *Decision) DecisionDefer(ctx context.Context, req *mcp.CallToolRequest, 
 	parsed := parser.Parse(content)
 	if parsed.Properties != nil {
 		if v, ok := parsed.Properties["deferred"]; ok {
-			fmt.Sscanf(fmt.Sprint(v), "%d", &deferCount)
+			_, _ = fmt.Sscanf(fmt.Sprint(v), "%d", &deferCount)
 		}
 	}
 	deferCount++
@@ -317,7 +317,7 @@ func (d *Decision) DecisionDefer(ctx context.Context, req *mcp.CallToolRequest, 
 	// Add reason as child block.
 	if input.Reason != "" {
 		reasonContent := fmt.Sprintf("Deferred %s: %s", today, input.Reason)
-		d.client.InsertBlock(ctx, input.UUID, reasonContent, map[string]any{"sibling": false})
+		_, _ = d.client.InsertBlock(ctx, input.UUID, reasonContent, map[string]any{"sibling": false})
 	}
 
 	result := map[string]any{

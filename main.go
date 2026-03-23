@@ -150,7 +150,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 				logger.Warn("failed to open persistent store, continuing without persistence",
 					"path", dbPath, "err", err)
 			} else {
-				defer s.Close()
+				defer func() { _ = s.Close() }()
 				persistentStore = s
 				opts = append(opts, vault.WithStore(s))
 				srvOpts = append(srvOpts, WithPersistentStore(s))
@@ -226,7 +226,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 		if err := vc.Watch(); err != nil {
 			return fmt.Errorf("failed to start watcher: %w", err)
 		}
-		defer vc.Close()
+		defer func() { _ = vc.Close() }()
 
 		b = vc
 	case "logseq":

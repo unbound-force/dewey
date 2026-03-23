@@ -37,7 +37,7 @@ func TestGraphOverview_Success(t *testing.T) {
 	if parsed["totalPages"] == nil {
 		t.Error("expected totalPages in overview")
 	}
-	totalPages := parsed["totalPages"].(float64)
+	totalPages, _ := parsed["totalPages"].(float64)
 	if totalPages != 2 {
 		t.Errorf("totalPages = %v, want 2", totalPages)
 	}
@@ -220,9 +220,9 @@ func TestListOrphans_WithLimit(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
-	returned := parsed["returned"].(float64)
+	returned, _ := parsed["returned"].(float64)
 	if returned > 3 {
 		t.Errorf("returned = %v, want <= 3", returned)
 	}

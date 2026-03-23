@@ -117,9 +117,9 @@ func TestFlashcardDue_Success(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
-	dueCount := parsed["dueCount"].(float64)
+	dueCount, _ := parsed["dueCount"].(float64)
 	if dueCount != 2 {
 		t.Errorf("dueCount = %v, want 2 (1 overdue + 1 new)", dueCount)
 	}
@@ -157,7 +157,7 @@ func TestFlashcardCreate_Success(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	json.Unmarshal([]byte(text), &parsed)
+	_ = json.Unmarshal([]byte(text), &parsed)
 
 	if parsed["created"] != true {
 		t.Errorf("created = %v, want true", parsed["created"])

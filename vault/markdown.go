@@ -24,9 +24,9 @@ func parseMarkdownBlocks(filepath, body string) []types.BlockEntity {
 
 	// Collect sections: each heading starts a new section.
 	type section struct {
-		level    int    // 0 = pre-heading, 1-6 = H1-H6
-		startLine int   // line number in the original file (for UUID seed)
-		lines    []string
+		level     int // 0 = pre-heading, 1-6 = H1-H6
+		startLine int // line number in the original file (for UUID seed)
+		lines     []string
 	}
 
 	var sections []section
@@ -161,14 +161,14 @@ func extractUUID(content string) (string, string) {
 // For other content, it adds as a standalone line at the beginning.
 func embedUUID(content, blockUUID string) string {
 	comment := fmt.Sprintf("<!-- id: %s -->", blockUUID)
-	
+
 	// If content starts with a heading, add comment at end of heading line
 	lines := strings.Split(content, "\n")
 	if len(lines) > 0 && headingLevel(lines[0]) > 0 {
 		lines[0] = strings.TrimSpace(lines[0]) + " " + comment
 		return strings.Join(lines, "\n")
 	}
-	
+
 	// Otherwise add as standalone line at beginning
 	return comment + "\n" + content
 }
@@ -181,7 +181,7 @@ func getOrCreateUUID(filepath string, lineNumber int, content string) (string, s
 	if blockUUID != "" {
 		return blockUUID, cleanContent
 	}
-	
+
 	// No embedded UUID found, use deterministic UUID as fallback
 	// This provides backward compatibility
 	return deterministicUUID(filepath, lineNumber), cleanContent

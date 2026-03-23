@@ -75,7 +75,7 @@ func (f *Flashcard) FlashcardOverview(ctx context.Context, req *mcp.CallToolRequ
 
 	res, err := jsonTextResult(map[string]any{
 		"totalCards":     len(cards),
-		"dueNow":        dueCount,
+		"dueNow":         dueCount,
 		"newCards":       newCount,
 		"reviewedCards":  reviewedCount,
 		"averageRepeats": fmt.Sprintf("%.1f", avgRepeats),

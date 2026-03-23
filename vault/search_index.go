@@ -12,9 +12,9 @@ import (
 // SearchIndex is a simple inverted index for full-text search.
 // Maps lowercase terms to the blocks containing them.
 type SearchIndex struct {
-	mu      sync.RWMutex
+	mu sync.RWMutex
 	// term → list of block references
-	index   map[string][]blockRef
+	index map[string][]blockRef
 	// page lowercase → set of terms (for efficient removal on reindex)
 	pageTerms map[string]map[string]bool
 }
@@ -163,14 +163,10 @@ func (si *SearchIndex) indexBlocksLocked(blocks []types.BlockEntity, pageName st
 		// Also index parsed links and tags as terms.
 		parsed := parser.Parse(b.Content)
 		for _, link := range parsed.Links {
-			for _, t := range tokenize(link) {
-				blockTerms = append(blockTerms, t)
-			}
+			blockTerms = append(blockTerms, tokenize(link)...)
 		}
 		for _, tag := range parsed.Tags {
-			for _, t := range tokenize(tag) {
-				blockTerms = append(blockTerms, t)
-			}
+			blockTerms = append(blockTerms, tokenize(tag)...)
 		}
 
 		ref := blockRef{

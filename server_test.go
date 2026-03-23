@@ -41,7 +41,7 @@ func TestNewServer_SemanticToolsRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	e := &mockEmbedderForHealth{available: true, model: "test-model"}
 
@@ -78,7 +78,7 @@ func TestHealthToolOutput_DeweyFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	e := &mockEmbedderForHealth{available: true, model: "granite-embedding:30m"}
 
@@ -96,15 +96,15 @@ func TestHealthToolOutput_DeweyFields(t *testing.T) {
 	}
 
 	// Verify store operations work.
-	s.InsertPage(&store.Page{
+	_ = s.InsertPage(&store.Page{
 		Name: "test", OriginalName: "test",
 		SourceID: "disk-local", SourceDocID: "test.md",
 		ContentHash: "abc", CreatedAt: 1, UpdatedAt: 1,
 	})
-	s.InsertBlock(&store.Block{
+	_ = s.InsertBlock(&store.Block{
 		UUID: "b1", PageName: "test", Content: "content", Position: 0,
 	})
-	s.InsertEmbedding("b1", "granite-embedding:30m", []float32{1, 0}, "chunk")
+	_ = s.InsertEmbedding("b1", "granite-embedding:30m", []float32{1, 0}, "chunk")
 
 	count, err := s.CountEmbeddings()
 	if err != nil {
@@ -168,7 +168,7 @@ func TestWithPersistentStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.New: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	var cfg serverConfig
 	WithPersistentStore(s)(&cfg)

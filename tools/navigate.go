@@ -410,12 +410,12 @@ func truncateBlockTree(blocks []types.EnrichedBlock, maxBlocks int) []types.Enri
 		}
 		remaining--
 
-		if len(b.BlockEntity.Children) > 0 && remaining > 0 {
+		if len(b.Children) > 0 && remaining > 0 {
 			// Recursively truncate children
-			childEnriched := truncateEnrichedChildren(b.BlockEntity.Children, &remaining)
-			b.BlockEntity.Children = childEnriched
+			childEnriched := truncateEnrichedChildren(b.Children, &remaining)
+			b.Children = childEnriched
 		} else {
-			b.BlockEntity.Children = nil
+			b.Children = nil
 		}
 
 		result = append(result, b)
@@ -456,7 +456,7 @@ func enrichBlockTree(blocks []types.BlockEntity, maxDepth, currentDepth int) []t
 		if len(b.Children) > 0 {
 			childEnriched := enrichBlockTree(b.Children, maxDepth, currentDepth+1)
 			for _, ce := range childEnriched {
-				eb.BlockEntity.Children = append(eb.BlockEntity.Children, ce.BlockEntity)
+				eb.Children = append(eb.Children, ce.BlockEntity)
 			}
 		}
 		enriched = append(enriched, eb)
@@ -510,8 +510,8 @@ func collectAllLinks(blocks []types.BlockEntity) []string {
 func countBlocks(blocks []types.EnrichedBlock) int {
 	count := len(blocks)
 	for _, b := range blocks {
-		if len(b.BlockEntity.Children) > 0 {
-			count += countBlocksRaw(b.BlockEntity.Children)
+		if len(b.Children) > 0 {
+			count += countBlocksRaw(b.Children)
 		}
 	}
 	return count

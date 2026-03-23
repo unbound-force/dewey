@@ -90,7 +90,7 @@ func (s *Store) GetAllEmbeddings(modelID string) ([]Embedding, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get all embeddings for model %q: %w", modelID, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var embeddings []Embedding
 	for rows.Next() {
@@ -204,7 +204,7 @@ func (s *Store) SearchSimilarFiltered(modelID string, queryVec []float32, filter
 	if err != nil {
 		return nil, fmt.Errorf("filtered embedding query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var embeddings []Embedding
 	for rows.Next() {

@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	defaultAPIURL      = "http://127.0.0.1:12315"
-	defaultTimeout     = 10 * time.Second
-	maxRetries         = 3
-	initialBackoff     = 100 * time.Millisecond
+	defaultAPIURL  = "http://127.0.0.1:12315"
+	defaultTimeout = 10 * time.Second
+	maxRetries     = 3
+	initialBackoff = 100 * time.Millisecond
 )
 
 // Client communicates with the Logseq HTTP API.
@@ -90,7 +90,7 @@ func (c *Client) call(ctx context.Context, method string, args ...any) (json.Raw
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("read response %s (attempt %d): %w", method, attempt+1, err)
 			continue

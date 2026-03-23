@@ -1,0 +1,27 @@
+# Speckit Project Configuration
+#
+# This file customizes the specification framework for your
+# project. All fields are optional -- missing fields use
+# sensible defaults.
+#
+# This file is user-owned: `unbound init` will not overwrite
+# it if it already exists.
+
+# Primary programming language (e.g., go, typescript, python)
+language: ""
+
+# Primary framework (e.g., hugo, react, cobra)
+framework: ""
+
+# Build command for the project
+build_command: ""
+
+# Test command for the project
+test_command: ""
+
+# Default integration patterns (e.g., RESTful APIs, CLI)
+integration_patterns: ""
+
+# Project type: one of library, cli, web, mobile
+project_type: ""
+# scaffolded by unbound vdev

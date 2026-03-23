@@ -2,20 +2,50 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - uses: actions/setup-go@v5
+      - name: Set up Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
-          go-version: "1.25"
+          go-version: '1.25'
 
-      - run: go vet ./...
-      - run: go build .
-      - run: go test -race -count=1 ./...
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build -v ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -v -count=1 -coverprofile=coverage.out ./...
+
+      - name: Install gaze
+        run: go install github.com/unbound-force/gaze/cmd/gaze@latest
+
+      - name: Install OpenCode
+        run: npm install -g opencode-ai@1.2.26
+
+      - name: Gaze quality report
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          gaze report ./... \
+            --ai=opencode \
+            --model=opencode/claude-sonnet-4-6 \
+            --coverprofile=coverage.out \
+            --max-crapload=48 \
+            --max-gaze-crapload=18 \
+            --min-contract-coverage=70

@@ -1,25 +1,27 @@
 ---
 description: >
   Generate tests and documentation fixes for functions identified by
-  gaze quality analysis. Prioritizes by fix strategy to reduce
-  CRAPload and GazeCRAPload below ratchet thresholds.
-agent: gaze-test-generator
+  gaze quality analysis, or auto-detect and run the active implementation
+  workflow (Speckit/OpenSpec). With arguments: batch remediation.
+  Without arguments: detects active workflow and runs /speckit.implement
+  or /opsx-apply.
 ---
-<!-- scaffolded by gaze v1.4.6 -->
 
 # Command: /gaze fix
 
 ## Description
 
-Batch remediation command that reads gaze analysis data, identifies
-functions needing tests or documentation, and generates complete,
-compilable fixes. Delegates to the `gaze-test-generator` agent for
-each target function.
+Dual-mode command. Without arguments, detects the active implementation
+workflow (Speckit or OpenSpec) and runs it. With arguments, performs
+batch remediation — reads gaze analysis data, identifies functions
+needing tests or documentation, and generates compilable fixes via
+the `gaze-test-generator` agent.
 
 ## Usage
 
 ```
-/gaze fix [package-pattern]
+/gaze fix                        # auto-detect workflow and implement
+/gaze fix [package-pattern]      # batch test generation
 /gaze fix --strategy=add_tests [pattern]
 /gaze fix --top=5 [pattern]
 /gaze fix --dry-run [pattern]
@@ -36,7 +38,52 @@ each target function.
 
 ## Instructions
 
-### Step 1: Run gaze analysis
+### When no arguments are provided
+
+Detect the active workflow and delegate to the corresponding
+implementation command:
+
+1. **Check for a Speckit feature branch**: Run
+   `.specify/scripts/bash/check-prerequisites.sh --json --paths-only`
+   from the repo root. If it succeeds and returns a `FEATURE_DIR`
+   with a `tasks.md`, this is a Speckit strategic workflow.
+   Read the full contents of `.opencode/command/speckit.implement.md`
+   and execute its instructions directly — follow the implementation
+   workflow it describes.
+
+2. **Check for an OpenSpec active change**: Look for directories
+   under `openspec/changes/` (excluding `archive/`) that contain a
+   `tasks.md` file. If one exists, this is an OpenSpec tactical
+   workflow.
+   **Validate branch**: Run `git rev-parse --abbrev-ref HEAD`.
+   The current branch must be `opsx/<change-name>` where
+   `<change-name>` matches the detected change directory name.
+   If not on the correct branch, **STOP** with error:
+   > "OpenSpec change `<name>` detected but you are on branch
+   > `<current-branch>`. Run: `git checkout opsx/<name>`"
+
+   If on the correct branch, read the full contents of
+   `.opencode/command/opsx-apply.md` and execute its instructions
+   directly.
+
+3. **If neither is detected**: Ask the user using the question tool:
+
+   > No active implementation context detected. Would you like to:
+   >
+   > - `/speckit.implement` — Strategic spec implementation
+   >   (requires a feature branch with `specs/NNN-*/tasks.md`)
+   > - `/opsx-apply` — Tactical change implementation
+   >   (requires an active change in `openspec/changes/`)
+   > - `/gaze fix ./...` — Batch test generation on full module
+
+   If the user selects a workflow command, read and execute the
+   corresponding command file. If they select batch test generation,
+   fall through to the "When arguments are provided" section below
+   with `./...` as the pattern.
+
+### When arguments are provided
+
+#### Step 1: Run gaze analysis
 
 Resolve the `gaze` binary (check PATH, then try `go run ./cmd/gaze`
 if in the gaze repo). Run both commands:
@@ -51,7 +98,7 @@ Parse the CRAP JSON for `scores` array — each score has `function`,
 `quadrant`, `contract_coverage`, `contract_coverage_reason`,
 `effect_confidence_range`.
 
-### Step 2: Build target list
+#### Step 2: Build target list
 
 Filter scores to actionable fix strategies:
 1. `add_tests` — functions with 0% line coverage
@@ -69,7 +116,7 @@ Sort by priority: `add_tests` first (by CRAP desc), then
 `add_assertions`, then `add_docs`, then `decompose_and_test`.
 Apply `--top=N` limit if specified.
 
-### Step 3: Process each target
+#### Step 3: Process each target
 
 For each function in the target list:
 
@@ -94,7 +141,7 @@ For each function in the target list:
    source file for `add_docs`). In `--dry-run` mode, show the
    code but don't write.
 
-### Step 4: Verify
+#### Step 4: Verify
 
 After all generation:
 
@@ -105,7 +152,7 @@ go test -race -count=1 -run "TestGenerated1|TestGenerated2|..." [pattern]
 
 Report any compilation errors or test failures with context.
 
-### Step 5: Report
+#### Step 5: Report
 
 ```
 ## /gaze fix Results

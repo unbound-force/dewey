@@ -32,7 +32,18 @@ When ready to implement, run /opsx-apply
    ```
    This creates a scaffolded change at `openspec/changes/<name>/` with `.openspec.yaml`.
 
-3. **Get the artifact build order**
+3. **Create and checkout a branch**
+
+   ```bash
+   git checkout -b opsx/<name>
+   ```
+
+   **Guard**: Before creating the branch, check the current branch:
+   - If already on `opsx/<name>` (exact match): skip branch creation, proceed.
+   - If on a different `opsx/*` branch: **STOP** with error: "Already on branch `opsx/<other>` -- finish or archive that change first."
+   - If on `main` or any non-opsx branch: create and checkout `opsx/<name>`.
+
+4. **Get the artifact build order**
    ```bash
    openspec status --change "<name>" --json
    ```
@@ -40,7 +51,7 @@ When ready to implement, run /opsx-apply
    - `applyRequires`: array of artifact IDs needed before implementation (e.g., `["tasks"]`)
    - `artifacts`: list of all artifacts with their status and dependencies
 
-4. **Create artifacts in sequence until apply-ready**
+5. **Create artifacts in sequence until apply-ready**
 
    Use the **TodoWrite tool** to track progress through the artifacts.
 
@@ -72,7 +83,7 @@ When ready to implement, run /opsx-apply
       - Use **AskUserQuestion tool** to clarify
       - Then continue with creation
 
-5. **Show final status**
+6. **Show final status**
    ```bash
    openspec status --change "<name>"
    ```

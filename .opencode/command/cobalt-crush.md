@@ -68,10 +68,18 @@ implementation command to the `cobalt-crush-dev` agent:
 2. **Check for an OpenSpec active change**: Look for directories
    under `openspec/changes/` that contain a `tasks.md` file. If
    one exists, this is an OpenSpec tactical workflow.
-   Read the full contents of `.opencode/command/opsx-apply.md`
-   and delegate it to the `cobalt-crush-dev` agent via the Task
-   tool — pass the command file's instructions as the agent's
-   prompt so the agent executes the apply workflow.
+   **Validate branch**: Run `git rev-parse --abbrev-ref HEAD`.
+   The current branch must be `opsx/<change-name>` where
+   `<change-name>` matches the detected change directory name.
+   If not on the correct branch, **STOP** with error:
+   > "OpenSpec change `<name>` detected but you are on branch
+   > `<current-branch>`. Run: `git checkout opsx/<name>`"
+
+   If on the correct branch, read the full contents of
+   `.opencode/command/opsx-apply.md` and delegate it to the
+   `cobalt-crush-dev` agent via the Task tool — pass the command
+   file's instructions as the agent's prompt so the agent
+   executes the apply workflow.
 
 3. **If neither is detected**: Ask the user which workflow to run:
 

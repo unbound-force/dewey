@@ -117,53 +117,105 @@ func (n *Navigate) ListPages(ctx context.Context, req *mcp.CallToolRequest, inpu
 		return errorResult(fmt.Sprintf("failed to list pages: %v", err)), nil, nil
 	}
 
-	limit := input.Limit
-	if limit <= 0 {
-		limit = 50
+	// Remove pages with empty names (invalid entries).
+	filtered := filterNonEmptyPages(pages)
+
+	if input.Namespace != "" {
+		filtered = filterPagesByNamespace(filtered, input.Namespace)
+	}
+	if input.HasProperty != "" {
+		filtered = filterPagesByProperty(filtered, input.HasProperty)
+	}
+	if input.HasTag != "" {
+		filtered = filterPagesByTag(ctx, n.client, filtered, input.HasTag)
 	}
 
-	var filtered []types.PageEntity
+	filtered = sortAndPaginatePages(filtered, input.SortBy, input.Limit)
+
+	summaries := buildPageSummaries(filtered)
+
+	res, err := jsonTextResult(summaries)
+	return res, nil, err
+}
+
+// filterNonEmptyPages removes pages with empty names from the list.
+func filterNonEmptyPages(pages []types.PageEntity) []types.PageEntity {
+	var result []types.PageEntity
 	for _, p := range pages {
-		if p.Name == "" {
+		if p.Name != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// filterPagesByNamespace filters pages to only those whose name starts with
+// the given namespace prefix (case-insensitive).
+func filterPagesByNamespace(pages []types.PageEntity, namespace string) []types.PageEntity {
+	nsLower := strings.ToLower(namespace)
+	var result []types.PageEntity
+	for _, p := range pages {
+		if strings.HasPrefix(strings.ToLower(p.Name), nsLower) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// filterPagesByProperty filters pages to only those that have the specified
+// property key present in their properties map.
+func filterPagesByProperty(pages []types.PageEntity, propName string) []types.PageEntity {
+	var result []types.PageEntity
+	for _, p := range pages {
+		if p.Properties == nil {
 			continue
 		}
-		if input.Namespace != "" {
-			if !strings.HasPrefix(strings.ToLower(p.Name), strings.ToLower(input.Namespace)) {
-				continue
-			}
+		if _, ok := p.Properties[propName]; ok {
+			result = append(result, p)
 		}
-		if input.HasProperty != "" {
-			if p.Properties == nil {
-				continue
-			}
-			if _, ok := p.Properties[input.HasProperty]; !ok {
-				continue
-			}
-		}
-		if input.HasTag != "" {
-			blocks, err := n.client.GetPageBlocksTree(ctx, p.Name)
-			if err != nil {
-				continue
-			}
-			if !pageHasTag(blocks, strings.ToLower(input.HasTag)) {
-				continue
-			}
-		}
-		filtered = append(filtered, p)
 	}
+	return result
+}
 
-	sortBy := input.SortBy
+// filterPagesByTag filters pages to only those containing the specified tag
+// in any of their blocks. Requires backend access to retrieve block trees.
+func filterPagesByTag(ctx context.Context, client backend.Backend, pages []types.PageEntity, tag string) []types.PageEntity {
+	tagLower := strings.ToLower(tag)
+	var result []types.PageEntity
+	for _, p := range pages {
+		blocks, err := client.GetPageBlocksTree(ctx, p.Name)
+		if err != nil {
+			continue
+		}
+		if pageHasTag(blocks, tagLower) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// sortAndPaginatePages sorts pages by the given field and applies a limit.
+// If sortBy is empty, defaults to "name". If limit is <= 0, defaults to 50.
+func sortAndPaginatePages(pages []types.PageEntity, sortBy string, limit int) []types.PageEntity {
 	if sortBy == "" {
 		sortBy = "name"
 	}
-	sortPages(filtered, sortBy)
+	sortPages(pages, sortBy)
 
-	if len(filtered) > limit {
-		filtered = filtered[:limit]
+	if limit <= 0 {
+		limit = 50
 	}
+	if len(pages) > limit {
+		pages = pages[:limit]
+	}
+	return pages
+}
 
-	summaries := make([]map[string]any, len(filtered))
-	for i, p := range filtered {
+// buildPageSummaries converts a slice of PageEntity into summary maps
+// suitable for JSON serialization in the MCP tool response.
+func buildPageSummaries(pages []types.PageEntity) []map[string]any {
+	summaries := make([]map[string]any, len(pages))
+	for i, p := range pages {
 		summaries[i] = map[string]any{
 			"name":       p.OriginalName,
 			"properties": p.Properties,
@@ -173,9 +225,7 @@ func (n *Navigate) ListPages(ctx context.Context, req *mcp.CallToolRequest, inpu
 			summaries[i]["updatedAt"] = p.UpdatedAt
 		}
 	}
-
-	res, err := jsonTextResult(summaries)
-	return res, nil, err
+	return summaries
 }
 
 // GetLinks returns forward links and backlinks for a page.

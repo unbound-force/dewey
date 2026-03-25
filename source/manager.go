@@ -31,8 +31,13 @@ type FetchResult struct {
 	TotalSkip int
 }
 
-// NewManager creates a Manager from source configurations.
-// It instantiates the appropriate Source implementation for each config.
+// NewManager creates a Manager from source configurations, instantiating
+// the appropriate [Source] implementation for each config entry (disk,
+// github, or web). Unknown source types are logged as warnings and skipped.
+// The basePath is used as the default directory for disk sources, and
+// cacheDir is used for web source caching.
+//
+// Returns a Manager ready for [Manager.FetchAll] calls.
 func NewManager(configs []SourceConfig, basePath, cacheDir string) *Manager {
 	var sources []Source
 
@@ -50,81 +55,92 @@ func NewManager(configs []SourceConfig, basePath, cacheDir string) *Manager {
 }
 
 // createSource instantiates a Source from a SourceConfig.
+// It dispatches to per-type factory functions based on cfg.Type.
 func createSource(cfg SourceConfig, basePath, cacheDir string) Source {
 	switch cfg.Type {
 	case "disk":
-		path := "."
-		if p, ok := cfg.Config["path"].(string); ok {
-			path = p
-		}
-		if path == "." {
-			path = basePath
-		}
-		return NewDiskSource(cfg.ID, cfg.Name, path)
-
+		return createDiskSource(cfg, basePath)
 	case "github":
-		org, _ := cfg.Config["org"].(string)
-		var repos []string
-		switch r := cfg.Config["repos"].(type) {
-		case []any:
-			for _, v := range r {
-				if s, ok := v.(string); ok {
-					repos = append(repos, s)
-				}
-			}
-		case string:
-			repos = []string{r}
-		}
-		var contentTypes []string
-		switch c := cfg.Config["content"].(type) {
-		case []any:
-			for _, v := range c {
-				if s, ok := v.(string); ok {
-					contentTypes = append(contentTypes, s)
-				}
-			}
-		case string:
-			contentTypes = []string{c}
-		}
-		return NewGitHubSource(cfg.ID, cfg.Name, org, repos, contentTypes)
-
+		return createGitHubSource(cfg)
 	case "web":
-		var urls []string
-		switch u := cfg.Config["urls"].(type) {
-		case []any:
-			for _, v := range u {
-				if s, ok := v.(string); ok {
-					urls = append(urls, s)
-				}
-			}
-		case string:
-			urls = []string{u}
-		}
-		depth := 1
-		if d, ok := cfg.Config["depth"].(int); ok {
-			depth = d
-		}
-		if d, ok := cfg.Config["depth"].(float64); ok {
-			depth = int(d)
-		}
-		rateLimit := defaultRateLimit
-		if rl, ok := cfg.Config["rate_limit"].(string); ok {
-			if d, err := time.ParseDuration(rl); err == nil {
-				rateLimit = d
-			}
-		}
-		return NewWebSource(cfg.ID, cfg.Name, urls, depth, rateLimit, cacheDir)
-
+		return createWebSource(cfg, cacheDir)
 	default:
 		logger.Warn("unknown source type, skipping", "type", cfg.Type, "id", cfg.ID)
 		return nil
 	}
 }
 
-// FetchAll fetches content from all configured sources.
-// If sourceName is non-empty, only that source is fetched.
-// If force is true, refresh intervals are ignored.
-// Source failures are non-fatal — logged and skipped (FR-020).
+// createDiskSource creates a DiskSource from config, resolving the path
+// relative to basePath when no explicit path is configured.
+func createDiskSource(cfg SourceConfig, basePath string) Source {
+	path := "."
+	if p, ok := cfg.Config["path"].(string); ok {
+		path = p
+	}
+	if path == "." {
+		path = basePath
+	}
+	return NewDiskSource(cfg.ID, cfg.Name, path)
+}
+
+// createGitHubSource creates a GitHubSource from config, extracting the
+// org, repos list, and content type filters from the config map.
+func createGitHubSource(cfg SourceConfig) Source {
+	org, _ := cfg.Config["org"].(string)
+	repos := extractStringList(cfg.Config["repos"])
+	contentTypes := extractStringList(cfg.Config["content"])
+	return NewGitHubSource(cfg.ID, cfg.Name, org, repos, contentTypes)
+}
+
+// createWebSource creates a WebSource from config, extracting URLs,
+// crawl depth, rate limit, and cache directory.
+func createWebSource(cfg SourceConfig, cacheDir string) Source {
+	urls := extractStringList(cfg.Config["urls"])
+	depth := 1
+	if d, ok := cfg.Config["depth"].(int); ok {
+		depth = d
+	}
+	if d, ok := cfg.Config["depth"].(float64); ok {
+		depth = int(d)
+	}
+	rateLimit := defaultRateLimit
+	if rl, ok := cfg.Config["rate_limit"].(string); ok {
+		if d, err := time.ParseDuration(rl); err == nil {
+			rateLimit = d
+		}
+	}
+	return NewWebSource(cfg.ID, cfg.Name, urls, depth, rateLimit, cacheDir)
+}
+
+// extractStringList converts a config value to a string slice.
+// It handles both []any (from JSON/YAML unmarshaling) and plain string values.
+func extractStringList(v any) []string {
+	switch val := v.(type) {
+	case []any:
+		var result []string
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result
+	case string:
+		return []string{val}
+	default:
+		return nil
+	}
+}
+
+// FetchAll fetches content from all configured sources and returns the
+// aggregate result along with a map of source ID → fetched documents.
+// If sourceName is non-empty, only that source is fetched. If force is
+// true, refresh intervals are ignored and all sources are fetched
+// regardless of when they were last refreshed.
+//
+// Source failures are non-fatal — each failure is logged as a warning
+// and the fetch continues with remaining sources (FR-020). The returned
+// [FetchResult] contains per-source summaries including document counts,
+// error counts, and skip counts.
 func (m *Manager) FetchAll(sourceName string, force bool, lastFetchedTimes map[string]time.Time) (*FetchResult, map[string][]Document) {
 	result := &FetchResult{}
 	allDocs := make(map[string][]Document)
@@ -194,7 +210,9 @@ func (m *Manager) FetchAll(sourceName string, force bool, lastFetchedTimes map[s
 	return result, allDocs
 }
 
-// Sources returns the list of instantiated sources.
+// Sources returns the list of instantiated [Source] implementations
+// created from the configurations passed to [NewManager]. Returns nil
+// if no sources were successfully created.
 func (m *Manager) Sources() []Source {
 	return m.sources
 }
@@ -209,7 +227,9 @@ func (m *Manager) findConfig(id string) *SourceConfig {
 	return nil
 }
 
-// FormatSummary returns a human-readable summary of the fetch result.
+// FormatSummary returns a human-readable, multi-line summary of the fetch
+// result including per-source status (documents fetched, errors, skips)
+// and aggregate totals.
 func (r *FetchResult) FormatSummary() string {
 	var sb fmt.Stringer = &summaryBuilder{result: r}
 	return sb.String()

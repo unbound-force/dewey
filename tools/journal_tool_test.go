@@ -46,6 +46,36 @@ func TestJournalRange_Success(t *testing.T) {
 	if parsed["to"] != "2026-01-17" {
 		t.Errorf("to = %v, want %q", parsed["to"], "2026-01-17")
 	}
+
+	// Verify entriesFound reflects matched journal pages.
+	entriesFound, ok := parsed["entriesFound"].(float64)
+	if !ok {
+		t.Fatalf("entriesFound missing or wrong type: %v", parsed["entriesFound"])
+	}
+	if entriesFound != 2 {
+		t.Errorf("entriesFound = %v, want 2", entriesFound)
+	}
+
+	// Verify journals array structure: each entry has date and pageName.
+	journals, ok := parsed["journals"].([]any)
+	if !ok {
+		t.Fatalf("journals missing or wrong type: %T", parsed["journals"])
+	}
+	if len(journals) != 2 {
+		t.Fatalf("journals length = %d, want 2", len(journals))
+	}
+	for i, entry := range journals {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			t.Fatalf("journals[%d] is not a map: %T", i, entry)
+		}
+		if _, ok := m["date"].(string); !ok {
+			t.Errorf("journals[%d].date missing or not a string", i)
+		}
+		if _, ok := m["pageName"].(string); !ok {
+			t.Errorf("journals[%d].pageName missing or not a string", i)
+		}
+	}
 }
 
 func TestJournalRange_InvalidFrom(t *testing.T) {
@@ -130,6 +160,26 @@ func TestJournalSearch_ViaDataScript(t *testing.T) {
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1 (only one block mentions meeting)", parsed["count"])
 	}
+
+	// Verify results array structure: each result has content, page, and parsed fields.
+	results, ok := parsed["results"].([]any)
+	if !ok {
+		t.Fatalf("results missing or wrong type: %T", parsed["results"])
+	}
+	if len(results) != 1 {
+		t.Fatalf("results length = %d, want 1", len(results))
+	}
+	match, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("results[0] is not a map: %T", results[0])
+	}
+	content, ok := match["content"].(string)
+	if !ok || content == "" {
+		t.Errorf("results[0].content missing or empty")
+	}
+	if _, ok := match["page"]; !ok {
+		t.Error("results[0].page missing")
+	}
 }
 
 func TestJournalSearch_ViaJournalSearcher(t *testing.T) {
@@ -165,6 +215,69 @@ func TestJournalSearch_ViaJournalSearcher(t *testing.T) {
 
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1", parsed["count"])
+	}
+
+	// Verify results array contains the matching block with date, page, and content.
+	results, ok := parsed["results"].([]any)
+	if !ok {
+		t.Fatalf("results missing or wrong type: %T", parsed["results"])
+	}
+	if len(results) != 1 {
+		t.Fatalf("results length = %d, want 1", len(results))
+	}
+	match, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("results[0] is not a map: %T", results[0])
+	}
+	if _, ok := match["content"].(string); !ok {
+		t.Error("results[0].content missing or not a string")
+	}
+	if _, ok := match["page"].(string); !ok {
+		t.Error("results[0].page missing or not a string")
+	}
+	if _, ok := match["date"].(string); !ok {
+		t.Error("results[0].date missing or not a string")
+	}
+}
+
+func TestJournalRange_EmptyRange(t *testing.T) {
+	mb := newMockBackend()
+	// No journal pages added — should return empty array, not error.
+	j := NewJournal(mb)
+
+	result, _, err := j.JournalRange(context.Background(), nil, types.JournalRangeInput{
+		From: "2026-06-01",
+		To:   "2026-06-03",
+	})
+	if err != nil {
+		t.Fatalf("JournalRange() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("JournalRange() returned error for empty range")
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	entriesFound, ok := parsed["entriesFound"].(float64)
+	if !ok {
+		t.Fatalf("entriesFound missing or wrong type")
+	}
+	if entriesFound != 0 {
+		t.Errorf("entriesFound = %v, want 0", entriesFound)
+	}
+
+	journals, ok := parsed["journals"].([]any)
+	if !ok {
+		// Null is also acceptable for empty results.
+		if parsed["journals"] != nil {
+			t.Fatalf("journals should be empty array or null, got %T", parsed["journals"])
+		}
+	} else if len(journals) != 0 {
+		t.Errorf("journals length = %d, want 0", len(journals))
 	}
 }
 

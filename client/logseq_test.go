@@ -166,18 +166,34 @@ func TestNew_DefaultURL(t *testing.T) {
 	t.Setenv("LOGSEQ_API_TOKEN", "")
 
 	c := New("", "")
+	if c == nil {
+		t.Fatal("New() returned nil")
+	}
 	if c.apiURL != defaultAPIURL {
 		t.Errorf("apiURL = %q, want %q", c.apiURL, defaultAPIURL)
+	}
+	// Verify httpClient is initialized with a timeout.
+	if c.httpClient == nil {
+		t.Fatal("httpClient should not be nil")
+	}
+	if c.httpClient.Timeout != defaultTimeout {
+		t.Errorf("httpClient.Timeout = %v, want %v", c.httpClient.Timeout, defaultTimeout)
 	}
 }
 
 func TestNew_CustomURL(t *testing.T) {
 	c := New("http://custom:1234", "tok")
+	if c == nil {
+		t.Fatal("New() returned nil")
+	}
 	if c.apiURL != "http://custom:1234" {
 		t.Errorf("apiURL = %q, want %q", c.apiURL, "http://custom:1234")
 	}
 	if c.token != "tok" {
 		t.Errorf("token = %q, want %q", c.token, "tok")
+	}
+	if c.httpClient == nil {
+		t.Fatal("httpClient should not be nil")
 	}
 }
 

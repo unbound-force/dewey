@@ -52,7 +52,13 @@ type WebSource struct {
 	robotsCache map[string]*robotsRules
 }
 
-// NewWebSource creates a WebSource for the given URLs.
+// NewWebSource creates a WebSource for the given seed URLs with the specified
+// crawl depth and rate limit. Negative depth is clamped to 0 (no crawling
+// beyond seed URLs). Non-positive rateLimit defaults to 1 second between
+// requests. If cacheDir is non-empty, fetched documents are cached to disk.
+//
+// Returns a ready-to-use source configured with same-domain-only redirect
+// policy (FR-017c) and robots.txt compliance.
 func NewWebSource(id, name string, urls []string, depth int, rateLimit time.Duration, cacheDir string) *WebSource {
 	if depth < 0 {
 		depth = 0
@@ -92,7 +98,12 @@ func NewWebSource(id, name string, urls []string, depth int, rateLimit time.Dura
 	return ws
 }
 
-// List returns all documents from configured web URLs.
+// List returns all documents from configured web URLs by crawling each
+// seed URL up to the configured depth. Validates URL schemes (http/https
+// only, FR-017a), enforces the max pages per source limit (FR-017b), and
+// respects robots.txt directives. Caches documents to disk if cacheDir is
+// configured. Returns an empty slice (not an error) if all URLs are invalid
+// or blocked. Updates source status and lastFetched timestamp.
 func (ws *WebSource) List() ([]Document, error) {
 	var docs []Document
 	visited := make(map[string]bool)
@@ -139,7 +150,10 @@ func (ws *WebSource) List() ([]Document, error) {
 	return docs, nil
 }
 
-// Fetch retrieves a single document by URL.
+// Fetch retrieves a single document by URL. Checks the disk cache first
+// if cacheDir is configured; falls back to an HTTP fetch. Returns the
+// document with HTML converted to plain text. Returns an error if the
+// page cannot be fetched or has a non-HTML content type.
 func (ws *WebSource) Fetch(id string) (*Document, error) {
 	// Check cache first.
 	if ws.cacheDir != "" {
@@ -156,7 +170,9 @@ func (ws *WebSource) Fetch(id string) (*Document, error) {
 }
 
 // Diff returns changes since the last fetch. Web sources don't support
-// incremental updates — every fetch is a full crawl.
+// incremental updates — every fetch is a full crawl, so all documents
+// are reported as [ChangeModified]. Returns an error if the underlying
+// List call fails.
 func (ws *WebSource) Diff() ([]Change, error) {
 	docs, err := ws.List()
 	if err != nil {
@@ -175,7 +191,9 @@ func (ws *WebSource) Diff() ([]Change, error) {
 	return changes, nil
 }
 
-// Meta returns metadata about this web source.
+// Meta returns metadata about this web source, including its ID, type
+// ("web"), name, current status, any error message from the last fetch,
+// and the last fetch timestamp.
 func (ws *WebSource) Meta() SourceMetadata {
 	return SourceMetadata{
 		ID:            ws.id,

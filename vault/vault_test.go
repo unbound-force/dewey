@@ -1151,3 +1151,501 @@ func TestSafePath_Traversal(t *testing.T) {
 		t.Error("path traversal via .. should be rejected")
 	}
 }
+
+// --- Tests for decomposed MoveBlock helpers ---
+
+func TestParseMoveOptions_NilOpts(t *testing.T) {
+	got := parseMoveOptions(nil)
+	if got {
+		t.Error("parseMoveOptions(nil) = true, want false")
+	}
+}
+
+func TestParseMoveOptions_EmptyMap(t *testing.T) {
+	got := parseMoveOptions(map[string]any{})
+	if got {
+		t.Error("parseMoveOptions({}) = true, want false")
+	}
+}
+
+func TestParseMoveOptions_BeforeTrue(t *testing.T) {
+	got := parseMoveOptions(map[string]any{"before": true})
+	if !got {
+		t.Error("parseMoveOptions({before: true}) = false, want true")
+	}
+}
+
+func TestParseMoveOptions_BeforeFalse(t *testing.T) {
+	got := parseMoveOptions(map[string]any{"before": false})
+	if got {
+		t.Error("parseMoveOptions({before: false}) = true, want false")
+	}
+}
+
+func TestParseMoveOptions_BeforeNonBool(t *testing.T) {
+	tests := []struct {
+		name string
+		val  any
+	}{
+		{"string", "true"},
+		{"int", 1},
+		{"nil", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseMoveOptions(map[string]any{"before": tc.val})
+			if got {
+				t.Errorf("parseMoveOptions({before: %v}) = true, want false (non-bool type assertion yields zero value)", tc.val)
+			}
+		})
+	}
+}
+
+func TestParseMoveOptions_OtherKeys(t *testing.T) {
+	got := parseMoveOptions(map[string]any{"after": true, "something": "else"})
+	if got {
+		t.Error("parseMoveOptions without 'before' key = true, want false")
+	}
+}
+
+func TestInsertContentRelative_InsertAfter(t *testing.T) {
+	fileStr := "line1\nline2\nline3\n"
+	got := insertContentRelative(fileStr, "inserted", "line2", false)
+	want := "line1\nline2\ninserted\nline3\n"
+	if got != want {
+		t.Errorf("insertContentRelative(after) =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestInsertContentRelative_InsertBefore(t *testing.T) {
+	fileStr := "line1\nline2\nline3\n"
+	got := insertContentRelative(fileStr, "inserted", "line2", true)
+	want := "line1\ninserted\nline2\nline3\n"
+	if got != want {
+		t.Errorf("insertContentRelative(before) =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestInsertContentRelative_TargetNotFound(t *testing.T) {
+	fileStr := "line1\nline2\nline3\n"
+	got := insertContentRelative(fileStr, "inserted", "nonexistent", false)
+	// strings.Replace with missing target returns the original string unchanged.
+	if got != fileStr {
+		t.Errorf("insertContentRelative(target not found) modified the string:\ngot:  %q\nwant: %q", got, fileStr)
+	}
+}
+
+func TestInsertContentRelative_FirstOccurrence(t *testing.T) {
+	fileStr := "target\nother\ntarget\n"
+	got := insertContentRelative(fileStr, "inserted", "target", false)
+	// Only the first occurrence should be replaced.
+	want := "target\ninserted\nother\ntarget\n"
+	if got != want {
+		t.Errorf("insertContentRelative(first occurrence) =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestInsertContentRelative_MultilineContent(t *testing.T) {
+	fileStr := "# Heading\n\nSome paragraph\n\n## Subheading\n"
+	srcContent := "Inserted paragraph"
+	tgtContent := "Some paragraph"
+
+	t.Run("after", func(t *testing.T) {
+		got := insertContentRelative(fileStr, srcContent, tgtContent, false)
+		want := "# Heading\n\nSome paragraph\nInserted paragraph\n\n## Subheading\n"
+		if got != want {
+			t.Errorf("after =\n%q\nwant\n%q", got, want)
+		}
+	})
+
+	t.Run("before", func(t *testing.T) {
+		got := insertContentRelative(fileStr, srcContent, tgtContent, true)
+		want := "# Heading\n\nInserted paragraph\nSome paragraph\n\n## Subheading\n"
+		if got != want {
+			t.Errorf("before =\n%q\nwant\n%q", got, want)
+		}
+	})
+}
+
+func TestInsertContentRelative_EmptyFileStr(t *testing.T) {
+	got := insertContentRelative("", "inserted", "target", false)
+	// Empty string has no target to match, so returns unchanged.
+	if got != "" {
+		t.Errorf("insertContentRelative(empty) = %q, want %q", got, "")
+	}
+}
+
+// headingLineOrder returns the order of heading lines in fileStr,
+// filtered to those containing any of the given substrings.
+// Returns a slice of the matched substrings in the order they appear.
+func headingLineOrder(fileStr string, markers []string) []string {
+	var order []string
+	for _, line := range strings.Split(fileStr, "\n") {
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, m := range markers {
+			if strings.Contains(line, m) {
+				order = append(order, m)
+				break
+			}
+		}
+	}
+	return order
+}
+
+func TestMoveBlockSamePage_Direct(t *testing.T) {
+	// Test moveBlockSamePage directly with a manually constructed vault
+	// to avoid UUID embedding complications from AppendBlockInPage.
+	dir := t.TempDir()
+	c := New(dir)
+
+	// Create file with known content (no embedded UUIDs).
+	content := "# Block A\n# Block B\n# Block C\n"
+	filePath := filepath.Join(dir, "movepage.md")
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c.BuildBacklinks()
+
+	// Acquire lock and call moveBlockSamePage to move A after C.
+	c.mu.Lock()
+	err := c.moveBlockSamePage("movepage", "# Block A", "# Block C", false)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("moveBlockSamePage(A after C): %v", err)
+	}
+
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	order := headingLineOrder(string(data), []string{"Block A", "Block B", "Block C"})
+	wantOrder := []string{"Block B", "Block C", "Block A"}
+	if fmt.Sprintf("%v", order) != fmt.Sprintf("%v", wantOrder) {
+		t.Errorf("after move A after C: heading order = %v, want %v\nfile:\n%s", order, wantOrder, string(data))
+	}
+
+	// Move A before B (restore original order).
+	c.mu.Lock()
+	err = c.moveBlockSamePage("movepage", "# Block A", "# Block B", true)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("moveBlockSamePage(A before B): %v", err)
+	}
+
+	data, err = os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	order = headingLineOrder(string(data), []string{"Block A", "Block B", "Block C"})
+	wantOrder = []string{"Block A", "Block B", "Block C"}
+	if fmt.Sprintf("%v", order) != fmt.Sprintf("%v", wantOrder) {
+		t.Errorf("after move A before B: heading order = %v, want %v\nfile:\n%s", order, wantOrder, string(data))
+	}
+}
+
+func TestMoveBlockSamePage_PageNotFound(t *testing.T) {
+	dir := t.TempDir()
+	c := New(dir)
+
+	c.mu.Lock()
+	err := c.moveBlockSamePage("nonexistent", "src", "tgt", false)
+	c.mu.Unlock()
+	if err == nil {
+		t.Error("moveBlockSamePage with nonexistent page should return error")
+	}
+	if !strings.Contains(err.Error(), "page not found") {
+		t.Errorf("error = %q, want to contain 'page not found'", err.Error())
+	}
+}
+
+func TestMoveBlockCrossPage_Direct(t *testing.T) {
+	dir := t.TempDir()
+	c := New(dir)
+
+	// Create source file with two blocks.
+	srcContent := "# Source Block\n# Remaining Block\n"
+	srcPath := filepath.Join(dir, "move-src.md")
+	if err := os.WriteFile(srcPath, []byte(srcContent), 0o644); err != nil {
+		t.Fatalf("WriteFile src: %v", err)
+	}
+
+	// Create target file with one block.
+	tgtContent := "# Target Block\n"
+	tgtPath := filepath.Join(dir, "move-tgt.md")
+	if err := os.WriteFile(tgtPath, []byte(tgtContent), 0o644); err != nil {
+		t.Fatalf("WriteFile tgt: %v", err)
+	}
+
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c.BuildBacklinks()
+
+	// Move Source Block after Target Block.
+	c.mu.Lock()
+	err := c.moveBlockCrossPage("move-src", "move-tgt", "# Source Block", "# Target Block", false)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("moveBlockCrossPage(after): %v", err)
+	}
+
+	// Source page should no longer contain "Source Block".
+	srcData, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("ReadFile src: %v", err)
+	}
+	if strings.Contains(string(srcData), "Source Block") {
+		t.Error("source block content still in source file after cross-page move")
+	}
+	if !strings.Contains(string(srcData), "Remaining Block") {
+		t.Error("remaining block content missing from source file")
+	}
+
+	// Target page should contain both blocks in order: Target, Source.
+	tgtData, err := os.ReadFile(tgtPath)
+	if err != nil {
+		t.Fatalf("ReadFile tgt: %v", err)
+	}
+	order := headingLineOrder(string(tgtData), []string{"Target Block", "Source Block"})
+	wantOrder := []string{"Target Block", "Source Block"}
+	if fmt.Sprintf("%v", order) != fmt.Sprintf("%v", wantOrder) {
+		t.Errorf("cross-page move after: heading order = %v, want %v\nfile:\n%s", order, wantOrder, string(tgtData))
+	}
+}
+
+func TestMoveBlockCrossPage_Before(t *testing.T) {
+	dir := t.TempDir()
+	c := New(dir)
+
+	srcPath := filepath.Join(dir, "xmove-src.md")
+	if err := os.WriteFile(srcPath, []byte("# Moved Block\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tgtPath := filepath.Join(dir, "xmove-tgt.md")
+	if err := os.WriteFile(tgtPath, []byte("# Target Block\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c.BuildBacklinks()
+
+	c.mu.Lock()
+	err := c.moveBlockCrossPage("xmove-src", "xmove-tgt", "# Moved Block", "# Target Block", true)
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("moveBlockCrossPage(before): %v", err)
+	}
+
+	tgtData, err := os.ReadFile(tgtPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	order := headingLineOrder(string(tgtData), []string{"Moved Block", "Target Block"})
+	wantOrder := []string{"Moved Block", "Target Block"}
+	if fmt.Sprintf("%v", order) != fmt.Sprintf("%v", wantOrder) {
+		t.Errorf("cross-page move before: heading order = %v, want %v\nfile:\n%s", order, wantOrder, string(tgtData))
+	}
+}
+
+func TestMoveBlockCrossPage_PageNotFound(t *testing.T) {
+	dir := t.TempDir()
+	c := New(dir)
+
+	// Create only a source file.
+	srcPath := filepath.Join(dir, "exists.md")
+	if err := os.WriteFile(srcPath, []byte("# Content\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	c.mu.Lock()
+	err := c.moveBlockCrossPage("nonexistent", "exists", "src", "tgt", false)
+	c.mu.Unlock()
+	if err == nil {
+		t.Error("expected error for nonexistent source page")
+	}
+	if !strings.Contains(err.Error(), "source page not found") {
+		t.Errorf("error = %q, want to contain 'source page not found'", err.Error())
+	}
+
+	c.mu.Lock()
+	err = c.moveBlockCrossPage("exists", "nonexistent", "src", "tgt", false)
+	c.mu.Unlock()
+	if err == nil {
+		t.Error("expected error for nonexistent target page")
+	}
+	if !strings.Contains(err.Error(), "target page not found") {
+		t.Errorf("error = %q, want to contain 'target page not found'", err.Error())
+	}
+}
+
+func TestMoveBlock_SourceNotFound(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	// Create a target block.
+	_, err := c.CreatePage(ctx, "move-err", nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+	tgtBlock, err := c.AppendBlockInPage(ctx, "move-err", "# Target")
+	if err != nil {
+		t.Fatalf("AppendBlockInPage: %v", err)
+	}
+
+	err = c.MoveBlock(ctx, "nonexistent-uuid", tgtBlock.UUID, nil)
+	if err == nil {
+		t.Error("MoveBlock with nonexistent source should return error")
+	}
+	if !strings.Contains(err.Error(), "source block not found") {
+		t.Errorf("error = %q, want to contain 'source block not found'", err.Error())
+	}
+}
+
+func TestMoveBlock_TargetNotFound(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	_, err := c.CreatePage(ctx, "move-err2", nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+	srcBlock, err := c.AppendBlockInPage(ctx, "move-err2", "# Source")
+	if err != nil {
+		t.Fatalf("AppendBlockInPage: %v", err)
+	}
+
+	err = c.MoveBlock(ctx, srcBlock.UUID, "nonexistent-uuid", nil)
+	if err == nil {
+		t.Error("MoveBlock with nonexistent target should return error")
+	}
+	if !strings.Contains(err.Error(), "target block not found") {
+		t.Errorf("error = %q, want to contain 'target block not found'", err.Error())
+	}
+}
+
+func TestRemoveContentFromFile(t *testing.T) {
+	dir := t.TempDir()
+	c := New(dir)
+
+	// Create a file manually.
+	filePath := filepath.Join(dir, "remove-test.md")
+	original := "# First\n# Second\n# Third\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cached := &cachedPage{filePath: "remove-test.md"}
+
+	t.Run("removes content with trailing newline", func(t *testing.T) {
+		// Reset file.
+		if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		got, err := c.removeContentFromFile(cached, "# Second")
+		if err != nil {
+			t.Fatalf("removeContentFromFile: %v", err)
+		}
+		if strings.Contains(got, "# Second") {
+			t.Errorf("returned string still contains removed content: %q", got)
+		}
+		if !strings.Contains(got, "# First") || !strings.Contains(got, "# Third") {
+			t.Errorf("other content missing: %q", got)
+		}
+
+		// Verify file was written.
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(data) != got {
+			t.Errorf("file content does not match returned string:\nfile: %q\nreturned: %q", string(data), got)
+		}
+	})
+
+	t.Run("removes content without trailing newline", func(t *testing.T) {
+		// File with content at the very end (no trailing newline after it).
+		noTrail := "# First\n# Last"
+		if err := os.WriteFile(filePath, []byte(noTrail), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		got, err := c.removeContentFromFile(cached, "# Last")
+		if err != nil {
+			t.Fatalf("removeContentFromFile: %v", err)
+		}
+		if strings.Contains(got, "# Last") {
+			t.Errorf("returned string still contains removed content: %q", got)
+		}
+		if !strings.Contains(got, "# First") {
+			t.Errorf("other content missing: %q", got)
+		}
+	})
+}
+
+func TestInsertContentInFile(t *testing.T) {
+	dir := t.TempDir()
+	c := New(dir)
+
+	filePath := filepath.Join(dir, "insert-test.md")
+	original := "# Target\n# Other\n"
+	if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cached := &cachedPage{filePath: "insert-test.md"}
+
+	t.Run("insert after", func(t *testing.T) {
+		if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		got, err := c.insertContentInFile(cached, "# Inserted", "# Target", false)
+		if err != nil {
+			t.Fatalf("insertContentInFile: %v", err)
+		}
+		idxTarget := strings.Index(got, "# Target")
+		idxInserted := strings.Index(got, "# Inserted")
+		if idxTarget < 0 || idxInserted < 0 {
+			t.Fatalf("content not found in result: %q", got)
+		}
+		if idxInserted <= idxTarget {
+			t.Errorf("inserted content should appear after target, got target@%d inserted@%d", idxTarget, idxInserted)
+		}
+
+		// Verify file was written.
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		if string(data) != got {
+			t.Errorf("file content does not match returned string")
+		}
+	})
+
+	t.Run("insert before", func(t *testing.T) {
+		if err := os.WriteFile(filePath, []byte(original), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		got, err := c.insertContentInFile(cached, "# Inserted", "# Target", true)
+		if err != nil {
+			t.Fatalf("insertContentInFile: %v", err)
+		}
+		idxTarget := strings.Index(got, "# Target")
+		idxInserted := strings.Index(got, "# Inserted")
+		if idxTarget < 0 || idxInserted < 0 {
+			t.Fatalf("content not found in result: %q", got)
+		}
+		if idxInserted >= idxTarget {
+			t.Errorf("inserted content should appear before target, got target@%d inserted@%d", idxTarget, idxInserted)
+		}
+	})
+}

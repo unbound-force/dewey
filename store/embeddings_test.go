@@ -366,6 +366,31 @@ func TestSearchSimilar(t *testing.T) {
 	if results[3].BlockUUID != "block-b" {
 		t.Errorf("results[3].BlockUUID = %q, want %q", results[3].BlockUUID, "block-b")
 	}
+
+	// Verify results are strictly ordered by descending cosine similarity.
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity+1e-6 {
+			t.Errorf("results not sorted: results[%d].Similarity (%f) > results[%d].Similarity (%f)",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
+		}
+	}
+
+	// Verify all similarity scores are in valid range [-1, 1].
+	for i, r := range results {
+		if r.Similarity < -1.0-1e-6 || r.Similarity > 1.0+1e-6 {
+			t.Errorf("results[%d].Similarity = %f, want value in [-1, 1]", i, r.Similarity)
+		}
+	}
+
+	// Verify content and page metadata are populated.
+	for i, r := range results {
+		if r.Content == "" {
+			t.Errorf("results[%d].Content should not be empty", i)
+		}
+		if r.PageName == "" {
+			t.Errorf("results[%d].PageName should not be empty", i)
+		}
+	}
 }
 
 // TestSearchSimilar_Threshold verifies the threshold filter.
@@ -494,6 +519,52 @@ func TestSearchSimilarFiltered(t *testing.T) {
 	}
 	if results[0].BlockUUID != "block-disk" {
 		t.Errorf("filtered result = %q, want %q", results[0].BlockUUID, "block-disk")
+	}
+
+	// Verify the filtered result has correct source metadata.
+	if results[0].SourceID != "disk-local" {
+		t.Errorf("filtered result SourceID = %q, want %q", results[0].SourceID, "disk-local")
+	}
+	if results[0].Similarity < 0 || results[0].Similarity > 1.0+1e-6 {
+		t.Errorf("filtered result Similarity = %f, want value in [0, 1]", results[0].Similarity)
+	}
+
+	// Filter by source_id = "github-gaze" — should return github content only.
+	githubFilters := SearchFilters{SourceID: "github-gaze"}
+	githubResults, err := s.SearchSimilarFiltered("model-a", []float32{1, 0, 0}, githubFilters, 10, 0.0)
+	if err != nil {
+		t.Fatalf("SearchSimilarFiltered(github): %v", err)
+	}
+	if len(githubResults) != 1 {
+		t.Fatalf("github filtered search returned %d results, want 1", len(githubResults))
+	}
+	if githubResults[0].BlockUUID != "block-github" {
+		t.Errorf("github filtered result = %q, want %q", githubResults[0].BlockUUID, "block-github")
+	}
+	if githubResults[0].SourceID != "github-gaze" {
+		t.Errorf("github filtered result SourceID = %q, want %q", githubResults[0].SourceID, "github-gaze")
+	}
+
+	// Filter by source type "disk" — should return disk-local.
+	typeFilters := SearchFilters{SourceType: "disk"}
+	typeResults, err := s.SearchSimilarFiltered("model-a", []float32{1, 0, 0}, typeFilters, 10, 0.0)
+	if err != nil {
+		t.Fatalf("SearchSimilarFiltered(type=disk): %v", err)
+	}
+	if len(typeResults) != 1 {
+		t.Fatalf("type filtered search returned %d results, want 1", len(typeResults))
+	}
+	if typeResults[0].BlockUUID != "block-disk" {
+		t.Errorf("type filtered result = %q, want %q", typeResults[0].BlockUUID, "block-disk")
+	}
+
+	// No filters — should return all results.
+	allResults, err := s.SearchSimilarFiltered("model-a", []float32{1, 0, 0}, SearchFilters{}, 10, 0.0)
+	if err != nil {
+		t.Fatalf("SearchSimilarFiltered(no filters): %v", err)
+	}
+	if len(allResults) != 2 {
+		t.Fatalf("unfiltered search returned %d results, want 2", len(allResults))
 	}
 }
 

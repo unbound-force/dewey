@@ -27,6 +27,13 @@ type Store struct {
 // schema migrations. Pass an empty string or ":memory:" for an in-memory
 // database (useful for testing).
 //
+// Returns an error if the database cannot be opened, pragma configuration
+// fails, the file lock cannot be acquired (another Dewey process is using
+// the database), or schema migration fails.
+//
+// The returned Store must be closed with [Store.Close] when no longer needed
+// to release the database connection and file lock.
+//
 // The database is configured with:
 //   - WAL journal mode for concurrent read access
 //   - Foreign key enforcement
@@ -91,6 +98,7 @@ func New(path string) (*Store, error) {
 }
 
 // Close closes the underlying database connection and releases the file lock.
+// Returns an error if the database connection cannot be closed cleanly.
 func (s *Store) Close() error {
 	if s.lockFile != nil {
 		// Release the advisory lock before closing the file descriptor.
@@ -101,7 +109,8 @@ func (s *Store) Close() error {
 }
 
 // DB returns the underlying *sql.DB for advanced queries.
-// Prefer using Store methods for standard operations.
+// Prefer using Store methods for standard operations. The returned
+// connection is managed by the Store and must not be closed independently.
 func (s *Store) DB() *sql.DB {
 	return s.db
 }
@@ -136,8 +145,12 @@ type Link struct {
 	BlockUUID string
 }
 
-// InsertPage inserts a new page into the store. Uses parameterized queries
-// to prevent SQL injection (FR-028).
+// InsertPage inserts a new page into the store. It sets CreatedAt and
+// UpdatedAt to the current time if they are zero. Uses parameterized
+// queries to prevent SQL injection (FR-028).
+//
+// Returns an error if the insert fails (e.g., duplicate page name
+// violating the unique constraint).
 func (s *Store) InsertPage(p *Page) error {
 	now := time.Now().UnixMilli()
 	if p.CreatedAt == 0 {
@@ -160,7 +173,9 @@ func (s *Store) InsertPage(p *Page) error {
 	return nil
 }
 
-// GetPage retrieves a page by name. Returns nil if not found.
+// GetPage retrieves a page by its normalized name.
+// Returns the page and nil error on success, or (nil, nil) if no page
+// exists with the given name. Returns a non-nil error if the query fails.
 func (s *Store) GetPage(name string) (*Page, error) {
 	p := &Page{}
 	var isJournal int
@@ -187,7 +202,9 @@ func (s *Store) GetPage(name string) (*Page, error) {
 	return p, nil
 }
 
-// ListPages returns all pages in the store.
+// ListPages returns all pages in the store, ordered alphabetically by name.
+// Returns an empty slice (not nil) if no pages exist. Returns an error if
+// the query or row scanning fails.
 func (s *Store) ListPages() ([]*Page, error) {
 	rows, err := s.db.Query(`
 		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
@@ -220,8 +237,12 @@ func (s *Store) ListPages() ([]*Page, error) {
 	return pages, rows.Err()
 }
 
-// UpdatePage updates an existing page's mutable fields. The content_hash
-// comparison enables incremental indexing — only re-index when content changes.
+// UpdatePage updates an existing page's mutable fields and sets UpdatedAt
+// to the current time. The content_hash comparison enables incremental
+// indexing — only re-index when content changes.
+//
+// Returns an error if the update query fails or if no page exists with
+// the given name (page not found).
 func (s *Store) UpdatePage(p *Page) error {
 	p.UpdatedAt = time.Now().UnixMilli()
 
@@ -248,6 +269,8 @@ func (s *Store) UpdatePage(p *Page) error {
 }
 
 // DeletePage removes a page and its associated blocks and links (via CASCADE).
+// Returns an error if the delete query fails or if no page exists with the
+// given name (page not found).
 func (s *Store) DeletePage(name string) error {
 	result, err := s.db.Exec(`DELETE FROM pages WHERE name = ?`, name)
 	if err != nil {
@@ -264,7 +287,11 @@ func (s *Store) DeletePage(name string) error {
 	return nil
 }
 
-// InsertBlock inserts a new block into the store.
+// InsertBlock inserts a new block into the store. The block's PageName
+// must reference an existing page (foreign key constraint).
+//
+// Returns an error if the insert fails (e.g., duplicate UUID or missing
+// parent page).
 func (s *Store) InsertBlock(b *Block) error {
 	_, err := s.db.Exec(`
 		INSERT INTO blocks (uuid, page_name, parent_uuid, content, heading_level, position)
@@ -278,7 +305,9 @@ func (s *Store) InsertBlock(b *Block) error {
 	return nil
 }
 
-// GetBlock retrieves a block by UUID. Returns nil if not found.
+// GetBlock retrieves a block by its UUID.
+// Returns the block and nil error on success, or (nil, nil) if no block
+// exists with the given UUID. Returns a non-nil error if the query fails.
 func (s *Store) GetBlock(uuid string) (*Block, error) {
 	b := &Block{}
 	err := s.db.QueryRow(`
@@ -296,7 +325,9 @@ func (s *Store) GetBlock(uuid string) (*Block, error) {
 	return b, nil
 }
 
-// GetBlocksByPage returns all blocks for a given page, ordered by position.
+// GetBlocksByPage returns all blocks belonging to the named page, ordered
+// by position. Returns an empty slice if the page has no blocks or does
+// not exist. Returns an error if the query or row scanning fails.
 func (s *Store) GetBlocksByPage(pageName string) ([]*Block, error) {
 	rows, err := s.db.Query(`
 		SELECT uuid, page_name, parent_uuid, content, heading_level, position
@@ -320,7 +351,9 @@ func (s *Store) GetBlocksByPage(pageName string) ([]*Block, error) {
 	return blocks, rows.Err()
 }
 
-// DeleteBlocksByPage removes all blocks for a given page.
+// DeleteBlocksByPage removes all blocks belonging to the named page.
+// Returns an error if the delete query fails. Does not return an error
+// if no blocks exist for the page (idempotent delete).
 func (s *Store) DeleteBlocksByPage(pageName string) error {
 	_, err := s.db.Exec(`DELETE FROM blocks WHERE page_name = ?`, pageName)
 	if err != nil {
@@ -329,7 +362,10 @@ func (s *Store) DeleteBlocksByPage(pageName string) error {
 	return nil
 }
 
-// InsertLink inserts a directed link between two pages.
+// InsertLink inserts a directed link between two pages. Uses INSERT OR
+// IGNORE to silently skip duplicate links (same from_page, to_page,
+// block_uuid triple). Returns an error if the insert query fails for
+// reasons other than a duplicate.
 func (s *Store) InsertLink(l *Link) error {
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO links (from_page, to_page, block_uuid)
@@ -342,7 +378,9 @@ func (s *Store) InsertLink(l *Link) error {
 	return nil
 }
 
-// GetForwardLinks returns all pages that the given page links to.
+// GetForwardLinks returns all outgoing links from the named page (pages
+// that this page links to). Returns an empty slice if the page has no
+// outgoing links. Returns an error if the query or row scanning fails.
 func (s *Store) GetForwardLinks(pageName string) ([]*Link, error) {
 	rows, err := s.db.Query(`
 		SELECT from_page, to_page, block_uuid
@@ -363,7 +401,9 @@ func (s *Store) GetForwardLinks(pageName string) ([]*Link, error) {
 	return links, rows.Err()
 }
 
-// GetBackwardLinks returns all pages that link to the given page.
+// GetBackwardLinks returns all incoming links to the named page (pages
+// that link to this page). Returns an empty slice if no pages link to
+// the given page. Returns an error if the query or row scanning fails.
 func (s *Store) GetBackwardLinks(pageName string) ([]*Link, error) {
 	rows, err := s.db.Query(`
 		SELECT from_page, to_page, block_uuid
@@ -384,7 +424,9 @@ func (s *Store) GetBackwardLinks(pageName string) ([]*Link, error) {
 	return links, rows.Err()
 }
 
-// DeleteLinksByPage removes all links originating from the given page.
+// DeleteLinksByPage removes all outgoing links from the named page.
+// Returns an error if the delete query fails. Does not return an error
+// if no links exist for the page (idempotent delete).
 func (s *Store) DeleteLinksByPage(pageName string) error {
 	_, err := s.db.Exec(`DELETE FROM links WHERE from_page = ?`, pageName)
 	if err != nil {
@@ -393,7 +435,9 @@ func (s *Store) DeleteLinksByPage(pageName string) error {
 	return nil
 }
 
-// GetMeta retrieves a metadata value by key. Returns empty string if not found.
+// GetMeta retrieves a metadata value by key. Returns an empty string and
+// nil error if the key does not exist. Returns a non-nil error if the
+// query fails.
 func (s *Store) GetMeta(key string) (string, error) {
 	var value string
 	err := s.db.QueryRow(`SELECT value FROM metadata WHERE key = ?`, key).Scan(&value)
@@ -406,7 +450,9 @@ func (s *Store) GetMeta(key string) (string, error) {
 	return value, nil
 }
 
-// SetMeta sets a metadata key-value pair, inserting or updating as needed.
+// SetMeta sets a metadata key-value pair, inserting a new entry or updating
+// the value if the key already exists (upsert). Returns an error if the
+// upsert query fails.
 func (s *Store) SetMeta(key, value string) error {
 	_, err := s.db.Exec(`
 		INSERT INTO metadata (key, value) VALUES (?, ?)
@@ -433,8 +479,10 @@ type SourceRecord struct {
 	ErrorMessage    string
 }
 
-// InsertSource inserts a new source into the store. Uses parameterized
-// queries to prevent SQL injection (FR-028).
+// InsertSource inserts a new content source record into the store. Uses
+// parameterized queries to prevent SQL injection (FR-028).
+//
+// Returns an error if the insert fails (e.g., duplicate source ID).
 func (s *Store) InsertSource(src *SourceRecord) error {
 	_, err := s.db.Exec(`
 		INSERT INTO sources (id, type, name, config, refresh_interval, last_fetched_at, status, error_message)
@@ -449,7 +497,9 @@ func (s *Store) InsertSource(src *SourceRecord) error {
 	return nil
 }
 
-// GetSource retrieves a source by ID. Returns nil if not found.
+// GetSource retrieves a content source record by its ID.
+// Returns the record and nil error on success, or (nil, nil) if no source
+// exists with the given ID. Returns a non-nil error if the query fails.
 func (s *Store) GetSource(id string) (*SourceRecord, error) {
 	src := &SourceRecord{}
 	var config, refreshInterval, errorMessage sql.NullString
@@ -476,7 +526,9 @@ func (s *Store) GetSource(id string) (*SourceRecord, error) {
 	return src, nil
 }
 
-// ListSources returns all sources in the store.
+// ListSources returns all content source records in the store, ordered by ID.
+// Returns an empty slice if no sources exist. Returns an error if the query
+// or row scanning fails.
 func (s *Store) ListSources() ([]*SourceRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT id, type, name, config, refresh_interval, last_fetched_at, status, error_message
@@ -509,7 +561,9 @@ func (s *Store) ListSources() ([]*SourceRecord, error) {
 	return sources, rows.Err()
 }
 
-// UpdateSourceStatus updates a source's status and error message.
+// UpdateSourceStatus updates a source's status and error message fields.
+// Returns an error if the update query fails or if no source exists with
+// the given ID (source not found).
 func (s *Store) UpdateSourceStatus(id, status, errorMessage string) error {
 	result, err := s.db.Exec(`
 		UPDATE sources SET status = ?, error_message = ?
@@ -530,7 +584,9 @@ func (s *Store) UpdateSourceStatus(id, status, errorMessage string) error {
 	return nil
 }
 
-// UpdateLastFetched updates a source's last_fetched_at timestamp.
+// UpdateLastFetched updates a source's last_fetched_at timestamp to the
+// given Unix millisecond value. Returns an error if the update query fails
+// or if no source exists with the given ID (source not found).
 func (s *Store) UpdateLastFetched(id string, fetchedAt int64) error {
 	result, err := s.db.Exec(`
 		UPDATE sources SET last_fetched_at = ?
@@ -552,6 +608,7 @@ func (s *Store) UpdateLastFetched(id string, fetchedAt int64) error {
 }
 
 // CountPages returns the total number of pages in the store.
+// Returns 0 and an error if the count query fails.
 func (s *Store) CountPages() (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM pages`).Scan(&count)
@@ -561,7 +618,9 @@ func (s *Store) CountPages() (int, error) {
 	return count, nil
 }
 
-// CountPagesBySource returns the number of pages for a given source ID.
+// CountPagesBySource returns the number of pages associated with the given
+// source ID. Returns 0 (not an error) if no pages belong to that source.
+// Returns an error if the count query fails.
 func (s *Store) CountPagesBySource(sourceID string) (int, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM pages WHERE source_id = ?`, sourceID).Scan(&count)
@@ -571,9 +630,10 @@ func (s *Store) CountPagesBySource(sourceID string) (int, error) {
 	return count, nil
 }
 
-// IsDiskSpaceError checks if an error is related to disk space exhaustion.
-// When disk space is insufficient, Dewey should continue operating from
-// the in-memory index without crashing (edge case from spec).
+// IsDiskSpaceError returns true if the given error indicates disk space
+// exhaustion (e.g., SQLite "database or disk is full", OS "no space left").
+// Returns false if err is nil. When disk space is insufficient, Dewey
+// should continue operating from the in-memory index without crashing.
 func IsDiskSpaceError(err error) bool {
 	if err == nil {
 		return false

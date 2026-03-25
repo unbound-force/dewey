@@ -219,6 +219,48 @@ func TestOllamaEmbedder_ModelID(t *testing.T) {
 	}
 }
 
+// TestNewOllamaEmbedder_ReturnsConfiguredEmbedder verifies the constructor
+// returns a fully initialized embedder with correct fields.
+func TestNewOllamaEmbedder_ReturnsConfiguredEmbedder(t *testing.T) {
+	e := NewOllamaEmbedder("http://custom:9999", "test-model:v1")
+
+	if e == nil {
+		t.Fatal("NewOllamaEmbedder returned nil")
+	}
+	if e.baseURL != "http://custom:9999" {
+		t.Errorf("baseURL = %q, want %q", e.baseURL, "http://custom:9999")
+	}
+	if e.model != "test-model:v1" {
+		t.Errorf("model = %q, want %q", e.model, "test-model:v1")
+	}
+	if e.ModelID() != "test-model:v1" {
+		t.Errorf("ModelID() = %q, want %q", e.ModelID(), "test-model:v1")
+	}
+	if e.client == nil {
+		t.Fatal("client should not be nil")
+	}
+	if e.client.Timeout != 30*time.Second {
+		t.Errorf("client.Timeout = %v, want 30s", e.client.Timeout)
+	}
+	if e.checkInterval != 30*time.Second {
+		t.Errorf("checkInterval = %v, want 30s", e.checkInterval)
+	}
+}
+
+// TestOllamaEmbedder_Available_ConnectionRefused_NoPanic verifies Available()
+// returns false without panicking when Ollama is not running.
+func TestOllamaEmbedder_Available_ConnectionRefused_NoPanic(t *testing.T) {
+	e := NewOllamaEmbedder("http://localhost:1", "granite-embedding:30m")
+	e.checkInterval = 0
+	e.client.Timeout = 500 * time.Millisecond
+
+	// Should return false, not panic.
+	got := e.Available()
+	if got {
+		t.Error("Available() = true, want false (connection refused)")
+	}
+}
+
 // TestOllamaEmbedder_Available_Caching verifies that Available() caches results.
 func TestOllamaEmbedder_Available_Caching(t *testing.T) {
 	callCount := 0

@@ -2,12 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/unbound-force/dewey/client"
+	"github.com/unbound-force/dewey/types"
 )
 
 // TestRootCmd_Version verifies the root command reports the correct version.
@@ -739,5 +746,484 @@ func TestFormatDuration(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
 		}
+	}
+}
+
+// --- findJournalPage tests (T020) ---
+
+// newTestLogseqServer creates an httptest server that simulates the Logseq API.
+// pageNames is the set of page names that exist. GetPage returns a result for
+// any name in the set; other names get a null response.
+func newTestLogseqServer(t *testing.T, pageNames map[string]bool) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			Args   []any  `json:"args"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		switch req.Method {
+		case "logseq.Editor.getPage":
+			if len(req.Args) > 0 {
+				name := fmt.Sprintf("%v", req.Args[0])
+				if pageNames[name] {
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"name": name,
+						"uuid": "page-uuid",
+						"id":   1,
+					})
+					return
+				}
+			}
+			// Page not found — Logseq returns null.
+			_, _ = w.Write([]byte("null"))
+
+		case "logseq.App.getCurrentGraph":
+			// Return a graph at a temp path — tests override this if needed.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "test-graph",
+				"path": t.TempDir(),
+			})
+
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+}
+
+// TestFindJournalPage_OrdinalFormat verifies findJournalPage returns the
+// ordinal date format name when that page exists.
+func TestFindJournalPage_OrdinalFormat(t *testing.T) {
+	date := time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC)
+	ordinal := ordinalDate(date) // "Jan 29th, 2026"
+
+	srv := newTestLogseqServer(t, map[string]bool{ordinal: true})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+	ctx := context.Background()
+
+	got := findJournalPage(ctx, c, date)
+	if got != ordinal {
+		t.Errorf("findJournalPage() = %q, want %q", got, ordinal)
+	}
+}
+
+// TestFindJournalPage_ISOFormat verifies findJournalPage falls through to
+// ISO date format when ordinal format page does not exist.
+func TestFindJournalPage_ISOFormat(t *testing.T) {
+	date := time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC)
+	isoName := "2026-01-29"
+
+	// Only the ISO format page exists.
+	srv := newTestLogseqServer(t, map[string]bool{isoName: true})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+	ctx := context.Background()
+
+	got := findJournalPage(ctx, c, date)
+	if got != isoName {
+		t.Errorf("findJournalPage() = %q, want %q", got, isoName)
+	}
+}
+
+// TestFindJournalPage_LongFormat verifies findJournalPage falls through to
+// "January 2, 2006" format when neither ordinal nor ISO pages exist.
+func TestFindJournalPage_LongFormat(t *testing.T) {
+	date := time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC)
+	longName := "January 29, 2026"
+
+	// Only the long format page exists.
+	srv := newTestLogseqServer(t, map[string]bool{longName: true})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+	ctx := context.Background()
+
+	got := findJournalPage(ctx, c, date)
+	if got != longName {
+		t.Errorf("findJournalPage() = %q, want %q", got, longName)
+	}
+}
+
+// TestFindJournalPage_NoPageExists verifies findJournalPage returns empty
+// string when no journal page exists for any format.
+func TestFindJournalPage_NoPageExists(t *testing.T) {
+	date := time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC)
+
+	// No pages exist.
+	srv := newTestLogseqServer(t, map[string]bool{})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+	ctx := context.Background()
+
+	got := findJournalPage(ctx, c, date)
+	if got != "" {
+		t.Errorf("findJournalPage() = %q, want empty string", got)
+	}
+}
+
+// TestFindJournalPage_PriorityOrder verifies ordinal format is preferred
+// over ISO format when both pages exist.
+func TestFindJournalPage_PriorityOrder(t *testing.T) {
+	date := time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC)
+	ordinal := ordinalDate(date) // "Jan 29th, 2026"
+
+	// Both ordinal and ISO pages exist — ordinal should be returned first.
+	srv := newTestLogseqServer(t, map[string]bool{
+		ordinal:      true,
+		"2026-01-29": true,
+	})
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+	ctx := context.Background()
+
+	got := findJournalPage(ctx, c, date)
+	if got != ordinal {
+		t.Errorf("findJournalPage() = %q, want %q (ordinal should take priority)", got, ordinal)
+	}
+}
+
+// --- printSearchResults tests (T020) ---
+
+// TestPrintSearchResults_MatchingBlocks verifies matching blocks are printed
+// in "page | content" format and found counter is incremented.
+func TestPrintSearchResults_MatchingBlocks(t *testing.T) {
+	blocks := []types.BlockEntity{
+		{Content: "Hello world from Logseq"},
+		{Content: "Another block without match"},
+		{Content: "HELLO uppercase match"},
+	}
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	found := 0
+	printSearchResults(blocks, "hello", "MyPage", 10, &found)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	output := buf.String()
+
+	// Should match 2 blocks (case-insensitive: "Hello" and "HELLO").
+	if found != 2 {
+		t.Errorf("found = %d, want 2", found)
+	}
+
+	// Verify output format: "page | content".
+	if !strings.Contains(output, "MyPage | Hello world from Logseq") {
+		t.Errorf("output missing first match, got:\n%s", output)
+	}
+	if !strings.Contains(output, "MyPage | HELLO uppercase match") {
+		t.Errorf("output missing second match, got:\n%s", output)
+	}
+
+	// "Another block without match" should NOT appear.
+	if strings.Contains(output, "Another block") {
+		t.Errorf("output should not contain non-matching block, got:\n%s", output)
+	}
+}
+
+// TestPrintSearchResults_RespectsLimit verifies the limit parameter stops
+// printing once the limit is reached.
+func TestPrintSearchResults_RespectsLimit(t *testing.T) {
+	blocks := []types.BlockEntity{
+		{Content: "match one"},
+		{Content: "match two"},
+		{Content: "match three"},
+	}
+
+	// Capture stdout.
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	found := 0
+	printSearchResults(blocks, "match", "Page", 2, &found)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	output := buf.String()
+
+	if found != 2 {
+		t.Errorf("found = %d, want 2 (limited)", found)
+	}
+
+	// Should only have 2 lines.
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) != 2 {
+		t.Errorf("output lines = %d, want 2, got:\n%s", len(lines), output)
+	}
+}
+
+// TestPrintSearchResults_RecursiveChildren verifies child blocks are searched.
+func TestPrintSearchResults_RecursiveChildren(t *testing.T) {
+	blocks := []types.BlockEntity{
+		{
+			Content: "parent block no match",
+			Children: []types.BlockEntity{
+				{Content: "child with keyword"},
+				{
+					Content: "nested no match",
+					Children: []types.BlockEntity{
+						{Content: "deep nested keyword"},
+					},
+				},
+			},
+		},
+	}
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	found := 0
+	printSearchResults(blocks, "keyword", "DeepPage", 10, &found)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	output := buf.String()
+
+	if found != 2 {
+		t.Errorf("found = %d, want 2 (both child and deep nested)", found)
+	}
+	if !strings.Contains(output, "DeepPage | child with keyword") {
+		t.Errorf("output missing child match, got:\n%s", output)
+	}
+	if !strings.Contains(output, "DeepPage | deep nested keyword") {
+		t.Errorf("output missing deep nested match, got:\n%s", output)
+	}
+}
+
+// TestPrintSearchResults_EmptyBlocks verifies empty input produces no output.
+func TestPrintSearchResults_EmptyBlocks(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	found := 0
+	printSearchResults(nil, "query", "Page", 10, &found)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if found != 0 {
+		t.Errorf("found = %d, want 0", found)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output, got: %q", buf.String())
+	}
+}
+
+// TestPrintSearchResults_FoundAlreadyAtLimit verifies that when found is
+// already at the limit, no additional results are printed.
+func TestPrintSearchResults_FoundAlreadyAtLimit(t *testing.T) {
+	blocks := []types.BlockEntity{
+		{Content: "match this"},
+	}
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	found := 5 // already at limit
+	printSearchResults(blocks, "match", "Page", 5, &found)
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if found != 5 {
+		t.Errorf("found = %d, want 5 (should not increment past limit)", found)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output when already at limit, got: %q", buf.String())
+	}
+}
+
+// --- checkGraphVersionControl tests (T020) ---
+
+// TestCheckGraphVersionControl_WithGit verifies no warning is logged when
+// the graph directory contains a .git directory (version controlled).
+func TestCheckGraphVersionControl_WithGit(t *testing.T) {
+	graphDir := t.TempDir()
+
+	// Create .git directory to simulate version control.
+	gitDir := filepath.Join(graphDir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name": "test-graph",
+			"path": graphDir,
+		})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+
+	// Capture logger output.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	checkGraphVersionControl(c)
+
+	// Should NOT contain "not version controlled".
+	if strings.Contains(logBuf.String(), "not version controlled") {
+		t.Errorf("should not warn about version control when .git exists, got:\n%s", logBuf.String())
+	}
+}
+
+// TestCheckGraphVersionControl_WithoutGit verifies a warning is logged when
+// the graph directory has no .git directory.
+func TestCheckGraphVersionControl_WithoutGit(t *testing.T) {
+	graphDir := t.TempDir()
+	// No .git directory — not version controlled.
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name": "test-graph",
+			"path": graphDir,
+		})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	checkGraphVersionControl(c)
+
+	if !strings.Contains(logBuf.String(), "not version controlled") {
+		t.Errorf("should warn about version control, got:\n%s", logBuf.String())
+	}
+}
+
+// TestCheckGraphVersionControl_APIError verifies the function silently returns
+// when the Logseq API is unreachable (best-effort behavior).
+func TestCheckGraphVersionControl_APIError(t *testing.T) {
+	// Use a server that returns an error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`"error"`))
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	// Should not panic.
+	checkGraphVersionControl(c)
+
+	// Should NOT warn about version control (error path returns silently).
+	if strings.Contains(logBuf.String(), "not version controlled") {
+		t.Errorf("should not warn when API is unreachable, got:\n%s", logBuf.String())
+	}
+}
+
+// TestCheckGraphVersionControl_NullGraph verifies the function silently returns
+// when GetCurrentGraph returns null (no graph open).
+func TestCheckGraphVersionControl_NullGraph(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("null"))
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	checkGraphVersionControl(c)
+
+	if strings.Contains(logBuf.String(), "not version controlled") {
+		t.Errorf("should not warn when graph is null, got:\n%s", logBuf.String())
+	}
+}
+
+// TestCheckGraphVersionControl_EmptyPath verifies the function silently returns
+// when the graph has an empty path.
+func TestCheckGraphVersionControl_EmptyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"name": "test-graph",
+			"path": "",
+		})
+	}))
+	defer srv.Close()
+
+	c := client.New(srv.URL, "")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	checkGraphVersionControl(c)
+
+	if strings.Contains(logBuf.String(), "not version controlled") {
+		t.Errorf("should not warn when path is empty, got:\n%s", logBuf.String())
 	}
 }

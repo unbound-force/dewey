@@ -278,6 +278,8 @@ specs/
 
 ## Active Technologies
 - SQLite via `modernc.org/sqlite` -- single database `.dewey/graph.db` containing the knowledge graph index (pages, blocks, links) and vector embeddings (001-core-implementation)
+- Go 1.25 (per `go.mod`) + Gaze v1.4.6 (`go install github.com/unbound-force/gaze/cmd/gaze@latest`) (002-quality-ratchets)
+- N/A (quality improvement, no storage changes) (002-quality-ratchets)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 

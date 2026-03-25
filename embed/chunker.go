@@ -14,8 +14,10 @@ const maxChunkChars = 2000
 //
 //	"setup.md > Installation > From Source\n\ncontent..."
 //
-// The chunk is truncated to maxChunkChars (~512 tokens) to fit within
-// the embedding model's context window.
+// Returns the formatted chunk string, truncated to maxChunkChars (~512
+// tokens) to fit within the embedding model's context window. Empty
+// headings in the path are skipped. Uses rune-based truncation to avoid
+// splitting multi-byte UTF-8 characters.
 //
 // Design decision: Block-level chunking was chosen over page-level or
 // fixed-size windows because blocks are the natural semantic units in

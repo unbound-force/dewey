@@ -550,6 +550,238 @@ func TestBulkUpdateProperties_PartialFailure(t *testing.T) {
 	}
 }
 
+func TestInsertChildren_SingleChild(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	children := []types.BlockInput{
+		{Content: "child one"},
+	}
+
+	uuids, err := w.insertChildren(context.Background(), "parent-uuid", children)
+	if err != nil {
+		t.Fatalf("insertChildren() error: %v", err)
+	}
+
+	if len(uuids) != 1 {
+		t.Fatalf("insertChildren() returned %d UUIDs, want 1", len(uuids))
+	}
+
+	// Verify InsertBlock was called with correct parent and content.
+	if len(mb.insertedBlocks) != 1 {
+		t.Fatalf("expected 1 InsertBlock call, got %d", len(mb.insertedBlocks))
+	}
+	if mb.insertedBlocks[0].parent != "parent-uuid" {
+		t.Errorf("InsertBlock parent = %q, want %q", mb.insertedBlocks[0].parent, "parent-uuid")
+	}
+	if mb.insertedBlocks[0].content != "child one" {
+		t.Errorf("InsertBlock content = %q, want %q", mb.insertedBlocks[0].content, "child one")
+	}
+}
+
+func TestInsertChildren_MultipleChildren(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	children := []types.BlockInput{
+		{Content: "first child"},
+		{Content: "second child"},
+		{Content: "third child"},
+	}
+
+	uuids, err := w.insertChildren(context.Background(), "parent-uuid", children)
+	if err != nil {
+		t.Fatalf("insertChildren() error: %v", err)
+	}
+
+	if len(uuids) != 3 {
+		t.Fatalf("insertChildren() returned %d UUIDs, want 3", len(uuids))
+	}
+
+	// Verify all three InsertBlock calls used the same parent.
+	if len(mb.insertedBlocks) != 3 {
+		t.Fatalf("expected 3 InsertBlock calls, got %d", len(mb.insertedBlocks))
+	}
+	for i, ib := range mb.insertedBlocks {
+		if ib.parent != "parent-uuid" {
+			t.Errorf("InsertBlock[%d] parent = %q, want %q", i, ib.parent, "parent-uuid")
+		}
+	}
+	if mb.insertedBlocks[0].content != "first child" {
+		t.Errorf("InsertBlock[0] content = %q, want %q", mb.insertedBlocks[0].content, "first child")
+	}
+	if mb.insertedBlocks[1].content != "second child" {
+		t.Errorf("InsertBlock[1] content = %q, want %q", mb.insertedBlocks[1].content, "second child")
+	}
+	if mb.insertedBlocks[2].content != "third child" {
+		t.Errorf("InsertBlock[2] content = %q, want %q", mb.insertedBlocks[2].content, "third child")
+	}
+}
+
+func TestInsertChildren_EmptyChildren(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	uuids, err := w.insertChildren(context.Background(), "parent-uuid", nil)
+	if err != nil {
+		t.Fatalf("insertChildren() error: %v", err)
+	}
+
+	if len(uuids) != 0 {
+		t.Errorf("insertChildren(nil) returned %d UUIDs, want 0", len(uuids))
+	}
+	if len(mb.insertedBlocks) != 0 {
+		t.Errorf("expected 0 InsertBlock calls, got %d", len(mb.insertedBlocks))
+	}
+}
+
+func TestInsertChildren_WithProperties(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	children := []types.BlockInput{
+		{
+			Content:    "block with props",
+			Properties: map[string]string{"type": "task"},
+		},
+	}
+
+	uuids, err := w.insertChildren(context.Background(), "parent-uuid", children)
+	if err != nil {
+		t.Fatalf("insertChildren() error: %v", err)
+	}
+
+	if len(uuids) != 1 {
+		t.Fatalf("insertChildren() returned %d UUIDs, want 1", len(uuids))
+	}
+
+	// Verify properties were appended to content.
+	if len(mb.insertedBlocks) != 1 {
+		t.Fatalf("expected 1 InsertBlock call, got %d", len(mb.insertedBlocks))
+	}
+	content := mb.insertedBlocks[0].content
+	if content != "block with props\ntype:: task" {
+		t.Errorf("InsertBlock content = %q, want content with property appended", content)
+	}
+}
+
+func TestInsertChildren_NestedChildren(t *testing.T) {
+	// Use a mock that returns unique UUIDs per InsertBlock call
+	// so we can verify parent-child relationships.
+	mb := &mockBackendWithInsertCounter{
+		mockBackend: newMockBackend(),
+	}
+	w := NewWrite(mb)
+
+	children := []types.BlockInput{
+		{
+			Content: "parent block",
+			Children: []types.BlockInput{
+				{Content: "nested child"},
+			},
+		},
+	}
+
+	uuids, err := w.insertChildren(context.Background(), "root-uuid", children)
+	if err != nil {
+		t.Fatalf("insertChildren() error: %v", err)
+	}
+
+	// Should return 2 UUIDs: the parent block + its nested child.
+	if len(uuids) != 2 {
+		t.Fatalf("insertChildren() returned %d UUIDs, want 2", len(uuids))
+	}
+
+	// Verify two InsertBlock calls were made.
+	if mb.callCount != 2 {
+		t.Fatalf("expected 2 InsertBlock calls, got %d", mb.callCount)
+	}
+
+	// First call: parent block inserted under root-uuid.
+	if mb.calls[0].parent != "root-uuid" {
+		t.Errorf("InsertBlock[0] parent = %q, want %q", mb.calls[0].parent, "root-uuid")
+	}
+	if mb.calls[0].content != "parent block" {
+		t.Errorf("InsertBlock[0] content = %q, want %q", mb.calls[0].content, "parent block")
+	}
+
+	// Second call: nested child inserted under the first block's UUID.
+	if mb.calls[1].parent != "uuid-1" {
+		t.Errorf("InsertBlock[1] parent = %q, want %q (UUID of first block)", mb.calls[1].parent, "uuid-1")
+	}
+	if mb.calls[1].content != "nested child" {
+		t.Errorf("InsertBlock[1] content = %q, want %q", mb.calls[1].content, "nested child")
+	}
+}
+
+func TestInsertChildren_InsertBlockError(t *testing.T) {
+	mb := newMockBackend()
+	mb.insertBlockErr = fmt.Errorf("backend insert failed")
+	w := NewWrite(mb)
+
+	children := []types.BlockInput{
+		{Content: "will fail"},
+	}
+
+	uuids, err := w.insertChildren(context.Background(), "parent-uuid", children)
+	if err == nil {
+		t.Fatal("insertChildren() expected error, got nil")
+	}
+	if err.Error() != "backend insert failed" {
+		t.Errorf("error = %q, want %q", err.Error(), "backend insert failed")
+	}
+	if len(uuids) != 0 {
+		t.Errorf("expected 0 UUIDs on error, got %d", len(uuids))
+	}
+}
+
+func TestInsertChildren_NilInsertBlockResult(t *testing.T) {
+	mb := newMockBackend()
+	// Set insertBlockResult to simulate nil return (no block created).
+	mb.insertBlockResult = nil
+	// Override the default InsertBlock to return nil without error.
+	w := NewWrite(&mockBackendNilInsert{mockBackend: mb})
+
+	children := []types.BlockInput{
+		{Content: "ghost block"},
+	}
+
+	uuids, err := w.insertChildren(context.Background(), "parent-uuid", children)
+	if err != nil {
+		t.Fatalf("insertChildren() error: %v", err)
+	}
+
+	// When InsertBlock returns nil, no UUID should be collected.
+	if len(uuids) != 0 {
+		t.Errorf("insertChildren() returned %d UUIDs, want 0 (nil insert result)", len(uuids))
+	}
+}
+
+// mockBackendWithInsertCounter wraps mockBackend to return unique UUIDs
+// for each InsertBlock call, enabling parent-child relationship verification.
+type mockBackendWithInsertCounter struct {
+	*mockBackend
+	callCount int
+	calls     []struct{ parent, content string }
+}
+
+func (m *mockBackendWithInsertCounter) InsertBlock(_ context.Context, srcBlock any, content string, opts map[string]any) (*types.BlockEntity, error) {
+	m.callCount++
+	m.calls = append(m.calls, struct{ parent, content string }{fmt.Sprint(srcBlock), content})
+	uuid := fmt.Sprintf("uuid-%d", m.callCount)
+	return &types.BlockEntity{UUID: uuid, Content: content}, nil
+}
+
+// mockBackendNilInsert wraps mockBackend but returns nil from InsertBlock
+// without an error, simulating a backend that silently skips block creation.
+type mockBackendNilInsert struct {
+	*mockBackend
+}
+
+func (m *mockBackendNilInsert) InsertBlock(_ context.Context, _ any, _ string, _ map[string]any) (*types.BlockEntity, error) {
+	return nil, nil
+}
+
 // extractText extracts the text string from a CallToolResult.
 func extractText(t *testing.T, result interface{}) string {
 	t.Helper()

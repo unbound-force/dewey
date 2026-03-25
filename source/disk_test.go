@@ -104,6 +104,37 @@ func TestDiskSource_Diff_NewFiles(t *testing.T) {
 	if addedCount != 3 {
 		t.Errorf("expected 3 added changes, got %d", addedCount)
 	}
+
+	// Verify all changes have ChangeType Added when no stored hashes.
+	for i, c := range changes {
+		if c.Type != ChangeAdded {
+			t.Errorf("changes[%d].Type = %q, want %q", i, c.Type, ChangeAdded)
+		}
+	}
+
+	// Verify each change has a non-empty document ID.
+	for i, c := range changes {
+		if c.ID == "" {
+			t.Errorf("changes[%d].ID should not be empty", i)
+		}
+	}
+
+	// Verify each added change has a non-nil Document with content.
+	for i, c := range changes {
+		if c.Document == nil {
+			t.Errorf("changes[%d].Document should not be nil for added changes", i)
+			continue
+		}
+		if c.Document.Content == "" {
+			t.Errorf("changes[%d].Document.Content should not be empty", i)
+		}
+		if c.Document.ContentHash == "" {
+			t.Errorf("changes[%d].Document.ContentHash should not be empty", i)
+		}
+		if c.Document.SourceID != "disk-local" {
+			t.Errorf("changes[%d].Document.SourceID = %q, want %q", i, c.Document.SourceID, "disk-local")
+		}
+	}
 }
 
 func TestDiskSource_Diff_ModifiedFile(t *testing.T) {
@@ -111,15 +142,23 @@ func TestDiskSource_Diff_ModifiedFile(t *testing.T) {
 	ds := NewDiskSource("disk-local", "local", dir)
 
 	// First, list to get current hashes.
-	docs, _ := ds.List()
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
 	hashes := make(map[string]string)
+	var originalHash string
 	for _, doc := range docs {
 		hashes[doc.ID] = doc.ContentHash
+		if doc.ID == "page1.md" {
+			originalHash = doc.ContentHash
+		}
 	}
 	ds.SetStoredHashes(hashes)
 
 	// Modify a file.
-	if err := os.WriteFile(filepath.Join(dir, "page1.md"), []byte("# Modified\nNew content."), 0o644); err != nil {
+	newContent := "# Modified\nNew content."
+	if err := os.WriteFile(filepath.Join(dir, "page1.md"), []byte(newContent), 0o644); err != nil {
 		t.Fatalf("write modified file: %v", err)
 	}
 
@@ -136,6 +175,41 @@ func TestDiskSource_Diff_ModifiedFile(t *testing.T) {
 	}
 	if modifiedCount != 1 {
 		t.Errorf("expected 1 modified change, got %d", modifiedCount)
+	}
+
+	// Find the modified change and verify its properties.
+	var modChange *Change
+	for i := range changes {
+		if changes[i].Type == ChangeModified && changes[i].ID == "page1.md" {
+			modChange = &changes[i]
+			break
+		}
+	}
+	if modChange == nil {
+		t.Fatal("expected a modified change for page1.md")
+	}
+
+	// Verify the modified change has a Document with updated content.
+	if modChange.Document == nil {
+		t.Fatal("modified change Document should not be nil")
+	}
+	if modChange.Document.Content != newContent {
+		t.Errorf("modified Document.Content = %q, want %q", modChange.Document.Content, newContent)
+	}
+
+	// Verify the content hash changed from the original.
+	if modChange.Document.ContentHash == originalHash {
+		t.Error("modified Document.ContentHash should differ from original")
+	}
+	if modChange.Document.ContentHash == "" {
+		t.Error("modified Document.ContentHash should not be empty")
+	}
+
+	// Verify no other change types appeared (only modified).
+	for i, c := range changes {
+		if c.Type != ChangeModified {
+			t.Errorf("changes[%d].Type = %q, expected only %q changes", i, c.Type, ChangeModified)
+		}
 	}
 }
 
@@ -156,13 +230,52 @@ func TestDiskSource_Diff_DeletedFile(t *testing.T) {
 	}
 
 	deletedCount := 0
-	for _, c := range changes {
+	var deletedChange *Change
+	for i, c := range changes {
 		if c.Type == ChangeDeleted && c.ID == "deleted.md" {
 			deletedCount++
+			deletedChange = &changes[i]
 		}
 	}
 	if deletedCount != 1 {
 		t.Errorf("expected 1 deleted change for deleted.md, got %d", deletedCount)
+	}
+
+	// Verify the deleted change has the correct ChangeType.
+	if deletedChange != nil {
+		if deletedChange.Type != ChangeDeleted {
+			t.Errorf("deleted change Type = %q, want %q", deletedChange.Type, ChangeDeleted)
+		}
+		// Deleted changes should have a nil Document (nothing to fetch).
+		if deletedChange.Document != nil {
+			t.Error("deleted change Document should be nil")
+		}
+		// But ID should always be set.
+		if deletedChange.ID != "deleted.md" {
+			t.Errorf("deleted change ID = %q, want %q", deletedChange.ID, "deleted.md")
+		}
+	}
+
+	// Verify page1.md is unchanged (hash matches) — should NOT appear in changes.
+	for _, c := range changes {
+		if c.ID == "page1.md" && c.Type != ChangeDeleted {
+			t.Errorf("page1.md should not appear as %q (hash matches stored)", c.Type)
+		}
+	}
+
+	// Verify new files (page2.md, subdir/nested.md) appear as Added since they
+	// are not in storedHashes.
+	addedIDs := make(map[string]bool)
+	for _, c := range changes {
+		if c.Type == ChangeAdded {
+			addedIDs[c.ID] = true
+		}
+	}
+	if !addedIDs["page2.md"] {
+		t.Error("expected page2.md to appear as Added (not in stored hashes)")
+	}
+	if !addedIDs["subdir/nested.md"] {
+		t.Error("expected subdir/nested.md to appear as Added (not in stored hashes)")
 	}
 }
 

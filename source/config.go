@@ -24,8 +24,13 @@ type SourcesFile struct {
 	Sources []SourceConfig `yaml:"sources"`
 }
 
-// LoadSourcesConfig reads and parses .dewey/sources.yaml.
-// Returns an empty slice (not error) if the file does not exist.
+// LoadSourcesConfig reads and parses the sources configuration file at
+// the given path (typically .dewey/sources.yaml). Returns (nil, nil) if
+// the file does not exist. Validates each source entry for required
+// fields and type-specific configuration.
+//
+// Returns an error if the file cannot be read, the YAML is malformed,
+// or any source entry fails validation.
 func LoadSourcesConfig(path string) ([]SourceConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -50,7 +55,12 @@ func LoadSourcesConfig(path string) ([]SourceConfig, error) {
 	return file.Sources, nil
 }
 
-// SaveSourcesConfig writes the sources configuration to .dewey/sources.yaml.
+// SaveSourcesConfig writes the sources configuration to the given path
+// (typically .dewey/sources.yaml) with a descriptive YAML header comment.
+// Overwrites any existing file at the path.
+//
+// Returns an error if the configuration cannot be marshaled to YAML or
+// the file cannot be written.
 func SaveSourcesConfig(path string, sources []SourceConfig) error {
 	file := SourcesFile{Sources: sources}
 	data, err := yaml.Marshal(&file)
@@ -109,9 +119,11 @@ func validateSourceConfig(src *SourceConfig) error {
 	return nil
 }
 
-// ParseRefreshInterval converts a refresh interval string to a time.Duration.
-// Supports: "daily", "weekly", "hourly", or Go duration strings (e.g., "1h", "30m").
-// Returns 0 for empty string (no refresh interval).
+// ParseRefreshInterval converts a refresh interval string to a [time.Duration].
+// Supports named intervals ("daily" = 24h, "weekly" = 168h, "hourly" = 1h)
+// and Go duration strings (e.g., "1h", "30m"). Returns 0 for an empty
+// string (no refresh interval). Returns an error if the string is not a
+// recognized named interval and cannot be parsed as a Go duration.
 func ParseRefreshInterval(interval string) (time.Duration, error) {
 	if interval == "" {
 		return 0, nil

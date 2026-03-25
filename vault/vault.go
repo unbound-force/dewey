@@ -1111,50 +1111,67 @@ func (c *Client) MoveBlock(_ context.Context, uuid string, targetUUID string, op
 	tgtPage := tgtLookup.page
 	srcContent := srcLookup.block.Content
 	tgtContent := tgtLookup.block.Content
-	samePage := strings.EqualFold(srcPage, tgtPage)
+	before := parseMoveOptions(opts)
 
-	before := false
-	if opts != nil {
-		if b, ok := opts["before"]; ok {
-			before, _ = b.(bool)
-		}
+	if strings.EqualFold(srcPage, tgtPage) {
+		return c.moveBlockSamePage(srcPage, srcContent, tgtContent, before)
+	}
+	return c.moveBlockCrossPage(srcPage, tgtPage, srcContent, tgtContent, before)
+}
+
+// parseMoveOptions extracts the "before" flag from MoveBlock options.
+// Returns false if opts is nil or "before" is not set.
+func parseMoveOptions(opts map[string]any) bool {
+	if opts == nil {
+		return false
+	}
+	b, ok := opts["before"]
+	if !ok {
+		return false
+	}
+	before, _ := b.(bool)
+	return before
+}
+
+// moveBlockSamePage moves a block within the same page by removing its content
+// and re-inserting it before or after the target block's content.
+// Caller must hold c.mu for write.
+func (c *Client) moveBlockSamePage(pageName, srcContent, tgtContent string, before bool) error {
+	lowerName := strings.ToLower(pageName)
+	cached, ok := c.pages[lowerName]
+	if !ok {
+		return fmt.Errorf("page not found: %s", pageName)
 	}
 
-	if samePage {
-		lowerName := strings.ToLower(srcPage)
-		cached, ok := c.pages[lowerName]
-		if !ok {
-			return fmt.Errorf("page not found: %s", srcPage)
-		}
-
-		absPath, err := c.safePath(cached.filePath)
-		if err != nil {
-			return err
-		}
-		existing, err := os.ReadFile(absPath)
-		if err != nil {
-			return fmt.Errorf("read file: %w", err)
-		}
-
-		fileStr := string(existing)
-		fileStr = strings.Replace(fileStr, srcContent+"\n", "", 1)
-
-		if before {
-			fileStr = strings.Replace(fileStr, tgtContent, srcContent+"\n"+tgtContent, 1)
-		} else {
-			fileStr = strings.Replace(fileStr, tgtContent, tgtContent+"\n"+srcContent, 1)
-		}
-
-		if err := atomicWrite(absPath, fileStr); err != nil {
-			return fmt.Errorf("write file: %w", err)
-		}
-
-		info, _ := os.Stat(absPath)
-		c.indexFileCore(cached.filePath, fileStr, info)
-		c.rebuildLinksLocked()
-		return nil
+	absPath, err := c.safePath(cached.filePath)
+	if err != nil {
+		return err
+	}
+	existing, err := os.ReadFile(absPath)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
 	}
 
+	fileStr := string(existing)
+	fileStr = strings.Replace(fileStr, srcContent+"\n", "", 1)
+
+	fileStr = insertContentRelative(fileStr, srcContent, tgtContent, before)
+
+	if err := atomicWrite(absPath, fileStr); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+
+	info, _ := os.Stat(absPath)
+	c.indexFileCore(cached.filePath, fileStr, info)
+	c.rebuildLinksLocked()
+	return nil
+}
+
+// moveBlockCrossPage moves a block from one page to another by removing its
+// content from the source file and inserting it before or after the target
+// block's content in the target file.
+// Caller must hold c.mu for write.
+func (c *Client) moveBlockCrossPage(srcPage, tgtPage, srcContent, tgtContent string, before bool) error {
 	// Cross-page move.
 	srcLower := strings.ToLower(srcPage)
 	tgtLower := strings.ToLower(tgtPage)
@@ -1167,6 +1184,16 @@ func (c *Client) MoveBlock(_ context.Context, uuid string, targetUUID string, op
 		return fmt.Errorf("target page not found: %s", tgtPage)
 	}
 
+	srcStr, err := c.removeContentFromFile(srcCached, srcContent)
+	if err != nil {
+		return err
+	}
+
+	tgtStr, err := c.insertContentInFile(tgtCached, srcContent, tgtContent, before)
+	if err != nil {
+		return err
+	}
+
 	srcAbsPath, err := c.safePath(srcCached.filePath)
 	if err != nil {
 		return err
@@ -1176,32 +1203,6 @@ func (c *Client) MoveBlock(_ context.Context, uuid string, targetUUID string, op
 		return err
 	}
 
-	srcFile, err := os.ReadFile(srcAbsPath)
-	if err != nil {
-		return fmt.Errorf("read source file: %w", err)
-	}
-	srcStr := strings.Replace(string(srcFile), srcContent+"\n", "", 1)
-	if srcStr == string(srcFile) {
-		srcStr = strings.Replace(string(srcFile), srcContent, "", 1)
-	}
-	if err := atomicWrite(srcAbsPath, srcStr); err != nil {
-		return fmt.Errorf("write source file: %w", err)
-	}
-
-	tgtFile, err := os.ReadFile(tgtAbsPath)
-	if err != nil {
-		return fmt.Errorf("read target file: %w", err)
-	}
-	tgtStr := string(tgtFile)
-	if before {
-		tgtStr = strings.Replace(tgtStr, tgtContent, srcContent+"\n"+tgtContent, 1)
-	} else {
-		tgtStr = strings.Replace(tgtStr, tgtContent, tgtContent+"\n"+srcContent, 1)
-	}
-	if err := atomicWrite(tgtAbsPath, tgtStr); err != nil {
-		return fmt.Errorf("write target file: %w", err)
-	}
-
 	srcInfo, _ := os.Stat(srcAbsPath)
 	c.indexFileCore(srcCached.filePath, srcStr, srcInfo)
 	tgtInfo, _ := os.Stat(tgtAbsPath)
@@ -1209,6 +1210,54 @@ func (c *Client) MoveBlock(_ context.Context, uuid string, targetUUID string, op
 	c.rebuildLinksLocked()
 
 	return nil
+}
+
+// removeContentFromFile removes a block's content from its page file.
+// Tries removing with trailing newline first, then without.
+// Caller must hold c.mu for write.
+func (c *Client) removeContentFromFile(cached *cachedPage, content string) (string, error) {
+	absPath, err := c.safePath(cached.filePath)
+	if err != nil {
+		return "", err
+	}
+	srcFile, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("read source file: %w", err)
+	}
+	srcStr := strings.Replace(string(srcFile), content+"\n", "", 1)
+	if srcStr == string(srcFile) {
+		srcStr = strings.Replace(string(srcFile), content, "", 1)
+	}
+	if err := atomicWrite(absPath, srcStr); err != nil {
+		return "", fmt.Errorf("write source file: %w", err)
+	}
+	return srcStr, nil
+}
+
+// insertContentInFile inserts block content before or after target content in a page file.
+// Caller must hold c.mu for write.
+func (c *Client) insertContentInFile(cached *cachedPage, srcContent, tgtContent string, before bool) (string, error) {
+	absPath, err := c.safePath(cached.filePath)
+	if err != nil {
+		return "", err
+	}
+	tgtFile, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", fmt.Errorf("read target file: %w", err)
+	}
+	tgtStr := insertContentRelative(string(tgtFile), srcContent, tgtContent, before)
+	if err := atomicWrite(absPath, tgtStr); err != nil {
+		return "", fmt.Errorf("write target file: %w", err)
+	}
+	return tgtStr, nil
+}
+
+// insertContentRelative inserts srcContent before or after tgtContent in fileStr.
+func insertContentRelative(fileStr, srcContent, tgtContent string, before bool) string {
+	if before {
+		return strings.Replace(fileStr, tgtContent, srcContent+"\n"+tgtContent, 1)
+	}
+	return strings.Replace(fileStr, tgtContent, tgtContent+"\n"+srcContent, 1)
 }
 
 // --- Write helpers ---

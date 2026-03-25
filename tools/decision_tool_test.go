@@ -315,6 +315,397 @@ func TestFindAnalysisPages_QueryError(t *testing.T) {
 	}
 }
 
+func TestDecisionResolve_Success(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "resolve-uuid",
+		Content: "DECIDE Should we use Go? #decision\ndeadline:: 2026-06-01",
+	})
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionResolve(context.Background(), nil, types.DecisionResolveInput{
+		UUID:    "resolve-uuid",
+		Outcome: "Yes, Go is the right choice",
+	})
+	if err != nil {
+		t.Fatalf("DecisionResolve() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("DecisionResolve() returned error result")
+	}
+
+	// Verify the block was updated.
+	if len(mb.updatedBlocks) != 1 {
+		t.Fatalf("expected 1 updated block, got %d", len(mb.updatedBlocks))
+	}
+	updated := mb.updatedBlocks[0]
+	if updated.uuid != "resolve-uuid" {
+		t.Errorf("updated uuid = %q, want %q", updated.uuid, "resolve-uuid")
+	}
+
+	// DECIDE marker should be replaced with DONE.
+	if !containsSubstring(updated.content, "DONE ") {
+		t.Errorf("updated content missing DONE marker: %s", updated.content)
+	}
+	if containsSubstring(updated.content, "DECIDE ") {
+		t.Errorf("updated content still has DECIDE marker: %s", updated.content)
+	}
+
+	// Should have resolved property.
+	if !containsSubstring(updated.content, "resolved::") {
+		t.Errorf("updated content missing resolved property: %s", updated.content)
+	}
+
+	// Should have outcome property.
+	if !containsSubstring(updated.content, "outcome:: Yes, Go is the right choice") {
+		t.Errorf("updated content missing outcome: %s", updated.content)
+	}
+
+	// Verify JSON response.
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["resolved"] != true {
+		t.Errorf("resolved = %v, want true", parsed["resolved"])
+	}
+	if parsed["uuid"] != "resolve-uuid" {
+		t.Errorf("uuid = %v, want %q", parsed["uuid"], "resolve-uuid")
+	}
+	if parsed["outcome"] != "Yes, Go is the right choice" {
+		t.Errorf("outcome = %v, want %q", parsed["outcome"], "Yes, Go is the right choice")
+	}
+	if _, ok := parsed["date"]; !ok {
+		t.Errorf("response missing date field")
+	}
+}
+
+func TestDecisionResolve_WithoutOutcome(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "resolve-no-outcome",
+		Content: "DECIDE Pick a database #decision\ndeadline:: 2026-03-01",
+	})
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionResolve(context.Background(), nil, types.DecisionResolveInput{
+		UUID: "resolve-no-outcome",
+	})
+	if err != nil {
+		t.Fatalf("DecisionResolve() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("DecisionResolve() returned error result")
+	}
+
+	// Should still update the block with DONE and resolved date.
+	if len(mb.updatedBlocks) != 1 {
+		t.Fatalf("expected 1 updated block, got %d", len(mb.updatedBlocks))
+	}
+	updated := mb.updatedBlocks[0]
+	if !containsSubstring(updated.content, "DONE ") {
+		t.Errorf("updated content missing DONE marker: %s", updated.content)
+	}
+	if !containsSubstring(updated.content, "resolved::") {
+		t.Errorf("updated content missing resolved property: %s", updated.content)
+	}
+	// No outcome property should be added when outcome is empty.
+	if containsSubstring(updated.content, "outcome::") {
+		t.Errorf("updated content should not have outcome property when empty: %s", updated.content)
+	}
+}
+
+func TestDecisionResolve_BlockNotFound(t *testing.T) {
+	mb := newMockBackend()
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionResolve(context.Background(), nil, types.DecisionResolveInput{
+		UUID:    "nonexistent-uuid",
+		Outcome: "doesn't matter",
+	})
+	if err != nil {
+		t.Fatalf("DecisionResolve() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when block not found")
+	}
+}
+
+func TestDecisionResolve_GetBlockError(t *testing.T) {
+	mb := newMockBackend()
+	mb.getBlockErr = fmt.Errorf("connection refused")
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionResolve(context.Background(), nil, types.DecisionResolveInput{
+		UUID: "any-uuid",
+	})
+	if err != nil {
+		t.Fatalf("DecisionResolve() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when GetBlock fails")
+	}
+}
+
+func TestDecisionResolve_UpdateBlockError(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "update-fail-uuid",
+		Content: "DECIDE Something #decision\ndeadline:: 2026-01-01",
+	})
+	mb.updateBlockErr = fmt.Errorf("write failed")
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionResolve(context.Background(), nil, types.DecisionResolveInput{
+		UUID:    "update-fail-uuid",
+		Outcome: "Decided but can't save",
+	})
+	if err != nil {
+		t.Fatalf("DecisionResolve() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when UpdateBlock fails")
+	}
+}
+
+func TestDecisionDefer_Success(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "defer-uuid",
+		Content: "DECIDE Should we hire? #decision\ndeadline:: 2026-01-01",
+	})
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "defer-uuid",
+		NewDeadline: "2026-06-01",
+		Reason:      "Need more budget data",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("DecisionDefer() returned error result")
+	}
+
+	// Verify the block was updated.
+	if len(mb.updatedBlocks) != 1 {
+		t.Fatalf("expected 1 updated block, got %d", len(mb.updatedBlocks))
+	}
+	updated := mb.updatedBlocks[0]
+	if updated.uuid != "defer-uuid" {
+		t.Errorf("updated uuid = %q, want %q", updated.uuid, "defer-uuid")
+	}
+
+	// Should update deadline.
+	if !containsSubstring(updated.content, "deadline:: 2026-06-01") {
+		t.Errorf("updated content missing new deadline: %s", updated.content)
+	}
+
+	// Should have deferred count of 1 (first deferral).
+	if !containsSubstring(updated.content, "deferred:: 1") {
+		t.Errorf("updated content missing deferred count: %s", updated.content)
+	}
+
+	// Should have deferred-on date.
+	if !containsSubstring(updated.content, "deferred-on::") {
+		t.Errorf("updated content missing deferred-on property: %s", updated.content)
+	}
+
+	// Reason should be inserted as child block.
+	if len(mb.insertedBlocks) != 1 {
+		t.Fatalf("expected 1 inserted block for reason, got %d", len(mb.insertedBlocks))
+	}
+	if mb.insertedBlocks[0].parent != "defer-uuid" {
+		t.Errorf("inserted block parent = %q, want %q", mb.insertedBlocks[0].parent, "defer-uuid")
+	}
+	if !containsSubstring(mb.insertedBlocks[0].content, "Need more budget data") {
+		t.Errorf("inserted block content missing reason: %s", mb.insertedBlocks[0].content)
+	}
+
+	// Verify JSON response.
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["deferred"] != true {
+		t.Errorf("deferred = %v, want true", parsed["deferred"])
+	}
+	if parsed["uuid"] != "defer-uuid" {
+		t.Errorf("uuid = %v, want %q", parsed["uuid"], "defer-uuid")
+	}
+	if parsed["newDeadline"] != "2026-06-01" {
+		t.Errorf("newDeadline = %v, want %q", parsed["newDeadline"], "2026-06-01")
+	}
+	if parsed["deferCount"] != float64(1) {
+		t.Errorf("deferCount = %v, want 1", parsed["deferCount"])
+	}
+	if _, ok := parsed["warning"]; ok {
+		t.Errorf("should not have warning on first deferral")
+	}
+}
+
+func TestDecisionDefer_IncrementsExistingCount(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "defer-again-uuid",
+		Content: "DECIDE Launch timing #decision\ndeadline:: 2026-03-01\ndeferred:: 1\ndeferred-on:: 2026-01-15",
+	})
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "defer-again-uuid",
+		NewDeadline: "2026-09-01",
+		Reason:      "Market uncertainty",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("DecisionDefer() returned error result")
+	}
+
+	// Verify defer count incremented to 2.
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["deferCount"] != float64(2) {
+		t.Errorf("deferCount = %v, want 2", parsed["deferCount"])
+	}
+	// Should not have warning at count 2.
+	if _, ok := parsed["warning"]; ok {
+		t.Errorf("should not have warning at deferCount 2")
+	}
+}
+
+func TestDecisionDefer_WarningAtThirdDeferral(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "defer-many-uuid",
+		Content: "DECIDE Pricing model #decision\ndeadline:: 2026-05-01\ndeferred:: 2\ndeferred-on:: 2026-03-01",
+	})
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "defer-many-uuid",
+		NewDeadline: "2026-12-01",
+		Reason:      "Still undecided",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("DecisionDefer() returned error result")
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["deferCount"] != float64(3) {
+		t.Errorf("deferCount = %v, want 3", parsed["deferCount"])
+	}
+	warning, ok := parsed["warning"]
+	if !ok {
+		t.Fatal("expected warning at deferCount >= 3")
+	}
+	warnStr, _ := warning.(string)
+	if !containsSubstring(warnStr, "3 times") {
+		t.Errorf("warning = %q, expected to mention '3 times'", warnStr)
+	}
+}
+
+func TestDecisionDefer_WithoutReason(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "defer-no-reason",
+		Content: "DECIDE Office location #decision\ndeadline:: 2026-02-01",
+	})
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "defer-no-reason",
+		NewDeadline: "2026-08-01",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("DecisionDefer() returned error result")
+	}
+
+	// Block should be updated.
+	if len(mb.updatedBlocks) != 1 {
+		t.Fatalf("expected 1 updated block, got %d", len(mb.updatedBlocks))
+	}
+
+	// No reason child block should be inserted when reason is empty.
+	if len(mb.insertedBlocks) != 0 {
+		t.Errorf("expected 0 inserted blocks when no reason, got %d", len(mb.insertedBlocks))
+	}
+}
+
+func TestDecisionDefer_BlockNotFound(t *testing.T) {
+	mb := newMockBackend()
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "nonexistent-uuid",
+		NewDeadline: "2026-12-01",
+		Reason:      "doesn't matter",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when block not found")
+	}
+}
+
+func TestDecisionDefer_GetBlockError(t *testing.T) {
+	mb := newMockBackend()
+	mb.getBlockErr = fmt.Errorf("connection refused")
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "any-uuid",
+		NewDeadline: "2026-12-01",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when GetBlock fails")
+	}
+}
+
+func TestDecisionDefer_UpdateBlockError(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "defer-update-fail",
+		Content: "DECIDE Something #decision\ndeadline:: 2026-01-01",
+	})
+	mb.updateBlockErr = fmt.Errorf("write failed")
+	d := NewDecision(mb)
+
+	result, _, err := d.DecisionDefer(context.Background(), nil, types.DecisionDeferInput{
+		UUID:        "defer-update-fail",
+		NewDeadline: "2026-06-01",
+		Reason:      "Deferred but can't save",
+	})
+	if err != nil {
+		t.Fatalf("DecisionDefer() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when UpdateBlock fails")
+	}
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstringHelper(s, substr))
 }

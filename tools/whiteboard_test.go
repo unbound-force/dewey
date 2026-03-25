@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/types"
@@ -56,25 +57,100 @@ func TestGetWhiteboard_Success(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
+	// Verify top-level whiteboard structure fields.
 	if parsed["name"] != "my-whiteboard" {
 		t.Errorf("name = %v, want %q", parsed["name"], "my-whiteboard")
 	}
 
-	elementCount, _ := parsed["elementCount"].(float64)
+	elementCount, ok := parsed["elementCount"].(float64)
+	if !ok {
+		t.Fatalf("elementCount missing or not a number, got %T: %v", parsed["elementCount"], parsed["elementCount"])
+	}
 	if elementCount != 3 {
 		t.Errorf("elementCount = %v, want 3", elementCount)
 	}
 
-	// Should detect embedded page.
-	embeddedPages, _ := parsed["embeddedPages"].([]any)
-	if len(embeddedPages) < 1 {
-		t.Error("expected at least 1 embedded page")
+	// Verify elements array structure.
+	elements, ok := parsed["elements"].([]any)
+	if !ok {
+		t.Fatalf("elements missing or not an array, got %T", parsed["elements"])
+	}
+	if len(elements) != 3 {
+		t.Errorf("len(elements) = %d, want 3", len(elements))
 	}
 
-	// Should detect connection.
-	connections, _ := parsed["connections"].([]any)
+	// Verify element[0] has uuid, content, and shapeType fields.
+	elem0, ok := elements[0].(map[string]any)
+	if !ok {
+		t.Fatalf("elements[0] not a map, got %T", elements[0])
+	}
+	if elem0["uuid"] != "wb-1" {
+		t.Errorf("elements[0].uuid = %v, want %q", elem0["uuid"], "wb-1")
+	}
+	if elem0["content"] != "Text element [[PageRef]]" {
+		t.Errorf("elements[0].content = %v, want %q", elem0["content"], "Text element [[PageRef]]")
+	}
+	if elem0["shapeType"] != "rectangle" {
+		t.Errorf("elements[0].shapeType = %v, want %q", elem0["shapeType"], "rectangle")
+	}
+
+	// Verify element[0] detected the [[PageRef]] link.
+	links0, ok := elem0["links"].([]any)
+	if !ok {
+		t.Fatalf("elements[0].links missing or not an array")
+	}
+	foundPageRef := false
+	for _, l := range links0 {
+		if l == "PageRef" {
+			foundPageRef = true
+			break
+		}
+	}
+	if !foundPageRef {
+		t.Errorf("elements[0].links = %v, expected to contain 'PageRef'", links0)
+	}
+
+	// Should detect embedded page — verify specific page name.
+	embeddedPages, ok := parsed["embeddedPages"].([]any)
+	if !ok {
+		t.Fatalf("embeddedPages missing or not an array")
+	}
+	if len(embeddedPages) < 1 {
+		t.Fatal("expected at least 1 embedded page")
+	}
+	// Should contain "embedded-page" (from logseq.tldraw.page) and "PageRef" (from content links).
+	embeddedSet := make(map[string]bool)
+	for _, ep := range embeddedPages {
+		if s, ok := ep.(string); ok {
+			embeddedSet[s] = true
+		}
+	}
+	if !embeddedSet["embedded-page"] {
+		t.Errorf("embeddedPages should contain 'embedded-page', got %v", embeddedPages)
+	}
+	if !embeddedSet["PageRef"] {
+		t.Errorf("embeddedPages should contain 'PageRef', got %v", embeddedPages)
+	}
+
+	// Verify connections — source/target relationship.
+	connections, ok := parsed["connections"].([]any)
+	if !ok {
+		t.Fatalf("connections missing or not an array")
+	}
 	if len(connections) != 1 {
 		t.Errorf("expected 1 connection, got %d", len(connections))
+	}
+	if len(connections) > 0 {
+		conn0, ok := connections[0].(map[string]any)
+		if !ok {
+			t.Fatalf("connections[0] not a map")
+		}
+		if conn0["source"] != "wb-1" {
+			t.Errorf("connection source = %v, want %q", conn0["source"], "wb-1")
+		}
+		if conn0["target"] != "wb-3" {
+			t.Errorf("connection target = %v, want %q", conn0["target"], "wb-3")
+		}
 	}
 }
 
@@ -91,6 +167,18 @@ func TestGetWhiteboard_NotFound(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected error result for nonexistent whiteboard")
+	}
+
+	// Verify error message mentions the whiteboard name.
+	text := extractText(t, result)
+	if text == "" {
+		t.Error("error result text should not be empty")
+	}
+	if !strings.Contains(text, "nonexistent") {
+		t.Errorf("error message = %q, should mention whiteboard name 'nonexistent'", text)
+	}
+	if !strings.Contains(text, "not found") {
+		t.Errorf("error message = %q, should mention 'not found'", text)
 	}
 }
 
@@ -111,10 +199,31 @@ func TestGetWhiteboard_EmptyBoard(t *testing.T) {
 
 	var parsed map[string]any
 	text := extractText(t, result)
-	_ = json.Unmarshal([]byte(text), &parsed)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 
+	// Verify structural fields exist even for empty whiteboard.
+	if parsed["name"] != "empty-wb" {
+		t.Errorf("name = %v, want %q", parsed["name"], "empty-wb")
+	}
 	if parsed["elementCount"] != float64(0) {
 		t.Errorf("elementCount = %v, want 0", parsed["elementCount"])
+	}
+
+	// Elements should be null/nil (no blocks), but the key should exist.
+	if _, exists := parsed["elements"]; !exists {
+		t.Error("elements key should exist in response even for empty whiteboard")
+	}
+
+	// Connections should be null/nil for empty whiteboard.
+	if _, exists := parsed["connections"]; !exists {
+		t.Error("connections key should exist in response even for empty whiteboard")
+	}
+
+	// EmbeddedPages should be null/nil for empty whiteboard.
+	if _, exists := parsed["embeddedPages"]; !exists {
+		t.Error("embeddedPages key should exist in response even for empty whiteboard")
 	}
 }
 

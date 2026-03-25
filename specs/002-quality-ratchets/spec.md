@@ -29,17 +29,17 @@ With quality ratchets in CI, the pipeline runs Gaze after tests pass and compare
 
 ### User Story 2 -- Reduce CRAPload to B Grade (Priority: P2)
 
-A project maintainer reviews the Gaze quality report and sees a CRAPload of 88 functions (24.8% of all functions above threshold 15), graded "D." This means nearly 1 in 4 functions is both complex and undertested -- a maintenance risk. The maintainer wants to reduce this to a "B" grade (≤15% of functions above threshold, roughly ≤53 functions).
+A project maintainer reviews the Gaze quality report and sees a CRAPload of 48 functions (13.5% of all functions above threshold 15), graded "C." While the CRAPload count is below the ≤53 target, 4 functions have extreme CRAP scores (306-650) due to high complexity combined with zero test coverage. The maintainer wants to decompose these high-risk functions and add tests to bring the GazeCRAPload (contract-aware metric) from 37 down to ≤10.
 
-The maintainer works through the highest-CRAP functions, applying two strategies: (1) adding tests for functions that are complex but testable as-is (the `add_tests` category: 71 functions), and (2) decomposing functions that are too complex to test effectively and then testing the decomposed parts (the `decompose_and_test` category: 4 functions, plus 13 `decompose` functions). The work is prioritized by CRAP score -- the worst offenders are addressed first for maximum impact.
+The maintainer works through the highest-CRAP functions, applying two strategies: (1) adding tests for functions that are complex but testable as-is (the `add_tests` category: 31 functions), and (2) decomposing functions that are too complex to test effectively and then testing the decomposed parts (the `decompose_and_test` category: 4 functions, plus 13 `decompose` functions). The work is prioritized by CRAP score -- the worst offenders are addressed first for maximum impact.
 
-**Why this priority**: CRAPload reduction delivers the largest quality improvement per effort. The 71 `add_tests` functions need only new test files, not production code changes. The 4 `decompose_and_test` functions (`executeServe`, `createSource`, `MoveBlock`, `ListPages`) need refactoring but are also the highest-risk code. Doing this after CI enforcement (US1) means every improvement is locked in by the ratchet.
+**Why this priority**: CRAPload reduction delivers the largest quality improvement per effort. The 31 `add_tests` functions need only new test files, not production code changes. The 4 `decompose_and_test` functions (`executeServe`, `createSource`, `MoveBlock`, `ListPages`) need refactoring but are also the highest-risk code. Doing this after CI enforcement (US1) means every improvement is locked in by the ratchet.
 
-**Independent Test**: Run Gaze before and after the changes. Verify CRAPload drops from 88 to ≤53 (≤15% of total functions). Verify no existing tests break.
+**Independent Test**: Run Gaze before and after the changes. Verify GazeCRAPload drops from 37 toward ≤10. Verify no existing tests break.
 
 **Acceptance Scenarios**:
 
-1. **Given** the current CRAPload of 88 functions above threshold, **When** tests are added for the highest-CRAP functions, **Then** CRAPload drops to 53 or fewer (≤15%).
+1. **Given** the current CRAPload of 48 functions above threshold (already below ≤53 target), **When** the 4 highest-CRAP functions are decomposed and tested, **Then** CRAPload drops further and GazeCRAPload improves toward ≤10.
 2. **Given** a function with complexity >15 and 0% coverage, **When** tests are added, **Then** the function's CRAP score drops below threshold 15.
 3. **Given** a function with complexity >20 (e.g., `executeServe` at 25), **When** it is decomposed into smaller functions, **Then** each resulting function has complexity ≤10 and is individually tested.
 4. **Given** the decomposition of a production function, **When** the refactoring is complete, **Then** all existing tests continue to pass (no behavioral regression).
@@ -48,9 +48,9 @@ The maintainer works through the highest-CRAP functions, applying two strategies
 
 ### User Story 3 -- Improve Contract Coverage to B Grade (Priority: P3)
 
-A project maintainer reviews the Gaze quality report and sees contract coverage at 70.1% (grade "C"). This means 30% of tested functions have tests that exercise the code but do not verify observable behavior -- tests that pass regardless of whether the function produces correct output. The maintainer wants to reach 80% contract coverage (grade "B").
+A project maintainer reviews the Gaze quality report and sees contract coverage at 56.5% (grade "D"). This means 43.5% of tested functions have tests that exercise the code but do not verify observable behavior -- tests that pass regardless of whether the function produces correct output. The maintainer wants to reach 80% contract coverage (grade "B").
 
-The maintainer strengthens existing test assertions across the 13 Q3 (Needs Tests) functions and the 5 Q4 (Dangerous) functions. For Q3 functions, the fix is adding assertions that verify return values, side effects, or error conditions. For Q4 functions, the fix involves both decomposition (to reduce complexity) and assertion strengthening.
+The maintainer strengthens existing test assertions across the 32 Q3 (Needs Tests) functions and the 5 Q4 (Dangerous) functions, and improves GoDoc comments to help Gaze's effect classifier distinguish contractual effects from ambiguous ones. For Q3 functions, the fix is adding assertions that verify return values, side effects, or error conditions. For Q4 functions, the fix involves both decomposition (to reduce complexity) and assertion strengthening.
 
 **Why this priority**: Contract coverage improvements build on the CRAPload work (US2). Many of the same functions that need tests (US2) also need stronger assertions (US3). Doing this last means the assertions are written against well-decomposed, testable functions rather than monolithic ones.
 
@@ -58,10 +58,10 @@ The maintainer strengthens existing test assertions across the 13 Q3 (Needs Test
 
 **Acceptance Scenarios**:
 
-1. **Given** current contract coverage of 70.1%, **When** test assertions are strengthened, **Then** contract coverage reaches 80% or higher.
+1. **Given** current contract coverage of 56.5%, **When** test assertions are strengthened, **Then** contract coverage reaches 80% or higher.
 2. **Given** a Q3 function (simple but underspecified), **When** contract assertions are added, **Then** the function moves from Q3 to Q1 (Safe).
 3. **Given** a Q4 function (dangerous: complex and underspecified), **When** decomposition and assertion strengthening are applied, **Then** the function moves from Q4 to Q1 or Q2.
-4. **Given** the GazeCRAPload of 18, **When** Q3 and Q4 functions are addressed, **Then** GazeCRAPload drops to 10 or fewer.
+4. **Given** the GazeCRAPload of 37 (5 Q4 + 32 Q3), **When** Q3 and Q4 functions are addressed, **Then** GazeCRAPload drops to 10 or fewer.
 
 ---
 
@@ -94,24 +94,35 @@ The maintainer strengthens existing test assertions across the 13 Q3 (Needs Test
 - **FR-011**: Test assertions MUST be strengthened for functions in Q3 (Needs Tests) and Q4 (Dangerous) quadrants, verifying observable behavior rather than just exercising code paths.
 - **FR-012**: Each strengthened test MUST verify at least one of: return value correctness, side effect presence, error condition accuracy, or state mutation.
 - **FR-013**: The contract coverage threshold in the committed threshold file MUST be set to the achieved value after improvements.
+- **FR-014**: GoDoc comments SHOULD be improved on exported functions to help Gaze's effect classifier distinguish contractual effects from ambiguous ones. This includes documenting return values, error conditions, and observable side effects explicitly.
 
 ### Assumptions
 
 - Gaze v1.4.6 or later is available for installation in the CI environment. The Gaze binary can be installed via `go install` from the gaze repository.
 - The Gaze `crap` and `quality` subcommands produce machine-readable output that can be parsed by a CI script for threshold comparison.
-- The current CRAPload baseline is 88 functions (24.8%). The target "B" grade requires ≤15% (≤53 functions at current total of 355).
-- The current contract coverage baseline is 70.1%. The target "B" grade requires ≥80%.
+- The current CRAPload baseline is 48 functions (13.5%, measured 2026-03-24, improved from the original 88). The target "B" grade requires ≤15% (≤53 functions). CRAPload target is already met; the remaining work is GazeCRAPload (37 → ≤10) and contract coverage (56.5% → ≥80%).
+- The current contract coverage baseline is 56.5% (measured 2026-03-24). The target "B" grade requires ≥80%. The gap is 23.5 percentage points.
 - Some inherited graphthulhu functions (e.g., `MoveBlock`, `ListPages`) may require significant refactoring. The effort is justified because these are the highest-risk functions in the codebase.
-- Functions in the `tools/` package (decision.go, journal.go, flashcard.go, whiteboard.go) require mock `backend.Backend` implementations for testing. These mocks are reusable across all tool tests.
+- Functions in the `tools/` package require mock `backend.Backend` implementations for testing. A shared `mockBackend` (355 lines, 28 mock funcs) already exists in `tools/mock_backend_test.go` and is reusable across all tool tests. Most tool test files already exist with substantial coverage; the remaining work is adding tests for uncovered functions (DecisionResolve, DecisionDefer, MoveBlock, ListPages) and strengthening assertions on existing tests.
 
 ## Success Criteria *(mandatory)*
 
 ### Measurable Outcomes
 
 - **SC-001**: CRAPload is ≤53 functions above threshold 15 (≤15% of total functions, grade B or better).
-- **SC-002**: Average contract coverage across analyzed functions is ≥80% (grade B or better).
-- **SC-003**: GazeCRAPload is ≤10 functions (reduced from 18).
+- **SC-002**: Module-wide average contract coverage across all analyzed functions is ≥80% (grade B or better). Individual packages may be below 80% as long as the overall average meets the target.
+- **SC-003**: GazeCRAPload is ≤10 functions (reduced from 37: 5 Q4 + 32 Q3).
 - **SC-004**: CI pipeline runs Gaze checks on every PR to `main` and fails on quality regression.
 - **SC-005**: Threshold files are committed to the repository and set to the achieved quality values (ratchet locked).
 - **SC-006**: No existing tests are broken by function decompositions (backward compatibility maintained).
 - **SC-007**: All Q4 (Dangerous) functions are moved to Q1 (Safe) or Q2 (Complex But Tested).
+
+## Clarifications
+
+### Session 2026-03-24
+
+- Q: Contract coverage baseline is 56.5% (not 70.1% as originally assumed). Update approach? → A: Update baseline to 56.5%, keep ≥80% target. Accept the larger effort.
+- Q: Should documentation improvements (GoDoc) be in scope for improving contract coverage classifier accuracy? → A: Yes, both documentation improvements and assertion strengthening are in scope. Most efficient path to 80%.
+- Q: Is the ≥80% contract coverage target module-wide average or per-package? → A: Module-wide average. Individual packages may be below 80% as long as the overall average meets the target.
+- Q: GazeCRAPload baseline is 37 (not 18 as assumed). Keep ≤10 target? → A: Yes, keep ≤10 target. Q3 functions (32) primarily need assertion strengthening, making this achievable.
+- Q: CRAPload already at 48 (below ≤53 target). Still decompose the 4 highest-CRAP functions? → A: Yes, still required. CRAP 306-650 functions are highest-risk code, and decomposition makes US3 assertion work more effective.

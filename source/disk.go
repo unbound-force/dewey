@@ -24,6 +24,9 @@ type DiskSource struct {
 }
 
 // NewDiskSource creates a DiskSource for the given directory path.
+// Returns a ready-to-use source with an empty stored hashes map.
+// Call [DiskSource.SetStoredHashes] before [DiskSource.Diff] to enable
+// incremental change detection.
 func NewDiskSource(id, name, basePath string) *DiskSource {
 	return &DiskSource{
 		id:           id,
@@ -33,13 +36,19 @@ func NewDiskSource(id, name, basePath string) *DiskSource {
 	}
 }
 
-// SetStoredHashes sets the previously known content hashes for change detection.
-// Call this before Diff() to enable incremental updates.
+// SetStoredHashes sets the previously known content hashes for change
+// detection. The hashes map is keyed by relative file path with SHA-256
+// hex digest values. Call this before [DiskSource.Diff] to enable
+// incremental updates; without stored hashes, Diff reports all files
+// as added.
 func (d *DiskSource) SetStoredHashes(hashes map[string]string) {
 	d.storedHashes = hashes
 }
 
-// List returns all .md files in the source directory as Documents.
+// List returns all .md files in the source directory as Documents,
+// skipping hidden directories (e.g., .dewey/, .git/) and unreadable files.
+// Updates the source's lastFetched timestamp on success.
+// Returns an error if the directory walk itself fails.
 func (d *DiskSource) List() ([]Document, error) {
 	var docs []Document
 
@@ -83,7 +92,9 @@ func (d *DiskSource) List() ([]Document, error) {
 	return docs, nil
 }
 
-// Fetch retrieves a single document by its relative file path.
+// Fetch retrieves a single document by its relative file path (e.g.,
+// "subfolder/page.md"). Returns the document with computed SHA-256
+// content hash. Returns an error if the file cannot be read.
 func (d *DiskSource) Fetch(id string) (*Document, error) {
 	absPath := filepath.Join(d.basePath, filepath.FromSlash(id))
 	content, err := os.ReadFile(absPath)
@@ -105,6 +116,8 @@ func (d *DiskSource) Fetch(id string) (*Document, error) {
 
 // Diff returns changes since the last fetch by comparing current file
 // hashes against stored hashes. Uses the same SHA-256 algorithm as VaultStore.
+// Returns a slice of changes categorized as [ChangeAdded], [ChangeModified],
+// or [ChangeDeleted]. Returns an error if the directory walk fails.
 func (d *DiskSource) Diff() ([]Change, error) {
 	currentFiles := make(map[string]string) // relPath → hash
 
@@ -174,7 +187,8 @@ func (d *DiskSource) Diff() ([]Change, error) {
 	return changes, nil
 }
 
-// Meta returns metadata about this disk source.
+// Meta returns metadata about this disk source, including its ID, type
+// ("disk"), name, status, and last fetch timestamp.
 func (d *DiskSource) Meta() SourceMetadata {
 	return SourceMetadata{
 		ID:            d.id,

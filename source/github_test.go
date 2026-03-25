@@ -67,21 +67,61 @@ func TestGitHubSource_FetchIssues(t *testing.T) {
 		t.Fatalf("expected 3 documents, got %d", len(docs))
 	}
 
-	// Verify first issue.
+	// Verify all documents have required metadata fields.
+	for i, doc := range docs {
+		if doc.SourceID != "github-test" {
+			t.Errorf("docs[%d].SourceID = %q, want %q", i, doc.SourceID, "github-test")
+		}
+		if doc.ContentHash == "" {
+			t.Errorf("docs[%d].ContentHash should not be empty", i)
+		}
+		if doc.ID == "" {
+			t.Errorf("docs[%d].ID should not be empty", i)
+		}
+		if doc.OriginURL == "" {
+			t.Errorf("docs[%d].OriginURL should not be empty", i)
+		}
+	}
+
+	// Verify first issue has correct type and URL format.
 	found := false
 	for _, doc := range docs {
 		if strings.Contains(doc.Title, "Bug report") {
 			found = true
 			if doc.OriginURL != "https://github.com/test-org/test-repo/issues/1" {
-				t.Errorf("origin_url = %q", doc.OriginURL)
+				t.Errorf("origin_url = %q, want issues URL", doc.OriginURL)
 			}
 			if doc.SourceID != "github-test" {
 				t.Errorf("source_id = %q, want %q", doc.SourceID, "github-test")
+			}
+			// Verify properties include type metadata.
+			if doc.Properties == nil {
+				t.Error("properties should not be nil for issue document")
+			} else if doc.Properties["type"] != "issues" {
+				t.Errorf("properties.type = %v, want %q", doc.Properties["type"], "issues")
+			}
+			// Verify content is non-empty.
+			if doc.Content == "" {
+				t.Error("issue document content should not be empty")
 			}
 		}
 	}
 	if !found {
 		t.Error("bug report issue not found in results")
+	}
+
+	// Verify readme document has correct type.
+	foundReadme := false
+	for _, doc := range docs {
+		if props, ok := doc.Properties["type"]; ok && props == "readme" {
+			foundReadme = true
+			if !strings.Contains(doc.OriginURL, "github.com") {
+				t.Errorf("readme origin_url = %q, expected github.com URL", doc.OriginURL)
+			}
+		}
+	}
+	if !foundReadme {
+		t.Error("readme document not found in results")
 	}
 }
 
@@ -262,5 +302,231 @@ func TestGitHubSource_Meta(t *testing.T) {
 	}
 	if meta.Type != "github" {
 		t.Errorf("type = %q, want %q", meta.Type, "github")
+	}
+}
+
+func TestGitHubSource_Fetch_ByDocumentID(t *testing.T) {
+	item := map[string]any{
+		"number":     42,
+		"title":      "Fix concurrency bug",
+		"body":       "Race condition in worker pool",
+		"html_url":   "https://github.com/test-org/test-repo/issues/42",
+		"state":      "open",
+		"updated_at": "2026-03-22T10:00:00Z",
+		"labels":     []map[string]string{{"name": "bug"}, {"name": "priority:high"}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Expect: /repos/test-org/test-repo/issues/42
+		if r.URL.Path == "/repos/test-org/test-repo/issues/42" {
+			_ = json.NewEncoder(w).Encode(item)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gs := newTestGitHubSource(t, server)
+
+	doc, err := gs.Fetch("test-repo/issues/42")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if doc.ID != "test-repo/issues/42" {
+		t.Errorf("id = %q, want %q", doc.ID, "test-repo/issues/42")
+	}
+	if !strings.Contains(doc.Title, "Fix concurrency bug") {
+		t.Errorf("title = %q, want to contain %q", doc.Title, "Fix concurrency bug")
+	}
+	if !strings.Contains(doc.Content, "Race condition in worker pool") {
+		t.Errorf("content should contain body text, got %q", doc.Content)
+	}
+	if !strings.Contains(doc.Content, "open") {
+		t.Errorf("content should contain state, got %q", doc.Content)
+	}
+	if doc.SourceID != "github-test" {
+		t.Errorf("source_id = %q, want %q", doc.SourceID, "github-test")
+	}
+	if doc.OriginURL != "https://github.com/test-org/test-repo/issues/42" {
+		t.Errorf("origin_url = %q", doc.OriginURL)
+	}
+	if doc.ContentHash == "" {
+		t.Error("content hash should not be empty")
+	}
+}
+
+func TestGitHubSource_Fetch_InvalidID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gs := newTestGitHubSource(t, server)
+
+	// ID with fewer than 3 parts should fail with a format error.
+	_, err := gs.Fetch("invalid-id")
+	if err == nil {
+		t.Fatal("expected error for invalid document ID")
+	}
+	if !strings.Contains(err.Error(), "invalid GitHub document ID") {
+		t.Errorf("error = %q, want invalid ID message", err.Error())
+	}
+}
+
+func TestGitHubSource_Fetch_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+	}))
+	defer server.Close()
+
+	gs := newTestGitHubSource(t, server)
+
+	_, err := gs.Fetch("test-repo/issues/999")
+	if err == nil {
+		t.Fatal("expected error for non-existent document")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error = %q, want 404 status", err.Error())
+	}
+}
+
+func TestGitHubSource_FetchPulls(t *testing.T) {
+	pulls := []map[string]any{
+		{
+			"number":     10,
+			"title":      "Add search feature",
+			"body":       "Implements full-text search",
+			"html_url":   "https://github.com/test-org/test-repo/pull/10",
+			"state":      "open",
+			"updated_at": "2026-03-22T10:00:00Z",
+			"labels":     []map[string]string{{"name": "feature"}},
+		},
+		{
+			"number":     11,
+			"title":      "Refactor parser",
+			"body":       "Clean up markdown parser",
+			"html_url":   "https://github.com/test-org/test-repo/pull/11",
+			"state":      "closed",
+			"updated_at": "2026-03-22T11:00:00Z",
+			"labels":     []any{},
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/pulls") {
+			// Verify query parameters.
+			q := r.URL.Query()
+			if q.Get("state") != "all" {
+				t.Errorf("expected state=all query param, got %q", q.Get("state"))
+			}
+			if q.Get("per_page") != "100" {
+				t.Errorf("expected per_page=100 query param, got %q", q.Get("per_page"))
+			}
+			_ = json.NewEncoder(w).Encode(pulls)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	gs := newTestGitHubSource(t, server)
+	gs.contentType = []string{"pulls"}
+
+	docs, err := gs.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 pull request documents, got %d", len(docs))
+	}
+
+	// Verify first PR document structure.
+	var foundOpen, foundClosed bool
+	for _, doc := range docs {
+		if strings.Contains(doc.Title, "Add search feature") {
+			foundOpen = true
+			if doc.ID != "test-repo/pulls/10" {
+				t.Errorf("PR 10 id = %q, want %q", doc.ID, "test-repo/pulls/10")
+			}
+			if !strings.Contains(doc.Content, "Implements full-text search") {
+				t.Errorf("PR 10 content should contain body text")
+			}
+			if !strings.Contains(doc.Content, "open") {
+				t.Errorf("PR 10 content should contain state 'open'")
+			}
+			if doc.OriginURL != "https://github.com/test-org/test-repo/pull/10" {
+				t.Errorf("PR 10 origin_url = %q", doc.OriginURL)
+			}
+			if doc.SourceID != "github-test" {
+				t.Errorf("PR 10 source_id = %q, want %q", doc.SourceID, "github-test")
+			}
+			if doc.ContentHash == "" {
+				t.Error("PR 10 content hash should not be empty")
+			}
+			props, ok := doc.Properties["type"]
+			if !ok || props != "pulls" {
+				t.Errorf("PR 10 properties.type = %v, want %q", props, "pulls")
+			}
+		}
+		if strings.Contains(doc.Title, "Refactor parser") {
+			foundClosed = true
+			if doc.ID != "test-repo/pulls/11" {
+				t.Errorf("PR 11 id = %q, want %q", doc.ID, "test-repo/pulls/11")
+			}
+			if !strings.Contains(doc.Content, "closed") {
+				t.Errorf("PR 11 content should contain state 'closed'")
+			}
+		}
+	}
+
+	if !foundOpen {
+		t.Error("open PR 'Add search feature' not found in results")
+	}
+	if !foundClosed {
+		t.Error("closed PR 'Refactor parser' not found in results")
+	}
+}
+
+func TestGitHubSource_FetchPulls_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode([]any{})
+	}))
+	defer server.Close()
+
+	gs := newTestGitHubSource(t, server)
+	gs.contentType = []string{"pulls"}
+
+	docs, err := gs.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	if len(docs) != 0 {
+		t.Errorf("expected 0 documents for empty pulls, got %d", len(docs))
+	}
+}
+
+func TestGitHubSource_FetchPulls_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message": "Internal Server Error"}`))
+	}))
+	defer server.Close()
+
+	gs := newTestGitHubSource(t, server)
+	gs.contentType = []string{"pulls"}
+
+	// Server error should not propagate — List handles errors gracefully.
+	docs, err := gs.List()
+	if err != nil {
+		t.Fatalf("List should not return error for individual content type failure: %v", err)
+	}
+
+	// No documents expected since the pulls endpoint failed.
+	if len(docs) != 0 {
+		t.Errorf("expected 0 documents on server error, got %d", len(docs))
 	}
 }

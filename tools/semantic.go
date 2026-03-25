@@ -22,14 +22,24 @@ type Semantic struct {
 	store    *store.Store
 }
 
-// NewSemantic creates a new Semantic tool handler. Both embedder and store
-// may be nil — the tools return clear error messages when unavailable.
+// NewSemantic creates a new Semantic tool handler with the given embedder
+// and store. Both embedder and store may be nil — the tools return clear
+// MCP error messages when unavailable, enabling graceful degradation when
+// Ollama is not running or no persistent store is configured.
+//
+// Returns a ready-to-use handler for the three semantic search MCP tools.
 func NewSemantic(e embed.Embedder, s *store.Store) *Semantic {
 	return &Semantic{embedder: e, store: s}
 }
 
-// SemanticSearch handles the dewey_semantic_search MCP tool.
-// Embeds the query text, then searches for similar blocks via cosine similarity.
+// SemanticSearch handles the dewey_semantic_search MCP tool. Embeds the
+// query text via the configured embedder, then searches for similar blocks
+// via cosine similarity. Returns a JSON array of [types.SemanticSearchResult]
+// with provenance metadata (page, source, similarity score, indexed
+// timestamp). Defaults limit to 10 and threshold to 0.3 if not specified.
+//
+// Returns an MCP error result (not a Go error) if the embedder is
+// unavailable, the store is nil, embedding fails, or the search fails.
 func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest, input types.SemanticSearchInput) (*mcp.CallToolResult, any, error) {
 	if s.embedder == nil || !s.embedder.Available() {
 		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model."), nil, nil
@@ -66,9 +76,15 @@ func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest,
 	return res, nil, err
 }
 
-// Similar handles the dewey_similar MCP tool.
-// Finds documents similar to a given page or block by looking up its
-// existing embedding and searching for similar vectors.
+// Similar handles the dewey_similar MCP tool. Finds documents similar to
+// a given page or block by looking up its existing embedding and searching
+// for similar vectors. At least one of input.Page or input.UUID must be
+// provided. Returns a JSON array of [types.SemanticSearchResult] excluding
+// the query document itself. Defaults limit to 10.
+//
+// Returns an MCP error result (not a Go error) if neither page nor UUID
+// is provided, the embedder is unavailable, no embeddings exist in the
+// index, or the referenced page/block has no embedding.
 func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input types.SimilarInput) (*mcp.CallToolResult, any, error) {
 	// Validate: at least one of page or uuid must be provided.
 	if input.Page == "" && input.UUID == "" {
@@ -154,8 +170,14 @@ func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input 
 	return res, nil, err
 }
 
-// SemanticSearchFiltered handles the dewey_semantic_search_filtered MCP tool.
-// Combines semantic search with metadata filters.
+// SemanticSearchFiltered handles the dewey_semantic_search_filtered MCP
+// tool. Combines semantic search with metadata filters (source type,
+// source ID, property, tag) to narrow results. Filters are applied at the
+// SQL level before vector comparison for efficiency. Returns a JSON array
+// of [types.SemanticSearchResult]. Defaults limit to 10 and threshold to 0.3.
+//
+// Returns an MCP error result (not a Go error) if the embedder is
+// unavailable, the store is nil, embedding fails, or the filtered search fails.
 func (s *Semantic) SemanticSearchFiltered(ctx context.Context, req *mcp.CallToolRequest, input types.SemanticSearchFilteredInput) (*mcp.CallToolResult, any, error) {
 	if s.embedder == nil || !s.embedder.Available() {
 		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model."), nil, nil

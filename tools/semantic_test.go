@@ -168,6 +168,36 @@ func TestSemanticSearch_Basic(t *testing.T) {
 	if results[0].IndexedAt == "" {
 		t.Error("indexed_at should not be empty")
 	}
+
+	// Verify all result fields are populated (complete result structure).
+	for i, r := range results {
+		if r.DocumentID == "" {
+			t.Errorf("results[%d].DocumentID should not be empty", i)
+		}
+		if r.Page == "" {
+			t.Errorf("results[%d].Page should not be empty", i)
+		}
+		if r.Content == "" {
+			t.Errorf("results[%d].Content should not be empty", i)
+		}
+		if r.Similarity <= 0 || r.Similarity > 1 {
+			t.Errorf("results[%d].Similarity = %f, want (0, 1]", i, r.Similarity)
+		}
+		if r.Source == "" {
+			t.Errorf("results[%d].Source should not be empty", i)
+		}
+		if r.SourceID == "" {
+			t.Errorf("results[%d].SourceID should not be empty", i)
+		}
+	}
+
+	// Verify results are ordered by descending similarity score.
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity {
+			t.Errorf("results not ordered: [%d].Similarity=%f > [%d].Similarity=%f",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
+		}
+	}
 }
 
 // TestSemanticSearch_EmptyIndex verifies behavior with no embeddings.
@@ -236,6 +266,32 @@ func TestSemanticSearch_NilEmbedder(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected error result when embedder is nil")
 	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "embedding model not loaded") {
+		t.Errorf("error message = %q, should mention embedding model", text)
+	}
+}
+
+// TestSemanticSearch_NilStore verifies graceful degradation with nil store.
+func TestSemanticSearch_NilStore(t *testing.T) {
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, nil)
+
+	result, _, err := sem.SemanticSearch(context.Background(), nil, types.SemanticSearchInput{
+		Query: "test",
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearch error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when store is nil")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "no persistent store") {
+		t.Errorf("error message = %q, should mention persistent store", text)
+	}
 }
 
 // TestSimilar_ByUUID verifies finding similar documents by block UUID.
@@ -270,6 +326,43 @@ func TestSimilar_ByUUID(t *testing.T) {
 	if len(results) > 0 && results[0].DocumentID != "block-api" {
 		t.Errorf("most similar = %q, want %q", results[0].DocumentID, "block-api")
 	}
+
+	// Verify similarity scores are between 0 and 1.
+	for i, r := range results {
+		if r.Similarity < 0 || r.Similarity > 1 {
+			t.Errorf("results[%d].Similarity = %f, want between 0 and 1", i, r.Similarity)
+		}
+	}
+
+	// Verify results are ordered by descending similarity score.
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity {
+			t.Errorf("results not ordered by descending score: results[%d].Similarity=%f > results[%d].Similarity=%f",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
+		}
+	}
+
+	// Verify provenance metadata is populated on all results.
+	for i, r := range results {
+		if r.Page == "" {
+			t.Errorf("results[%d].Page should not be empty", i)
+		}
+		if r.Content == "" {
+			t.Errorf("results[%d].Content should not be empty", i)
+		}
+		if r.Source == "" {
+			t.Errorf("results[%d].Source should not be empty", i)
+		}
+		if r.SourceID == "" {
+			t.Errorf("results[%d].SourceID should not be empty", i)
+		}
+		if r.DocumentID == "" {
+			t.Errorf("results[%d].DocumentID should not be empty", i)
+		}
+		if r.IndexedAt == "" {
+			t.Errorf("results[%d].IndexedAt should not be empty", i)
+		}
+	}
 }
 
 // TestSimilar_ByPage verifies finding similar documents by page name.
@@ -287,6 +380,77 @@ func TestSimilar_ByPage(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("Similar returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Page lookup uses the first block's embedding (block-install: [1,0,0]).
+	// Should return similar results based on that vector.
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 similar result for page 'setup'")
+	}
+
+	// Verify similarity scores are valid (0-1 range, descending order).
+	for i, r := range results {
+		if r.Similarity < 0 || r.Similarity > 1 {
+			t.Errorf("results[%d].Similarity = %f, want between 0 and 1", i, r.Similarity)
+		}
+		if r.DocumentID == "" {
+			t.Errorf("results[%d].DocumentID should not be empty", i)
+		}
+	}
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity {
+			t.Errorf("results not ordered by descending score: [%d]=%f > [%d]=%f",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
+		}
+	}
+}
+
+// TestSimilar_EmbedderUnavailable verifies graceful degradation for Similar.
+func TestSimilar_EmbedderUnavailable(t *testing.T) {
+	s := newTestStoreWithData(t)
+	e := newMockEmbedder(false)
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.Similar(context.Background(), nil, types.SimilarInput{
+		UUID: "block-install",
+	})
+	if err != nil {
+		t.Fatalf("Similar error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when embedder unavailable")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "embedding model not loaded") {
+		t.Errorf("error message = %q, should mention embedding model", text)
+	}
+}
+
+// TestSimilar_NilStore verifies graceful degradation for Similar with nil store.
+func TestSimilar_NilStore(t *testing.T) {
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, nil)
+
+	result, _, err := sem.Similar(context.Background(), nil, types.SimilarInput{
+		UUID: "block-install",
+	})
+	if err != nil {
+		t.Fatalf("Similar error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when store is nil")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "no persistent store") {
+		t.Errorf("error message = %q, should mention persistent store", text)
 	}
 }
 
@@ -390,10 +554,35 @@ func TestSemanticSearchFiltered_Basic(t *testing.T) {
 	text := resultText(result)
 	_ = json.Unmarshal([]byte(text), &results)
 
-	// All results should have source_id = "disk-local".
-	for _, r := range results {
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 filtered result")
+	}
+
+	// All results should have source_id = "disk-local" (filter was applied).
+	for i, r := range results {
 		if r.SourceID != "disk-local" {
-			t.Errorf("filtered result source_id = %q, want %q", r.SourceID, "disk-local")
+			t.Errorf("filtered results[%d].SourceID = %q, want %q", i, r.SourceID, "disk-local")
+		}
+		// Verify complete result structure for filtered results.
+		if r.DocumentID == "" {
+			t.Errorf("filtered results[%d].DocumentID should not be empty", i)
+		}
+		if r.Page == "" {
+			t.Errorf("filtered results[%d].Page should not be empty", i)
+		}
+		if r.Content == "" {
+			t.Errorf("filtered results[%d].Content should not be empty", i)
+		}
+		if r.Similarity <= 0 || r.Similarity > 1 {
+			t.Errorf("filtered results[%d].Similarity = %f, want (0, 1]", i, r.Similarity)
+		}
+	}
+
+	// Verify results are ordered by descending similarity score.
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity {
+			t.Errorf("filtered results not ordered: [%d].Similarity=%f > [%d].Similarity=%f",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
 		}
 	}
 }
@@ -404,11 +593,72 @@ func TestSemanticSearchFiltered_EmbedderUnavailable(t *testing.T) {
 	e := newMockEmbedder(false)
 	sem := NewSemantic(e, s)
 
-	result, _, _ := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
 		Query: "test",
 	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
 	if !result.IsError {
 		t.Fatal("expected error when embedder unavailable")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "embedding model not loaded") {
+		t.Errorf("error message = %q, should mention embedding model", text)
+	}
+}
+
+// TestSemanticSearchFiltered_NilStore verifies degradation with nil store.
+func TestSemanticSearchFiltered_NilStore(t *testing.T) {
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, nil)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query: "test",
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error when store is nil")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "no persistent store") {
+		t.Errorf("error message = %q, should mention persistent store", text)
+	}
+}
+
+// TestSemanticSearchFiltered_EmptyIndex verifies filtered search on empty index.
+func TestSemanticSearchFiltered_EmptyIndex(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:    "anything",
+		SourceID: "disk-local",
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("empty index should not be an error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty index, got %d", len(results))
 	}
 }
 

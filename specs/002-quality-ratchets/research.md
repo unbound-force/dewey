@@ -37,7 +37,12 @@ No NEEDS CLARIFICATION items existed in the Technical Context. This research doc
 
 ## Decision 4: Initial Threshold Values
 
-**Decision**: Start with current baseline values (CRAPload=88, GazeCRAPload=18, contract coverage=70%), then tighten after each improvement phase.
+**Decision**: Start with current baseline values, then tighten after each improvement phase. The baselines have evolved:
+- Original (spec written): CRAPload=88, GazeCRAPload=18, contract coverage=70%
+- Actual (measured 2026-03-24): CRAPload=48, GazeCRAPload=37, contract coverage=56.5%
+- Current CI gates: `--max-crapload=48 --max-gaze-crapload=37 --min-contract-coverage=8`
+
+The CRAPload improved from 88 to 48 during Spec 001 core implementation (109+ tests added). However, GazeCRAPload increased (18 → 37) and contract coverage decreased (70% → 56.5%) because the new tests exercise code paths without verifying observable behavior.
 
 **Rationale**: Setting the ratchet at the current baseline means CI immediately prevents regression. As improvements land, the thresholds are tightened in the same PR. This is a monotonically non-decreasing quality guarantee.
 
@@ -54,3 +59,23 @@ No NEEDS CLARIFICATION items existed in the Technical Context. This research doc
 - Build from source (Gaze repo's approach): Only appropriate when Gaze is the project being tested. For consumers, `go install` is simpler.
 - Download pre-built binary from GitHub releases: More complex CI config, no benefit since `go install` works and Go is already installed.
 - GitHub Action: No published `action.yml` exists for Gaze.
+
+## Decision 6: GoDoc Improvements in Scope (Clarification 2026-03-24)
+
+**Decision**: GoDoc comment improvements on exported functions are in scope for reaching ≥80% contract coverage (FR-014). This is in addition to test assertion strengthening.
+
+**Rationale**: Gaze's effect classifier determines whether a function's effects are "contractual" (verifiable) or "ambiguous" (unclear). When GoDoc comments explicitly document return values, error conditions, and lifecycle requirements, the classifier can more accurately categorize effects as contractual. This means existing test assertions that already verify behavior get properly counted toward contract coverage. Without GoDoc improvements, some functions would require disproportionate test effort to reach 80% because the classifier cannot recognize what the tests are verifying.
+
+**Alternatives considered**:
+- Test changes only: Rejected because 66.5% of effects are classified as ambiguous. Even perfect test assertions would not be counted if the classifier cannot determine what the function's contract is. GoDoc improvements provide the signal the classifier needs.
+- Blanket documentation pass: Rejected. Only functions where GoDoc improvements materially affect contract coverage classification should be updated. Not a documentation-for-documentation's-sake effort.
+
+## Decision 7: Module-Wide Average for Contract Coverage (Clarification 2026-03-24)
+
+**Decision**: The ≥80% contract coverage target is measured as the module-wide average across all Gaze-analyzed functions, not per-package.
+
+**Rationale**: Per-package minimums would force disproportionate effort on packages with many inherited graphthulhu functions that are difficult to test (e.g., `vault/` with `MoveBlock`). A module-wide average allows strategic prioritization — focusing assertion effort on functions where the ROI is highest.
+
+**Alternatives considered**:
+- Per-package minimum of 80%: Rejected because some packages (vault, client) have many inherited functions with low contract coverage that would require extensive mocking infrastructure.
+- Module-wide average + per-package floor of 60%: Considered but deferred. The floor can be added as a future ratchet once the module-wide average target is met.

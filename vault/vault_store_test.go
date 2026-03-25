@@ -74,7 +74,7 @@ func TestVaultStore_IncrementalIndex_NoChanges(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	testdata := filepath.Join(filepath.Dir(thisFile), "testdata")
 
-	vs, _ := newTestVaultStore(t, testdata)
+	vs, s := newTestVaultStore(t, testdata)
 
 	c := New(testdata)
 
@@ -103,6 +103,20 @@ func TestVaultStore_IncrementalIndex_NoChanges(t *testing.T) {
 	if stats.Unchanged == 0 {
 		t.Error("Unchanged = 0, want > 0")
 	}
+
+	// Verify Total() sums correctly.
+	if got := stats.Total(); got != stats.Unchanged {
+		t.Errorf("Total() = %d, want %d (all unchanged)", got, stats.Unchanged)
+	}
+
+	// Verify page count metadata was updated.
+	pageCount, err := s.GetMeta("page_count")
+	if err != nil {
+		t.Fatalf("GetMeta(page_count): %v", err)
+	}
+	if pageCount == "" || pageCount == "0" {
+		t.Errorf("page_count = %q, want non-zero after incremental index", pageCount)
+	}
 }
 
 func TestVaultStore_IncrementalIndex_NewFile(t *testing.T) {
@@ -110,12 +124,19 @@ func TestVaultStore_IncrementalIndex_NewFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	copyTestdata(t, tmpDir)
 
-	vs, _ := newTestVaultStore(t, tmpDir)
+	vs, s := newTestVaultStore(t, tmpDir)
 
 	c := New(tmpDir)
 	if err := vs.FullIndex(c); err != nil {
 		t.Fatalf("FullIndex: %v", err)
 	}
+
+	// Count pages before adding new file.
+	pagesBefore, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages before: %v", err)
+	}
+	countBefore := len(pagesBefore)
 
 	// Add a new file.
 	newFile := filepath.Join(tmpDir, "new-page.md")
@@ -133,18 +154,63 @@ func TestVaultStore_IncrementalIndex_NewFile(t *testing.T) {
 	if stats.New != 1 {
 		t.Errorf("New = %d, want 1", stats.New)
 	}
+	if stats.Changed != 0 {
+		t.Errorf("Changed = %d, want 0", stats.Changed)
+	}
+	if stats.Deleted != 0 {
+		t.Errorf("Deleted = %d, want 0", stats.Deleted)
+	}
+
+	// Verify the new page was persisted to store.
+	pagesAfter, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages after: %v", err)
+	}
+	if len(pagesAfter) != countBefore+1 {
+		t.Errorf("page count = %d, want %d (countBefore+1)", len(pagesAfter), countBefore+1)
+	}
+
+	// Verify the new page exists in the store with correct data.
+	newPage, err := s.GetPage("new-page")
+	if err != nil {
+		t.Fatalf("GetPage(new-page): %v", err)
+	}
+	if newPage == nil {
+		t.Fatal("new-page should exist in store after incremental index")
+	}
+	if newPage.ContentHash == "" {
+		t.Error("new-page ContentHash should not be empty")
+	}
+	if newPage.SourceID != "disk-local" {
+		t.Errorf("new-page SourceID = %q, want %q", newPage.SourceID, "disk-local")
+	}
+
+	// Verify Total() is consistent.
+	if got := stats.Total(); got != stats.New+stats.Changed+stats.Deleted+stats.Unchanged {
+		t.Errorf("Total() = %d, want %d", got, stats.New+stats.Changed+stats.Deleted+stats.Unchanged)
+	}
 }
 
 func TestVaultStore_IncrementalIndex_ChangedFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	copyTestdata(t, tmpDir)
 
-	vs, _ := newTestVaultStore(t, tmpDir)
+	vs, s := newTestVaultStore(t, tmpDir)
 
 	c := New(tmpDir)
 	if err := vs.FullIndex(c); err != nil {
 		t.Fatalf("FullIndex: %v", err)
 	}
+
+	// Get the original content hash before modification.
+	originalPage, err := s.GetPage("index")
+	if err != nil {
+		t.Fatalf("GetPage(index) before: %v", err)
+	}
+	if originalPage == nil {
+		t.Fatal("index page should exist before modification")
+	}
+	originalHash := originalPage.ContentHash
 
 	// Modify an existing file.
 	indexFile := filepath.Join(tmpDir, "index.md")
@@ -161,18 +227,55 @@ func TestVaultStore_IncrementalIndex_ChangedFile(t *testing.T) {
 	if stats.Changed != 1 {
 		t.Errorf("Changed = %d, want 1", stats.Changed)
 	}
+	if stats.New != 0 {
+		t.Errorf("New = %d, want 0", stats.New)
+	}
+	if stats.Deleted != 0 {
+		t.Errorf("Deleted = %d, want 0", stats.Deleted)
+	}
+
+	// Verify the changed page's content hash was updated in the store.
+	updatedPage, err := s.GetPage("index")
+	if err != nil {
+		t.Fatalf("GetPage(index) after: %v", err)
+	}
+	if updatedPage == nil {
+		t.Fatal("index page should still exist after modification")
+	}
+	if updatedPage.ContentHash == originalHash {
+		t.Error("ContentHash should have changed after file modification")
+	}
+	if updatedPage.ContentHash == "" {
+		t.Error("ContentHash should not be empty after modification")
+	}
 }
 
 func TestVaultStore_IncrementalIndex_DeletedFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	copyTestdata(t, tmpDir)
 
-	vs, _ := newTestVaultStore(t, tmpDir)
+	vs, s := newTestVaultStore(t, tmpDir)
 
 	c := New(tmpDir)
 	if err := vs.FullIndex(c); err != nil {
 		t.Fatalf("FullIndex: %v", err)
 	}
+
+	// Verify page exists before deletion.
+	pageBefore, err := s.GetPage("index")
+	if err != nil {
+		t.Fatalf("GetPage(index) before: %v", err)
+	}
+	if pageBefore == nil {
+		t.Fatal("index page should exist before deletion")
+	}
+
+	// Count pages before deletion.
+	pagesBefore, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages before: %v", err)
+	}
+	countBefore := len(pagesBefore)
 
 	// Delete a file.
 	indexFile := filepath.Join(tmpDir, "index.md")
@@ -188,6 +291,30 @@ func TestVaultStore_IncrementalIndex_DeletedFile(t *testing.T) {
 
 	if stats.Deleted != 1 {
 		t.Errorf("Deleted = %d, want 1", stats.Deleted)
+	}
+	if stats.New != 0 {
+		t.Errorf("New = %d, want 0", stats.New)
+	}
+	if stats.Changed != 0 {
+		t.Errorf("Changed = %d, want 0", stats.Changed)
+	}
+
+	// Verify the deleted page was removed from the store.
+	pageAfter, err := s.GetPage("index")
+	if err != nil {
+		t.Fatalf("GetPage(index) after: %v", err)
+	}
+	if pageAfter != nil {
+		t.Error("index page should be removed from store after deletion")
+	}
+
+	// Verify page count decreased.
+	pagesAfter, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages after: %v", err)
+	}
+	if len(pagesAfter) != countBefore-1 {
+		t.Errorf("page count = %d, want %d (countBefore-1)", len(pagesAfter), countBefore-1)
 	}
 }
 

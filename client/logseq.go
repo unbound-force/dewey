@@ -27,8 +27,12 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// New creates a new Logseq API client.
-// Reads LOGSEQ_API_URL and LOGSEQ_API_TOKEN from environment if not provided.
+// New creates a new Logseq API client. If apiURL is empty, it reads
+// LOGSEQ_API_URL from the environment, defaulting to "http://127.0.0.1:12315".
+// If token is empty, it reads LOGSEQ_API_TOKEN from the environment.
+//
+// Returns a ready-to-use client with a 10-second HTTP timeout. The client
+// retries server errors up to 3 times with exponential backoff.
 func New(apiURL, token string) *Client {
 	if apiURL == "" {
 		apiURL = os.Getenv("LOGSEQ_API_URL")
@@ -126,27 +130,37 @@ func callTyped[T any](c *Client, ctx context.Context, method string, args ...any
 
 // --- Page Operations ---
 
-// GetAllPages returns all pages in the graph.
+// GetAllPages returns all pages in the Logseq graph as a slice of
+// [types.PageEntity]. Returns an error if the API call fails or the
+// response cannot be parsed.
 func (c *Client) GetAllPages(ctx context.Context) ([]types.PageEntity, error) {
 	return callTyped[[]types.PageEntity](c, ctx, "logseq.Editor.getAllPages")
 }
 
-// GetPage returns a page by name or ID.
+// GetPage returns a page by name (string) or numeric ID. Returns nil if
+// the page does not exist. Returns an error if the API call fails or the
+// response cannot be parsed.
 func (c *Client) GetPage(ctx context.Context, nameOrID any) (*types.PageEntity, error) {
 	return callTyped[*types.PageEntity](c, ctx, "logseq.Editor.getPage", nameOrID)
 }
 
-// GetPageBlocksTree returns the full block tree for a page.
+// GetPageBlocksTree returns the full hierarchical block tree for a page,
+// identified by name (string) or numeric ID. Returns an error if the API
+// call fails or the response cannot be parsed.
 func (c *Client) GetPageBlocksTree(ctx context.Context, nameOrID any) ([]types.BlockEntity, error) {
 	return callTyped[[]types.BlockEntity](c, ctx, "logseq.Editor.getPageBlocksTree", nameOrID)
 }
 
-// GetPageLinkedReferences returns pages that link to this page, with the blocks containing the links.
+// GetPageLinkedReferences returns pages that link to this page, with the
+// blocks containing the links. Returns the raw JSON response from the
+// Logseq API. Returns an error if the API call fails.
 func (c *Client) GetPageLinkedReferences(ctx context.Context, nameOrID any) (json.RawMessage, error) {
 	return c.call(ctx, "logseq.Editor.getPageLinkedReferences", nameOrID)
 }
 
-// CreatePage creates a new page with optional properties.
+// CreatePage creates a new page with the given name and optional properties
+// and options. Returns the created page entity. Returns an error if the
+// API call fails or the response cannot be parsed.
 func (c *Client) CreatePage(ctx context.Context, name string, properties map[string]any, opts map[string]any) (*types.PageEntity, error) {
 	args := []any{name}
 	if properties != nil {
@@ -160,13 +174,14 @@ func (c *Client) CreatePage(ctx context.Context, name string, properties map[str
 	return callTyped[*types.PageEntity](c, ctx, "logseq.Editor.createPage", args...)
 }
 
-// DeletePage removes a page by name.
+// DeletePage removes a page by name. Returns an error if the API call fails.
 func (c *Client) DeletePage(ctx context.Context, name string) error {
 	_, err := c.call(ctx, "logseq.Editor.deletePage", name)
 	return err
 }
 
-// RenamePage renames a page. Logseq handles link updates automatically.
+// RenamePage renames a page from oldName to newName. Logseq handles link
+// updates automatically. Returns an error if the API call fails.
 func (c *Client) RenamePage(ctx context.Context, oldName, newName string) error {
 	_, err := c.call(ctx, "logseq.Editor.renamePage", oldName, newName)
 	return err
@@ -174,7 +189,8 @@ func (c *Client) RenamePage(ctx context.Context, oldName, newName string) error 
 
 // --- Block Operations ---
 
-// GetBlock returns a block by UUID.
+// GetBlock returns a block by its UUID with optional query options.
+// Returns an error if the API call fails or the response cannot be parsed.
 func (c *Client) GetBlock(ctx context.Context, uuid string, opts ...map[string]any) (*types.BlockEntity, error) {
 	args := []any{uuid}
 	if len(opts) > 0 {
@@ -183,7 +199,9 @@ func (c *Client) GetBlock(ctx context.Context, uuid string, opts ...map[string]a
 	return callTyped[*types.BlockEntity](c, ctx, "logseq.Editor.getBlock", args...)
 }
 
-// InsertBlock inserts a block relative to another block.
+// InsertBlock inserts a block with the given content relative to the
+// source block (by UUID or page name). Returns the created block entity.
+// Returns an error if the API call fails or the response cannot be parsed.
 func (c *Client) InsertBlock(ctx context.Context, srcBlock any, content string, opts map[string]any) (*types.BlockEntity, error) {
 	args := []any{srcBlock, content}
 	if opts != nil {
@@ -192,7 +210,8 @@ func (c *Client) InsertBlock(ctx context.Context, srcBlock any, content string, 
 	return callTyped[*types.BlockEntity](c, ctx, "logseq.Editor.insertBlock", args...)
 }
 
-// UpdateBlock modifies a block's content.
+// UpdateBlock modifies a block's content identified by UUID. Returns an
+// error if the API call fails.
 func (c *Client) UpdateBlock(ctx context.Context, uuid string, content string, opts ...map[string]any) error {
 	args := []any{uuid, content}
 	if len(opts) > 0 {
@@ -202,23 +221,28 @@ func (c *Client) UpdateBlock(ctx context.Context, uuid string, content string, o
 	return err
 }
 
-// RemoveBlock deletes a block.
+// RemoveBlock deletes a block by UUID. Returns an error if the API call fails.
 func (c *Client) RemoveBlock(ctx context.Context, uuid string) error {
 	_, err := c.call(ctx, "logseq.Editor.removeBlock", uuid)
 	return err
 }
 
-// AppendBlockInPage adds a block at the end of a page.
+// AppendBlockInPage adds a block with the given content at the end of the
+// named page. Returns the created block entity. Returns an error if the
+// API call fails or the response cannot be parsed.
 func (c *Client) AppendBlockInPage(ctx context.Context, page string, content string) (*types.BlockEntity, error) {
 	return callTyped[*types.BlockEntity](c, ctx, "logseq.Editor.appendBlockInPage", page, content)
 }
 
-// PrependBlockInPage adds a block at the start of a page.
+// PrependBlockInPage adds a block with the given content at the start of
+// the named page. Returns the created block entity. Returns an error if
+// the API call fails or the response cannot be parsed.
 func (c *Client) PrependBlockInPage(ctx context.Context, page string, content string) (*types.BlockEntity, error) {
 	return callTyped[*types.BlockEntity](c, ctx, "logseq.Editor.prependBlockInPage", page, content)
 }
 
-// MoveBlock moves a block to a new location.
+// MoveBlock moves a block identified by uuid to a new location relative
+// to targetUUID. Returns an error if the API call fails.
 func (c *Client) MoveBlock(ctx context.Context, uuid string, targetUUID string, opts map[string]any) error {
 	args := []any{uuid, targetUUID}
 	if opts != nil {
@@ -228,7 +252,9 @@ func (c *Client) MoveBlock(ctx context.Context, uuid string, targetUUID string, 
 	return err
 }
 
-// InsertBatchBlock inserts multiple blocks at once.
+// InsertBatchBlock inserts multiple blocks at once relative to the source
+// block. Returns the created block entities. Returns an error if the API
+// call fails or the response cannot be parsed.
 func (c *Client) InsertBatchBlock(ctx context.Context, srcBlock any, batch []map[string]any, opts map[string]any) ([]types.BlockEntity, error) {
 	args := []any{srcBlock, batch}
 	if opts != nil {
@@ -240,39 +266,47 @@ func (c *Client) InsertBatchBlock(ctx context.Context, srcBlock any, batch []map
 // --- Query Operations ---
 
 // DatascriptQuery executes a Datalog query against the Logseq database.
+// Returns the raw JSON response. Returns an error if the API call fails.
 func (c *Client) DatascriptQuery(ctx context.Context, query string, inputs ...any) (json.RawMessage, error) {
 	args := []any{query}
 	args = append(args, inputs...)
 	return c.call(ctx, "logseq.DB.datascriptQuery", args...)
 }
 
-// DSLQuery executes a Logseq DSL query.
+// DSLQuery executes a Logseq DSL query string. Returns the raw JSON
+// response. Returns an error if the API call fails.
 func (c *Client) DSLQuery(ctx context.Context, dsl string) (json.RawMessage, error) {
 	return c.call(ctx, "logseq.DB.q", dsl)
 }
 
 // --- Tag Operations ---
 
-// GetAllTags returns all tags in the graph.
+// GetAllTags returns all tags in the graph as page entities. Returns an
+// error if the API call fails or the response cannot be parsed.
 func (c *Client) GetAllTags(ctx context.Context) ([]types.PageEntity, error) {
 	return callTyped[[]types.PageEntity](c, ctx, "logseq.Editor.getAllTags")
 }
 
 // --- Property Operations ---
 
-// GetPageProperties returns all properties for a page.
+// GetPageProperties returns all properties for a page identified by name
+// (string) or numeric ID. Returns an error if the API call fails or the
+// response cannot be parsed.
 func (c *Client) GetPageProperties(ctx context.Context, nameOrID any) (map[string]any, error) {
 	return callTyped[map[string]any](c, ctx, "logseq.Editor.getPageProperties", nameOrID)
 }
 
-// GetBlockProperties returns all properties for a block.
+// GetBlockProperties returns all properties for a block identified by
+// UUID. Returns an error if the API call fails or the response cannot
+// be parsed.
 func (c *Client) GetBlockProperties(ctx context.Context, uuid string) (map[string]any, error) {
 	return callTyped[map[string]any](c, ctx, "logseq.Editor.getBlockProperties", uuid)
 }
 
 // --- Namespace Operations ---
 
-// GetPagesFromNamespace returns all pages in a namespace.
+// GetPagesFromNamespace returns all pages in the given namespace.
+// Returns an error if the API call fails or the response cannot be parsed.
 func (c *Client) GetPagesFromNamespace(ctx context.Context, namespace string) ([]types.PageEntity, error) {
 	return callTyped[[]types.PageEntity](c, ctx, "logseq.Editor.getPagesFromNamespace", namespace)
 }
@@ -285,12 +319,16 @@ type GraphInfo struct {
 	Path string `json:"path"`
 }
 
-// GetCurrentGraph returns the name and filesystem path of the current graph.
+// GetCurrentGraph returns the name and filesystem path of the current
+// Logseq graph. Returns an error if the API call fails or the response
+// cannot be parsed.
 func (c *Client) GetCurrentGraph(ctx context.Context) (*GraphInfo, error) {
 	return callTyped[*GraphInfo](c, ctx, "logseq.App.getCurrentGraph")
 }
 
-// Ping checks if the Logseq API is reachable by attempting to list pages.
+// Ping checks if the Logseq API is reachable by calling getCurrentPage.
+// Returns nil if the API responds successfully. Returns an error if the
+// API is unreachable or returns an error status.
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.call(ctx, "logseq.Editor.getCurrentPage")
 	return err

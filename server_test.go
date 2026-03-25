@@ -3,10 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/embed"
 	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/types"
 	"github.com/unbound-force/dewey/vault"
 )
 
@@ -30,6 +35,103 @@ func (m *mockEmbedderForHealth) Available() bool { return m.available }
 func (m *mockEmbedderForHealth) ModelID() string { return m.model }
 
 var _ embed.Embedder = (*mockEmbedderForHealth)(nil)
+
+// serverMockBackend implements backend.Backend for newServer tests.
+// It returns empty data for all read operations and tracks write calls.
+// It does NOT implement HasDataScript, so DataScript-only tools should
+// not be registered when this backend is used.
+type serverMockBackend struct{}
+
+func (m *serverMockBackend) GetAllPages(_ context.Context) ([]types.PageEntity, error) {
+	return nil, nil
+}
+func (m *serverMockBackend) GetPage(_ context.Context, _ any) (*types.PageEntity, error) {
+	return nil, fmt.Errorf("page not found")
+}
+func (m *serverMockBackend) GetPageBlocksTree(_ context.Context, _ any) ([]types.BlockEntity, error) {
+	return nil, nil
+}
+func (m *serverMockBackend) GetBlock(_ context.Context, _ string, _ ...map[string]any) (*types.BlockEntity, error) {
+	return nil, fmt.Errorf("block not found")
+}
+func (m *serverMockBackend) GetPageLinkedReferences(_ context.Context, _ any) (json.RawMessage, error) {
+	return json.RawMessage(`[]`), nil
+}
+func (m *serverMockBackend) DatascriptQuery(_ context.Context, _ string, _ ...any) (json.RawMessage, error) {
+	return json.RawMessage(`[]`), nil
+}
+func (m *serverMockBackend) CreatePage(_ context.Context, name string, _ map[string]any, _ map[string]any) (*types.PageEntity, error) {
+	return &types.PageEntity{Name: name}, nil
+}
+func (m *serverMockBackend) AppendBlockInPage(_ context.Context, _ string, content string) (*types.BlockEntity, error) {
+	return &types.BlockEntity{Content: content}, nil
+}
+func (m *serverMockBackend) PrependBlockInPage(_ context.Context, _ string, content string) (*types.BlockEntity, error) {
+	return &types.BlockEntity{Content: content}, nil
+}
+func (m *serverMockBackend) InsertBlock(_ context.Context, _ any, content string, _ map[string]any) (*types.BlockEntity, error) {
+	return &types.BlockEntity{Content: content}, nil
+}
+func (m *serverMockBackend) UpdateBlock(_ context.Context, _ string, _ string, _ ...map[string]any) error {
+	return nil
+}
+func (m *serverMockBackend) RemoveBlock(_ context.Context, _ string) error { return nil }
+func (m *serverMockBackend) MoveBlock(_ context.Context, _ string, _ string, _ map[string]any) error {
+	return nil
+}
+func (m *serverMockBackend) DeletePage(_ context.Context, _ string) error { return nil }
+func (m *serverMockBackend) RenamePage(_ context.Context, _, _ string) error {
+	return nil
+}
+func (m *serverMockBackend) Ping(_ context.Context) error { return nil }
+
+var _ backend.Backend = (*serverMockBackend)(nil)
+
+// serverMockBackendWithDataScript embeds serverMockBackend and adds
+// the HasDataScript marker interface, enabling DataScript-only tools
+// (get_references, query_datalog, flashcard_*, whiteboard_*).
+type serverMockBackendWithDataScript struct {
+	serverMockBackend
+}
+
+func (m *serverMockBackendWithDataScript) HasDataScript() {}
+
+var _ backend.Backend = (*serverMockBackendWithDataScript)(nil)
+var _ backend.HasDataScript = (*serverMockBackendWithDataScript)(nil)
+
+// listServerTools creates an in-memory MCP client session connected to the
+// given server and returns the names of all registered tools, sorted.
+func listServerTools(t *testing.T, srv *mcp.Server) []string {
+	t.Helper()
+
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+
+	ss, err := srv.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer func() { _ = ss.Close() }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0.0.1"}, nil)
+	cs, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	result, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+
+	var names []string
+	for _, tool := range result.Tools {
+		names = append(names, tool.Name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // TestNewServer_SemanticToolsRegistered verifies that the 3 semantic search
 // tools are registered in the server (T035).
@@ -175,4 +277,326 @@ func TestWithPersistentStore(t *testing.T) {
 	if cfg.store != s {
 		t.Error("WithPersistentStore did not set store")
 	}
+}
+
+// TestNewServer_RegistersTools verifies that newServer with a non-DataScript
+// backend in read-write mode registers the expected set of tools. The backend
+// does not implement HasDataScript, so DataScript-only tools (get_references,
+// query_datalog, flashcard_*, whiteboard_*) must be absent.
+func TestNewServer_RegistersTools(t *testing.T) {
+	b := &serverMockBackend{}
+	srv := newServer(b, false)
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	// Core tools expected for any non-DataScript read-write backend.
+	coreTools := []string{
+		// Navigate
+		"get_page", "get_block", "list_pages", "get_links", "traverse",
+		// Search
+		"search", "query_properties", "find_by_tag",
+		// Analyze
+		"graph_overview", "find_connections", "knowledge_gaps", "list_orphans", "topic_clusters",
+		// Write
+		"create_page", "append_blocks", "update_block", "delete_block",
+		"upsert_blocks", "move_block", "delete_page", "rename_page",
+		"bulk_update_properties", "link_pages",
+		// Decision
+		"decision_check", "decision_create", "decision_resolve", "decision_defer", "analysis_health",
+		// Journal
+		"journal_range", "journal_search",
+		// Semantic
+		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+		// Health
+		"health",
+	}
+
+	for _, name := range coreTools {
+		if !containsTool(tools, name) {
+			t.Errorf("missing expected tool %q", name)
+		}
+	}
+
+	// DataScript-only tools must NOT be registered.
+	dataScriptOnly := []string{
+		"get_references", "query_datalog",
+		"flashcard_overview", "flashcard_due", "flashcard_create",
+		"list_whiteboards", "get_whiteboard",
+	}
+	for _, name := range dataScriptOnly {
+		if containsTool(tools, name) {
+			t.Errorf("DataScript-only tool %q should not be registered for non-DataScript backend", name)
+		}
+	}
+
+	// Vault-specific "reload" tool should not be registered for a mock backend.
+	if containsTool(tools, "reload") {
+		t.Error("reload tool should only be registered for vault.Client backend")
+	}
+}
+
+// TestNewServer_ReadOnlyMode verifies that write and decision tools are not
+// registered when readOnly is true.
+func TestNewServer_ReadOnlyMode(t *testing.T) {
+	b := &serverMockBackend{}
+	srv := newServer(b, true)
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	// Write tools must be absent in read-only mode.
+	writeTools := []string{
+		"create_page", "append_blocks", "update_block", "delete_block",
+		"upsert_blocks", "move_block", "delete_page", "rename_page",
+		"bulk_update_properties", "link_pages",
+	}
+	for _, name := range writeTools {
+		if containsTool(tools, name) {
+			t.Errorf("write tool %q should not be registered in read-only mode", name)
+		}
+	}
+
+	// Decision tools must also be absent in read-only mode.
+	decisionTools := []string{
+		"decision_check", "decision_create", "decision_resolve",
+		"decision_defer", "analysis_health",
+	}
+	for _, name := range decisionTools {
+		if containsTool(tools, name) {
+			t.Errorf("decision tool %q should not be registered in read-only mode", name)
+		}
+	}
+
+	// Read-only tools must still be present.
+	readTools := []string{
+		"get_page", "get_block", "list_pages", "get_links", "traverse",
+		"search", "query_properties", "find_by_tag",
+		"graph_overview", "find_connections", "knowledge_gaps", "list_orphans", "topic_clusters",
+		"journal_range", "journal_search",
+		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+		"health",
+	}
+	for _, name := range readTools {
+		if !containsTool(tools, name) {
+			t.Errorf("read tool %q should be registered in read-only mode", name)
+		}
+	}
+}
+
+// TestNewServer_DataScriptBackend verifies that DataScript-only tools are
+// registered when the backend implements backend.HasDataScript.
+func TestNewServer_DataScriptBackend(t *testing.T) {
+	b := &serverMockBackendWithDataScript{}
+	srv := newServer(b, false)
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	// DataScript-only tools must be present.
+	dataScriptTools := []string{
+		"get_references", "query_datalog",
+		"flashcard_overview", "flashcard_due", "flashcard_create",
+		"list_whiteboards", "get_whiteboard",
+	}
+	for _, name := range dataScriptTools {
+		if !containsTool(tools, name) {
+			t.Errorf("DataScript tool %q should be registered for HasDataScript backend", name)
+		}
+	}
+}
+
+// TestNewServer_DataScriptReadOnly verifies that DataScript-only write tools
+// (flashcard_create) are excluded in read-only mode, while DataScript read
+// tools remain.
+func TestNewServer_DataScriptReadOnly(t *testing.T) {
+	b := &serverMockBackendWithDataScript{}
+	srv := newServer(b, true)
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	// DataScript read tools should be registered.
+	for _, name := range []string{
+		"get_references", "query_datalog",
+		"flashcard_overview", "flashcard_due",
+		"list_whiteboards", "get_whiteboard",
+	} {
+		if !containsTool(tools, name) {
+			t.Errorf("DataScript read tool %q should be registered in read-only mode", name)
+		}
+	}
+
+	// flashcard_create is a write tool and should be excluded.
+	if containsTool(tools, "flashcard_create") {
+		t.Error("flashcard_create should not be registered in read-only mode")
+	}
+}
+
+// TestNewServer_WithEmbedderOption verifies that the WithEmbedder option
+// passes the embedder to the semantic tools (server creation succeeds and
+// semantic tools are registered).
+func TestNewServer_WithEmbedderOption(t *testing.T) {
+	b := &serverMockBackend{}
+	e := &mockEmbedderForHealth{available: true, model: "test-model"}
+
+	srv := newServer(b, false, WithEmbedder(e))
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	semanticTools := []string{
+		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+	}
+	for _, name := range semanticTools {
+		if !containsTool(tools, name) {
+			t.Errorf("semantic tool %q should be registered with embedder option", name)
+		}
+	}
+}
+
+// TestNewServer_WithPersistentStoreOption verifies that the WithPersistentStore
+// option passes the store to the server (server creation succeeds and health
+// tool is registered with store-dependent fields available).
+func TestNewServer_WithPersistentStoreOption(t *testing.T) {
+	b := &serverMockBackend{}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	srv := newServer(b, false, WithPersistentStore(s))
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	// Health tool should be registered (it uses the store internally).
+	if !containsTool(tools, "health") {
+		t.Error("health tool should be registered with persistent store option")
+	}
+
+	// Semantic tools should also be registered (they use the store).
+	for _, name := range []string{
+		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+	} {
+		if !containsTool(tools, name) {
+			t.Errorf("semantic tool %q should be registered with persistent store option", name)
+		}
+	}
+}
+
+// TestNewServer_VaultBackendRegistersReload verifies that the "reload" tool
+// is registered when the backend is a *vault.Client in read-write mode.
+func TestNewServer_VaultBackendRegistersReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	vc := vault.New(tmpDir)
+
+	srv := newServer(vc, false)
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	if !containsTool(tools, "reload") {
+		t.Error("reload tool should be registered for vault.Client backend")
+	}
+}
+
+// TestNewServer_VaultBackendReadOnlyNoReload verifies that the "reload" tool
+// is NOT registered for a vault.Client in read-only mode.
+func TestNewServer_VaultBackendReadOnlyNoReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	vc := vault.New(tmpDir)
+
+	srv := newServer(vc, true)
+	if srv == nil {
+		t.Fatal("newServer returned nil")
+	}
+
+	tools := listServerTools(t, srv)
+
+	if containsTool(tools, "reload") {
+		t.Error("reload tool should not be registered in read-only mode")
+	}
+}
+
+// TestNewServer_ToolCount verifies the total number of registered tools
+// for different backend configurations.
+func TestNewServer_ToolCount(t *testing.T) {
+	tests := []struct {
+		name     string
+		backend  backend.Backend
+		readOnly bool
+		wantMin  int // minimum expected tool count
+		wantMax  int // maximum expected tool count
+	}{
+		{
+			name:     "non-DataScript read-write",
+			backend:  &serverMockBackend{},
+			readOnly: false,
+			wantMin:  30, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + health(1) = 34
+			wantMax:  35,
+		},
+		{
+			name:     "non-DataScript read-only",
+			backend:  &serverMockBackend{},
+			readOnly: true,
+			wantMin:  16, // navigate(5) + search(3) + analyze(5) + journal(2) + semantic(3) + health(1) = 19
+			wantMax:  20,
+		},
+		{
+			name:     "DataScript read-write",
+			backend:  &serverMockBackendWithDataScript{},
+			readOnly: false,
+			wantMin:  38, // above + get_references + query_datalog + flashcard(3) + whiteboard(2) = 41
+			wantMax:  42,
+		},
+		{
+			name:     "DataScript read-only",
+			backend:  &serverMockBackendWithDataScript{},
+			readOnly: true,
+			wantMin:  23, // read-only + DataScript read tools
+			wantMax:  26,
+		},
+		{
+			name:     "vault read-write",
+			backend:  vault.New(t.TempDir()),
+			readOnly: false,
+			wantMin:  31, // non-DataScript read-write + reload
+			wantMax:  36,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newServer(tc.backend, tc.readOnly)
+			tools := listServerTools(t, srv)
+
+			if len(tools) < tc.wantMin || len(tools) > tc.wantMax {
+				t.Errorf("tool count = %d, want between %d and %d\ntools: %v",
+					len(tools), tc.wantMin, tc.wantMax, tools)
+			}
+		})
+	}
+}
+
+// containsTool reports whether the sorted tool list contains the given name.
+func containsTool(tools []string, name string) bool {
+	i := sort.SearchStrings(tools, name)
+	return i < len(tools) && tools[i] == name
 }

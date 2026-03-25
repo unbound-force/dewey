@@ -51,7 +51,10 @@ type Cluster struct {
 	Hub   string   `json:"hub"`
 }
 
-// Overview computes global graph statistics.
+// Overview computes global graph statistics including total pages, blocks,
+// links, journal page count, orphan count, top-10 most connected pages,
+// top-10 most linked-to pages, and namespace distribution. Returns the
+// statistics as an [OverviewStats] value.
 func (g *Graph) Overview() OverviewStats {
 	stats := OverviewStats{
 		TotalPages: len(g.Pages),
@@ -119,7 +122,11 @@ func (g *Graph) Overview() OverviewStats {
 	return stats
 }
 
-// FindConnections finds how two pages are connected.
+// FindConnections finds how two pages are connected by checking for
+// direct links, finding paths via BFS (up to maxDepth, default 5, max
+// 10 paths), and identifying shared connections. Returns a
+// [ConnectionResult] with direct link status, paths, and shared
+// connections sorted alphabetically.
 func (g *Graph) FindConnections(from, to string, maxDepth int) ConnectionResult {
 	fromKey := strings.ToLower(from)
 	toKey := strings.ToLower(to)
@@ -155,7 +162,11 @@ func (g *Graph) FindConnections(from, to string, maxDepth int) ConnectionResult 
 	return result
 }
 
-// KnowledgeGaps finds sparse areas in the graph.
+// KnowledgeGaps finds sparse areas in the graph by identifying orphan
+// pages (no links in or out), dead-end pages (incoming links but no
+// outgoing), and weakly linked pages (total degree ≤ 2). Journal pages
+// are excluded from the analysis. Returns a [GapInfo] with sorted lists
+// and up to 20 weakly linked pages.
 func (g *Graph) KnowledgeGaps() GapInfo {
 	var gaps GapInfo
 	var weakStats []PageStat
@@ -201,7 +212,11 @@ func (g *Graph) KnowledgeGaps() GapInfo {
 	return gaps
 }
 
-// TopicClusters finds connected components in the undirected link graph.
+// TopicClusters finds connected components in the undirected link graph
+// using BFS. Returns a slice of [Cluster] sorted by size descending.
+// Each cluster includes the list of page names, the hub page (highest
+// degree), and the cluster size. Singleton pages and journal pages are
+// excluded.
 func (g *Graph) TopicClusters() []Cluster {
 	visited := make(map[string]bool)
 	var clusters []Cluster

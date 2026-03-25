@@ -39,7 +39,14 @@ type GitHubSource struct {
 	rateLimited bool
 }
 
-// NewGitHubSource creates a GitHubSource for the given organization and repositories.
+// NewGitHubSource creates a GitHubSource for the given organization and
+// repositories. If contentTypes is empty, it defaults to
+// ["issues", "pulls", "readme"]. The GitHub token is resolved at creation
+// time using the precedence chain: GITHUB_TOKEN env → GH_TOKEN env →
+// `gh auth token` subprocess → unauthenticated (60 req/hr limit).
+//
+// Returns a ready-to-use source. The token is held in memory only and
+// never persisted or logged (FR-015b).
 func NewGitHubSource(id, name, org string, repos, contentTypes []string) *GitHubSource {
 	if len(contentTypes) == 0 {
 		contentTypes = []string{"issues", "pulls", "readme"}
@@ -100,7 +107,12 @@ func resolveGitHubToken() string {
 	return ""
 }
 
-// List returns all documents from configured GitHub repositories.
+// List returns all documents from configured GitHub repositories by
+// fetching issues, pull requests, and/or READMEs based on the configured
+// content types. If a rate limit is hit, returns the documents fetched so
+// far without an error (partial result). Updates status and lastFetched
+// timestamp. Returns an error only if a non-rate-limit API failure occurs
+// on a repository (logged as warning, fetch continues with other repos).
 func (gs *GitHubSource) List() ([]Document, error) {
 	var docs []Document
 	gs.rateLimited = false
@@ -143,7 +155,10 @@ func (gs *GitHubSource) List() ([]Document, error) {
 	return docs, nil
 }
 
-// Fetch retrieves a single document by its source-specific ID.
+// Fetch retrieves a single document by its source-specific ID. The ID
+// format is "repo/type/number" (e.g., "gaze/issues/42"). Returns the
+// document with full content and metadata. Returns an error if the ID
+// format is invalid or the GitHub API request fails.
 func (gs *GitHubSource) Fetch(id string) (*Document, error) {
 	// ID format: "repo/type/number" (e.g., "gaze/issues/42")
 	parts := strings.SplitN(id, "/", 3)
@@ -168,8 +183,10 @@ func (gs *GitHubSource) Fetch(id string) (*Document, error) {
 	return &doc, nil
 }
 
-// Diff returns changes since the last fetch. GitHub source uses timestamps
-// for incremental updates — only items updated after lastFetched are returned.
+// Diff returns changes since the last fetch. GitHub source treats all
+// current items as [ChangeModified] since the API does not support
+// efficient diff detection. Returns an error if the underlying List
+// call fails.
 func (gs *GitHubSource) Diff() ([]Change, error) {
 	// For GitHub, Diff is equivalent to List with a since filter.
 	// The manager handles the refresh interval; Diff just returns all current items.
@@ -190,7 +207,9 @@ func (gs *GitHubSource) Diff() ([]Change, error) {
 	return changes, nil
 }
 
-// Meta returns metadata about this GitHub source.
+// Meta returns metadata about this GitHub source, including its ID, type
+// ("github"), name, current status, any error message from the last fetch,
+// and the last fetch timestamp.
 func (gs *GitHubSource) Meta() SourceMetadata {
 	return SourceMetadata{
 		ID:            gs.id,

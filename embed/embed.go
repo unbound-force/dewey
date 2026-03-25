@@ -56,7 +56,11 @@ type OllamaEmbedder struct {
 
 // NewOllamaEmbedder creates an OllamaEmbedder that connects to the Ollama
 // API at baseURL (e.g., "http://localhost:11434") using the specified model
-// (e.g., "granite-embedding:30m").
+// (e.g., "granite-embedding:30m"). Returns a ready-to-use embedder with
+// a 30-second HTTP timeout and 30-second availability cache interval.
+//
+// The returned embedder is safe for concurrent use. Call [OllamaEmbedder.Available]
+// to check if the model is loaded before calling [OllamaEmbedder.Embed].
 func NewOllamaEmbedder(baseURL, model string) *OllamaEmbedder {
 	return &OllamaEmbedder{
 		baseURL: baseURL,
@@ -90,7 +94,10 @@ type tagModel struct {
 }
 
 // Embed generates a vector embedding for the given text by calling
-// Ollama's POST /api/embed endpoint.
+// Ollama's POST /api/embed endpoint. Returns the float32 embedding
+// vector for the input text. Returns an error if the HTTP request fails,
+// Ollama returns a non-200 status, the response cannot be parsed, or
+// the response contains no embeddings.
 func (o *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	vectors, err := o.doEmbed(ctx, text)
 	if err != nil {
@@ -103,7 +110,10 @@ func (o *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 }
 
 // EmbedBatch generates vector embeddings for multiple texts in a single
-// request by passing an array of strings to the Ollama API.
+// request by passing an array of strings to the Ollama API. Returns one
+// float32 vector per input text in the same order. Returns (nil, nil) if
+// texts is empty. Returns an error if the HTTP request fails or the
+// response cannot be parsed.
 func (o *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -112,8 +122,10 @@ func (o *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 }
 
 // Available reports whether the configured embedding model is available
-// in the Ollama instance. Caches the result for 30 seconds to avoid
-// excessive HTTP calls.
+// in the Ollama instance by querying GET /api/tags. Returns false if
+// Ollama is unreachable, returns a non-200 status, or the model is not
+// in the list. Caches the result for 30 seconds to avoid excessive HTTP
+// calls. Safe for concurrent use.
 func (o *OllamaEmbedder) Available() bool {
 	o.mu.RLock()
 	if time.Since(o.lastCheck) < o.checkInterval {
@@ -137,7 +149,8 @@ func (o *OllamaEmbedder) Available() bool {
 	return o.available
 }
 
-// ModelID returns the model identifier used for embeddings.
+// ModelID returns the model identifier string (e.g., "granite-embedding:30m")
+// used for embedding generation and storage lookups.
 func (o *OllamaEmbedder) ModelID() string {
 	return o.model
 }

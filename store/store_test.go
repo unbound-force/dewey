@@ -43,6 +43,14 @@ func TestNew_InMemory(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
+	// Verify returned store is non-nil with accessible DB handle.
+	if s == nil {
+		t.Fatal("New('') returned nil store")
+	}
+	if s.DB() == nil {
+		t.Fatal("store.DB() returned nil")
+	}
+
 	// Verify WAL mode is set.
 	var journalMode string
 	if err := s.db.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
@@ -60,6 +68,55 @@ func TestNew_InMemory(t *testing.T) {
 	}
 	if fk != 1 {
 		t.Errorf("foreign_keys = %d, want 1", fk)
+	}
+
+	// Verify Close releases resources without error.
+	if err := s.Close(); err != nil {
+		t.Errorf("Close() returned error: %v", err)
+	}
+}
+
+func TestNew_InvalidPath(t *testing.T) {
+	// Non-existent nested directory should fail.
+	_, err := New("/nonexistent/deeply/nested/path/that/cannot/exist/test.db")
+	if err == nil {
+		t.Fatal("New with invalid path should return error")
+	}
+}
+
+func TestNew_FileBacked_CloseReleasesResources(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "close-test.db")
+
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New(%q): %v", dbPath, err)
+	}
+
+	// Verify store is functional.
+	if err := s.InsertPage(testPage("close-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Close should release resources without error.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() returned error: %v", err)
+	}
+
+	// After close, re-opening should succeed (lock released).
+	s2, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New after Close: %v (lock may not have been released)", err)
+	}
+	defer func() { _ = s2.Close() }()
+
+	// Verify data persisted.
+	got, err := s2.GetPage("close-page")
+	if err != nil {
+		t.Fatalf("GetPage after reopen: %v", err)
+	}
+	if got == nil {
+		t.Fatal("page should persist after close and reopen")
 	}
 }
 
@@ -954,5 +1011,88 @@ func TestInsertPage_NullOptionalFields(t *testing.T) {
 	}
 	if got.ContentHash != "" {
 		t.Errorf("ContentHash = %q, want empty", got.ContentHash)
+	}
+}
+
+func TestFindSubstring_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		name   string
+		s      string
+		substr string
+		want   bool
+	}{
+		{name: "exact_match_lowercase", s: "hello", substr: "hello", want: true},
+		{name: "exact_match_uppercase", s: "HELLO", substr: "HELLO", want: true},
+		{name: "mixed_case_match", s: "Hello World", substr: "hello world", want: true},
+		{name: "substr_uppercase_s_lowercase", s: "disk is full", substr: "DISK IS FULL", want: true},
+		{name: "substr_lowercase_s_uppercase", s: "SQLITE_FULL", substr: "sqlite_full", want: true},
+		{name: "partial_match_at_start", s: "database or disk is full", substr: "disk is full", want: true},
+		{name: "partial_match_in_middle", s: "error: no space left on device", substr: "no space left", want: true},
+		{name: "no_match", s: "hello world", substr: "goodbye", want: false},
+		{name: "substr_longer_than_s", s: "hi", substr: "hello", want: false},
+		{name: "single_char_match", s: "abc", substr: "B", want: true},
+		{name: "single_char_no_match", s: "abc", substr: "z", want: false},
+		{name: "empty_s_nonempty_substr", s: "", substr: "a", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := findSubstring(tc.s, tc.substr)
+			if got != tc.want {
+				t.Errorf("findSubstring(%q, %q) = %v, want %v", tc.s, tc.substr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestContains_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name   string
+		s      string
+		substr string
+		want   bool
+	}{
+		{name: "empty_substr_always_matches", s: "anything", substr: "", want: true},
+		{name: "empty_both", s: "", substr: "", want: true},
+		{name: "equal_strings", s: "hello", substr: "hello", want: true},
+		{name: "case_insensitive_equal", s: "Hello", substr: "hello", want: true},
+		{name: "s_shorter_than_substr", s: "hi", substr: "hello", want: false},
+		{name: "substr_at_end", s: "SQLITE_FULL", substr: "full", want: true},
+		{name: "no_match", s: "abc", substr: "xyz", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := contains(tc.s, tc.substr)
+			if got != tc.want {
+				t.Errorf("contains(%q, %q) = %v, want %v", tc.s, tc.substr, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsDiskSpaceError_Recognition(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil_error", err: nil, want: false},
+		{name: "disk_full_lowercase", err: fmt.Errorf("database or disk is full"), want: true},
+		{name: "disk_full_mixed_case", err: fmt.Errorf("Disk Is Full"), want: true},
+		{name: "no_space_left", err: fmt.Errorf("no space left on device"), want: true},
+		{name: "sqlite_full_uppercase", err: fmt.Errorf("SQLITE_FULL (18)"), want: true},
+		{name: "sqlite_full_lowercase", err: fmt.Errorf("sqlite_full"), want: true},
+		{name: "unrelated_error", err: fmt.Errorf("connection refused"), want: false},
+		{name: "empty_error_message", err: fmt.Errorf(""), want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := IsDiskSpaceError(tc.err)
+			if got != tc.want {
+				t.Errorf("IsDiskSpaceError(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

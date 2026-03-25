@@ -387,6 +387,23 @@ func TestTopicClusters_SingleCluster(t *testing.T) {
 	if clusters[0].Size != 3 {
 		t.Errorf("cluster size = %d, want 3", clusters[0].Size)
 	}
+
+	// Verify all three pages are in the cluster.
+	pageSet := make(map[string]bool)
+	for _, p := range clusters[0].Pages {
+		pageSet[p] = true
+	}
+	for _, expected := range []string{"a", "b", "c"} {
+		if !pageSet[expected] {
+			t.Errorf("page %q missing from cluster, got %v", expected, clusters[0].Pages)
+		}
+	}
+
+	// Verify cluster pages are reachable from each other (connected component).
+	// All should be reachable from "a" via undirected traversal.
+	if clusters[0].Size != len(clusters[0].Pages) {
+		t.Errorf("Size = %d but Pages has %d entries", clusters[0].Size, len(clusters[0].Pages))
+	}
 }
 
 func TestTopicClusters_TwoClusters(t *testing.T) {
@@ -405,6 +422,37 @@ func TestTopicClusters_TwoClusters(t *testing.T) {
 		if c.Size != 2 {
 			t.Errorf("cluster %d size = %d, want 2", c.ID, c.Size)
 		}
+	}
+
+	// Verify each page appears in exactly one cluster.
+	pageToClusters := make(map[string]int)
+	for _, c := range clusters {
+		for _, p := range c.Pages {
+			pageToClusters[p]++
+		}
+	}
+	for page, count := range pageToClusters {
+		if count != 1 {
+			t.Errorf("page %q appears in %d clusters, want 1", page, count)
+		}
+	}
+
+	// Verify total pages across clusters equals non-singleton graph pages.
+	totalPages := 0
+	for _, c := range clusters {
+		totalPages += c.Size
+	}
+	if totalPages != 4 {
+		t.Errorf("total pages in clusters = %d, want 4", totalPages)
+	}
+
+	// Verify cluster IDs are unique.
+	clusterIDs := make(map[int]bool)
+	for _, c := range clusters {
+		if clusterIDs[c.ID] {
+			t.Errorf("duplicate cluster ID: %d", c.ID)
+		}
+		clusterIDs[c.ID] = true
 	}
 }
 

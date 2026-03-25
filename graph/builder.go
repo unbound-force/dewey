@@ -20,7 +20,9 @@ type Cache struct {
 	backend backend.Backend
 }
 
-// NewCache creates a graph cache with the given TTL.
+// NewCache creates a graph cache with the given TTL backed by the provided
+// [backend.Backend]. Returns a Cache that lazily builds the graph on the
+// first [Cache.Get] call and re-uses it until the TTL expires.
 func NewCache(b backend.Backend, ttl time.Duration) *Cache {
 	return &Cache{
 		backend: b,
@@ -28,7 +30,9 @@ func NewCache(b backend.Backend, ttl time.Duration) *Cache {
 	}
 }
 
-// Get returns a cached graph or builds a fresh one if expired.
+// Get returns the cached graph if it was built within the TTL, or builds
+// a fresh one by calling [Build]. Returns an error if the graph build
+// fails. Safe for concurrent use (serialized via mutex).
 func (c *Cache) Get(ctx context.Context) (*Graph, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -47,7 +51,8 @@ func (c *Cache) Get(ctx context.Context) (*Graph, error) {
 	return g, nil
 }
 
-// Invalidate forces the next Get to rebuild.
+// Invalidate clears the cached graph, forcing the next [Cache.Get] call
+// to rebuild it from the backend. Safe for concurrent use.
 func (c *Cache) Invalidate() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -66,7 +71,11 @@ type Graph struct {
 	BlockCounts map[string]int
 }
 
-// Build fetches all pages and their block trees, constructing the link graph.
+// Build fetches all pages and their block trees from the backend and
+// constructs an in-memory link graph. Returns the graph with forward links,
+// backward links, page metadata, and block counts populated. Pages with
+// empty names are skipped; block tree fetch errors are logged and skipped
+// (partial graph). Returns an error if GetAllPages fails.
 func Build(ctx context.Context, c backend.Backend) (*Graph, error) {
 	pages, err := c.GetAllPages(ctx)
 	if err != nil {
@@ -132,22 +141,27 @@ func extractLinksRecursive(blocks []types.BlockEntity, sourceKey string, g *Grap
 	}
 }
 
-// OutDegree returns the number of outgoing links from a page.
+// OutDegree returns the number of outgoing links from the named page.
+// Returns 0 if the page does not exist in the graph.
 func (g *Graph) OutDegree(name string) int {
 	return len(g.Forward[strings.ToLower(name)])
 }
 
-// InDegree returns the number of incoming links to a page.
+// InDegree returns the number of incoming links to the named page.
+// Returns 0 if the page does not exist in the graph or has no incoming links.
 func (g *Graph) InDegree(name string) int {
 	return len(g.Backward[strings.ToLower(name)])
 }
 
-// TotalDegree returns outgoing + incoming link count for a page.
+// TotalDegree returns the sum of outgoing and incoming link counts for
+// the named page. Returns 0 if the page does not exist in the graph.
 func (g *Graph) TotalDegree(name string) int {
 	return g.OutDegree(name) + g.InDegree(name)
 }
 
-// OriginalName returns the display name for a page.
+// OriginalName returns the original display name for a page identified by
+// its lowercase key. Returns the key itself if the page is not found or
+// has no OriginalName set.
 func (g *Graph) OriginalName(key string) string {
 	if p, ok := g.Pages[key]; ok && p.OriginalName != "" {
 		return p.OriginalName

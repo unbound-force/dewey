@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,29 @@ func TestWebSource_FetchHTML(t *testing.T) {
 	defer server.Close()
 
 	ws := NewWebSource("web-test", "test", []string{server.URL}, 0, 10*time.Millisecond, "")
+
+	// Verify NewWebSource returns correctly configured source.
+	if ws.id != "web-test" {
+		t.Errorf("ws.id = %q, want %q", ws.id, "web-test")
+	}
+	if ws.name != "test" {
+		t.Errorf("ws.name = %q, want %q", ws.name, "test")
+	}
+	if ws.depth != 0 {
+		t.Errorf("ws.depth = %d, want 0", ws.depth)
+	}
+	if ws.rateLimit != 10*time.Millisecond {
+		t.Errorf("ws.rateLimit = %v, want 10ms", ws.rateLimit)
+	}
+	if ws.client == nil {
+		t.Fatal("ws.client should not be nil")
+	}
+	if ws.robotsCache == nil {
+		t.Fatal("ws.robotsCache should not be nil")
+	}
+	if ws.status != "active" {
+		t.Errorf("ws.status = %q, want %q", ws.status, "active")
+	}
 
 	docs, err := ws.List()
 	if err != nil {
@@ -42,6 +67,12 @@ func TestWebSource_FetchHTML(t *testing.T) {
 	}
 	if doc.OriginURL == "" {
 		t.Error("origin_url should not be empty")
+	}
+	if doc.ContentHash == "" {
+		t.Error("content hash should not be empty")
+	}
+	if doc.ID == "" {
+		t.Error("document ID should not be empty")
 	}
 }
 
@@ -229,6 +260,17 @@ func TestWebSource_NonHTMLContentSkip(t *testing.T) {
 	}
 }
 
+func TestNewWebSource_NegativeDepthClamped(t *testing.T) {
+	ws := NewWebSource("web-neg", "neg", []string{"https://example.com"}, -5, 0, "")
+	if ws.depth != 0 {
+		t.Errorf("depth = %d, want 0 (negative depth should be clamped)", ws.depth)
+	}
+	// Non-positive rateLimit should default to defaultRateLimit.
+	if ws.rateLimit != defaultRateLimit {
+		t.Errorf("rateLimit = %v, want %v (default)", ws.rateLimit, defaultRateLimit)
+	}
+}
+
 func TestWebSource_Meta(t *testing.T) {
 	ws := NewWebSource("web-go-stdlib", "go-stdlib", []string{"https://pkg.go.dev/std"}, 1, time.Second, "")
 	meta := ws.Meta()
@@ -260,6 +302,235 @@ func TestExtractHTMLTitle(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("extractHTMLTitle(%q) = %q, want %q", tt.html[:min(len(tt.html), 40)], got, tt.want)
 		}
+	}
+}
+
+func TestWebSource_CacheDocuments_CreatesFiles(t *testing.T) {
+	cacheDir := t.TempDir()
+	ws := NewWebSource("web-cache-test", "cache-test", nil, 0, 10*time.Millisecond, cacheDir)
+
+	docs := []Document{
+		{
+			ID:          "https://example.com/page1",
+			Title:       "Page 1",
+			Content:     "Content of page one",
+			ContentHash: computeHash("Content of page one"),
+			SourceID:    "web-cache-test",
+		},
+		{
+			ID:          "https://example.com/page2",
+			Title:       "Page 2",
+			Content:     "Content of page two",
+			ContentHash: computeHash("Content of page two"),
+			SourceID:    "web-cache-test",
+		},
+	}
+
+	ws.cacheDocuments(docs)
+
+	// Verify the source-specific subdirectory was created.
+	sourceDir := filepath.Join(cacheDir, "web-cache-test")
+	info, err := os.Stat(sourceDir)
+	if err != nil {
+		t.Fatalf("cache source directory not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("cache source path is not a directory")
+	}
+
+	// Verify each document was cached as <hash>.txt.
+	for _, doc := range docs {
+		filename := computeHash(doc.ID) + ".txt"
+		cachePath := filepath.Join(sourceDir, filename)
+
+		content, err := os.ReadFile(cachePath)
+		if err != nil {
+			t.Fatalf("failed to read cached file for %q: %v", doc.ID, err)
+		}
+		if string(content) != doc.Content {
+			t.Errorf("cached content for %q = %q, want %q", doc.ID, string(content), doc.Content)
+		}
+	}
+
+	// Verify exactly 2 files were created (no extras).
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		t.Fatalf("failed to read cache directory: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("expected 2 cached files, got %d", len(entries))
+	}
+}
+
+func TestWebSource_CacheDocuments_EmptySlice(t *testing.T) {
+	cacheDir := t.TempDir()
+	ws := NewWebSource("web-cache-empty", "empty", nil, 0, 10*time.Millisecond, cacheDir)
+
+	// Caching an empty slice should still create the directory but no files.
+	ws.cacheDocuments([]Document{})
+
+	sourceDir := filepath.Join(cacheDir, "web-cache-empty")
+	info, err := os.Stat(sourceDir)
+	if err != nil {
+		t.Fatalf("cache directory not created for empty docs: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("cache path is not a directory")
+	}
+
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		t.Fatalf("failed to read cache directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 cached files for empty slice, got %d", len(entries))
+	}
+}
+
+func TestWebSource_CacheDocuments_NoCacheDir(t *testing.T) {
+	// When cacheDir is empty, cacheDocuments should be a no-op.
+	ws := NewWebSource("web-no-cache", "no-cache", nil, 0, 10*time.Millisecond, "")
+
+	// Should not panic or error.
+	ws.cacheDocuments([]Document{
+		{ID: "https://example.com", Content: "test"},
+	})
+}
+
+func TestWebSource_CacheDocuments_NestedDirectory(t *testing.T) {
+	// Verify cacheDocuments creates nested directories via MkdirAll.
+	cacheDir := filepath.Join(t.TempDir(), "deep", "nested", "path")
+	ws := NewWebSource("web-nested", "nested", nil, 0, 10*time.Millisecond, cacheDir)
+
+	docs := []Document{
+		{
+			ID:      "https://example.com/deep",
+			Content: "Deep nested content",
+		},
+	}
+
+	ws.cacheDocuments(docs)
+
+	// Verify the nested directory was created.
+	sourceDir := filepath.Join(cacheDir, "web-nested")
+	if _, err := os.Stat(sourceDir); err != nil {
+		t.Fatalf("nested cache directory not created: %v", err)
+	}
+
+	// Verify file was written.
+	filename := computeHash("https://example.com/deep") + ".txt"
+	content, err := os.ReadFile(filepath.Join(sourceDir, filename))
+	if err != nil {
+		t.Fatalf("failed to read cached file: %v", err)
+	}
+	if string(content) != "Deep nested content" {
+		t.Errorf("cached content = %q, want %q", string(content), "Deep nested content")
+	}
+}
+
+func TestWebSource_Fetch_FromServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/robots.txt" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = fmt.Fprint(w, `<html><head><title>Fetched Page</title></head><body><p>Fetched content</p></body></html>`)
+	}))
+	defer server.Close()
+
+	ws := NewWebSource("web-fetch", "fetch", nil, 0, 10*time.Millisecond, "")
+
+	doc, err := ws.Fetch(server.URL + "/page")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if doc.Title != "Fetched Page" {
+		t.Errorf("title = %q, want %q", doc.Title, "Fetched Page")
+	}
+	if !strings.Contains(doc.Content, "Fetched content") {
+		t.Errorf("content should contain 'Fetched content', got %q", doc.Content)
+	}
+	if doc.SourceID != "web-fetch" {
+		t.Errorf("source_id = %q, want %q", doc.SourceID, "web-fetch")
+	}
+	if doc.ContentHash == "" {
+		t.Error("content hash should not be empty")
+	}
+	if doc.OriginURL != server.URL+"/page" {
+		t.Errorf("origin_url = %q, want %q", doc.OriginURL, server.URL+"/page")
+	}
+}
+
+func TestWebSource_Fetch_NotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ws := NewWebSource("web-fetch", "fetch", nil, 0, 10*time.Millisecond, "")
+
+	_, err := ws.Fetch(server.URL + "/nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent page")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error = %q, want HTTP 404 message", err.Error())
+	}
+}
+
+func TestWebSource_Fetch_FromCache(t *testing.T) {
+	// Set up a cache with a pre-cached document.
+	cacheDir := t.TempDir()
+	ws := NewWebSource("web-cached", "cached", nil, 0, 10*time.Millisecond, cacheDir)
+
+	// Pre-populate cache.
+	docID := "https://example.com/cached-page"
+	sourceDir := filepath.Join(cacheDir, "web-cached")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	filename := computeHash(docID) + ".txt"
+	cachedContent := "This is cached content"
+	if err := os.WriteFile(filepath.Join(sourceDir, filename), []byte(cachedContent), 0o644); err != nil {
+		t.Fatalf("write cache: %v", err)
+	}
+
+	// Fetch should return from cache without hitting any server.
+	doc, err := ws.Fetch(docID)
+	if err != nil {
+		t.Fatalf("Fetch from cache: %v", err)
+	}
+
+	if doc.Content != cachedContent {
+		t.Errorf("content = %q, want %q", doc.Content, cachedContent)
+	}
+	if doc.ID != docID {
+		t.Errorf("id = %q, want %q", doc.ID, docID)
+	}
+	if doc.SourceID != "web-cached" {
+		t.Errorf("source_id = %q, want %q", doc.SourceID, "web-cached")
+	}
+	if doc.ContentHash == "" {
+		t.Error("content hash should not be empty for cached document")
+	}
+}
+
+func TestWebSource_Fetch_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ws := NewWebSource("web-err", "err", nil, 0, 10*time.Millisecond, "")
+
+	_, err := ws.Fetch(server.URL + "/error")
+	if err == nil {
+		t.Fatal("expected error for server error response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error = %q, want HTTP 500 message", err.Error())
 	}
 }
 

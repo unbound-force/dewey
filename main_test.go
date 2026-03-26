@@ -183,7 +183,7 @@ func TestRunServer_HTTPTransport_ContextCancellation(t *testing.T) {
 		t.Fatalf("net.Listen: %v", err)
 	}
 	addr := listener.Addr().String()
-	listener.Close()
+	_ = listener.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 

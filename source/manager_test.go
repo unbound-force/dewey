@@ -329,7 +329,10 @@ func TestCreateDiskSource_FallsBackToBasePath(t *testing.T) {
 		t.Fatal("createDiskSource returned nil")
 	}
 
-	ds := src.(*DiskSource)
+	ds, ok := src.(*DiskSource)
+	if !ok {
+		t.Fatal("createDiskSource did not return *DiskSource")
+	}
 	if ds.basePath != "/fallback/base" {
 		t.Errorf("basePath = %q, want %q (should fall back to basePath)", ds.basePath, "/fallback/base")
 	}
@@ -350,7 +353,10 @@ func TestCreateDiskSource_DotPathFallsBackToBasePath(t *testing.T) {
 		t.Fatal("createDiskSource returned nil")
 	}
 
-	ds := src.(*DiskSource)
+	ds, ok := src.(*DiskSource)
+	if !ok {
+		t.Fatal("createDiskSource did not return *DiskSource")
+	}
 	if ds.basePath != "/fallback/base" {
 		t.Errorf("basePath = %q, want %q (dot path should resolve to basePath)", ds.basePath, "/fallback/base")
 	}
@@ -369,7 +375,10 @@ func TestCreateDiskSource_NilConfig(t *testing.T) {
 		t.Fatal("createDiskSource returned nil for nil config")
 	}
 
-	ds := src.(*DiskSource)
+	ds, ok := src.(*DiskSource)
+	if !ok {
+		t.Fatal("createDiskSource did not return *DiskSource")
+	}
 	// With nil Config, path type assertion fails, defaults to ".", then to basePath.
 	if ds.basePath != "/fallback/base" {
 		t.Errorf("basePath = %q, want %q", ds.basePath, "/fallback/base")

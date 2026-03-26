@@ -40,14 +40,6 @@ func (m *builderMockBackend) addPage(name string, blocks ...types.BlockEntity) {
 	}
 }
 
-func (m *builderMockBackend) addJournalPage(name string) {
-	m.pages = append(m.pages, types.PageEntity{
-		Name:         name,
-		OriginalName: name,
-		Journal:      true,
-	})
-}
-
 func (m *builderMockBackend) GetAllPages(_ context.Context) ([]types.PageEntity, error) {
 	m.callCount.Add(1)
 	if m.pagesErr != nil {

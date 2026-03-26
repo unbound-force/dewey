@@ -1592,6 +1592,129 @@ func TestRemoveContentFromFile(t *testing.T) {
 	})
 }
 
+func TestPrependBlockInPage_AutoCreate(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	// Prepend to a non-existent page — should auto-create it.
+	block, err := c.PrependBlockInPage(ctx, "prepend-auto", "Prepended to new page")
+	if err != nil {
+		t.Fatalf("PrependBlockInPage auto-create: %v", err)
+	}
+	if block == nil {
+		t.Fatal("returned nil block")
+	}
+	if block.UUID == "" {
+		t.Error("block UUID should not be empty")
+	}
+	if block.Content == "" {
+		t.Error("block Content should not be empty")
+	}
+
+	// The page should now exist.
+	page, err := c.GetPage(ctx, "prepend-auto")
+	if err != nil {
+		t.Fatalf("GetPage after auto-create: %v", err)
+	}
+	if page == nil {
+		t.Fatal("auto-created page not found")
+	}
+
+	// Verify file was created on disk.
+	absPath := filepath.Join(c.vaultPath, "prepend-auto.md")
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "Prepended to new page") {
+		t.Errorf("file content = %q, should contain 'Prepended to new page'", string(data))
+	}
+}
+
+func TestPrependBlockInPage_WithFrontmatter(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	// Create a page with frontmatter.
+	_, err := c.CreatePage(ctx, "prepend-fm", map[string]any{"type": "test"}, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+
+	// Append an existing block after frontmatter so the page has content.
+	_, err = c.AppendBlockInPage(ctx, "prepend-fm", "# Existing Block")
+	if err != nil {
+		t.Fatalf("AppendBlockInPage: %v", err)
+	}
+
+	// Prepend a block — should go after frontmatter but before existing content.
+	block, err := c.PrependBlockInPage(ctx, "prepend-fm", "Prepended after frontmatter")
+	if err != nil {
+		t.Fatalf("PrependBlockInPage: %v", err)
+	}
+	if block == nil {
+		t.Fatal("returned nil block")
+	}
+
+	// Read the raw file to verify ordering.
+	absPath := filepath.Join(c.vaultPath, "prepend-fm.md")
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	fileStr := string(data)
+
+	// Frontmatter should still be at the beginning.
+	if !strings.HasPrefix(fileStr, "---\n") {
+		t.Errorf("file should start with frontmatter, got: %q", fileStr[:min(50, len(fileStr))])
+	}
+
+	// Prepended content should appear before existing content.
+	idxPrepended := strings.Index(fileStr, "Prepended after frontmatter")
+	idxExisting := strings.Index(fileStr, "Existing Block")
+	if idxPrepended < 0 {
+		t.Fatal("prepended content not found in file")
+	}
+	if idxExisting < 0 {
+		t.Fatal("existing content not found in file")
+	}
+	if idxPrepended >= idxExisting {
+		t.Errorf("prepended content (pos %d) should appear before existing content (pos %d)", idxPrepended, idxExisting)
+	}
+}
+
+func TestPrependBlockInPage_EmptyExistingPage(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	// Create an empty page (no content, no frontmatter).
+	_, err := c.CreatePage(ctx, "prepend-empty", nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+
+	// Prepend to the empty page.
+	block, err := c.PrependBlockInPage(ctx, "prepend-empty", "Content into empty page")
+	if err != nil {
+		t.Fatalf("PrependBlockInPage: %v", err)
+	}
+	if block == nil {
+		t.Fatal("returned nil block")
+	}
+
+	// Verify the block is now the first (and only) content.
+	blocks, err := c.GetPageBlocksTree(ctx, "prepend-empty")
+	if err != nil {
+		t.Fatalf("GetPageBlocksTree: %v", err)
+	}
+	if len(blocks) == 0 {
+		t.Fatal("expected at least 1 block after prepend")
+	}
+	if !strings.Contains(blocks[0].Content, "Content into empty page") {
+		t.Errorf("first block = %q, expected prepended content", blocks[0].Content)
+	}
+}
+
 func TestInsertContentInFile(t *testing.T) {
 	dir := t.TempDir()
 	c := New(dir)

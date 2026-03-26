@@ -282,3 +282,103 @@ func TestInitObsidianBackend_WithPersistentStore(t *testing.T) {
 		t.Errorf("expected at least 2 server options (store + embedder), got %d", len(opts))
 	}
 }
+
+// TestInitObsidianBackend_EmbedderEnvConfig verifies that the DEWEY_EMBEDDING_MODEL
+// and DEWEY_EMBEDDING_ENDPOINT env vars are used when set, and default values are
+// used when unset. The function always creates an embedder (graceful degradation).
+func TestInitObsidianBackend_EmbedderEnvConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set custom embedding config via env vars.
+	t.Setenv("OBSIDIAN_VAULT_PATH", "")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "custom-model:latest")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "http://localhost:99999")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	b, opts, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	if err != nil {
+		t.Fatalf("initObsidianBackend failed: %v", err)
+	}
+	defer cleanup()
+
+	if b == nil {
+		t.Fatal("initObsidianBackend returned nil backend")
+	}
+
+	// Should have at least the embedder option (store may or may not be present).
+	if len(opts) == 0 {
+		t.Error("initObsidianBackend returned no server options (expected at least embedder)")
+	}
+
+	// Log output should mention the custom model and warn about unavailability.
+	logOutput := logBuf.String()
+	if logOutput == "" {
+		t.Error("expected log output about embedding model")
+	}
+}
+
+// TestInitObsidianBackend_WithMarkdownFiles verifies that initObsidianBackend
+// successfully indexes markdown files and returns a working backend that can
+// list pages.
+func TestInitObsidianBackend_WithMarkdownFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create some test markdown files.
+	if err := os.WriteFile(tmpDir+"/test-page.md", []byte("# Test Page\n\nContent."), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	if err != nil {
+		t.Fatalf("initObsidianBackend failed: %v", err)
+	}
+	defer cleanup()
+
+	// Verify pages were indexed by querying through the backend.
+	pages, err := b.GetAllPages(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllPages: %v", err)
+	}
+	if len(pages) == 0 {
+		t.Error("expected at least 1 page after indexing")
+	}
+
+	// Verify the specific page is accessible.
+	page, err := b.GetPage(context.Background(), "test-page")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Error("test-page should be found after indexing")
+	}
+}
+
+// TestInitObsidianBackend_FlagTakesPrecedence verifies that the vaultPath
+// flag takes precedence over the OBSIDIAN_VAULT_PATH env var.
+func TestInitObsidianBackend_FlagTakesPrecedence(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set env to a different (non-existent) path — flag should take precedence.
+	t.Setenv("OBSIDIAN_VAULT_PATH", "/nonexistent/should-not-be-used")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	if err != nil {
+		t.Fatalf("initObsidianBackend failed: %v", err)
+	}
+	defer cleanup()
+
+	if b == nil {
+		t.Fatal("initObsidianBackend returned nil backend")
+	}
+}

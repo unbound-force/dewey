@@ -447,7 +447,10 @@ func TestCreateGitHubSource_DefaultContentTypes(t *testing.T) {
 	}
 
 	src := createGitHubSource(cfg)
-	gs := src.(*GitHubSource)
+	gs, ok := src.(*GitHubSource)
+	if !ok {
+		t.Fatal("createGitHubSource did not return *GitHubSource")
+	}
 
 	// When no content types specified, NewGitHubSource defaults to all three.
 	if len(gs.contentType) != 3 {
@@ -518,7 +521,10 @@ func TestCreateWebSource_DepthAsFloat64(t *testing.T) {
 	}
 
 	src := createWebSource(cfg, "")
-	ws := src.(*WebSource)
+	ws, ok := src.(*WebSource)
+	if !ok {
+		t.Fatal("createWebSource did not return *WebSource")
+	}
 
 	if ws.depth != 3 {
 		t.Errorf("depth = %d, want 3 (from float64)", ws.depth)
@@ -536,7 +542,10 @@ func TestCreateWebSource_DefaultDepthAndRateLimit(t *testing.T) {
 	}
 
 	src := createWebSource(cfg, "")
-	ws := src.(*WebSource)
+	ws, ok := src.(*WebSource)
+	if !ok {
+		t.Fatal("createWebSource did not return *WebSource")
+	}
 
 	if ws.depth != 1 {
 		t.Errorf("depth = %d, want 1 (default)", ws.depth)

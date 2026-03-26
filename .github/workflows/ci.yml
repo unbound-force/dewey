@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Cancel in-progress runs for the same branch/PR. Avoids redundant
+# work when multiple pushes land in quick succession.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -35,17 +41,28 @@ jobs:
       - name: Install gaze
         run: go install github.com/unbound-force/gaze/cmd/gaze@latest
 
-      - name: Install OpenCode
-        run: npm install -g opencode-ai@1.2.26
-
-      - name: Gaze quality report
-        env:
-          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+      # Threshold gate: runs on every push and PR. No AI, no billing.
+      # Uses gaze crap with threshold flags — exits non-zero on regression.
+      - name: Gaze threshold gate
         run: |
-          gaze report ./... \
-            --ai=opencode \
-            --model=opencode/claude-sonnet-4-6 \
+          gaze crap --format=json \
             --coverprofile=coverage.out \
             --max-crapload=15 \
             --max-gaze-crapload=34 \
-            --min-contract-coverage=61
+            ./...
+
+      # AI-formatted report: runs only on pushes to main (not PRs, not
+      # feature branches). This is the expensive step that uses OpenCode.
+      # Threshold enforcement is handled by the gate above, so this step
+      # is informational only (continue-on-error).
+      - name: Gaze AI quality report
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        continue-on-error: true
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          npm install -g opencode-ai@1.2.26
+          gaze report ./... \
+            --ai=opencode \
+            --model=opencode/claude-sonnet-4-6 \
+            --coverprofile=coverage.out

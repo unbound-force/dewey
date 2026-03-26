@@ -9,7 +9,7 @@ Extend Dewey (a hard fork of graphthulhu) with persistent storage, vector-based 
 
 ## Technical Context
 
-**Language/Version**: Go 1.24 (per `go.mod`)
+**Language/Version**: Go 1.25 (per `go.mod`; was 1.24 when plan was written)
 **Primary Dependencies**: `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging)
 **Storage**: SQLite via `modernc.org/sqlite` -- single database `.dewey/graph.db` containing the knowledge graph index (pages, blocks, links) and vector embeddings
 **Testing**: `go test -race ./...` -- existing test suite (vault, tools, parser, graph, types packages) plus new tests for store, embedding, source, and CLI packages

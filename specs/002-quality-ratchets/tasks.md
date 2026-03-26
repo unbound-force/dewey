@@ -126,9 +126,9 @@
 
 - [x] T050 [US3] Run `go test -race -count=1 -coverprofile=coverage.out ./...` — all tests pass, no regressions
 - [ ] T051 [US3] Run `gaze crap --format=json --coverprofile=coverage.out ./...` — contract coverage 60.6% (target ≥80% NOT MET), GazeCRAPload 36 (target ≤10 NOT MET), Q4=5 (target 0 NOT MET). GoDoc + assertion strengthening moved needle but insufficient. Remaining Q3/Q4 functions need deeper assertion work or structural changes.
-- [x] T052 [US3] Tighten CI thresholds to achieved values: --max-crapload=26 --max-gaze-crapload=36 --min-contract-coverage=60
+- [x] T052 [US3] Tighten CI thresholds to achieved values. Final CI: --max-crapload=15 --max-gaze-crapload=34 (in gaze crap gate step). Note: --min-contract-coverage is not supported by `gaze crap` subcommand and is only enforced via `gaze report` on main pushes.
 
-**Checkpoint**: Contract coverage at B grade (≥80%). GazeCRAPload ≤10. All Q4 functions eliminated. CI ratchet locked.
+**Checkpoint**: Contract coverage at 61.6% (target ≥80% NOT MET — blocked by Gaze classifier, issues #77-#79). GazeCRAPload 34 (target ≤10 NOT MET). Q4=5 (target 0 NOT MET). CI ratchet tightened to achieved values (--max-crapload=15 --max-gaze-crapload=34). Further progress requires upstream Gaze classifier fixes.
 
 ---
 
@@ -139,7 +139,7 @@
 - [x] T055 Verify all 40 MCP tools still function correctly — all 10 packages pass tests with -race, no regressions from decompositions
 - [x] T056 Update specs/002-quality-ratchets/tasks.md to mark all completed tasks with [x]
 
-**Checkpoint**: All quality targets met. CI enforces ratcheted thresholds. Ready for PR.
+**Checkpoint**: CRAPload target exceeded (15 ≤ 53, grade A). CI enforces ratcheted thresholds at achieved values. Contract coverage (61.6%) and GazeCRAPload (34) targets not met — blocked by upstream Gaze classifier limitations (issues #77-#79). PR #4 merged, v0.2.0 released. Remaining targets deferred to follow-up work after Gaze fixes land.
 
 ---
 

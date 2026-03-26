@@ -1,7 +1,7 @@
-# Specification Quality Checklist: Quality Ratchets
+# Specification Quality Checklist: Website Documentation for Dewey
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
-**Created**: 2026-03-23
+**Created**: 2026-03-26
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality
@@ -31,10 +31,6 @@
 
 ## Notes
 
-- All items passed on first validation iteration.
-- 3 user stories covering CI enforcement, CRAPload reduction, and contract coverage improvement.
-- 14 functional requirements (FR-014 added during 2026-03-24 clarification), 7 success criteria, 4 edge cases.
-- Original baseline estimates: CRAPload 88, contract coverage 70.1%, GazeCRAPload 18.
-- Actual measured baselines (2026-03-24): CRAPload 48, contract coverage 56.5%, GazeCRAPload 37.
-- Achieved values (2026-03-26): CRAPload 15, contract coverage 61.6%, GazeCRAPload 34.
-- Target metrics: CRAPload ≤53 (MET), contract coverage ≥80% (NOT MET), GazeCRAPload ≤10 (NOT MET).
+- All items pass. Spec is ready for `/speckit.clarify` or `/speckit.plan`.
+- Implementation happens in the `unbound-force/website` repo, not the dewey repo.
+- Existing `knowledge.md` and `team/dewey.md` pages already have partial content — this spec drives updates and additions.

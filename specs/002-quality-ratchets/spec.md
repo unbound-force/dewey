@@ -2,7 +2,7 @@
 
 **Feature Branch**: `002-quality-ratchets`
 **Created**: 2026-03-23
-**Status**: Draft
+**Status**: In Progress (US1 complete, US2 complete, US3 partially complete — contract coverage 61.6% vs 80% target, blocked by Gaze classifier issues #77-#79)
 **Input**: User description: "please create a plan to bring the CRAPload grade up to a B, the Contract Coverage up to a B, add Gaze to the CI checks for main, and add ratchets for the Gaze thresholds"
 
 ## User Scenarios & Testing *(mandatory)*

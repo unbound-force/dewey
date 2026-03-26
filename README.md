@@ -121,11 +121,21 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Install
 
-### go install
+### Homebrew (macOS)
+
+```bash
+brew install --cask unbound-force/tap/dewey
+```
+
+The cask includes a signed and notarized binary. Ollama is installed automatically as a dependency.
+
+### go install (all platforms)
 
 ```bash
 go install github.com/unbound-force/dewey@latest
 ```
+
+Requires Go 1.25+. Works on macOS, Linux, and any platform with a Go toolchain.
 
 ### Build from source
 
@@ -221,6 +231,23 @@ To disable all write operations:
 
 On startup with the Logseq backend, Dewey checks if your graph directory is git-controlled. If not, it prints a warning to stderr suggesting you initialize version control. Write operations cannot be undone without it.
 
+### Persistence
+
+Dewey stores its index in `.dewey/graph.db` (SQLite). The database holds pages, blocks, links, vector embeddings, and source metadata. After the first full index, subsequent sessions load from the persistent index and only reprocess changed files — startup is near-instant.
+
+Run `dewey init` to create the `.dewey/` directory with default configuration:
+
+```bash
+dewey init
+```
+
+This creates:
+- `.dewey/config.yaml` — embedding model and endpoint settings
+- `.dewey/sources.yaml` — content source configuration (empty by default)
+- `.dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
+
+Add `.dewey/` to your `.gitignore`. The index is machine-local and rebuilt from source files.
+
 ### Environment variables
 
 | Variable | Default | Description |
@@ -267,6 +294,82 @@ Add a content source (GitHub or web) to the configuration.
 dewey source add github --org ORG --repos REPO1,REPO2 [--refresh INTERVAL]
 dewey source add web --url URL [--name NAME] [--depth N] [--refresh INTERVAL]
 ```
+
+## Content Sources
+
+Dewey indexes content from three pluggable source types. Configure them in `.dewey/sources.yaml`:
+
+```yaml
+sources:
+  - name: local-vault
+    type: disk
+    config:
+      path: .
+
+  - name: org-repos
+    type: github
+    config:
+      org: your-org
+      repos:
+        - repo-one
+        - repo-two
+      content_types:
+        - issues
+        - pulls
+        - readmes
+    refresh: daily
+
+  - name: go-docs
+    type: web
+    config:
+      urls:
+        - https://pkg.go.dev/github.com/spf13/cobra
+      depth: 2
+    refresh: weekly
+```
+
+You can also add sources via the CLI instead of editing YAML directly:
+
+```bash
+dewey source add github --org your-org --repos repo-one,repo-two
+dewey source add web --url https://pkg.go.dev/github.com/spf13/cobra --depth 2
+```
+
+After adding sources, build the index:
+
+```bash
+dewey index             # incremental — only fetches sources past their refresh interval
+dewey index --force     # full rebuild — re-fetches everything
+```
+
+## Semantic Search Setup
+
+Semantic search requires [Ollama](https://ollama.ai) running locally. All 37 keyword-based tools work without it — only the 3 semantic search tools (`dewey_semantic_search`, `dewey_similar`, `dewey_semantic_search_filtered`) require Ollama.
+
+### Install Ollama and pull the embedding model
+
+```bash
+brew install ollama       # macOS — or download from https://ollama.ai
+ollama serve              # start the Ollama server (runs in background)
+ollama pull granite-embedding:30m   # IBM Granite, 63 MB, Apache 2.0
+```
+
+### Verify
+
+```bash
+dewey status
+```
+
+The output shows embedding coverage. If Ollama is running and the model is pulled, you'll see embedding stats. If Ollama is unavailable, Dewey logs a warning at startup and disables semantic search — all other tools continue to work normally.
+
+### Configuration
+
+The embedding model and endpoint are configurable via environment variables or `.dewey/config.yaml`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama model name |
+| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
 
 ## Architecture
 

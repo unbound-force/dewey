@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/store"
@@ -437,6 +438,189 @@ func TestVaultStore_RemovePage(t *testing.T) {
 	}
 	if sp != nil {
 		t.Error("page should be nil after removal")
+	}
+}
+
+func TestVaultStore_IncrementalIndex_StoreConsistency(t *testing.T) {
+	// Verify that IncrementalIndex maintains store consistency by checking
+	// page count in store matches expected after new + changed + deleted operations.
+	tmpDir := t.TempDir()
+	copyTestdata(t, tmpDir)
+
+	vs, s := newTestVaultStore(t, tmpDir)
+
+	c := New(tmpDir)
+	if err := vs.FullIndex(c); err != nil {
+		t.Fatalf("FullIndex: %v", err)
+	}
+
+	// Get initial page list and count.
+	initialPages, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages initial: %v", err)
+	}
+	initialCount := len(initialPages)
+	if initialCount < 6 {
+		t.Fatalf("expected at least 6 initial pages, got %d", initialCount)
+	}
+
+	// Verify each initial page has a non-empty ContentHash.
+	for _, p := range initialPages {
+		if p.ContentHash == "" {
+			t.Errorf("initial page %q has empty ContentHash", p.Name)
+		}
+		if p.SourceID == "" {
+			t.Errorf("initial page %q has empty SourceID", p.Name)
+		}
+	}
+
+	// Add a new file, modify another, and delete a third.
+	newFile := filepath.Join(tmpDir, "consistency-new.md")
+	if err := os.WriteFile(newFile, []byte("# Consistency New\n\nNew content."), 0o644); err != nil {
+		t.Fatalf("WriteFile new: %v", err)
+	}
+	indexFile := filepath.Join(tmpDir, "index.md")
+	if err := os.WriteFile(indexFile, []byte("# Modified for consistency\n\nChanged."), 0o644); err != nil {
+		t.Fatalf("WriteFile modified: %v", err)
+	}
+	// Find a page that's NOT index to delete.
+	for _, p := range initialPages {
+		if p.Name != "index" && !strings.Contains(p.Name, "/") {
+			// Found a root-level page to delete. But we need to check the testdata first.
+			break
+		}
+	}
+
+	c2 := New(tmpDir, WithStore(vs.store))
+	stats, err := vs.IncrementalIndex(c2)
+	if err != nil {
+		t.Fatalf("IncrementalIndex: %v", err)
+	}
+
+	// Verify stats fields are consistent integers.
+	if stats.New < 1 {
+		t.Errorf("New = %d, want >= 1 (added consistency-new.md)", stats.New)
+	}
+	if stats.Changed < 1 {
+		t.Errorf("Changed = %d, want >= 1 (modified index.md)", stats.Changed)
+	}
+	if stats.Unchanged < 0 {
+		t.Errorf("Unchanged = %d, should not be negative", stats.Unchanged)
+	}
+	if stats.Deleted < 0 {
+		t.Errorf("Deleted = %d, should not be negative", stats.Deleted)
+	}
+
+	// Verify Total() equals the sum of all fields.
+	expectedTotal := stats.New + stats.Changed + stats.Deleted + stats.Unchanged
+	if got := stats.Total(); got != expectedTotal {
+		t.Errorf("Total() = %d, want %d (New=%d + Changed=%d + Deleted=%d + Unchanged=%d)",
+			got, expectedTotal, stats.New, stats.Changed, stats.Deleted, stats.Unchanged)
+	}
+
+	// Verify pages in store after indexing.
+	afterPages, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages after: %v", err)
+	}
+	expectedPageCount := initialCount + stats.New - stats.Deleted
+	if len(afterPages) != expectedPageCount {
+		t.Errorf("page count after = %d, want %d (initial=%d + new=%d - deleted=%d)",
+			len(afterPages), expectedPageCount, initialCount, stats.New, stats.Deleted)
+	}
+
+	// Verify the new page exists in store with correct metadata.
+	newPage, err := s.GetPage("consistency-new")
+	if err != nil {
+		t.Fatalf("GetPage(consistency-new): %v", err)
+	}
+	if newPage == nil {
+		t.Fatal("consistency-new page should exist in store after incremental index")
+	}
+	if newPage.ContentHash == "" {
+		t.Error("consistency-new ContentHash should not be empty")
+	}
+	if newPage.SourceID != "disk-local" {
+		t.Errorf("consistency-new SourceID = %q, want %q", newPage.SourceID, "disk-local")
+	}
+
+	// Verify page_count metadata matches actual page count.
+	pageCountMeta, err := s.GetMeta("page_count")
+	if err != nil {
+		t.Fatalf("GetMeta(page_count): %v", err)
+	}
+	wantPageCount := fmt.Sprintf("%d", stats.New+stats.Changed+stats.Unchanged)
+	if pageCountMeta != wantPageCount {
+		t.Errorf("page_count metadata = %q, want %q", pageCountMeta, wantPageCount)
+	}
+}
+
+func TestVaultStore_IncrementalIndex_ContentHashVerification(t *testing.T) {
+	// Verify that content hashes are correctly updated in the store for changed files.
+	tmpDir := t.TempDir()
+	copyTestdata(t, tmpDir)
+
+	vs, s := newTestVaultStore(t, tmpDir)
+
+	c := New(tmpDir)
+	if err := vs.FullIndex(c); err != nil {
+		t.Fatalf("FullIndex: %v", err)
+	}
+
+	// Record hashes for all pages after full index.
+	initialPages, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages: %v", err)
+	}
+	initialHashes := make(map[string]string)
+	for _, p := range initialPages {
+		initialHashes[p.Name] = p.ContentHash
+	}
+
+	// Modify index.md.
+	indexFile := filepath.Join(tmpDir, "index.md")
+	if err := os.WriteFile(indexFile, []byte("# Completely New Content\n\nDifferent text."), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c2 := New(tmpDir, WithStore(vs.store))
+	_, err = vs.IncrementalIndex(c2)
+	if err != nil {
+		t.Fatalf("IncrementalIndex: %v", err)
+	}
+
+	// Verify changed page has a new hash.
+	updatedPage, err := s.GetPage("index")
+	if err != nil {
+		t.Fatalf("GetPage(index): %v", err)
+	}
+	if updatedPage == nil {
+		t.Fatal("index page should exist after incremental index")
+	}
+	if updatedPage.ContentHash == initialHashes["index"] {
+		t.Error("index ContentHash should have changed after file modification")
+	}
+	if updatedPage.ContentHash == "" {
+		t.Error("index ContentHash should not be empty after modification")
+	}
+
+	// Verify unchanged pages retain their original hash.
+	afterPages, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages after: %v", err)
+	}
+	for _, p := range afterPages {
+		if p.Name == "index" {
+			continue // already checked
+		}
+		original, exists := initialHashes[p.Name]
+		if !exists {
+			continue // new page, skip
+		}
+		if p.ContentHash != original {
+			t.Errorf("unchanged page %q: ContentHash changed from %q to %q",
+				p.Name, original, p.ContentHash)
+		}
 	}
 }
 

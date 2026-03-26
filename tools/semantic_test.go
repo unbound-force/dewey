@@ -506,6 +506,175 @@ func TestSimilar_NoEmbeddingFound(t *testing.T) {
 	}
 }
 
+// TestSimilar_ByUUID_ResultFields verifies that Similar results have all fields
+// correctly populated with expected types and values.
+func TestSimilar_ByUUID_ResultFields(t *testing.T) {
+	s := newTestStoreWithData(t)
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.Similar(context.Background(), nil, types.SimilarInput{
+		UUID:  "block-install",
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Similar error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Similar returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Verify we got results.
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	// Verify exact result count: with block-install excluded, we expect 2 results
+	// (block-config and block-api).
+	if len(results) != 2 {
+		t.Errorf("expected 2 results (excluding query doc), got %d", len(results))
+	}
+
+	// Verify each result has all required fields with valid values.
+	for i, r := range results {
+		// Text/Content must be non-empty.
+		if r.Content == "" {
+			t.Errorf("results[%d].Content is empty", i)
+		}
+
+		// DocumentID must be non-empty and not the query UUID.
+		if r.DocumentID == "" {
+			t.Errorf("results[%d].DocumentID is empty", i)
+		}
+		if r.DocumentID == "block-install" {
+			t.Errorf("results[%d].DocumentID = query doc 'block-install', should be excluded", i)
+		}
+
+		// Similarity must be a valid float64 in range [0, 1].
+		if r.Similarity < 0 || r.Similarity > 1.0 {
+			t.Errorf("results[%d].Similarity = %f, want in range [0, 1]", i, r.Similarity)
+		}
+
+		// Page must be non-empty.
+		if r.Page == "" {
+			t.Errorf("results[%d].Page is empty", i)
+		}
+
+		// Source must be non-empty.
+		if r.Source == "" {
+			t.Errorf("results[%d].Source is empty", i)
+		}
+
+		// SourceID must be non-empty.
+		if r.SourceID == "" {
+			t.Errorf("results[%d].SourceID is empty", i)
+		}
+
+		// IndexedAt must be a valid RFC3339 timestamp.
+		if r.IndexedAt == "" {
+			t.Errorf("results[%d].IndexedAt is empty", i)
+		}
+	}
+
+	// Verify descending sort order by similarity score.
+	for i := 1; i < len(results); i++ {
+		if results[i].Similarity > results[i-1].Similarity {
+			t.Errorf("results not in descending order: [%d].Similarity=%f > [%d].Similarity=%f",
+				i, results[i].Similarity, i-1, results[i-1].Similarity)
+		}
+	}
+}
+
+// TestSimilar_ByPage_ResultFields verifies Similar by page returns results with
+// all provenance fields populated and correct result count.
+func TestSimilar_ByPage_ResultFields(t *testing.T) {
+	s := newTestStoreWithData(t)
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.Similar(context.Background(), nil, types.SimilarInput{
+		Page:  "setup",
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("Similar error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Similar returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Should return results (at least block-api which is on a different page).
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	// Verify each result has non-empty Text (Content) and DocumentID.
+	for i, r := range results {
+		if r.Content == "" {
+			t.Errorf("results[%d].Content is empty", i)
+		}
+		if r.DocumentID == "" {
+			t.Errorf("results[%d].DocumentID is empty", i)
+		}
+
+		// Similarity should be valid float64.
+		if r.Similarity < 0 || r.Similarity > 1.0 {
+			t.Errorf("results[%d].Similarity = %f, want in range [0, 1]", i, r.Similarity)
+		}
+
+		// Provenance fields should all be populated.
+		if r.Page == "" {
+			t.Errorf("results[%d].Page is empty", i)
+		}
+		if r.Source == "" {
+			t.Errorf("results[%d].Source is empty", i)
+		}
+		if r.SourceID == "" {
+			t.Errorf("results[%d].SourceID is empty", i)
+		}
+	}
+}
+
+// TestSimilar_LimitRespected verifies that the limit parameter is respected.
+func TestSimilar_LimitRespected(t *testing.T) {
+	s := newTestStoreWithData(t)
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.Similar(context.Background(), nil, types.SimilarInput{
+		UUID:  "block-install",
+		Limit: 1,
+	})
+	if err != nil {
+		t.Fatalf("Similar error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Similar returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	if len(results) > 1 {
+		t.Errorf("expected at most 1 result with Limit=1, got %d", len(results))
+	}
+}
+
 // TestSimilar_NoEmbeddingsInIndex verifies error when index is completely empty.
 func TestSimilar_NoEmbeddingsInIndex(t *testing.T) {
 	s, err := store.New(":memory:")

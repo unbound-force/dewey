@@ -279,6 +279,182 @@ func TestDiskSource_Diff_DeletedFile(t *testing.T) {
 	}
 }
 
+func TestDiskSource_Diff_DocumentFields(t *testing.T) {
+	dir := createTestVault(t)
+	ds := NewDiskSource("disk-local", "local", dir)
+
+	// With no stored hashes, all files are "added" — verify Document fields thoroughly.
+	changes, err := ds.Diff()
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+
+	if len(changes) == 0 {
+		t.Fatal("expected at least 1 change, got 0")
+	}
+
+	for i, c := range changes {
+		// Every change must have a non-empty ID.
+		if c.ID == "" {
+			t.Errorf("changes[%d].ID is empty", i)
+		}
+
+		// Type must be a valid ChangeType.
+		switch c.Type {
+		case ChangeAdded, ChangeModified, ChangeDeleted:
+			// ok
+		default:
+			t.Errorf("changes[%d].Type = %q, not a valid ChangeType", i, c.Type)
+		}
+
+		// For Added changes, verify all Document fields.
+		if c.Type == ChangeAdded {
+			if c.Document == nil {
+				t.Errorf("changes[%d].Document should not be nil for Added change", i)
+				continue
+			}
+
+			// ID should match the Change.ID.
+			if c.Document.ID != c.ID {
+				t.Errorf("changes[%d]: Document.ID = %q, Change.ID = %q — should match",
+					i, c.Document.ID, c.ID)
+			}
+
+			// Content should not be empty.
+			if c.Document.Content == "" {
+				t.Errorf("changes[%d].Document.Content should not be empty", i)
+			}
+
+			// ContentHash should be a SHA-256 hex digest (64 chars).
+			if len(c.Document.ContentHash) != 64 {
+				t.Errorf("changes[%d].Document.ContentHash length = %d, want 64 (SHA-256 hex)",
+					i, len(c.Document.ContentHash))
+			}
+
+			// ContentHash should match the actual content hash.
+			expectedHash := computeHash(c.Document.Content)
+			if c.Document.ContentHash != expectedHash {
+				t.Errorf("changes[%d].Document.ContentHash = %q, want %q (computed from Content)",
+					i, c.Document.ContentHash, expectedHash)
+			}
+
+			// SourceID should be set.
+			if c.Document.SourceID != "disk-local" {
+				t.Errorf("changes[%d].Document.SourceID = %q, want %q",
+					i, c.Document.SourceID, "disk-local")
+			}
+
+			// Title should be the filename without .md extension.
+			if c.Document.Title == "" {
+				t.Errorf("changes[%d].Document.Title should not be empty", i)
+			}
+
+			// FetchedAt should be recent (not zero time).
+			if c.Document.FetchedAt.IsZero() {
+				t.Errorf("changes[%d].Document.FetchedAt should not be zero", i)
+			}
+		}
+	}
+}
+
+func TestDiskSource_Diff_ModifiedDocumentFields(t *testing.T) {
+	dir := createTestVault(t)
+	ds := NewDiskSource("disk-local", "local", dir)
+
+	// Set up stored hashes to detect modifications.
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	hashes := make(map[string]string)
+	for _, doc := range docs {
+		hashes[doc.ID] = doc.ContentHash
+	}
+	ds.SetStoredHashes(hashes)
+
+	// Modify page1.md with distinct content.
+	modifiedContent := "# Modified Page\n\nCompletely new content for testing."
+	if err := os.WriteFile(filepath.Join(dir, "page1.md"), []byte(modifiedContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	changes, err := ds.Diff()
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+
+	// Should have exactly 1 change (only page1.md was modified).
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+
+	c := changes[0]
+
+	// Verify the change is a modification.
+	if c.Type != ChangeModified {
+		t.Errorf("Type = %q, want %q", c.Type, ChangeModified)
+	}
+	if c.ID != "page1.md" {
+		t.Errorf("ID = %q, want %q", c.ID, "page1.md")
+	}
+
+	// Verify the Document has updated content.
+	if c.Document == nil {
+		t.Fatal("Document should not be nil for modified change")
+	}
+	if c.Document.Content != modifiedContent {
+		t.Errorf("Document.Content = %q, want %q", c.Document.Content, modifiedContent)
+	}
+
+	// Verify content hash matches the new content.
+	expectedHash := computeHash(modifiedContent)
+	if c.Document.ContentHash != expectedHash {
+		t.Errorf("Document.ContentHash = %q, want %q", c.Document.ContentHash, expectedHash)
+	}
+
+	// Verify content hash differs from original.
+	originalHash := hashes["page1.md"]
+	if c.Document.ContentHash == originalHash {
+		t.Error("Document.ContentHash should differ from original after modification")
+	}
+
+	// Verify source metadata.
+	if c.Document.SourceID != "disk-local" {
+		t.Errorf("Document.SourceID = %q, want %q", c.Document.SourceID, "disk-local")
+	}
+	if c.Document.ID != "page1.md" {
+		t.Errorf("Document.ID = %q, want %q", c.Document.ID, "page1.md")
+	}
+}
+
+func TestDiskSource_Diff_UnchangedFilesExcluded(t *testing.T) {
+	dir := createTestVault(t)
+	ds := NewDiskSource("disk-local", "local", dir)
+
+	// Set stored hashes to match current files exactly.
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	hashes := make(map[string]string)
+	for _, doc := range docs {
+		hashes[doc.ID] = doc.ContentHash
+	}
+	ds.SetStoredHashes(hashes)
+
+	// No modifications — Diff should return no changes.
+	changes, err := ds.Diff()
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Errorf("expected 0 changes when nothing modified, got %d", len(changes))
+		for i, c := range changes {
+			t.Logf("  changes[%d]: Type=%q ID=%q", i, c.Type, c.ID)
+		}
+	}
+}
+
 func TestDiskSource_Meta(t *testing.T) {
 	ds := NewDiskSource("disk-local", "local", "/tmp/test")
 	meta := ds.Meta()

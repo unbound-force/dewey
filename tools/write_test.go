@@ -772,6 +772,126 @@ func (m *mockBackendWithInsertCounter) InsertBlock(_ context.Context, srcBlock a
 	return &types.BlockEntity{UUID: uuid, Content: content}, nil
 }
 
+func TestMoveBlock_SuccessDefaultPosition(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	result, _, err := w.MoveBlock(context.Background(), nil, types.MoveBlockInput{
+		UUID:       "block-to-move",
+		TargetUUID: "target-block",
+	})
+	if err != nil {
+		t.Fatalf("MoveBlock() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("MoveBlock() returned error result")
+	}
+
+	// Verify MoveBlock was called on the backend.
+	if len(mb.movedBlocks) != 1 {
+		t.Fatalf("expected 1 MoveBlock call, got %d", len(mb.movedBlocks))
+	}
+	if mb.movedBlocks[0].uuid != "block-to-move" {
+		t.Errorf("moved UUID = %q, want %q", mb.movedBlocks[0].uuid, "block-to-move")
+	}
+	if mb.movedBlocks[0].target != "target-block" {
+		t.Errorf("moved target = %q, want %q", mb.movedBlocks[0].target, "target-block")
+	}
+
+	// Verify JSON response.
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["moved"] != true {
+		t.Errorf("moved = %v, want true", parsed["moved"])
+	}
+	if parsed["uuid"] != "block-to-move" {
+		t.Errorf("uuid = %v, want %q", parsed["uuid"], "block-to-move")
+	}
+	if parsed["target"] != "target-block" {
+		t.Errorf("target = %v, want %q", parsed["target"], "target-block")
+	}
+	// Default position should be "child".
+	if parsed["position"] != "child" {
+		t.Errorf("position = %v, want %q", parsed["position"], "child")
+	}
+}
+
+func TestMoveBlock_BeforePosition(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	result, _, err := w.MoveBlock(context.Background(), nil, types.MoveBlockInput{
+		UUID:       "block-to-move",
+		TargetUUID: "target-block",
+		Position:   "before",
+	})
+	if err != nil {
+		t.Fatalf("MoveBlock() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("MoveBlock() returned error result")
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["position"] != "before" {
+		t.Errorf("position = %v, want %q", parsed["position"], "before")
+	}
+}
+
+func TestMoveBlock_Error(t *testing.T) {
+	mb := newMockBackend()
+	mb.moveBlockErr = fmt.Errorf("move failed: block not found")
+	w := NewWrite(mb)
+
+	result, _, err := w.MoveBlock(context.Background(), nil, types.MoveBlockInput{
+		UUID:       "nonexistent-block",
+		TargetUUID: "target-block",
+	})
+	if err != nil {
+		t.Fatalf("MoveBlock() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when MoveBlock fails")
+	}
+}
+
+func TestMoveBlock_ExplicitChildPosition(t *testing.T) {
+	mb := newMockBackend()
+	w := NewWrite(mb)
+
+	result, _, err := w.MoveBlock(context.Background(), nil, types.MoveBlockInput{
+		UUID:       "block-1",
+		TargetUUID: "parent-block",
+		Position:   "child",
+	})
+	if err != nil {
+		t.Fatalf("MoveBlock() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("MoveBlock() returned error result")
+	}
+
+	if len(mb.movedBlocks) != 1 {
+		t.Fatalf("expected 1 MoveBlock call, got %d", len(mb.movedBlocks))
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if parsed["position"] != "child" {
+		t.Errorf("position = %v, want %q", parsed["position"], "child")
+	}
+}
+
 // mockBackendNilInsert wraps mockBackend but returns nil from InsertBlock
 // without an error, simulating a backend that silently skips block creation.
 type mockBackendNilInsert struct {

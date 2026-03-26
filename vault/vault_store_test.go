@@ -1,6 +1,8 @@
 package vault
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/types"
 )
 
 // newTestVaultStore creates a VaultStore backed by an in-memory SQLite database.
@@ -467,6 +470,418 @@ func copyTestdata(t *testing.T, dst string) {
 	}); err != nil {
 		t.Fatalf("copy testdata: %v", err)
 	}
+}
+
+// --- Mock embedder for generateEmbeddings tests ---
+
+// mockEmbedder implements embed.Embedder for testing generateEmbeddings.
+type mockEmbedder struct {
+	available bool
+	modelID   string
+	embedFn   func(ctx context.Context, text string) ([]float32, error)
+	calls     []string // records chunk texts passed to Embed
+}
+
+func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	m.calls = append(m.calls, text)
+	if m.embedFn != nil {
+		return m.embedFn(ctx, text)
+	}
+	// Default: return a simple 3-dimensional vector.
+	return []float32{0.1, 0.2, 0.3}, nil
+}
+
+func (m *mockEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	var results [][]float32
+	for _, text := range texts {
+		vec, err := m.Embed(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, vec)
+	}
+	return results, nil
+}
+
+func (m *mockEmbedder) Available() bool {
+	return m.available
+}
+
+func (m *mockEmbedder) ModelID() string {
+	if m.modelID != "" {
+		return m.modelID
+	}
+	return "test-model"
+}
+
+// insertTestPageAndBlocks inserts a page and its blocks into the store,
+// satisfying foreign key constraints required by the embeddings table.
+func insertTestPageAndBlocks(t *testing.T, s *store.Store, pageName string, blocks []types.BlockEntity) {
+	t.Helper()
+	err := s.InsertPage(&store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "disk-local",
+		SourceDocID:  pageName + ".md",
+	})
+	if err != nil {
+		t.Fatalf("InsertPage(%q): %v", pageName, err)
+	}
+
+	for i, b := range blocks {
+		err := s.InsertBlock(&store.Block{
+			UUID:     b.UUID,
+			PageName: pageName,
+			Content:  b.Content,
+			Position: i,
+		})
+		if err != nil {
+			t.Fatalf("InsertBlock(%q): %v", b.UUID, err)
+		}
+		// Also insert child blocks.
+		for j, child := range b.Children {
+			err := s.InsertBlock(&store.Block{
+				UUID:       child.UUID,
+				PageName:   pageName,
+				ParentUUID: sql.NullString{String: b.UUID, Valid: true},
+				Content:    child.Content,
+				Position:   j,
+			})
+			if err != nil {
+				t.Fatalf("InsertBlock(%q child): %v", child.UUID, err)
+			}
+		}
+	}
+}
+
+func TestGenerateEmbeddings_EmbedderUnavailable(t *testing.T) {
+	vs, _ := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{available: false}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "block-1", Content: "Some content"},
+	}
+
+	// Should skip silently — no calls to Embed.
+	vs.generateEmbeddings("test-page", blocks, nil)
+
+	if len(me.calls) != 0 {
+		t.Errorf("expected 0 Embed calls when unavailable, got %d", len(me.calls))
+	}
+}
+
+func TestGenerateEmbeddings_NilEmbedder(t *testing.T) {
+	vs, _ := newTestVaultStore(t, t.TempDir())
+	// embedder is nil by default (not set).
+
+	blocks := []types.BlockEntity{
+		{UUID: "block-1", Content: "Some content"},
+	}
+
+	// Should skip silently — no panic.
+	vs.generateEmbeddings("test-page", blocks, nil)
+}
+
+func TestGenerateEmbeddings_NilStore(t *testing.T) {
+	vs := NewVaultStore(nil, t.TempDir(), "disk-local")
+	me := &mockEmbedder{available: true}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "block-1", Content: "Some content"},
+	}
+
+	// Should skip silently — store is nil.
+	vs.generateEmbeddings("test-page", blocks, nil)
+
+	if len(me.calls) != 0 {
+		t.Errorf("expected 0 Embed calls when store is nil, got %d", len(me.calls))
+	}
+}
+
+func TestGenerateEmbeddings_PagesWithBlocks(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{
+		available: true,
+		modelID:   "test-model",
+	}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "block-1", Content: "First block content"},
+		{UUID: "block-2", Content: "Second block content"},
+	}
+
+	// Insert page and blocks into store to satisfy FK constraints.
+	insertTestPageAndBlocks(t, s, "test-page", blocks)
+
+	vs.generateEmbeddings("test-page", blocks, nil)
+
+	// Verify Embed was called for each non-empty block.
+	if len(me.calls) != 2 {
+		t.Fatalf("expected 2 Embed calls, got %d", len(me.calls))
+	}
+
+	// Verify embeddings were persisted in the store.
+	for _, b := range blocks {
+		emb, err := s.GetEmbedding(b.UUID, "test-model")
+		if err != nil {
+			t.Fatalf("GetEmbedding(%q): %v", b.UUID, err)
+		}
+		if emb == nil {
+			t.Errorf("expected embedding for block %q, got nil", b.UUID)
+			continue
+		}
+		if len(emb.Vector) != 3 {
+			t.Errorf("block %q: vector length = %d, want 3", b.UUID, len(emb.Vector))
+		}
+		if emb.ChunkText == "" {
+			t.Errorf("block %q: chunk_text should not be empty", b.UUID)
+		}
+		if emb.ModelID != "test-model" {
+			t.Errorf("block %q: model_id = %q, want %q", b.UUID, emb.ModelID, "test-model")
+		}
+	}
+}
+
+func TestGenerateEmbeddings_SkipsEmptyBlocks(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{available: true, modelID: "test-model"}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "block-empty", Content: ""},
+		{UUID: "block-whitespace", Content: "   \n\t  "},
+		{UUID: "block-real", Content: "Actual content here"},
+	}
+
+	// Only insert the blocks that have UUIDs we'll use.
+	insertTestPageAndBlocks(t, s, "test-page", blocks)
+
+	vs.generateEmbeddings("test-page", blocks, nil)
+
+	// Only the non-empty block should get an Embed call.
+	if len(me.calls) != 1 {
+		t.Fatalf("expected 1 Embed call (skipping empty/whitespace blocks), got %d", len(me.calls))
+	}
+
+	// Verify only the real block has an embedding.
+	emb, err := s.GetEmbedding("block-real", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding(block-real): %v", err)
+	}
+	if emb == nil {
+		t.Error("expected embedding for block-real, got nil")
+	}
+}
+
+func TestGenerateEmbeddings_EmbedError(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	callCount := 0
+	me := &mockEmbedder{
+		available: true,
+		modelID:   "test-model",
+		embedFn: func(_ context.Context, _ string) ([]float32, error) {
+			callCount++
+			return nil, fmt.Errorf("ollama connection refused")
+		},
+	}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "block-1", Content: "Content that will fail embedding"},
+		{UUID: "block-2", Content: "Another block"},
+	}
+
+	insertTestPageAndBlocks(t, s, "test-page", blocks)
+
+	// Should not panic — errors are logged and skipped.
+	vs.generateEmbeddings("test-page", blocks, nil)
+
+	// Verify Embed was called for both blocks (continues on error).
+	if callCount != 2 {
+		t.Errorf("expected 2 Embed calls (continues past errors), got %d", callCount)
+	}
+
+	// Verify no embeddings were persisted (all failed).
+	for _, b := range blocks {
+		emb, err := s.GetEmbedding(b.UUID, "test-model")
+		if err != nil {
+			t.Fatalf("GetEmbedding(%q): %v", b.UUID, err)
+		}
+		if emb != nil {
+			t.Errorf("block %q: expected no embedding after error, got one", b.UUID)
+		}
+	}
+}
+
+func TestGenerateEmbeddings_EmptyVault(t *testing.T) {
+	vs, _ := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{available: true, modelID: "test-model"}
+	vs.SetEmbedder(me)
+
+	// No blocks at all.
+	vs.generateEmbeddings("empty-page", nil, nil)
+
+	if len(me.calls) != 0 {
+		t.Errorf("expected 0 Embed calls for empty block list, got %d", len(me.calls))
+	}
+}
+
+func TestGenerateEmbeddings_WithChildren(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{available: true, modelID: "test-model"}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{
+			UUID:    "parent-block",
+			Content: "## Section Heading\n\nParent content",
+			Children: []types.BlockEntity{
+				{UUID: "child-block", Content: "Child block content"},
+			},
+		},
+	}
+
+	// Insert page, parent block, and child block into store.
+	insertTestPageAndBlocks(t, s, "docs-page", blocks)
+
+	vs.generateEmbeddings("docs-page", blocks, nil)
+
+	// Should embed both parent and child.
+	if len(me.calls) != 2 {
+		t.Fatalf("expected 2 Embed calls (parent + child), got %d", len(me.calls))
+	}
+
+	// Verify both embeddings were persisted.
+	parentEmb, err := s.GetEmbedding("parent-block", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding(parent-block): %v", err)
+	}
+	if parentEmb == nil {
+		t.Error("expected embedding for parent-block, got nil")
+	}
+
+	childEmb, err := s.GetEmbedding("child-block", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding(child-block): %v", err)
+	}
+	if childEmb == nil {
+		t.Error("expected embedding for child-block, got nil")
+	}
+}
+
+func TestGenerateEmbeddings_HeadingPathPropagation(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{available: true, modelID: "test-model"}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{
+			UUID:    "heading-block",
+			Content: "## Installation\n\nInstall instructions here.",
+			Children: []types.BlockEntity{
+				{UUID: "sub-block", Content: "Run `go install`"},
+			},
+		},
+	}
+
+	insertTestPageAndBlocks(t, s, "setup", blocks)
+
+	vs.generateEmbeddings("setup", blocks, nil)
+
+	if len(me.calls) != 2 {
+		t.Fatalf("expected 2 Embed calls, got %d", len(me.calls))
+	}
+
+	// The parent chunk should include the page name and content.
+	parentChunk := me.calls[0]
+	if parentChunk == "" {
+		t.Fatal("parent chunk should not be empty")
+	}
+
+	// The child chunk should include the heading hierarchy from the parent.
+	childChunk := me.calls[1]
+	if childChunk == "" {
+		t.Fatal("child chunk should not be empty")
+	}
+
+	// Verify the child chunk contains the heading context propagated from parent.
+	// PrepareChunk("setup", ["Installation"], content) should produce
+	// "setup > Installation\n\ncontent"
+	wantSubstring := "setup > Installation"
+	if !containsSubstring(childChunk, wantSubstring) {
+		t.Errorf("child chunk should contain heading path %q, got:\n%s", wantSubstring, childChunk)
+	}
+}
+
+func TestGenerateEmbeddings_PartialEmbedError(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	callIdx := 0
+	me := &mockEmbedder{
+		available: true,
+		modelID:   "test-model",
+		embedFn: func(_ context.Context, _ string) ([]float32, error) {
+			callIdx++
+			if callIdx == 1 {
+				// First call fails.
+				return nil, fmt.Errorf("transient error")
+			}
+			// Subsequent calls succeed.
+			return []float32{0.5, 0.6, 0.7}, nil
+		},
+	}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "fail-block", Content: "This will fail"},
+		{UUID: "ok-block", Content: "This will succeed"},
+	}
+
+	insertTestPageAndBlocks(t, s, "mixed-page", blocks)
+
+	vs.generateEmbeddings("mixed-page", blocks, nil)
+
+	// First block should have no embedding (error).
+	failEmb, err := s.GetEmbedding("fail-block", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding(fail-block): %v", err)
+	}
+	if failEmb != nil {
+		t.Error("fail-block should have no embedding after error")
+	}
+
+	// Second block should have an embedding (success).
+	okEmb, err := s.GetEmbedding("ok-block", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding(ok-block): %v", err)
+	}
+	if okEmb == nil {
+		t.Fatal("ok-block should have an embedding")
+	}
+	if len(okEmb.Vector) != 3 {
+		t.Errorf("ok-block vector length = %d, want 3", len(okEmb.Vector))
+	}
+}
+
+// containsSubstring checks if s contains substr. Extracted as a helper
+// to avoid importing strings in the test file solely for this check.
+func containsSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // BenchmarkIncrementalStartup measures the time from store.Open() to ready-to-serve

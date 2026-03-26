@@ -609,3 +609,132 @@ func TestExtractStringList_UnsupportedType(t *testing.T) {
 		t.Errorf("got = %v, want nil for unsupported type", got)
 	}
 }
+
+// --- summaryBuilder.String Tests ---
+
+func TestSummaryBuilder_String_MultipleSources(t *testing.T) {
+	sb := &summaryBuilder{
+		result: &FetchResult{
+			Summaries: []FetchSummary{
+				{SourceID: "disk-local", Documents: 5},
+				{SourceID: "github-test", Documents: 3},
+			},
+			TotalDocs: 8,
+			TotalErrs: 0,
+			TotalSkip: 0,
+		},
+	}
+
+	got := sb.String()
+
+	// Verify each source appears in the output with document count.
+	if !containsStr(got, "disk-local: 5 documents") {
+		t.Errorf("output missing 'disk-local: 5 documents', got:\n%s", got)
+	}
+	if !containsStr(got, "github-test: 3 documents") {
+		t.Errorf("output missing 'github-test: 3 documents', got:\n%s", got)
+	}
+	if !containsStr(got, "Total: 8 documents, 0 errors, 0 skipped") {
+		t.Errorf("output missing totals line, got:\n%s", got)
+	}
+}
+
+func TestSummaryBuilder_String_WithError(t *testing.T) {
+	sb := &summaryBuilder{
+		result: &FetchResult{
+			Summaries: []FetchSummary{
+				{SourceID: "disk-local", Documents: 2},
+				{SourceID: "github-fail", Error: "network error", Errors: 1},
+			},
+			TotalDocs: 2,
+			TotalErrs: 1,
+			TotalSkip: 0,
+		},
+	}
+
+	got := sb.String()
+
+	if !containsStr(got, "github-fail: error (network error)") {
+		t.Errorf("output missing error line for github-fail, got:\n%s", got)
+	}
+	if !containsStr(got, "disk-local: 2 documents") {
+		t.Errorf("output missing disk-local line, got:\n%s", got)
+	}
+	if !containsStr(got, "Total: 2 documents, 1 errors, 0 skipped") {
+		t.Errorf("output missing totals line, got:\n%s", got)
+	}
+}
+
+func TestSummaryBuilder_String_WithSkipped(t *testing.T) {
+	sb := &summaryBuilder{
+		result: &FetchResult{
+			Summaries: []FetchSummary{
+				{SourceID: "disk-local", Documents: 1},
+				{SourceID: "github-test", Skipped: true},
+			},
+			TotalDocs: 1,
+			TotalErrs: 0,
+			TotalSkip: 1,
+		},
+	}
+
+	got := sb.String()
+
+	if !containsStr(got, "github-test: skipped (within refresh interval)") {
+		t.Errorf("output missing skipped line, got:\n%s", got)
+	}
+	if !containsStr(got, "Total: 1 documents, 0 errors, 1 skipped") {
+		t.Errorf("output missing totals line, got:\n%s", got)
+	}
+}
+
+func TestSummaryBuilder_String_EmptySummaries(t *testing.T) {
+	sb := &summaryBuilder{
+		result: &FetchResult{
+			Summaries: nil,
+			TotalDocs: 0,
+			TotalErrs: 0,
+			TotalSkip: 0,
+		},
+	}
+
+	got := sb.String()
+
+	if !containsStr(got, "Total: 0 documents, 0 errors, 0 skipped") {
+		t.Errorf("output missing totals line for empty result, got:\n%s", got)
+	}
+}
+
+func TestFormatSummary_DelegatesToSummaryBuilder(t *testing.T) {
+	result := &FetchResult{
+		Summaries: []FetchSummary{
+			{SourceID: "disk-local", Documents: 3},
+		},
+		TotalDocs: 3,
+		TotalErrs: 0,
+		TotalSkip: 0,
+	}
+
+	got := result.FormatSummary()
+
+	if !containsStr(got, "disk-local: 3 documents") {
+		t.Errorf("FormatSummary output missing source line, got:\n%s", got)
+	}
+	if !containsStr(got, "Total: 3 documents, 0 errors, 0 skipped") {
+		t.Errorf("FormatSummary output missing totals line, got:\n%s", got)
+	}
+}
+
+// containsStr checks if s contains substr (helper for readability).
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && searchStr(s, substr)
+}
+
+func searchStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

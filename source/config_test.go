@@ -3,6 +3,7 @@ package source
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -244,5 +245,230 @@ func TestSaveSourcesConfig(t *testing.T) {
 	}
 	if loaded[0].ID != "disk-local" {
 		t.Errorf("id = %q, want %q", loaded[0].ID, "disk-local")
+	}
+}
+
+// --- validateSourceConfig Tests ---
+
+func TestValidateSourceConfig_ValidDisk(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "disk-local",
+		Type: "disk",
+		Name: "local",
+		Config: map[string]any{
+			"path": "/vault",
+		},
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("validateSourceConfig returned unexpected error: %v", err)
+	}
+}
+
+func TestValidateSourceConfig_DiskDefaultsPath(t *testing.T) {
+	src := &SourceConfig{
+		ID:     "disk-local",
+		Type:   "disk",
+		Name:   "local",
+		Config: nil,
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("validateSourceConfig: %v", err)
+	}
+
+	// When Config is nil, validateSourceConfig should set a default path.
+	if src.Config == nil {
+		t.Fatal("Config should be set to default after validation")
+	}
+	path, ok := src.Config["path"]
+	if !ok {
+		t.Fatal("Config should contain 'path' key after validation")
+	}
+	if path != "." {
+		t.Errorf("Config[path] = %q, want %q", path, ".")
+	}
+}
+
+func TestValidateSourceConfig_MissingID(t *testing.T) {
+	src := &SourceConfig{
+		Type: "disk",
+		Name: "local",
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for missing id")
+	}
+	if !strings.Contains(err.Error(), "missing required field: id") {
+		t.Errorf("error = %q, want to contain 'missing required field: id'", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_MissingType(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "test",
+		Name: "local",
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for missing type")
+	}
+	if !strings.Contains(err.Error(), "missing required field: type") {
+		t.Errorf("error = %q, want to contain 'missing required field: type'", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_MissingName(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "test",
+		Type: "disk",
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for missing name")
+	}
+	if !strings.Contains(err.Error(), "missing required field: name") {
+		t.Errorf("error = %q, want to contain 'missing required field: name'", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_UnknownType(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "test",
+		Type: "ftp",
+		Name: "bad",
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for unknown type")
+	}
+	if !strings.Contains(err.Error(), "unknown source type: ftp") {
+		t.Errorf("error = %q, want to contain 'unknown source type: ftp'", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_ValidGitHub(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "github-test",
+		Type: "github",
+		Name: "test",
+		Config: map[string]any{
+			"org":   "myorg",
+			"repos": []any{"repo1"},
+		},
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("validateSourceConfig returned unexpected error: %v", err)
+	}
+}
+
+func TestValidateSourceConfig_GitHubMissingConfig(t *testing.T) {
+	src := &SourceConfig{
+		ID:     "github-test",
+		Type:   "github",
+		Name:   "test",
+		Config: nil,
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for github source with nil config")
+	}
+	if !strings.Contains(err.Error(), "github source requires config") {
+		t.Errorf("error = %q, want to contain 'github source requires config'", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_GitHubMissingOrg(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "github-test",
+		Type: "github",
+		Name: "test",
+		Config: map[string]any{
+			"repos": []any{"repo1"},
+		},
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for github source missing org")
+	}
+	if !strings.Contains(err.Error(), "requires 'org'") {
+		t.Errorf("error = %q, want to contain \"requires 'org'\"", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_GitHubMissingRepos(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "github-test",
+		Type: "github",
+		Name: "test",
+		Config: map[string]any{
+			"org": "myorg",
+		},
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for github source missing repos")
+	}
+	if !strings.Contains(err.Error(), "requires 'repos'") {
+		t.Errorf("error = %q, want to contain \"requires 'repos'\"", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_ValidWeb(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"urls": []any{"https://example.com"},
+		},
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("validateSourceConfig returned unexpected error: %v", err)
+	}
+}
+
+func TestValidateSourceConfig_WebMissingConfig(t *testing.T) {
+	src := &SourceConfig{
+		ID:     "web-docs",
+		Type:   "web",
+		Name:   "docs",
+		Config: nil,
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for web source with nil config")
+	}
+	if !strings.Contains(err.Error(), "web source requires config") {
+		t.Errorf("error = %q, want to contain 'web source requires config'", err.Error())
+	}
+}
+
+func TestValidateSourceConfig_WebMissingURLs(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"depth": 2,
+		},
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for web source missing urls")
+	}
+	if !strings.Contains(err.Error(), "requires 'urls'") {
+		t.Errorf("error = %q, want to contain \"requires 'urls'\"", err.Error())
 	}
 }

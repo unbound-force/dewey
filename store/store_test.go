@@ -1096,3 +1096,284 @@ func TestIsDiskSpaceError_Recognition(t *testing.T) {
 		})
 	}
 }
+
+// --- Source CRUD Tests ---
+
+// testSource returns a SourceRecord with sensible defaults for testing.
+func testSource(id, name string) *SourceRecord {
+	return &SourceRecord{
+		ID:              id,
+		Type:            "disk",
+		Name:            name,
+		Config:          `{"path": "."}`,
+		RefreshInterval: "daily",
+		Status:          "active",
+	}
+}
+
+func TestListSources_Empty(t *testing.T) {
+	s := newTestStore(t)
+
+	sources, err := s.ListSources()
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Errorf("ListSources returned %d sources, want 0", len(sources))
+	}
+}
+
+func TestListSources_Multiple(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert sources in non-alphabetical order to verify ORDER BY id.
+	for _, id := range []string{"github-test", "disk-local", "web-docs"} {
+		src := testSource(id, id+"-name")
+		src.Type = strings.SplitN(id, "-", 2)[0] // "github", "disk", "web"
+		if err := s.InsertSource(src); err != nil {
+			t.Fatalf("InsertSource(%s): %v", id, err)
+		}
+	}
+
+	sources, err := s.ListSources()
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 3 {
+		t.Fatalf("ListSources returned %d sources, want 3", len(sources))
+	}
+
+	// Verify ORDER BY id (alphabetical).
+	if sources[0].ID != "disk-local" {
+		t.Errorf("sources[0].ID = %q, want %q", sources[0].ID, "disk-local")
+	}
+	if sources[1].ID != "github-test" {
+		t.Errorf("sources[1].ID = %q, want %q", sources[1].ID, "github-test")
+	}
+	if sources[2].ID != "web-docs" {
+		t.Errorf("sources[2].ID = %q, want %q", sources[2].ID, "web-docs")
+	}
+}
+
+func TestListSources_FieldValues(t *testing.T) {
+	s := newTestStore(t)
+
+	src := &SourceRecord{
+		ID:              "disk-local",
+		Type:            "disk",
+		Name:            "local vault",
+		Config:          `{"path": "/vault"}`,
+		RefreshInterval: "hourly",
+		LastFetchedAt:   1700000000,
+		Status:          "active",
+		ErrorMessage:    "",
+	}
+	if err := s.InsertSource(src); err != nil {
+		t.Fatalf("InsertSource: %v", err)
+	}
+
+	sources, err := s.ListSources()
+	if err != nil {
+		t.Fatalf("ListSources: %v", err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("ListSources returned %d sources, want 1", len(sources))
+	}
+
+	got := sources[0]
+	if got.ID != "disk-local" {
+		t.Errorf("ID = %q, want %q", got.ID, "disk-local")
+	}
+	if got.Type != "disk" {
+		t.Errorf("Type = %q, want %q", got.Type, "disk")
+	}
+	if got.Name != "local vault" {
+		t.Errorf("Name = %q, want %q", got.Name, "local vault")
+	}
+	if got.Config != `{"path": "/vault"}` {
+		t.Errorf("Config = %q, want %q", got.Config, `{"path": "/vault"}`)
+	}
+	if got.RefreshInterval != "hourly" {
+		t.Errorf("RefreshInterval = %q, want %q", got.RefreshInterval, "hourly")
+	}
+	if got.LastFetchedAt != 1700000000 {
+		t.Errorf("LastFetchedAt = %d, want %d", got.LastFetchedAt, 1700000000)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want %q", got.Status, "active")
+	}
+	if got.ErrorMessage != "" {
+		t.Errorf("ErrorMessage = %q, want empty", got.ErrorMessage)
+	}
+}
+
+func TestUpdateSourceStatus_ExistingSource(t *testing.T) {
+	s := newTestStore(t)
+
+	src := testSource("disk-local", "local")
+	if err := s.InsertSource(src); err != nil {
+		t.Fatalf("InsertSource: %v", err)
+	}
+
+	// Update status to error with a message.
+	if err := s.UpdateSourceStatus("disk-local", "error", "connection timeout"); err != nil {
+		t.Fatalf("UpdateSourceStatus: %v", err)
+	}
+
+	// Verify the status and error message changed.
+	got, err := s.GetSource("disk-local")
+	if err != nil {
+		t.Fatalf("GetSource: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetSource returned nil after update")
+	}
+	if got.Status != "error" {
+		t.Errorf("Status = %q, want %q", got.Status, "error")
+	}
+	if got.ErrorMessage != "connection timeout" {
+		t.Errorf("ErrorMessage = %q, want %q", got.ErrorMessage, "connection timeout")
+	}
+}
+
+func TestUpdateSourceStatus_ClearError(t *testing.T) {
+	s := newTestStore(t)
+
+	src := testSource("disk-local", "local")
+	src.Status = "error"
+	src.ErrorMessage = "previous failure"
+	if err := s.InsertSource(src); err != nil {
+		t.Fatalf("InsertSource: %v", err)
+	}
+
+	// Clear the error by updating to active with empty error message.
+	if err := s.UpdateSourceStatus("disk-local", "active", ""); err != nil {
+		t.Fatalf("UpdateSourceStatus: %v", err)
+	}
+
+	got, err := s.GetSource("disk-local")
+	if err != nil {
+		t.Fatalf("GetSource: %v", err)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want %q", got.Status, "active")
+	}
+	if got.ErrorMessage != "" {
+		t.Errorf("ErrorMessage = %q, want empty", got.ErrorMessage)
+	}
+}
+
+func TestUpdateSourceStatus_NonExistent(t *testing.T) {
+	s := newTestStore(t)
+
+	err := s.UpdateSourceStatus("nonexistent-source", "active", "")
+	if err == nil {
+		t.Fatal("UpdateSourceStatus should return error for non-existent source")
+	}
+	if !strings.Contains(err.Error(), "source not found") {
+		t.Errorf("error = %q, want to contain 'source not found'", err.Error())
+	}
+}
+
+func TestUpdateLastFetched_ExistingSource(t *testing.T) {
+	s := newTestStore(t)
+
+	src := testSource("disk-local", "local")
+	src.LastFetchedAt = 1000
+	if err := s.InsertSource(src); err != nil {
+		t.Fatalf("InsertSource: %v", err)
+	}
+
+	// Update last fetched to a new timestamp.
+	newTimestamp := int64(1700000000)
+	if err := s.UpdateLastFetched("disk-local", newTimestamp); err != nil {
+		t.Fatalf("UpdateLastFetched: %v", err)
+	}
+
+	got, err := s.GetSource("disk-local")
+	if err != nil {
+		t.Fatalf("GetSource: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetSource returned nil after update")
+	}
+	if got.LastFetchedAt != newTimestamp {
+		t.Errorf("LastFetchedAt = %d, want %d", got.LastFetchedAt, newTimestamp)
+	}
+}
+
+func TestUpdateLastFetched_ZeroTimestamp(t *testing.T) {
+	s := newTestStore(t)
+
+	src := testSource("disk-local", "local")
+	src.LastFetchedAt = 1700000000
+	if err := s.InsertSource(src); err != nil {
+		t.Fatalf("InsertSource: %v", err)
+	}
+
+	// Setting to zero should succeed (reset to "never fetched").
+	if err := s.UpdateLastFetched("disk-local", 0); err != nil {
+		t.Fatalf("UpdateLastFetched(0): %v", err)
+	}
+
+	got, err := s.GetSource("disk-local")
+	if err != nil {
+		t.Fatalf("GetSource: %v", err)
+	}
+	if got.LastFetchedAt != 0 {
+		t.Errorf("LastFetchedAt = %d, want 0", got.LastFetchedAt)
+	}
+}
+
+func TestUpdateLastFetched_NonExistent(t *testing.T) {
+	s := newTestStore(t)
+
+	err := s.UpdateLastFetched("nonexistent-source", 1700000000)
+	if err == nil {
+		t.Fatal("UpdateLastFetched should return error for non-existent source")
+	}
+	if !strings.Contains(err.Error(), "source not found") {
+		t.Errorf("error = %q, want to contain 'source not found'", err.Error())
+	}
+}
+
+func TestUpdateLastFetched_DoesNotAffectOtherFields(t *testing.T) {
+	s := newTestStore(t)
+
+	src := &SourceRecord{
+		ID:              "disk-local",
+		Type:            "disk",
+		Name:            "local",
+		Config:          `{"path": "."}`,
+		RefreshInterval: "daily",
+		LastFetchedAt:   1000,
+		Status:          "active",
+		ErrorMessage:    "some error",
+	}
+	if err := s.InsertSource(src); err != nil {
+		t.Fatalf("InsertSource: %v", err)
+	}
+
+	if err := s.UpdateLastFetched("disk-local", 2000); err != nil {
+		t.Fatalf("UpdateLastFetched: %v", err)
+	}
+
+	got, err := s.GetSource("disk-local")
+	if err != nil {
+		t.Fatalf("GetSource: %v", err)
+	}
+
+	// Verify only LastFetchedAt changed.
+	if got.LastFetchedAt != 2000 {
+		t.Errorf("LastFetchedAt = %d, want 2000", got.LastFetchedAt)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want %q (should be unchanged)", got.Status, "active")
+	}
+	if got.ErrorMessage != "some error" {
+		t.Errorf("ErrorMessage = %q, want %q (should be unchanged)", got.ErrorMessage, "some error")
+	}
+	if got.Name != "local" {
+		t.Errorf("Name = %q, want %q (should be unchanged)", got.Name, "local")
+	}
+}

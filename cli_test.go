@@ -1203,6 +1203,711 @@ func TestCheckGraphVersionControl_NullGraph(t *testing.T) {
 	}
 }
 
+// --- newJournalCmd validation tests ---
+
+// TestJournalCmd_NoContent verifies journal fails when no content is provided.
+func TestJournalCmd_NoContent(t *testing.T) {
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("journal with no content should fail")
+	}
+	if !strings.Contains(err.Error(), "no content provided") {
+		t.Errorf("error = %q, want to contain 'no content provided'", err.Error())
+	}
+}
+
+// TestJournalCmd_InvalidDate verifies journal fails with an invalid date format.
+func TestJournalCmd_InvalidDate(t *testing.T) {
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{"--date", "not-a-date", "some content"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("journal with invalid date should fail")
+	}
+	if !strings.Contains(err.Error(), "invalid date") {
+		t.Errorf("error = %q, want to contain 'invalid date'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "YYYY-MM-DD") {
+		t.Errorf("error = %q, want to contain usage hint 'YYYY-MM-DD'", err.Error())
+	}
+}
+
+// TestJournalCmd_InvalidDatePartialFormat verifies journal rejects dates that
+// are close to valid but use wrong separators (e.g. "2026/01/29").
+func TestJournalCmd_InvalidDatePartialFormat(t *testing.T) {
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{"--date", "2026/01/29", "some content"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("journal with slash-separated date should fail")
+	}
+	if !strings.Contains(err.Error(), "invalid date") {
+		t.Errorf("error = %q, want to contain 'invalid date'", err.Error())
+	}
+}
+
+// TestJournalCmd_ValidDateFormat verifies journal accepts a valid YYYY-MM-DD
+// date. The command will fail at the API call, but the date parsing itself
+// should succeed.
+func TestJournalCmd_ValidDateFormat(t *testing.T) {
+	// Use a mock server that returns null for all getPage calls and
+	// an error for appendBlockInPage — so we can verify date parsing
+	// succeeds but the command fails at the API level, not date parsing.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getPage":
+			_, _ = w.Write([]byte("null"))
+		case "logseq.Editor.appendBlockInPage":
+			// Return an error response to distinguish from date parse error.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`"server error"`))
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{"--date", "2026-03-15", "test content"})
+
+	err := cmd.Execute()
+	// Should fail — but the error should be from the API, not date parsing.
+	if err == nil {
+		t.Fatal("expected API error, got nil")
+	}
+	if strings.Contains(err.Error(), "invalid date") {
+		t.Errorf("date parsing should succeed, but got date error: %v", err)
+	}
+	// The error should be wrapped with "journal:" prefix from the API failure.
+	if !strings.Contains(err.Error(), "journal:") {
+		t.Errorf("error = %q, want to contain 'journal:' prefix from API failure", err.Error())
+	}
+}
+
+// TestJournalCmd_SuccessfulAppend verifies journal succeeds and prints the
+// block UUID when the API returns a valid block.
+func TestJournalCmd_SuccessfulAppend(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getPage":
+			// Return an existing page for the ordinal date format.
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "Jan 15th, 2026",
+				"uuid": "page-uuid",
+				"id":   1,
+			})
+		case "logseq.Editor.appendBlockInPage":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uuid":    "block-uuid-123",
+				"content": "test content",
+				"id":      42,
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout to verify UUID is printed.
+	old := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{"--date", "2026-01-15", "test content"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(pr); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if execErr != nil {
+		t.Fatalf("journal should succeed, got: %v", execErr)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output != "block-uuid-123" {
+		t.Errorf("stdout = %q, want %q", output, "block-uuid-123")
+	}
+}
+
+// TestJournalCmd_MultiWordContent verifies journal joins multiple args as
+// content separated by spaces.
+func TestJournalCmd_MultiWordContent(t *testing.T) {
+	var capturedContent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			Args   []any  `json:"args"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getPage":
+			_, _ = w.Write([]byte("null"))
+		case "logseq.Editor.appendBlockInPage":
+			if len(req.Args) >= 2 {
+				capturedContent = fmt.Sprintf("%v", req.Args[1])
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uuid":    "block-uuid",
+				"content": capturedContent,
+				"id":      1,
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout to suppress UUID output.
+	old := os.Stdout
+	_, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{"hello", "world", "test"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	if execErr != nil {
+		t.Fatalf("journal should succeed, got: %v", execErr)
+	}
+
+	if capturedContent != "hello world test" {
+		t.Errorf("captured content = %q, want %q", capturedContent, "hello world test")
+	}
+}
+
+// TestJournalCmd_CommandMetadata verifies the command's Use, Short, and Long
+// descriptions are set correctly.
+func TestJournalCmd_CommandMetadata(t *testing.T) {
+	cmd := newJournalCmd()
+
+	if cmd.Use != "journal [flags] TEXT" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "journal [flags] TEXT")
+	}
+	if cmd.Short == "" {
+		t.Error("Short description should not be empty")
+	}
+	if !strings.Contains(cmd.Long, "Logseq") {
+		t.Errorf("Long description should mention Logseq, got %q", cmd.Long)
+	}
+}
+
+// TestJournalCmd_DateDefaultToday verifies journal uses today's date when
+// --date is not specified.
+func TestJournalCmd_DateDefaultToday(t *testing.T) {
+	var capturedPage string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			Args   []any  `json:"args"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getPage":
+			// Return a match for the ordinal date of today.
+			name := fmt.Sprintf("%v", req.Args[0])
+			todayOrdinal := ordinalDate(time.Now())
+			if name == todayOrdinal {
+				capturedPage = name
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"name": name,
+					"uuid": "page-uuid",
+					"id":   1,
+				})
+				return
+			}
+			_, _ = w.Write([]byte("null"))
+		case "logseq.Editor.appendBlockInPage":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uuid": "block-uuid",
+				"id":   1,
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout.
+	old := os.Stdout
+	_, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newJournalCmd()
+	cmd.SetArgs([]string{"today note"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	if execErr != nil {
+		t.Fatalf("journal should succeed, got: %v", execErr)
+	}
+
+	expectedPage := ordinalDate(time.Now())
+	if capturedPage != expectedPage {
+		t.Errorf("used page = %q, want today's ordinal %q", capturedPage, expectedPage)
+	}
+}
+
+// --- newSearchCmd validation tests ---
+
+// TestSearchCmd_NoResults verifies search returns an error when no blocks
+// match the query.
+func TestSearchCmd_NoResults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getAllPages":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "TestPage", "originalName": "TestPage", "id": 1},
+			})
+		case "logseq.Editor.getPageBlocksTree":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"content": "nothing relevant here", "uuid": "b1", "id": 1},
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	cmd := newSearchCmd()
+	cmd.SetArgs([]string{"nonexistent-query-xyz"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("search with no matching results should fail")
+	}
+	if !strings.Contains(err.Error(), "no results") {
+		t.Errorf("error = %q, want to contain 'no results'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "nonexistent-query-xyz") {
+		t.Errorf("error = %q, want to contain the query string", err.Error())
+	}
+}
+
+// TestSearchCmd_WithResults verifies search prints matching results.
+func TestSearchCmd_WithResults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getAllPages":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "notes", "originalName": "Notes", "id": 1},
+			})
+		case "logseq.Editor.getPageBlocksTree":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"content": "Hello world from dewey", "uuid": "b1", "id": 1},
+				{"content": "Another block", "uuid": "b2", "id": 2},
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout — printSearchResults writes to os.Stdout directly.
+	old := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newSearchCmd()
+	cmd.SetArgs([]string{"hello"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(pr); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if execErr != nil {
+		t.Fatalf("search should succeed, got: %v", execErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Notes | Hello world from dewey") {
+		t.Errorf("output should contain matching result, got:\n%s", output)
+	}
+	// Non-matching block should not appear.
+	if strings.Contains(output, "Another block") {
+		t.Errorf("output should not contain non-matching block, got:\n%s", output)
+	}
+}
+
+// TestSearchCmd_MultiWordQuery verifies search joins multiple args into a
+// single query string.
+func TestSearchCmd_MultiWordQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getAllPages":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "docs", "originalName": "Docs", "id": 1},
+			})
+		case "logseq.Editor.getPageBlocksTree":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"content": "hello world search test", "uuid": "b1", "id": 1},
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout.
+	old := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newSearchCmd()
+	// Multi-word: "hello world" should be joined and matched.
+	cmd.SetArgs([]string{"hello", "world"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(pr); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if execErr != nil {
+		t.Fatalf("multi-word search should succeed, got: %v", execErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "hello world search test") {
+		t.Errorf("multi-word query should match, got:\n%s", output)
+	}
+}
+
+// TestSearchCmd_LimitFlag verifies the --limit flag restricts results.
+func TestSearchCmd_LimitFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getAllPages":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "page1", "originalName": "Page1", "id": 1},
+			})
+		case "logseq.Editor.getPageBlocksTree":
+			// Return 5 matching blocks.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"content": "match one", "uuid": "b1", "id": 1},
+				{"content": "match two", "uuid": "b2", "id": 2},
+				{"content": "match three", "uuid": "b3", "id": 3},
+				{"content": "match four", "uuid": "b4", "id": 4},
+				{"content": "match five", "uuid": "b5", "id": 5},
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout.
+	old := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newSearchCmd()
+	cmd.SetArgs([]string{"--limit", "2", "match"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(pr); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if execErr != nil {
+		t.Fatalf("search with limit should succeed, got: %v", execErr)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	lines := strings.Split(output, "\n")
+	if len(lines) != 2 {
+		t.Errorf("with --limit 2, got %d lines, want 2:\n%s", len(lines), output)
+	}
+}
+
+// TestSearchCmd_LimitFlagDefault verifies the default --limit is 10.
+func TestSearchCmd_LimitFlagDefault(t *testing.T) {
+	cmd := newSearchCmd()
+	f := cmd.Flags().Lookup("limit")
+	if f == nil {
+		t.Fatal("search command missing --limit flag")
+	}
+	if f.DefValue != "10" {
+		t.Errorf("--limit default = %q, want %q", f.DefValue, "10")
+	}
+}
+
+// TestSearchCmd_SkipsEmptyNamePages verifies that pages with empty names
+// are skipped during search (covers the pg.Name == "" continue branch).
+func TestSearchCmd_SkipsEmptyNamePages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getAllPages":
+			// First page has empty name (should be skipped), second has content.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "", "originalName": "", "id": 1},
+				{"name": "real-page", "originalName": "Real Page", "id": 2},
+			})
+		case "logseq.Editor.getPageBlocksTree":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"content": "findme content", "uuid": "b1", "id": 1},
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout.
+	old := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newSearchCmd()
+	cmd.SetArgs([]string{"findme"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(pr); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if execErr != nil {
+		t.Fatalf("search should succeed, got: %v", execErr)
+	}
+
+	output := buf.String()
+	// Only the real page should produce output.
+	if !strings.Contains(output, "Real Page | findme content") {
+		t.Errorf("output should show result from real-page, got:\n%s", output)
+	}
+}
+
+// TestSearchCmd_GetAllPagesError verifies search returns an error when
+// GetAllPages fails (covers the API error branch).
+func TestSearchCmd_GetAllPagesError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`"server error"`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	cmd := newSearchCmd()
+	cmd.SetArgs([]string{"anything"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("search should fail when GetAllPages returns error")
+	}
+	if !strings.Contains(err.Error(), "search:") {
+		t.Errorf("error = %q, want to contain 'search:' prefix", err.Error())
+	}
+}
+
+// TestSearchCmd_GetPageBlocksTreeError verifies search continues past pages
+// whose block tree cannot be fetched (covers the err != nil continue branch).
+func TestSearchCmd_GetPageBlocksTreeError(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+			Args   []any  `json:"args"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "logseq.Editor.getAllPages":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"name": "broken-page", "originalName": "Broken Page", "id": 1},
+				{"name": "good-page", "originalName": "Good Page", "id": 2},
+			})
+		case "logseq.Editor.getPageBlocksTree":
+			callCount++
+			if callCount == 1 {
+				// First page's blocks fail.
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`"error"`))
+				return
+			}
+			// Second page succeeds.
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"content": "target content here", "uuid": "b1", "id": 1},
+			})
+		default:
+			_, _ = w.Write([]byte("null"))
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("LOGSEQ_API_URL", srv.URL)
+
+	// Capture stdout.
+	old := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	cmd := newSearchCmd()
+	cmd.SetArgs([]string{"target"})
+
+	execErr := cmd.Execute()
+
+	_ = pw.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(pr); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+
+	if execErr != nil {
+		t.Fatalf("search should succeed despite one page failing, got: %v", execErr)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Good Page | target content here") {
+		t.Errorf("output should contain result from good-page, got:\n%s", output)
+	}
+}
+
+// TestSearchCmd_CommandMetadata verifies the command's Use, Short, and Long
+// descriptions are set correctly.
+func TestSearchCmd_CommandMetadata(t *testing.T) {
+	cmd := newSearchCmd()
+
+	if cmd.Use != "search [flags] QUERY" {
+		t.Errorf("Use = %q, want %q", cmd.Use, "search [flags] QUERY")
+	}
+	if cmd.Short == "" {
+		t.Error("Short description should not be empty")
+	}
+	if cmd.Long == "" {
+		t.Error("Long description should not be empty")
+	}
+}
+
 // TestCheckGraphVersionControl_EmptyPath verifies the function silently returns
 // when the graph has an empty path.
 func TestCheckGraphVersionControl_EmptyPath(t *testing.T) {

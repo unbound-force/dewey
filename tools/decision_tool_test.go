@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/types"
@@ -704,6 +705,226 @@ func TestDecisionDefer_UpdateBlockError(t *testing.T) {
 	if !result.IsError {
 		t.Fatal("expected error result when UpdateBlock fails")
 	}
+}
+
+func TestFindDecisionsViaTagSearch_Success(t *testing.T) {
+	mb := newMockBackend()
+	ts := &mockTagSearcher{
+		results: []backend.TagResult{
+			{
+				Page: "strategy",
+				Blocks: []types.BlockEntity{
+					{UUID: "d1", Content: "DECIDE Should we launch? #decision\ndeadline:: 2099-12-31"},
+					{UUID: "d2", Content: "DONE Chose React #decision\nresolved:: 2025-01-10"},
+				},
+			},
+			{
+				Page: "planning",
+				Blocks: []types.BlockEntity{
+					{UUID: "d3", Content: "TODO Review budget #decision"},
+				},
+			},
+		},
+	}
+	combined := &mockBackendWithTagSearch{mockBackend: mb, mockTagSearcher: ts}
+	d := NewDecision(combined)
+
+	today := parseTestDate(t, "2025-06-15")
+	decisions, err := d.findDecisionsViaTagSearch(context.Background(), ts, today)
+	if err != nil {
+		t.Fatalf("findDecisionsViaTagSearch() error: %v", err)
+	}
+
+	// Should find 3 blocks with markers: DECIDE, DONE, TODO.
+	if len(decisions) != 3 {
+		t.Fatalf("expected 3 decisions, got %d", len(decisions))
+	}
+
+	// Verify first decision has correct page and marker.
+	if decisions[0].Page != "strategy" {
+		t.Errorf("decisions[0].Page = %q, want %q", decisions[0].Page, "strategy")
+	}
+	if decisions[0].Marker != "DECIDE" {
+		t.Errorf("decisions[0].Marker = %q, want %q", decisions[0].Marker, "DECIDE")
+	}
+	if decisions[0].UUID != "d1" {
+		t.Errorf("decisions[0].UUID = %q, want %q", decisions[0].UUID, "d1")
+	}
+
+	// Verify resolved decision has DONE marker.
+	if decisions[1].Marker != "DONE" {
+		t.Errorf("decisions[1].Marker = %q, want %q", decisions[1].Marker, "DONE")
+	}
+	if decisions[1].Resolved != "2025-01-10" {
+		t.Errorf("decisions[1].Resolved = %q, want %q", decisions[1].Resolved, "2025-01-10")
+	}
+
+	// Verify third decision from second page.
+	if decisions[2].Page != "planning" {
+		t.Errorf("decisions[2].Page = %q, want %q", decisions[2].Page, "planning")
+	}
+	if decisions[2].Marker != "TODO" {
+		t.Errorf("decisions[2].Marker = %q, want %q", decisions[2].Marker, "TODO")
+	}
+}
+
+func TestFindDecisionsViaTagSearch_NoMatchingBlocks(t *testing.T) {
+	mb := newMockBackend()
+	ts := &mockTagSearcher{
+		results: []backend.TagResult{},
+	}
+	combined := &mockBackendWithTagSearch{mockBackend: mb, mockTagSearcher: ts}
+	d := NewDecision(combined)
+
+	today := parseTestDate(t, "2025-06-15")
+	decisions, err := d.findDecisionsViaTagSearch(context.Background(), ts, today)
+	if err != nil {
+		t.Fatalf("findDecisionsViaTagSearch() error: %v", err)
+	}
+
+	if len(decisions) != 0 {
+		t.Errorf("expected 0 decisions when no tag results, got %d", len(decisions))
+	}
+}
+
+func TestFindDecisionsViaTagSearch_SkipsBlocksWithoutMarker(t *testing.T) {
+	mb := newMockBackend()
+	ts := &mockTagSearcher{
+		results: []backend.TagResult{
+			{
+				Page: "docs",
+				Blocks: []types.BlockEntity{
+					// This block mentions #decision but has no marker — should be skipped.
+					{UUID: "doc1", Content: "Read about #decision making process"},
+					// This block has a DECIDE marker — should be included.
+					{UUID: "d1", Content: "DECIDE on framework #decision"},
+				},
+			},
+		},
+	}
+	combined := &mockBackendWithTagSearch{mockBackend: mb, mockTagSearcher: ts}
+	d := NewDecision(combined)
+
+	today := parseTestDate(t, "2025-06-15")
+	decisions, err := d.findDecisionsViaTagSearch(context.Background(), ts, today)
+	if err != nil {
+		t.Fatalf("findDecisionsViaTagSearch() error: %v", err)
+	}
+
+	// Only the DECIDE block should be returned.
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 decision (marker block), got %d", len(decisions))
+	}
+	if decisions[0].UUID != "d1" {
+		t.Errorf("decisions[0].UUID = %q, want %q", decisions[0].UUID, "d1")
+	}
+}
+
+func TestFindDecisionsViaTagSearch_SearchError(t *testing.T) {
+	ts := &mockTagSearcher{
+		err: fmt.Errorf("tag search unavailable"),
+	}
+	mb := newMockBackend()
+	combined := &mockBackendWithTagSearch{mockBackend: mb, mockTagSearcher: ts}
+	d := NewDecision(combined)
+
+	today := parseTestDate(t, "2025-06-15")
+	_, err := d.findDecisionsViaTagSearch(context.Background(), ts, today)
+	if err == nil {
+		t.Fatal("expected error when tag search fails")
+	}
+	if !containsSubstring(err.Error(), "decision tag search failed") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "decision tag search failed")
+	}
+}
+
+func TestFindDecisionsViaTagSearch_DeadlineCalculation(t *testing.T) {
+	mb := newMockBackend()
+	ts := &mockTagSearcher{
+		results: []backend.TagResult{
+			{
+				Page: "deadlines",
+				Blocks: []types.BlockEntity{
+					// Overdue decision (deadline in the past).
+					{UUID: "overdue1", Content: "DECIDE Past deadline #decision\ndeadline:: 2025-01-01"},
+					// Future decision.
+					{UUID: "future1", Content: "DECIDE Future deadline #decision\ndeadline:: 2099-12-31"},
+				},
+			},
+		},
+	}
+	combined := &mockBackendWithTagSearch{mockBackend: mb, mockTagSearcher: ts}
+	d := NewDecision(combined)
+
+	today := parseTestDate(t, "2025-06-15")
+	decisions, err := d.findDecisionsViaTagSearch(context.Background(), ts, today)
+	if err != nil {
+		t.Fatalf("findDecisionsViaTagSearch() error: %v", err)
+	}
+
+	if len(decisions) != 2 {
+		t.Fatalf("expected 2 decisions, got %d", len(decisions))
+	}
+
+	// Overdue decision should have negative days left and Overdue=true.
+	if decisions[0].DaysLeft == nil {
+		t.Fatal("overdue decision DaysLeft should not be nil")
+	}
+	if *decisions[0].DaysLeft >= 0 {
+		t.Errorf("overdue decision DaysLeft = %d, want negative", *decisions[0].DaysLeft)
+	}
+	if !decisions[0].Overdue {
+		t.Error("overdue decision Overdue = false, want true")
+	}
+
+	// Future decision should have positive days left and Overdue=false.
+	if decisions[1].DaysLeft == nil {
+		t.Fatal("future decision DaysLeft should not be nil")
+	}
+	if *decisions[1].DaysLeft <= 0 {
+		t.Errorf("future decision DaysLeft = %d, want positive", *decisions[1].DaysLeft)
+	}
+	if decisions[1].Overdue {
+		t.Error("future decision Overdue = true, want false")
+	}
+}
+
+func TestFindDecisions_DispatchesToTagSearcher(t *testing.T) {
+	mb := newMockBackend()
+	ts := &mockTagSearcher{
+		results: []backend.TagResult{
+			{
+				Page: "via-tag",
+				Blocks: []types.BlockEntity{
+					{UUID: "t1", Content: "DECIDE via tag search #decision"},
+				},
+			},
+		},
+	}
+	combined := &mockBackendWithTagSearch{mockBackend: mb, mockTagSearcher: ts}
+	d := NewDecision(combined)
+
+	decisions, err := d.findDecisions(context.Background())
+	if err != nil {
+		t.Fatalf("findDecisions() error: %v", err)
+	}
+
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 decision via tag search dispatch, got %d", len(decisions))
+	}
+	if decisions[0].Page != "via-tag" {
+		t.Errorf("decision page = %q, want %q", decisions[0].Page, "via-tag")
+	}
+}
+
+// parseTestDate parses a YYYY-MM-DD date string for test use.
+func parseTestDate(t *testing.T, s string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		t.Fatalf("parseTestDate(%q): %v", s, err)
+	}
+	return parsed
 }
 
 func containsSubstring(s, substr string) bool {

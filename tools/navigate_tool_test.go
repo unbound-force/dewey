@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/unbound-force/dewey/types"
@@ -357,5 +358,241 @@ func TestTraverse_NoPath(t *testing.T) {
 	// No error result, just a text message about no path found.
 	if result.IsError {
 		t.Fatal("no path is not an error, just a text response")
+	}
+}
+
+func TestListPages_DefaultParams(t *testing.T) {
+	mb := newMockBackend()
+	mb.addPage(types.PageEntity{Name: "alpha", OriginalName: "Alpha"})
+	mb.addPage(types.PageEntity{Name: "beta", OriginalName: "Beta"})
+	mb.addPage(types.PageEntity{Name: "gamma", OriginalName: "Gamma"})
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	// Should return all 3 pages sorted by name.
+	if len(parsed) != 3 {
+		t.Fatalf("expected 3 pages, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "Alpha" {
+		t.Errorf("first page name = %v, want %q", parsed[0]["name"], "Alpha")
+	}
+	if parsed[1]["name"] != "Beta" {
+		t.Errorf("second page name = %v, want %q", parsed[1]["name"], "Beta")
+	}
+	if parsed[2]["name"] != "Gamma" {
+		t.Errorf("third page name = %v, want %q", parsed[2]["name"], "Gamma")
+	}
+}
+
+func TestListPages_WithTagFilter(t *testing.T) {
+	mb := newMockBackend()
+	mb.addPage(types.PageEntity{Name: "tagged-page", OriginalName: "Tagged Page"},
+		types.BlockEntity{UUID: "b1", Content: "Some content #project"},
+	)
+	mb.addPage(types.PageEntity{Name: "untagged-page", OriginalName: "Untagged Page"},
+		types.BlockEntity{UUID: "b2", Content: "No relevant tags here"},
+	)
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{
+		HasTag: "project",
+	})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	// Only the tagged page should be returned.
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 tagged page, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "Tagged Page" {
+		t.Errorf("page name = %v, want %q", parsed[0]["name"], "Tagged Page")
+	}
+}
+
+func TestListPages_WithLimit(t *testing.T) {
+	mb := newMockBackend()
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("page-%02d", i)
+		mb.addPage(types.PageEntity{Name: name, OriginalName: name})
+	}
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{
+		Limit: 3,
+	})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if len(parsed) != 3 {
+		t.Errorf("expected 3 pages with limit=3, got %d", len(parsed))
+	}
+}
+
+func TestListPages_WithNamespace(t *testing.T) {
+	mb := newMockBackend()
+	mb.addPage(types.PageEntity{Name: "projects/alpha", OriginalName: "projects/alpha"})
+	mb.addPage(types.PageEntity{Name: "projects/beta", OriginalName: "projects/beta"})
+	mb.addPage(types.PageEntity{Name: "notes/gamma", OriginalName: "notes/gamma"})
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{
+		Namespace: "projects/",
+	})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if len(parsed) != 2 {
+		t.Fatalf("expected 2 pages in projects/ namespace, got %d", len(parsed))
+	}
+}
+
+func TestListPages_WithPropertyFilter(t *testing.T) {
+	mb := newMockBackend()
+	mb.addPage(types.PageEntity{
+		Name:         "typed-page",
+		OriginalName: "typed-page",
+		Properties:   map[string]any{"type": "analysis"},
+	})
+	mb.addPage(types.PageEntity{
+		Name:         "untyped-page",
+		OriginalName: "untyped-page",
+	})
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{
+		HasProperty: "type",
+	})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 page with 'type' property, got %d", len(parsed))
+	}
+	if parsed[0]["name"] != "typed-page" {
+		t.Errorf("page name = %v, want %q", parsed[0]["name"], "typed-page")
+	}
+}
+
+func TestListPages_FiltersEmptyNames(t *testing.T) {
+	mb := newMockBackend()
+	mb.addPage(types.PageEntity{Name: "valid-page", OriginalName: "Valid Page"})
+	mb.addPage(types.PageEntity{Name: "", OriginalName: ""}) // invalid entry
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	// Empty-name pages should be filtered out.
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 page (empty name filtered), got %d", len(parsed))
+	}
+}
+
+func TestListPages_GetAllPagesError(t *testing.T) {
+	mb := newMockBackend()
+	mb.getAllPagesErr = fmt.Errorf("backend unavailable")
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when GetAllPages fails")
+	}
+}
+
+func TestListPages_IncludesUpdatedAt(t *testing.T) {
+	mb := newMockBackend()
+	mb.addPage(types.PageEntity{
+		Name:         "recent-page",
+		OriginalName: "Recent Page",
+		UpdatedAt:    1700000000,
+	})
+	nav := NewNavigate(mb)
+
+	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{})
+	if err != nil {
+		t.Fatalf("ListPages() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("ListPages() returned error result")
+	}
+
+	var parsed []map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if len(parsed) != 1 {
+		t.Fatalf("expected 1 page, got %d", len(parsed))
+	}
+	if parsed[0]["updatedAt"] != float64(1700000000) {
+		t.Errorf("updatedAt = %v, want %v", parsed[0]["updatedAt"], float64(1700000000))
 	}
 }

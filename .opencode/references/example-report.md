@@ -70,4 +70,4 @@ Top 5 Prioritized Recommendations
 4. 🟡 Resolve ambiguous classifications — 66.5% ambiguous rate can be reduced with project documentation providing stronger signal evidence.
 5. 🟢 Run per-package quality analysis — module-level returned 0 tests; per-package analysis provides granular contract coverage data.
 ```
-<!-- scaffolded by gaze v1.4.6 -->
+<!-- scaffolded by gaze v1.4.7 -->

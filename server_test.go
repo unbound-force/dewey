@@ -600,3 +600,194 @@ func containsTool(tools []string, name string) bool {
 	i := sort.SearchStrings(tools, name)
 	return i < len(tools) && tools[i] == name
 }
+
+// callHealthTool creates an in-memory MCP client session, calls the "health"
+// tool, and returns the parsed JSON response.
+func callHealthTool(t *testing.T, srv *mcp.Server) map[string]any {
+	t.Helper()
+
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+
+	ss, err := srv.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer func() { _ = ss.Close() }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0.0.1"}, nil)
+	cs, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "health"})
+	if err != nil {
+		t.Fatalf("CallTool(health): %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("health tool returned error")
+	}
+
+	// Extract text content from the result.
+	if len(result.Content) == 0 {
+		t.Fatal("health tool returned no content")
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("health content is %T, want *mcp.TextContent", result.Content[0])
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &parsed); err != nil {
+		t.Fatalf("unmarshal health response: %v", err)
+	}
+	return parsed
+}
+
+// TestRegisterHealthTool_MinimalConfig tests health tool output with nil
+// store and nil embedder — the minimal server configuration.
+func TestRegisterHealthTool_MinimalConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	vc := vault.New(tmpDir)
+	srv := newServer(vc, false)
+
+	parsed := callHealthTool(t, srv)
+
+	if parsed["status"] != "ok" {
+		t.Errorf("status = %v, want %q", parsed["status"], "ok")
+	}
+	if parsed["readOnly"] != false {
+		t.Errorf("readOnly = %v, want false", parsed["readOnly"])
+	}
+
+	dewey, ok := parsed["dewey"].(map[string]any)
+	if !ok {
+		t.Fatalf("dewey field missing or wrong type: %T", parsed["dewey"])
+	}
+	if dewey["persistent"] != false {
+		t.Errorf("dewey.persistent = %v, want false", dewey["persistent"])
+	}
+	if dewey["embeddingAvailable"] != false {
+		t.Errorf("dewey.embeddingAvailable = %v, want false", dewey["embeddingAvailable"])
+	}
+	if dewey["embeddingCount"] != float64(0) {
+		t.Errorf("dewey.embeddingCount = %v, want 0", dewey["embeddingCount"])
+	}
+}
+
+// TestRegisterHealthTool_WithStore tests health tool output when a persistent
+// store is configured with pages, blocks, embeddings, and sources.
+func TestRegisterHealthTool_WithStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	vc := vault.New(tmpDir)
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Populate store with test data.
+	_ = s.InsertPage(&store.Page{
+		Name: "test-page", OriginalName: "Test Page",
+		SourceID: "disk-local", SourceDocID: "test.md",
+		ContentHash: "abc", CreatedAt: 1, UpdatedAt: 1,
+	})
+	_ = s.InsertBlock(&store.Block{
+		UUID: "b1", PageName: "test-page", Content: "block content", Position: 0,
+	})
+	_ = s.InsertBlock(&store.Block{
+		UUID: "b2", PageName: "test-page", Content: "another block", Position: 1,
+	})
+	_ = s.InsertEmbedding("b1", "test-model", []float32{0.1, 0.2}, "chunk1")
+	_ = s.InsertSource(&store.SourceRecord{
+		ID: "disk-local", Type: "disk", Status: "ok", LastFetchedAt: 1000,
+	})
+
+	srv := newServer(vc, false, WithPersistentStore(s))
+	parsed := callHealthTool(t, srv)
+
+	dewey, ok := parsed["dewey"].(map[string]any)
+	if !ok {
+		t.Fatalf("dewey field missing or wrong type: %T", parsed["dewey"])
+	}
+	if dewey["persistent"] != true {
+		t.Errorf("dewey.persistent = %v, want true", dewey["persistent"])
+	}
+	if dewey["embeddingCount"] != float64(1) {
+		t.Errorf("dewey.embeddingCount = %v, want 1", dewey["embeddingCount"])
+	}
+	coverage, ok := dewey["embeddingCoverage"].(float64)
+	if !ok || coverage <= 0 {
+		t.Errorf("dewey.embeddingCoverage = %v, want > 0", dewey["embeddingCoverage"])
+	}
+
+	sources, ok := dewey["sources"].([]any)
+	if !ok {
+		t.Fatalf("dewey.sources missing or wrong type: %T", dewey["sources"])
+	}
+	if len(sources) != 1 {
+		t.Fatalf("dewey.sources length = %d, want 1", len(sources))
+	}
+	src, ok := sources[0].(map[string]any)
+	if !ok {
+		t.Fatalf("sources[0] is not a map: %T", sources[0])
+	}
+	if src["id"] != "disk-local" {
+		t.Errorf("sources[0].id = %v, want %q", src["id"], "disk-local")
+	}
+	if src["type"] != "disk" {
+		t.Errorf("sources[0].type = %v, want %q", src["type"], "disk")
+	}
+}
+
+// TestRegisterHealthTool_WithEmbedder tests health tool output when an
+// embedder is configured and available.
+func TestRegisterHealthTool_WithEmbedder(t *testing.T) {
+	tmpDir := t.TempDir()
+	vc := vault.New(tmpDir)
+
+	e := &mockEmbedderForHealth{available: true, model: "granite-embedding:30m"}
+	srv := newServer(vc, false, WithEmbedder(e))
+
+	parsed := callHealthTool(t, srv)
+
+	dewey, ok := parsed["dewey"].(map[string]any)
+	if !ok {
+		t.Fatalf("dewey field missing or wrong type: %T", parsed["dewey"])
+	}
+	if dewey["embeddingAvailable"] != true {
+		t.Errorf("dewey.embeddingAvailable = %v, want true", dewey["embeddingAvailable"])
+	}
+	if dewey["embeddingModel"] != "granite-embedding:30m" {
+		t.Errorf("dewey.embeddingModel = %v, want %q", dewey["embeddingModel"], "granite-embedding:30m")
+	}
+}
+
+// TestRegisterHealthTool_PingError tests health tool output when the backend
+// Ping() returns an error.
+func TestRegisterHealthTool_PingError(t *testing.T) {
+	mb := &serverMockBackendWithPingError{}
+	srv := newServer(mb, false)
+
+	parsed := callHealthTool(t, srv)
+
+	status, ok := parsed["status"].(string)
+	if !ok {
+		t.Fatalf("status missing or wrong type: %T", parsed["status"])
+	}
+	if len(status) < 6 || status[:6] != "error:" {
+		t.Errorf("status = %q, want prefix %q", status, "error:")
+	}
+}
+
+// serverMockBackendWithPingError is a backend that returns an error from Ping.
+type serverMockBackendWithPingError struct {
+	serverMockBackend
+}
+
+func (m *serverMockBackendWithPingError) Ping(_ context.Context) error {
+	return fmt.Errorf("connection refused")
+}

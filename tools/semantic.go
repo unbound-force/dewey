@@ -86,16 +86,8 @@ func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest,
 // is provided, the embedder is unavailable, no embeddings exist in the
 // index, or the referenced page/block has no embedding.
 func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input types.SimilarInput) (*mcp.CallToolResult, any, error) {
-	// Validate: at least one of page or uuid must be provided.
-	if input.Page == "" && input.UUID == "" {
-		return errorResult("At least one of 'page' or 'uuid' must be provided."), nil, nil
-	}
-
-	if s.embedder == nil || !s.embedder.Available() {
-		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model."), nil, nil
-	}
-	if s.store == nil {
-		return errorResult("Semantic search unavailable: no persistent store configured."), nil, nil
+	if errResult := s.validateSimilarInput(input); errResult != nil {
+		return errResult, nil, nil
 	}
 
 	limit := input.Limit
@@ -105,57 +97,84 @@ func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input 
 
 	modelID := s.embedder.ModelID()
 
-	// Check if any embeddings exist at all.
-	count, err := s.store.CountEmbeddings()
-	if err != nil {
-		return errorResult(fmt.Sprintf("Failed to check embeddings: %v", err)), nil, nil
-	}
-	if count == 0 {
-		return errorResult("No embeddings in index. Run `dewey index` to generate embeddings."), nil, nil
+	queryVec, errResult := s.resolveQueryVector(ctx, input, modelID)
+	if errResult != nil {
+		return errResult, nil, nil
 	}
 
-	var queryVec []float32
-
-	if input.UUID != "" {
-		// Look up embedding by block UUID.
-		emb, err := s.store.GetEmbedding(input.UUID, modelID)
-		if err != nil {
-			return errorResult(fmt.Sprintf("Failed to look up embedding: %v", err)), nil, nil
-		}
-		if emb == nil {
-			return errorResult(fmt.Sprintf("No embedding found for %s. Run `dewey index` to generate embeddings.", input.UUID)), nil, nil
-		}
-		queryVec = emb.Vector
-	} else {
-		// Look up by page name — find the first block's embedding.
-		blocks, err := s.store.GetBlocksByPage(input.Page)
-		if err != nil || len(blocks) == 0 {
-			return errorResult(fmt.Sprintf("Page/block not found: %s", input.Page)), nil, nil
-		}
-
-		// Find the first block that has an embedding.
-		for _, block := range blocks {
-			emb, err := s.store.GetEmbedding(block.UUID, modelID)
-			if err == nil && emb != nil {
-				queryVec = emb.Vector
-				break
-			}
-		}
-		if queryVec == nil {
-			return errorResult(fmt.Sprintf("No embedding found for %s. Run `dewey index` to generate embeddings.", input.Page)), nil, nil
-		}
-	}
-
-	// Search for similar blocks.
 	results, err := s.store.SearchSimilar(modelID, queryVec, limit+1, 0.0)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Search failed: %v", err)), nil, nil
 	}
 
-	// Filter out the query document itself from results.
+	filtered := filterSimilarResults(results, input.UUID, limit)
+	output := toSemanticResults(filtered)
+
+	res, err := jsonTextResult(output)
+	return res, nil, err
+}
+
+// validateSimilarInput checks that the input has at least one identifier
+// and that the embedder and store are available. Returns an error result
+// or nil if validation passes.
+func (s *Semantic) validateSimilarInput(input types.SimilarInput) *mcp.CallToolResult {
+	if input.Page == "" && input.UUID == "" {
+		return errorResult("At least one of 'page' or 'uuid' must be provided.")
+	}
+	if s.embedder == nil || !s.embedder.Available() {
+		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model.")
+	}
+	if s.store == nil {
+		return errorResult("Semantic search unavailable: no persistent store configured.")
+	}
+	return nil
+}
+
+// resolveQueryVector looks up the embedding vector for the given input,
+// either by block UUID or by finding the first embedded block for a page.
+// Returns the vector or an error result.
+func (s *Semantic) resolveQueryVector(_ context.Context, input types.SimilarInput, modelID string) ([]float32, *mcp.CallToolResult) {
+	// Check if any embeddings exist at all.
+	count, err := s.store.CountEmbeddings()
+	if err != nil {
+		return nil, errorResult(fmt.Sprintf("Failed to check embeddings: %v", err))
+	}
+	if count == 0 {
+		return nil, errorResult("No embeddings in index. Run `dewey index` to generate embeddings.")
+	}
+
+	if input.UUID != "" {
+		emb, err := s.store.GetEmbedding(input.UUID, modelID)
+		if err != nil {
+			return nil, errorResult(fmt.Sprintf("Failed to look up embedding: %v", err))
+		}
+		if emb == nil {
+			return nil, errorResult(fmt.Sprintf("No embedding found for %s. Run `dewey index` to generate embeddings.", input.UUID))
+		}
+		return emb.Vector, nil
+	}
+
+	// Look up by page name — find the first block's embedding.
+	blocks, err := s.store.GetBlocksByPage(input.Page)
+	if err != nil || len(blocks) == 0 {
+		return nil, errorResult(fmt.Sprintf("Page/block not found: %s", input.Page))
+	}
+
+	for _, block := range blocks {
+		emb, err := s.store.GetEmbedding(block.UUID, modelID)
+		if err == nil && emb != nil {
+			return emb.Vector, nil
+		}
+	}
+	return nil, errorResult(fmt.Sprintf("No embedding found for %s. Run `dewey index` to generate embeddings.", input.Page))
+}
+
+// filterSimilarResults removes the query document from results and enforces
+// the limit. This is a pure function with no side effects.
+func filterSimilarResults(results []store.SimilarityResult, excludeUUID string, limit int) []store.SimilarityResult {
 	filtered := make([]store.SimilarityResult, 0, len(results))
 	for _, r := range results {
-		if r.BlockUUID == input.UUID {
+		if r.BlockUUID == excludeUUID {
 			continue
 		}
 		filtered = append(filtered, r)
@@ -163,11 +182,7 @@ func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input 
 	if len(filtered) > limit {
 		filtered = filtered[:limit]
 	}
-
-	output := toSemanticResults(filtered)
-
-	res, err := jsonTextResult(output)
-	return res, nil, err
+	return filtered
 }
 
 // SemanticSearchFiltered handles the dewey_semantic_search_filtered MCP

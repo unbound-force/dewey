@@ -265,6 +265,36 @@ sources:
 	return cmd
 }
 
+// sourceStatus holds per-source metadata for status reporting.
+type sourceStatus struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	PageCount   int    `json:"pageCount"`
+	LastFetched string `json:"lastFetched,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+// statusData holds all data needed to render the status output.
+// Separates data collection from formatting to reduce cyclomatic complexity.
+type statusData struct {
+	PageCount          int
+	BlockCount         int
+	EmbeddingCount     int
+	EmbeddingModel     string
+	EmbeddingAvailable bool
+	Sources            []sourceStatus
+	IndexPath          string
+}
+
+// embeddingCoverage computes the percentage of blocks with embeddings.
+func (d statusData) embeddingCoverage() float64 {
+	if d.BlockCount > 0 {
+		return float64(d.EmbeddingCount) / float64(d.BlockCount) * 100
+	}
+	return 0
+}
+
 // newStatusCmd creates the `dewey status` subcommand.
 // Reports index health: page count, block count, source info.
 // Supports --json flag for structured output.
@@ -277,7 +307,6 @@ func newStatusCmd() *cobra.Command {
 		Long:         "Show Dewey index health: page count, block count, source info, and index path.",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Find .dewey/ directory.
 			cwd, err := os.Getwd()
 			if err != nil {
 				return fmt.Errorf("get working directory: %w", err)
@@ -288,135 +317,146 @@ func newStatusCmd() *cobra.Command {
 				return fmt.Errorf("not initialized. Run 'dewey init' first")
 			}
 
-			dbPath := filepath.Join(deweyDir, "graph.db")
-			var pageCount, blockCount, embeddingCount int
-			var embeddingModel string
-			embeddingAvailable := false
-
-			// Read embedding model from config.yaml if it exists.
-			configPath := filepath.Join(deweyDir, "config.yaml")
-			if configData, err := os.ReadFile(configPath); err == nil {
-				// Simple YAML parsing for model name — avoid adding a YAML dependency
-				// just for status display. The config is already parsed elsewhere.
-				for _, line := range strings.Split(string(configData), "\n") {
-					line = strings.TrimSpace(line)
-					if strings.HasPrefix(line, "model:") {
-						embeddingModel = strings.TrimSpace(strings.TrimPrefix(line, "model:"))
-					}
-				}
+			data, err := queryStoreStatus(deweyDir)
+			if err != nil {
+				return err
 			}
 
-			// Load per-source status from store.
-			type sourceStatus struct {
-				ID          string `json:"id"`
-				Type        string `json:"type"`
-				Status      string `json:"status"`
-				PageCount   int    `json:"pageCount"`
-				LastFetched string `json:"lastFetched,omitempty"`
-				Error       string `json:"error,omitempty"`
-			}
-			var sources []sourceStatus
-
-			// Open store if database exists.
-			if _, err := os.Stat(dbPath); err == nil {
-				s, err := store.New(dbPath)
-				if err != nil {
-					return fmt.Errorf("open store: %w", err)
-				}
-				defer func() { _ = s.Close() }()
-
-				pages, err := s.ListPages()
-				if err != nil {
-					return fmt.Errorf("list pages: %w", err)
-				}
-				pageCount = len(pages)
-
-				bc, err := s.CountBlocks()
-				if err == nil {
-					blockCount = bc
-				}
-
-				ec, err := s.CountEmbeddings()
-				if err == nil {
-					embeddingCount = ec
-				}
-
-				storedSources, _ := s.ListSources()
-				for _, src := range storedSources {
-					ss := sourceStatus{
-						ID:     src.ID,
-						Type:   src.Type,
-						Status: src.Status,
-						Error:  src.ErrorMessage,
-					}
-					pc, _ := s.CountPagesBySource(src.ID)
-					ss.PageCount = pc
-					if src.LastFetchedAt > 0 {
-						elapsed := time.Since(time.UnixMilli(src.LastFetchedAt))
-						ss.LastFetched = formatDuration(elapsed)
-					}
-					sources = append(sources, ss)
-				}
-			}
-
-			// Compute embedding coverage.
-			var coverage float64
-			if blockCount > 0 {
-				coverage = float64(embeddingCount) / float64(blockCount) * 100
-			}
-
+			w := cmd.OutOrStdout()
 			if jsonOutput {
-				status := map[string]any{
-					"path":               deweyDir,
-					"pages":              pageCount,
-					"blocks":             blockCount,
-					"embeddings":         embeddingCount,
-					"embeddingModel":     embeddingModel,
-					"embeddingAvailable": embeddingAvailable,
-					"embeddingCoverage":  coverage,
-					"sources":            sources,
-				}
-				data, err := json.MarshalIndent(status, "", "  ")
-				if err != nil {
-					return fmt.Errorf("marshal JSON: %w", err)
-				}
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			} else {
-				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Dewey Index Status")
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Path:       %s\n", deweyDir)
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Pages:      %d\n", pageCount)
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Blocks:     %d\n", blockCount)
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Embeddings: %d\n", embeddingCount)
-				if embeddingModel != "" {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Model:      %s\n", embeddingModel)
-				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Coverage:   %.1f%%\n", coverage)
-
-				if len(sources) > 0 {
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), "\nSources")
-					for _, src := range sources {
-						lastFetched := "never"
-						if src.LastFetched != "" {
-							lastFetched = src.LastFetched + " ago"
-						}
-						if src.Error != "" {
-							_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-15s %-8s %3d pages  %s  error: %s\n",
-								src.ID, src.Status, src.PageCount, lastFetched, src.Error)
-						} else {
-							_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %-15s %-8s %3d pages  %s\n",
-								src.ID, src.Status, src.PageCount, lastFetched)
-						}
-					}
-				}
+				return formatStatusJSON(data, w)
 			}
-
-			return nil
+			return formatStatusText(data, w)
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// readEmbeddingModel extracts the embedding model name from config.yaml
+// using simple line parsing to avoid a YAML dependency for status display.
+func readEmbeddingModel(deweyDir string) string {
+	configPath := filepath.Join(deweyDir, "config.yaml")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(configData), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "model:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "model:"))
+		}
+	}
+	return ""
+}
+
+// queryStoreStatus opens the store at deweyDir, queries all counts and source
+// records, and returns a populated statusData. The store is closed before
+// returning. Returns a zero-value statusData (with IndexPath set) if the
+// database does not yet exist.
+func queryStoreStatus(deweyDir string) (statusData, error) {
+	data := statusData{
+		IndexPath:      deweyDir,
+		EmbeddingModel: readEmbeddingModel(deweyDir),
+	}
+
+	dbPath := filepath.Join(deweyDir, "graph.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		// Database does not exist yet — return zero counts.
+		return data, nil
+	}
+
+	s, err := store.New(dbPath)
+	if err != nil {
+		return data, fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	pages, err := s.ListPages()
+	if err != nil {
+		return data, fmt.Errorf("list pages: %w", err)
+	}
+	data.PageCount = len(pages)
+
+	if bc, err := s.CountBlocks(); err == nil {
+		data.BlockCount = bc
+	}
+	if ec, err := s.CountEmbeddings(); err == nil {
+		data.EmbeddingCount = ec
+	}
+
+	storedSources, _ := s.ListSources()
+	for _, src := range storedSources {
+		ss := sourceStatus{
+			ID:     src.ID,
+			Type:   src.Type,
+			Status: src.Status,
+			Error:  src.ErrorMessage,
+		}
+		pc, _ := s.CountPagesBySource(src.ID)
+		ss.PageCount = pc
+		if src.LastFetchedAt > 0 {
+			elapsed := time.Since(time.UnixMilli(src.LastFetchedAt))
+			ss.LastFetched = formatDuration(elapsed)
+		}
+		data.Sources = append(data.Sources, ss)
+	}
+
+	return data, nil
+}
+
+// formatStatusText writes human-readable status output to w.
+func formatStatusText(data statusData, w io.Writer) error {
+	_, _ = fmt.Fprintln(w, "Dewey Index Status")
+	_, _ = fmt.Fprintf(w, "  Path:       %s\n", data.IndexPath)
+	_, _ = fmt.Fprintf(w, "  Pages:      %d\n", data.PageCount)
+	_, _ = fmt.Fprintf(w, "  Blocks:     %d\n", data.BlockCount)
+	_, _ = fmt.Fprintf(w, "  Embeddings: %d\n", data.EmbeddingCount)
+	if data.EmbeddingModel != "" {
+		_, _ = fmt.Fprintf(w, "  Model:      %s\n", data.EmbeddingModel)
+	}
+	_, _ = fmt.Fprintf(w, "  Coverage:   %.1f%%\n", data.embeddingCoverage())
+
+	if len(data.Sources) > 0 {
+		_, _ = fmt.Fprintln(w, "\nSources")
+		for _, src := range data.Sources {
+			lastFetched := "never"
+			if src.LastFetched != "" {
+				lastFetched = src.LastFetched + " ago"
+			}
+			if src.Error != "" {
+				_, _ = fmt.Fprintf(w, "  %-15s %-8s %3d pages  %s  error: %s\n",
+					src.ID, src.Status, src.PageCount, lastFetched, src.Error)
+			} else {
+				_, _ = fmt.Fprintf(w, "  %-15s %-8s %3d pages  %s\n",
+					src.ID, src.Status, src.PageCount, lastFetched)
+			}
+		}
+	}
+
+	return nil
+}
+
+// formatStatusJSON writes JSON-formatted status output to w.
+func formatStatusJSON(data statusData, w io.Writer) error {
+	status := map[string]any{
+		"path":               data.IndexPath,
+		"pages":              data.PageCount,
+		"blocks":             data.BlockCount,
+		"embeddings":         data.EmbeddingCount,
+		"embeddingModel":     data.EmbeddingModel,
+		"embeddingAvailable": data.EmbeddingAvailable,
+		"embeddingCoverage":  data.embeddingCoverage(),
+		"sources":            data.Sources,
+	}
+	out, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal JSON: %w", err)
+	}
+	_, _ = fmt.Fprintln(w, string(out))
+	return nil
 }
 
 // --- Helpers ---
@@ -560,78 +600,9 @@ Fetches content from all configured sources and indexes it.`,
 			mgr := source.NewManager(configs, cwd, cacheDir)
 			result, allDocs := mgr.FetchAll(sourceName, force, lastFetchedTimes)
 
-			// Index fetched documents into store.
-			totalIndexed := 0
-			for sourceID, docs := range allDocs {
-				for _, doc := range docs {
-					// Upsert page from document.
-					existing, _ := s.GetPage(doc.Title)
-					if existing != nil {
-						existing.ContentHash = doc.ContentHash
-						existing.SourceID = sourceID
-						existing.SourceDocID = doc.ID
-						if err := s.UpdatePage(existing); err != nil {
-							logger.Warn("failed to update page", "page", doc.Title, "err", err)
-							continue
-						}
-					} else {
-						page := &store.Page{
-							Name:         doc.Title,
-							OriginalName: doc.Title,
-							SourceID:     sourceID,
-							SourceDocID:  doc.ID,
-							ContentHash:  doc.ContentHash,
-							CreatedAt:    doc.FetchedAt.UnixMilli(),
-							UpdatedAt:    doc.FetchedAt.UnixMilli(),
-						}
-						if doc.Properties != nil {
-							propsJSON, _ := json.Marshal(doc.Properties)
-							page.Properties = string(propsJSON)
-						}
-						if err := s.InsertPage(page); err != nil {
-							logger.Warn("failed to insert page", "page", doc.Title, "err", err)
-							continue
-						}
-					}
-					totalIndexed++
-				}
+			totalIndexed := indexDocuments(s, allDocs, configs)
+			reportSourceErrors(s, result)
 
-				// Update source record in store.
-				existingSrc, _ := s.GetSource(sourceID)
-				if existingSrc == nil {
-					// Find config for this source.
-					var srcType, srcName string
-					for _, cfg := range configs {
-						if cfg.ID == sourceID {
-							srcType = cfg.Type
-							srcName = cfg.Name
-							break
-						}
-					}
-					_ = s.InsertSource(&store.SourceRecord{
-						ID:            sourceID,
-						Type:          srcType,
-						Name:          srcName,
-						Status:        "active",
-						LastFetchedAt: time.Now().UnixMilli(),
-					})
-				} else {
-					_ = s.UpdateLastFetched(sourceID, time.Now().UnixMilli())
-					_ = s.UpdateSourceStatus(sourceID, "active", "")
-				}
-			}
-
-			// Report errors for failed sources.
-			for _, summary := range result.Summaries {
-				if summary.Error != "" {
-					existingSrc, _ := s.GetSource(summary.SourceID)
-					if existingSrc != nil {
-						_ = s.UpdateSourceStatus(summary.SourceID, "error", summary.Error)
-					}
-				}
-			}
-
-			// Print summary.
 			logger.Info("index complete",
 				"documents", totalIndexed,
 				"errors", result.TotalErrs,
@@ -646,6 +617,82 @@ Fetches content from all configured sources and indexes it.`,
 	cmd.Flags().BoolVar(&force, "force", false, "Force full re-index, ignoring refresh intervals")
 
 	return cmd
+}
+
+// indexDocuments upserts fetched documents into the persistent store and updates
+// source records. Returns the total number of documents successfully indexed.
+func indexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig) int {
+	totalIndexed := 0
+	for sourceID, docs := range allDocs {
+		for _, doc := range docs {
+			existing, _ := s.GetPage(doc.Title)
+			if existing != nil {
+				existing.ContentHash = doc.ContentHash
+				existing.SourceID = sourceID
+				existing.SourceDocID = doc.ID
+				if err := s.UpdatePage(existing); err != nil {
+					logger.Warn("failed to update page", "page", doc.Title, "err", err)
+					continue
+				}
+			} else {
+				page := &store.Page{
+					Name:         doc.Title,
+					OriginalName: doc.Title,
+					SourceID:     sourceID,
+					SourceDocID:  doc.ID,
+					ContentHash:  doc.ContentHash,
+					CreatedAt:    doc.FetchedAt.UnixMilli(),
+					UpdatedAt:    doc.FetchedAt.UnixMilli(),
+				}
+				if doc.Properties != nil {
+					propsJSON, _ := json.Marshal(doc.Properties)
+					page.Properties = string(propsJSON)
+				}
+				if err := s.InsertPage(page); err != nil {
+					logger.Warn("failed to insert page", "page", doc.Title, "err", err)
+					continue
+				}
+			}
+			totalIndexed++
+		}
+
+		// Update source record in store.
+		existingSrc, _ := s.GetSource(sourceID)
+		if existingSrc == nil {
+			var srcType, srcName string
+			for _, cfg := range configs {
+				if cfg.ID == sourceID {
+					srcType = cfg.Type
+					srcName = cfg.Name
+					break
+				}
+			}
+			_ = s.InsertSource(&store.SourceRecord{
+				ID:            sourceID,
+				Type:          srcType,
+				Name:          srcName,
+				Status:        "active",
+				LastFetchedAt: time.Now().UnixMilli(),
+			})
+		} else {
+			_ = s.UpdateLastFetched(sourceID, time.Now().UnixMilli())
+			_ = s.UpdateSourceStatus(sourceID, "active", "")
+		}
+	}
+	return totalIndexed
+}
+
+// reportSourceErrors updates source status for any sources that failed
+// during the fetch phase.
+func reportSourceErrors(s *store.Store, result *source.FetchResult) {
+	for _, summary := range result.Summaries {
+		if summary.Error != "" {
+			existingSrc, _ := s.GetSource(summary.SourceID)
+			if existingSrc != nil {
+				_ = s.UpdateSourceStatus(summary.SourceID, "error", summary.Error)
+			}
+		}
+	}
 }
 
 // --- Source command (T051) ---

@@ -1007,15 +1007,10 @@ func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(newAbsPath), 0o755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
+	if err := renameFile(oldPath, newAbsPath); err != nil {
+		return err
 	}
 
-	if err := os.Rename(oldPath, newAbsPath); err != nil {
-		return fmt.Errorf("rename file: %w", err)
-	}
-
-	// Update all [[links]] across the vault — log every error.
 	if errs := c.updateLinksAcrossVaultLocked(oldName, newName); len(errs) > 0 {
 		for _, e := range errs {
 			logger.Error("link update error during rename", "err", e)
@@ -1023,15 +1018,40 @@ func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 	}
 
 	c.removePageFromIndexLocked(lowerOld)
+	c.reindexRenamed(newRelPath, newAbsPath)
+
+	vaultAbs, _ := filepath.Abs(c.vaultPath)
+	cleanupEmptyDirs(filepath.Dir(oldPath), vaultAbs)
+
+	return nil
+}
+
+// renameFile creates the target directory if needed and renames the file.
+func renameFile(oldPath, newAbsPath string) error {
+	if err := os.MkdirAll(filepath.Dir(newAbsPath), 0o755); err != nil {
+		return fmt.Errorf("create directory: %w", err)
+	}
+	if err := os.Rename(oldPath, newAbsPath); err != nil {
+		return fmt.Errorf("rename file: %w", err)
+	}
+	return nil
+}
+
+// reindexRenamed reads the renamed file and re-indexes it under the new
+// path. Must be called within a locked context.
+func (c *Client) reindexRenamed(newRelPath, newAbsPath string) {
 	content, err := os.ReadFile(newAbsPath)
 	if err == nil {
 		info, _ := os.Stat(newAbsPath)
 		c.indexFileCore(newRelPath, string(content), info)
 	}
 	c.rebuildLinksLocked()
+}
 
-	dir := filepath.Dir(oldPath)
-	vaultAbs, _ := filepath.Abs(c.vaultPath)
+// cleanupEmptyDirs walks up from startDir removing empty directories until
+// it reaches vaultAbs or encounters a non-empty directory.
+func cleanupEmptyDirs(startDir, vaultAbs string) {
+	dir := startDir
 	for dir != vaultAbs {
 		entries, err := os.ReadDir(dir)
 		if err != nil || len(entries) > 0 {
@@ -1042,8 +1062,6 @@ func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 		}
 		dir = filepath.Dir(dir)
 	}
-
-	return nil
 }
 
 // removePageFromIndex removes a page and its blocks from all indices.

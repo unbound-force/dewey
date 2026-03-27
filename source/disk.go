@@ -118,10 +118,26 @@ func (d *DiskSource) Fetch(id string) (*Document, error) {
 // hashes against stored hashes. Uses the same SHA-256 algorithm as VaultStore.
 // Returns a slice of changes categorized as [ChangeAdded], [ChangeModified],
 // or [ChangeDeleted]. Returns an error if the directory walk fails.
+//
+// Decomposed into walkDiskFiles (directory scan) and diffFileChanges
+// (hash comparison) to keep each function under cyclomatic complexity 10.
 func (d *DiskSource) Diff() ([]Change, error) {
-	currentFiles := make(map[string]string) // relPath → hash
+	currentFiles, err := walkDiskFiles(d.basePath)
+	if err != nil {
+		return nil, err
+	}
 
-	err := filepath.Walk(d.basePath, func(path string, info os.FileInfo, walkErr error) error {
+	return diffFileChanges(currentFiles, d.storedHashes, d.Fetch), nil
+}
+
+// walkDiskFiles walks basePath and returns a map of relPath → SHA-256
+// content hash for every .md file found. Hidden directories (names
+// starting with ".") are skipped entirely. Unreadable files are
+// silently ignored, matching the List behavior.
+func walkDiskFiles(basePath string) (map[string]string, error) {
+	files := make(map[string]string) // relPath → hash
+
+	err := filepath.Walk(basePath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -137,22 +153,32 @@ func (d *DiskSource) Diff() ([]Change, error) {
 			return nil
 		}
 
-		relPath, _ := filepath.Rel(d.basePath, path)
+		relPath, _ := filepath.Rel(basePath, path)
 		relPath = filepath.ToSlash(relPath)
-		currentFiles[relPath] = computeHash(string(content))
+		files[relPath] = computeHash(string(content))
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walk disk source for diff: %w", err)
 	}
 
+	return files, nil
+}
+
+// diffFileChanges compares currentFiles against storedHashes and returns
+// a slice of changes. New files (in current but not stored) are
+// ChangeAdded; files with different hashes are ChangeModified; files
+// in stored but not current are ChangeDeleted. For added and modified
+// files, fetcher is called to retrieve the full Document; fetch errors
+// cause the file to be silently skipped.
+func diffFileChanges(currentFiles, storedHashes map[string]string, fetcher func(string) (*Document, error)) []Change {
 	var changes []Change
 
 	// Detect new and modified files.
 	for relPath, currentHash := range currentFiles {
-		storedHash, exists := d.storedHashes[relPath]
+		storedHash, exists := storedHashes[relPath]
 		if !exists {
-			doc, err := d.Fetch(relPath)
+			doc, err := fetcher(relPath)
 			if err != nil {
 				continue
 			}
@@ -162,7 +188,7 @@ func (d *DiskSource) Diff() ([]Change, error) {
 				ID:       relPath,
 			})
 		} else if storedHash != currentHash {
-			doc, err := d.Fetch(relPath)
+			doc, err := fetcher(relPath)
 			if err != nil {
 				continue
 			}
@@ -175,7 +201,7 @@ func (d *DiskSource) Diff() ([]Change, error) {
 	}
 
 	// Detect deleted files.
-	for relPath := range d.storedHashes {
+	for relPath := range storedHashes {
 		if _, exists := currentFiles[relPath]; !exists {
 			changes = append(changes, Change{
 				Type: ChangeDeleted,
@@ -184,7 +210,7 @@ func (d *DiskSource) Diff() ([]Change, error) {
 		}
 	}
 
-	return changes, nil
+	return changes
 }
 
 // Meta returns metadata about this disk source, including its ID, type

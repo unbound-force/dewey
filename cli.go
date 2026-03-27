@@ -755,92 +755,22 @@ Examples:
 			}
 
 			var newSource source.SourceConfig
+			var buildErr error
 
 			switch sourceType {
 			case "github":
-				if org == "" {
-					return fmt.Errorf("--org is required for github source")
-				}
-				if repos == "" {
-					return fmt.Errorf("--repos is required for github source")
-				}
-
-				repoList := strings.Split(repos, ",")
-				for i := range repoList {
-					repoList[i] = strings.TrimSpace(repoList[i])
-				}
-
-				contentTypes := []string{"issues", "pulls", "readme"}
-				if content != "" {
-					contentTypes = strings.Split(content, ",")
-					for i := range contentTypes {
-						contentTypes[i] = strings.TrimSpace(contentTypes[i])
-					}
-				}
-
-				if refresh == "" {
-					refresh = "daily"
-				}
-
-				sourceID := fmt.Sprintf("github-%s", org)
-				newSource = source.SourceConfig{
-					ID:              sourceID,
-					Type:            "github",
-					Name:            org,
-					RefreshInterval: refresh,
-					Config: map[string]any{
-						"org":     org,
-						"repos":   repoList,
-						"content": contentTypes,
-					},
-				}
-
+				newSource, buildErr = buildGitHubSource(org, repos, content, refresh)
 			case "web":
-				if webURL == "" {
-					return fmt.Errorf("--url is required for web source")
-				}
-
-				name := webName
-				if name == "" {
-					// Derive name from URL hostname.
-					name = strings.TrimPrefix(webURL, "https://")
-					name = strings.TrimPrefix(name, "http://")
-					if idx := strings.Index(name, "/"); idx > 0 {
-						name = name[:idx]
-					}
-				}
-
-				if refresh == "" {
-					refresh = "weekly"
-				}
-
-				sourceID := fmt.Sprintf("web-%s", name)
-				newSource = source.SourceConfig{
-					ID:              sourceID,
-					Type:            "web",
-					Name:            name,
-					RefreshInterval: refresh,
-					Config: map[string]any{
-						"urls":  []string{webURL},
-						"depth": depth,
-					},
-				}
-
+				newSource, buildErr = buildWebSource(webURL, webName, refresh, depth)
 			default:
 				return fmt.Errorf("unknown source type %q (use github or web)", sourceType)
 			}
-
-			// Check for duplicate source.
-			for _, src := range existing {
-				if src.ID == newSource.ID {
-					return fmt.Errorf("source %s already exists", newSource.ID)
-				}
+			if buildErr != nil {
+				return buildErr
 			}
 
-			// Append and save.
-			existing = append(existing, newSource)
-			if err := source.SaveSourcesConfig(sourcesPath, existing); err != nil {
-				return fmt.Errorf("save sources config: %w", err)
+			if err := saveSourceConfig(sourcesPath, existing, newSource); err != nil {
+				return err
 			}
 
 			logger.Info("added source",
@@ -866,4 +796,90 @@ Examples:
 	cmd.Flags().IntVar(&depth, "depth", 1, "Crawl depth")
 
 	return cmd
+}
+
+// buildGitHubSource validates inputs and creates a SourceConfig for a GitHub source.
+func buildGitHubSource(org, repos, content, refresh string) (source.SourceConfig, error) {
+	if org == "" {
+		return source.SourceConfig{}, fmt.Errorf("--org is required for github source")
+	}
+	if repos == "" {
+		return source.SourceConfig{}, fmt.Errorf("--repos is required for github source")
+	}
+
+	repoList := strings.Split(repos, ",")
+	for i := range repoList {
+		repoList[i] = strings.TrimSpace(repoList[i])
+	}
+
+	contentTypes := []string{"issues", "pulls", "readme"}
+	if content != "" {
+		contentTypes = strings.Split(content, ",")
+		for i := range contentTypes {
+			contentTypes[i] = strings.TrimSpace(contentTypes[i])
+		}
+	}
+
+	if refresh == "" {
+		refresh = "daily"
+	}
+
+	return source.SourceConfig{
+		ID:              fmt.Sprintf("github-%s", org),
+		Type:            "github",
+		Name:            org,
+		RefreshInterval: refresh,
+		Config: map[string]any{
+			"org":     org,
+			"repos":   repoList,
+			"content": contentTypes,
+		},
+	}, nil
+}
+
+// buildWebSource validates inputs and creates a SourceConfig for a web crawl source.
+func buildWebSource(webURL, webName, refresh string, depth int) (source.SourceConfig, error) {
+	if webURL == "" {
+		return source.SourceConfig{}, fmt.Errorf("--url is required for web source")
+	}
+
+	name := webName
+	if name == "" {
+		name = strings.TrimPrefix(webURL, "https://")
+		name = strings.TrimPrefix(name, "http://")
+		if idx := strings.Index(name, "/"); idx > 0 {
+			name = name[:idx]
+		}
+	}
+
+	if refresh == "" {
+		refresh = "weekly"
+	}
+
+	return source.SourceConfig{
+		ID:              fmt.Sprintf("web-%s", name),
+		Type:            "web",
+		Name:            name,
+		RefreshInterval: refresh,
+		Config: map[string]any{
+			"urls":  []string{webURL},
+			"depth": depth,
+		},
+	}, nil
+}
+
+// saveSourceConfig checks for duplicate source IDs, appends the new source,
+// and saves the updated config to the YAML file.
+func saveSourceConfig(sourcesPath string, existing []source.SourceConfig, newSource source.SourceConfig) error {
+	for _, src := range existing {
+		if src.ID == newSource.ID {
+			return fmt.Errorf("source %s already exists", newSource.ID)
+		}
+	}
+
+	existing = append(existing, newSource)
+	if err := source.SaveSourcesConfig(sourcesPath, existing); err != nil {
+		return fmt.Errorf("save sources config: %w", err)
+	}
+	return nil
 }

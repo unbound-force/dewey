@@ -314,7 +314,8 @@ func (c *Client) watchLoop() {
 	}
 }
 
-// handleEvent processes a single fsnotify event.
+// handleEvent processes a single fsnotify event by dispatching to
+// per-event-type handlers after shared pre-checks.
 func (c *Client) handleEvent(event fsnotify.Event) {
 	// Skip non-.md files.
 	if !strings.HasSuffix(event.Name, ".md") {
@@ -334,64 +335,81 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 
 	switch {
 	case event.Op&fsnotify.Create == fsnotify.Create, event.Op&fsnotify.Write == fsnotify.Write:
-		// File created or modified: re-index it.
-		content, err := os.ReadFile(event.Name)
-		if err != nil {
-			logger.Error("failed to read file", "file", event.Name, "err", err)
-			return
-		}
-		info, err := os.Stat(event.Name)
-		if err != nil {
-			logger.Error("failed to stat file", "file", event.Name, "err", err)
-			return
-		}
-		c.indexFile(filepath.ToSlash(relPath), string(content), info)
-		c.BuildBacklinks()
-
-		// Persist to store if available (nil check preserves backward compat).
-		if c.vaultStore != nil {
-			pageName := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
-			lowerName := strings.ToLower(pageName)
-			c.mu.RLock()
-			page, ok := c.pages[lowerName]
-			c.mu.RUnlock()
-			if ok {
-				if err := c.vaultStore.PersistPage(page); err != nil {
-					logger.Warn("failed to persist page to store", "file", relPath, "err", err)
-				}
-			}
-		}
-		logger.Info("reindexed", "file", relPath)
-
+		c.handleFileWrite(relPath, event.Name)
 	case event.Op&fsnotify.Remove == fsnotify.Remove:
-		// File deleted: remove from index.
-		name := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
-		lowerName := strings.ToLower(name)
-		c.removePageFromIndex(lowerName)
-		c.BuildBacklinks()
-
-		// Remove from store if available.
-		if c.vaultStore != nil {
-			if err := c.vaultStore.RemovePage(name); err != nil {
-				logger.Warn("failed to remove page from store", "file", relPath, "err", err)
-			}
-		}
-		logger.Info("removed from index", "file", relPath)
-
+		c.handleFileRemove(relPath)
 	case event.Op&fsnotify.Rename == fsnotify.Rename:
-		// File renamed: treat as remove (new name will trigger Create event).
-		name := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
-		lowerName := strings.ToLower(name)
-		c.removePageFromIndex(lowerName)
-		c.BuildBacklinks()
+		c.handleFileRename(relPath)
+	}
+}
 
-		// Remove from store if available.
-		if c.vaultStore != nil {
-			if err := c.vaultStore.RemovePage(name); err != nil {
-				logger.Warn("failed to remove renamed page from store", "file", relPath, "err", err)
-			}
+// handleFileWrite re-indexes a created or modified markdown file and
+// optionally persists it to the store.
+func (c *Client) handleFileWrite(relPath, absPath string) {
+	content, err := os.ReadFile(absPath)
+	if err != nil {
+		logger.Error("failed to read file", "file", absPath, "err", err)
+		return
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		logger.Error("failed to stat file", "file", absPath, "err", err)
+		return
+	}
+	c.indexFile(filepath.ToSlash(relPath), string(content), info)
+	c.BuildBacklinks()
+	c.persistPageToStore(relPath)
+	logger.Info("reindexed", "file", relPath)
+}
+
+// handleFileRemove removes a deleted markdown file from the in-memory
+// index and optionally from the store.
+func (c *Client) handleFileRemove(relPath string) {
+	name := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
+	lowerName := strings.ToLower(name)
+	c.removePageFromIndex(lowerName)
+	c.BuildBacklinks()
+	c.removePageFromStore(name, relPath)
+	logger.Info("removed from index", "file", relPath)
+}
+
+// handleFileRename treats a renamed file as a removal. The new file name
+// will trigger a separate Create event.
+func (c *Client) handleFileRename(relPath string) {
+	name := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
+	lowerName := strings.ToLower(name)
+	c.removePageFromIndex(lowerName)
+	c.BuildBacklinks()
+	c.removePageFromStore(name, relPath)
+	logger.Info("removed from index (rename)", "file", relPath)
+}
+
+// persistPageToStore writes the page at relPath to the persistent store
+// if one is configured. This is a no-op when vaultStore is nil.
+func (c *Client) persistPageToStore(relPath string) {
+	if c.vaultStore == nil {
+		return
+	}
+	pageName := strings.TrimSuffix(filepath.ToSlash(relPath), ".md")
+	lowerName := strings.ToLower(pageName)
+	c.mu.RLock()
+	page, ok := c.pages[lowerName]
+	c.mu.RUnlock()
+	if ok {
+		if err := c.vaultStore.PersistPage(page); err != nil {
+			logger.Warn("failed to persist page to store", "file", relPath, "err", err)
 		}
-		logger.Info("removed from index (rename)", "file", relPath)
+	}
+}
+
+// removePageFromStore removes the named page from the persistent store
+// if one is configured. This is a no-op when vaultStore is nil.
+func (c *Client) removePageFromStore(pageName, relPath string) {
+	if c.vaultStore == nil {
+		return
+	}
+	if err := c.vaultStore.RemovePage(pageName); err != nil {
+		logger.Warn("failed to remove page from store", "file", relPath, "err", err)
 	}
 }
 

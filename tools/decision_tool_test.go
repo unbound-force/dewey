@@ -228,6 +228,28 @@ func TestAnalysisHealth_Success(t *testing.T) {
 	if parsed["healthy"] != float64(2) {
 		t.Errorf("healthy = %v, want 2", parsed["healthy"])
 	}
+
+	// Verify per-page health details are present in the results.
+	pages, ok := parsed["pages"].([]any)
+	if !ok {
+		t.Fatalf("pages missing or wrong type: %T", parsed["pages"])
+	}
+	if len(pages) != 2 {
+		t.Fatalf("pages length = %d, want 2", len(pages))
+	}
+	// Each page entry should have name and healthy fields.
+	for i, p := range pages {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			t.Fatalf("pages[%d] is not a map: %T", i, p)
+		}
+		if _, ok := pm["name"].(string); !ok {
+			t.Errorf("pages[%d].name missing or not a string", i)
+		}
+		if _, ok := pm["healthy"]; !ok {
+			t.Errorf("pages[%d].healthy missing", i)
+		}
+	}
 }
 
 func TestAnalysisHealth_ViaPropertySearcher(t *testing.T) {

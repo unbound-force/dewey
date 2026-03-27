@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/backend"
@@ -177,8 +178,15 @@ func TestJournalSearch_ViaDataScript(t *testing.T) {
 	if !ok || content == "" {
 		t.Errorf("results[0].content missing or empty")
 	}
-	if _, ok := match["page"]; !ok {
+	if !strings.Contains(content, "meeting") {
+		t.Errorf("results[0].content = %q, want it to contain 'meeting'", content)
+	}
+	page, ok := match["page"].(string)
+	if !ok {
 		t.Error("results[0].page missing")
+	}
+	if page != "jan-15" && page != "Jan 15th, 2026" {
+		t.Errorf("results[0].page = %q, want journal page name", page)
 	}
 }
 
@@ -229,14 +237,26 @@ func TestJournalSearch_ViaJournalSearcher(t *testing.T) {
 	if !ok {
 		t.Fatalf("results[0] is not a map: %T", results[0])
 	}
-	if _, ok := match["content"].(string); !ok {
+	content, ok := match["content"].(string)
+	if !ok {
 		t.Error("results[0].content missing or not a string")
 	}
-	if _, ok := match["page"].(string); !ok {
+	if !strings.Contains(content, "launch") {
+		t.Errorf("results[0].content = %q, want it to contain 'launch'", content)
+	}
+	page, ok := match["page"].(string)
+	if !ok {
 		t.Error("results[0].page missing or not a string")
 	}
-	if _, ok := match["date"].(string); !ok {
+	if page != "Jan 15th, 2026" {
+		t.Errorf("results[0].page = %q, want %q", page, "Jan 15th, 2026")
+	}
+	date, ok := match["date"].(string)
+	if !ok {
 		t.Error("results[0].date missing or not a string")
+	}
+	if date != "2026-01-15" {
+		t.Errorf("results[0].date = %q, want %q", date, "2026-01-15")
 	}
 }
 

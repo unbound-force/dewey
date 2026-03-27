@@ -1123,3 +1123,83 @@ func BenchmarkIncrementalStartup(b *testing.B) {
 		_ = s.Close()
 	}
 }
+
+func TestDiffPages_Empty(t *testing.T) {
+	diff := diffPages(map[string]string{}, map[string]string{})
+	if len(diff.newPages) != 0 || len(diff.changedPages) != 0 || len(diff.deletedPages) != 0 || len(diff.unchanged) != 0 {
+		t.Errorf("expected empty diff, got new=%d changed=%d deleted=%d unchanged=%d",
+			len(diff.newPages), len(diff.changedPages), len(diff.deletedPages), len(diff.unchanged))
+	}
+}
+
+func TestDiffPages_AllNew(t *testing.T) {
+	current := map[string]string{"a": "h1", "b": "h2"}
+	stored := map[string]string{}
+	diff := diffPages(current, stored)
+	if len(diff.newPages) != 2 {
+		t.Errorf("expected 2 new pages, got %d", len(diff.newPages))
+	}
+	if len(diff.changedPages) != 0 {
+		t.Errorf("expected 0 changed pages, got %d", len(diff.changedPages))
+	}
+	if len(diff.deletedPages) != 0 {
+		t.Errorf("expected 0 deleted pages, got %d", len(diff.deletedPages))
+	}
+}
+
+func TestDiffPages_AllChanged(t *testing.T) {
+	current := map[string]string{"a": "h1-new", "b": "h2-new"}
+	stored := map[string]string{"a": "h1-old", "b": "h2-old"}
+	diff := diffPages(current, stored)
+	if len(diff.newPages) != 0 {
+		t.Errorf("expected 0 new pages, got %d", len(diff.newPages))
+	}
+	if len(diff.changedPages) != 2 {
+		t.Errorf("expected 2 changed pages, got %d", len(diff.changedPages))
+	}
+	if len(diff.deletedPages) != 0 {
+		t.Errorf("expected 0 deleted pages, got %d", len(diff.deletedPages))
+	}
+}
+
+func TestDiffPages_AllDeleted(t *testing.T) {
+	current := map[string]string{}
+	stored := map[string]string{"a": "h1", "b": "h2"}
+	diff := diffPages(current, stored)
+	if len(diff.newPages) != 0 {
+		t.Errorf("expected 0 new pages, got %d", len(diff.newPages))
+	}
+	if len(diff.changedPages) != 0 {
+		t.Errorf("expected 0 changed pages, got %d", len(diff.changedPages))
+	}
+	if len(diff.deletedPages) != 2 {
+		t.Errorf("expected 2 deleted pages, got %d", len(diff.deletedPages))
+	}
+}
+
+func TestDiffPages_Mixed(t *testing.T) {
+	current := map[string]string{
+		"kept":    "same-hash",
+		"changed": "new-hash",
+		"new":     "brand-new",
+	}
+	stored := map[string]string{
+		"kept":    "same-hash",
+		"changed": "old-hash",
+		"deleted": "old-hash",
+	}
+	diff := diffPages(current, stored)
+
+	if len(diff.newPages) != 1 {
+		t.Errorf("expected 1 new page, got %d", len(diff.newPages))
+	}
+	if len(diff.changedPages) != 1 {
+		t.Errorf("expected 1 changed page, got %d", len(diff.changedPages))
+	}
+	if len(diff.deletedPages) != 1 {
+		t.Errorf("expected 1 deleted page, got %d", len(diff.deletedPages))
+	}
+	if len(diff.unchanged) != 1 {
+		t.Errorf("expected 1 unchanged page, got %d", len(diff.unchanged))
+	}
+}

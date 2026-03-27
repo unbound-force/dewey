@@ -215,6 +215,89 @@ func (vs *VaultStore) LoadFromStore() (int, error) {
 	return len(pages), nil
 }
 
+// fileEntry holds metadata for a single vault file discovered during a walk.
+type fileEntry struct {
+	relPath string
+	content string
+	info    os.FileInfo
+}
+
+// pageDiff categorizes pages by comparing current file hashes against stored hashes.
+type pageDiff struct {
+	newPages     []string // pages on disk but not in store
+	changedPages []string // pages on disk whose hash differs from store
+	deletedPages []string // pages in store but not on disk
+	unchanged    []string // pages on disk whose hash matches store
+}
+
+// walkVault scans the vault directory and returns a map of page names to content
+// hashes, and a map of page names to file metadata. Hidden directories are skipped.
+func walkVault(vaultPath string) (currentFiles map[string]string, fileContents map[string]fileEntry, err error) {
+	currentFiles = make(map[string]string)
+	fileContents = make(map[string]fileEntry)
+
+	walkErr := filepath.Walk(vaultPath, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return nil // skip errors
+		}
+		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
+			return nil
+		}
+
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil // skip unreadable files
+		}
+
+		relPath, _ := filepath.Rel(vaultPath, path)
+		relPath = filepath.ToSlash(relPath)
+		pageName := strings.TrimSuffix(relPath, ".md")
+		hash := computeHash(string(content))
+
+		currentFiles[pageName] = hash
+		fileContents[pageName] = fileEntry{relPath, string(content), info}
+
+		return nil
+	})
+	if walkErr != nil {
+		return nil, nil, fmt.Errorf("walk vault: %w", walkErr)
+	}
+
+	return currentFiles, fileContents, nil
+}
+
+// diffPages compares current file hashes against stored hashes and categorizes
+// each page as new, changed, deleted, or unchanged. This is a pure function
+// with no side effects.
+func diffPages(currentFiles map[string]string, storedHashes map[string]string) pageDiff {
+	var diff pageDiff
+	seen := make(map[string]bool, len(storedHashes))
+	for k := range storedHashes {
+		seen[k] = true
+	}
+
+	for pageName, currentHash := range currentFiles {
+		storedHash, exists := storedHashes[pageName]
+		if !exists {
+			diff.newPages = append(diff.newPages, pageName)
+		} else if storedHash != currentHash {
+			diff.changedPages = append(diff.changedPages, pageName)
+		} else {
+			diff.unchanged = append(diff.unchanged, pageName)
+		}
+		delete(seen, pageName)
+	}
+
+	for pageName := range seen {
+		diff.deletedPages = append(diff.deletedPages, pageName)
+	}
+
+	return diff
+}
+
 // IncrementalIndex performs incremental indexing by comparing file content
 // hashes against stored hashes. It returns counts of new, changed, deleted,
 // and unchanged files.
@@ -231,84 +314,44 @@ func (vs *VaultStore) IncrementalIndex(c *Client) (stats IndexStats, err error) 
 		return stats, nil
 	}
 
-	// Step 1: Load stored hashes.
 	storedHashes, err := vs.LoadPages()
 	if err != nil {
 		return stats, fmt.Errorf("load stored hashes: %w", err)
 	}
 
-	// Step 2: Walk vault and compute current hashes.
-	currentFiles := make(map[string]string) // pageName → contentHash
-	fileContents := make(map[string]struct {
-		relPath string
-		content string
-		info    os.FileInfo
-	})
-
-	walkErr := filepath.Walk(c.vaultPath, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return nil // skip errors
-		}
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
-			return filepath.SkipDir
-		}
-		if info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
-			return nil
-		}
-
-		content, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil // skip unreadable files
-		}
-
-		relPath, _ := filepath.Rel(c.vaultPath, path)
-		relPath = filepath.ToSlash(relPath)
-		pageName := strings.TrimSuffix(relPath, ".md")
-		hash := computeHash(string(content))
-
-		currentFiles[pageName] = hash
-		fileContents[pageName] = struct {
-			relPath string
-			content string
-			info    os.FileInfo
-		}{relPath, string(content), info}
-
-		return nil
-	})
-	if walkErr != nil {
-		return stats, fmt.Errorf("walk vault: %w", walkErr)
+	currentFiles, fileContents, err := walkVault(c.vaultPath)
+	if err != nil {
+		return stats, err
 	}
 
-	// Step 3+4: Compare and re-index changed/new files.
-	// Track which pages need persistence (new or changed only).
+	diff := diffPages(currentFiles, storedHashes)
+
+	// Index new files.
 	changedPages := make(map[string]bool)
-
-	for pageName, currentHash := range currentFiles {
-		storedHash, exists := storedHashes[pageName]
-		if !exists {
-			// New file — index it.
-			fc := fileContents[pageName]
-			c.indexFile(fc.relPath, fc.content, fc.info)
-			changedPages[pageName] = true
-			stats.New++
-		} else if storedHash != currentHash {
-			// Changed file — re-index it.
-			fc := fileContents[pageName]
-			c.indexFile(fc.relPath, fc.content, fc.info)
-			changedPages[pageName] = true
-			stats.Changed++
-		} else {
-			// Unchanged — still need to load into memory from disk for serving.
-			fc := fileContents[pageName]
-			c.indexFile(fc.relPath, fc.content, fc.info)
-			stats.Unchanged++
-		}
-		// Remove from storedHashes so we can detect deletions.
-		delete(storedHashes, pageName)
+	for _, pageName := range diff.newPages {
+		fc := fileContents[pageName]
+		c.indexFile(fc.relPath, fc.content, fc.info)
+		changedPages[pageName] = true
+		stats.New++
 	}
 
-	// Step 5: Remove deleted files (remaining in storedHashes).
-	for pageName := range storedHashes {
+	// Index changed files.
+	for _, pageName := range diff.changedPages {
+		fc := fileContents[pageName]
+		c.indexFile(fc.relPath, fc.content, fc.info)
+		changedPages[pageName] = true
+		stats.Changed++
+	}
+
+	// Load unchanged files into memory (needed for serving).
+	for _, pageName := range diff.unchanged {
+		fc := fileContents[pageName]
+		c.indexFile(fc.relPath, fc.content, fc.info)
+		stats.Unchanged++
+	}
+
+	// Remove deleted files from index and store.
+	for _, pageName := range diff.deletedPages {
 		lowerName := strings.ToLower(pageName)
 		c.removePageFromIndex(lowerName)
 		if err := vs.RemovePage(pageName); err != nil {
@@ -318,11 +361,9 @@ func (vs *VaultStore) IncrementalIndex(c *Client) (stats IndexStats, err error) 
 		stats.Deleted++
 	}
 
-	// Rebuild backlinks after all changes.
 	c.BuildBacklinks()
 
-	// Persist only new/changed pages to store — unchanged pages already
-	// have correct data in the store and don't need re-writing.
+	// Persist only new/changed pages to store.
 	c.mu.RLock()
 	for pageName := range changedPages {
 		lowerName := strings.ToLower(pageName)
@@ -335,7 +376,6 @@ func (vs *VaultStore) IncrementalIndex(c *Client) (stats IndexStats, err error) 
 	}
 	c.mu.RUnlock()
 
-	// Update metadata.
 	total := stats.New + stats.Changed + stats.Unchanged
 	if err := vs.store.SetMeta("page_count", fmt.Sprintf("%d", total)); err != nil {
 		logger.Warn("failed to update page_count metadata", "err", err)

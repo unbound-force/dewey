@@ -40,11 +40,14 @@ type BlockEntity struct {
 	PreBlock        bool           `json:"preBlock,omitempty"`
 }
 
-// UnmarshalJSON handles two Logseq formats for children:
+// UnmarshalJSON implements json.Unmarshaler for BlockEntity.
+// It handles two Logseq JSON formats for the Children field:
 //   - Full objects from getPageBlocksTree: [{"uuid":"...", "content":"...", ...}]
 //   - Compact refs from getBlock: [["uuid", "value"]]
 //
-// The compact format is silently skipped (children left empty).
+// When children are in compact ref format, they are silently discarded and the
+// Children field is left empty. The receiver's fields are populated from the
+// unmarshaled data; an error is returned if the JSON cannot be parsed.
 func (b *BlockEntity) UnmarshalJSON(data []byte) error {
 	type blockAlias BlockEntity
 	type blockRaw struct {
@@ -94,7 +97,11 @@ type FileInfo struct {
 	Path string `json:"path,omitempty"`
 }
 
-// UnmarshalJSON handles Logseq returning PageRef as either {"id": N} or plain N.
+// UnmarshalJSON implements json.Unmarshaler for PageRef.
+// It handles both the number form (compact, from write operations) and the
+// object form ({"id": N, "name": "..."}). The receiver's ID and Name fields
+// are populated from the unmarshaled data; an error is returned if the JSON
+// matches neither format.
 func (p *PageRef) UnmarshalJSON(data []byte) error {
 	// Try number first (compact form from write operations)
 	var id int
@@ -112,7 +119,10 @@ func (p *PageRef) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// UnmarshalJSON handles Logseq returning BlockRef as either {"id": N} or plain N.
+// UnmarshalJSON implements json.Unmarshaler for BlockRef.
+// It handles both the number form (compact) and the object form ({"id": N}).
+// The receiver's ID field is populated from the unmarshaled data; an error
+// is returned if the JSON matches neither format.
 func (b *BlockRef) UnmarshalJSON(data []byte) error {
 	var id int
 	if err := json.Unmarshal(data, &id); err == nil {

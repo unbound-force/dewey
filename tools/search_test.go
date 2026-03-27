@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/backend"
@@ -212,6 +213,30 @@ func TestFindByTag_ViaDataScript(t *testing.T) {
 	if parsed["count"] != float64(1) {
 		t.Errorf("count = %v, want 1", parsed["count"])
 	}
+
+	// Verify result contains the matching block content and source page.
+	results, ok := parsed["results"].([]any)
+	if !ok {
+		t.Fatalf("results missing or wrong type: %T", parsed["results"])
+	}
+	if len(results) != 1 {
+		t.Fatalf("results length = %d, want 1", len(results))
+	}
+	match, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("results[0] is not a map: %T", results[0])
+	}
+	content, ok := match["content"].(string)
+	if !ok || content == "" {
+		t.Error("results[0].content missing or empty")
+	}
+	if !strings.Contains(content, "project") {
+		t.Errorf("results[0].content = %q, want it to contain 'project'", content)
+	}
+	page, _ := match["page"].(string)
+	if page != "tasks" {
+		t.Errorf("results[0].page = %q, want %q", page, "tasks")
+	}
 }
 
 func TestFindByTag_ViaTagSearcher(t *testing.T) {
@@ -246,6 +271,28 @@ func TestFindByTag_ViaTagSearcher(t *testing.T) {
 
 	if parsed["count"] != float64(2) {
 		t.Errorf("count = %v, want 2", parsed["count"])
+	}
+
+	// Verify results contain blocks from the mock tag searcher with page context.
+	results, ok := parsed["results"].([]any)
+	if !ok {
+		t.Fatalf("results missing or wrong type: %T", parsed["results"])
+	}
+	if len(results) != 2 {
+		t.Fatalf("results length = %d, want 2", len(results))
+	}
+	for i, r := range results {
+		rm, ok := r.(map[string]any)
+		if !ok {
+			t.Fatalf("results[%d] is not a map: %T", i, r)
+		}
+		content, ok := rm["content"].(string)
+		if !ok || content == "" {
+			t.Errorf("results[%d].content missing or empty", i)
+		}
+		if !strings.Contains(content, "project") {
+			t.Errorf("results[%d].content = %q, want it to contain 'project'", i, content)
+		}
 	}
 }
 

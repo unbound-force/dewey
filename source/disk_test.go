@@ -455,6 +455,58 @@ func TestDiskSource_Diff_UnchangedFilesExcluded(t *testing.T) {
 	}
 }
 
+func TestWalkDiskFiles_FiltersCorrectly(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create two .md files, one .txt file, and a hidden directory with an .md file.
+	layout := map[string]string{
+		"alpha.md":          "# Alpha\nContent A.",
+		"beta.md":           "# Beta\nContent B.",
+		"readme.txt":        "Not markdown — should be excluded.",
+		".hidden/secret.md": "# Secret\nInside hidden dir — should be excluded.",
+	}
+	for name, content := range layout {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	files, err := walkDiskFiles(dir)
+	if err != nil {
+		t.Fatalf("walkDiskFiles: %v", err)
+	}
+
+	// Should contain exactly the two .md files.
+	if len(files) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %v", len(files), files)
+	}
+
+	for _, expected := range []string{"alpha.md", "beta.md"} {
+		hash, ok := files[expected]
+		if !ok {
+			t.Errorf("missing expected file %q", expected)
+			continue
+		}
+		if len(hash) != 64 {
+			t.Errorf("hash for %q has length %d, want 64 (SHA-256 hex)", expected, len(hash))
+		}
+	}
+
+	// Hidden dir contents must not appear.
+	if _, ok := files[".hidden/secret.md"]; ok {
+		t.Error("hidden directory file .hidden/secret.md should have been skipped")
+	}
+
+	// Non-.md file must not appear.
+	if _, ok := files["readme.txt"]; ok {
+		t.Error("non-.md file readme.txt should have been skipped")
+	}
+}
+
 func TestDiskSource_Meta(t *testing.T) {
 	ds := NewDiskSource("disk-local", "local", "/tmp/test")
 	meta := ds.Meta()

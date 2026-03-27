@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/unbound-force/dewey/client"
+	"github.com/unbound-force/dewey/source"
+	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
 )
 
@@ -1930,5 +1932,206 @@ func TestCheckGraphVersionControl_EmptyPath(t *testing.T) {
 
 	if strings.Contains(logBuf.String(), "not version controlled") {
 		t.Errorf("should not warn when path is empty, got:\n%s", logBuf.String())
+	}
+}
+
+// --- indexDocuments tests ---
+
+// TestIndexDocuments_InsertNew verifies that indexDocuments inserts a new page
+// into the store when no existing page matches the document title.
+func TestIndexDocuments_InsertNew(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	now := time.Now()
+	docs := map[string][]source.Document{
+		"test-src": {
+			{
+				ID:          "doc-001",
+				Title:       "My Test Page",
+				Content:     "some content",
+				ContentHash: "abc123",
+				FetchedAt:   now,
+			},
+		},
+	}
+
+	got := indexDocuments(s, docs, nil)
+	if got != 1 {
+		t.Fatalf("indexDocuments() = %d, want 1", got)
+	}
+
+	page, err := s.GetPage("My Test Page")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("GetPage returned nil, want page")
+	}
+	if page.Name != "My Test Page" {
+		t.Errorf("page.Name = %q, want %q", page.Name, "My Test Page")
+	}
+	if page.ContentHash != "abc123" {
+		t.Errorf("page.ContentHash = %q, want %q", page.ContentHash, "abc123")
+	}
+	if page.SourceID != "test-src" {
+		t.Errorf("page.SourceID = %q, want %q", page.SourceID, "test-src")
+	}
+	if page.SourceDocID != "doc-001" {
+		t.Errorf("page.SourceDocID = %q, want %q", page.SourceDocID, "doc-001")
+	}
+}
+
+// TestIndexDocuments_UpdateExisting verifies that indexDocuments updates an
+// existing page's ContentHash when the document title matches.
+func TestIndexDocuments_UpdateExisting(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Pre-insert a page with the old content hash.
+	if err := s.InsertPage(&store.Page{
+		Name:         "Existing Page",
+		OriginalName: "Existing Page",
+		ContentHash:  "old-hash",
+		SourceID:     "old-src",
+		SourceDocID:  "old-doc",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	docs := map[string][]source.Document{
+		"new-src": {
+			{
+				ID:          "new-doc",
+				Title:       "Existing Page",
+				Content:     "updated content",
+				ContentHash: "new-hash",
+				FetchedAt:   time.Now(),
+			},
+		},
+	}
+
+	got := indexDocuments(s, docs, nil)
+	if got != 1 {
+		t.Fatalf("indexDocuments() = %d, want 1", got)
+	}
+
+	page, err := s.GetPage("Existing Page")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("GetPage returned nil, want page")
+	}
+	if page.ContentHash != "new-hash" {
+		t.Errorf("page.ContentHash = %q, want %q", page.ContentHash, "new-hash")
+	}
+	if page.SourceID != "new-src" {
+		t.Errorf("page.SourceID = %q, want %q (should be updated)", page.SourceID, "new-src")
+	}
+	if page.SourceDocID != "new-doc" {
+		t.Errorf("page.SourceDocID = %q, want %q (should be updated)", page.SourceDocID, "new-doc")
+	}
+}
+
+// TestIndexDocuments_SourceRecord verifies that indexDocuments creates a source
+// record in the store when a matching SourceConfig is provided.
+func TestIndexDocuments_SourceRecord(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	docs := map[string][]source.Document{
+		"test-src": {
+			{
+				ID:          "doc-1",
+				Title:       "Source Doc",
+				ContentHash: "hash1",
+				FetchedAt:   time.Now(),
+			},
+		},
+	}
+	configs := []source.SourceConfig{
+		{
+			ID:   "test-src",
+			Type: "github",
+			Name: "my-github",
+		},
+	}
+
+	indexDocuments(s, docs, configs)
+
+	src, err := s.GetSource("test-src")
+	if err != nil {
+		t.Fatalf("GetSource: %v", err)
+	}
+	if src == nil {
+		t.Fatal("GetSource returned nil, want source record")
+	}
+	if src.Type != "github" {
+		t.Errorf("src.Type = %q, want %q", src.Type, "github")
+	}
+	if src.Status != "active" {
+		t.Errorf("src.Status = %q, want %q", src.Status, "active")
+	}
+}
+
+// TestIndexDocuments_WithProperties verifies that indexDocuments serializes
+// document Properties to JSON and stores them on the page.
+func TestIndexDocuments_WithProperties(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	docs := map[string][]source.Document{
+		"prop-src": {
+			{
+				ID:          "doc-props",
+				Title:       "Props Page",
+				ContentHash: "hash-props",
+				FetchedAt:   time.Now(),
+				Properties: map[string]any{
+					"type":   "issue",
+					"status": "open",
+				},
+			},
+		},
+	}
+
+	got := indexDocuments(s, docs, nil)
+	if got != 1 {
+		t.Fatalf("indexDocuments() = %d, want 1", got)
+	}
+
+	page, err := s.GetPage("Props Page")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("GetPage returned nil, want page")
+	}
+	if page.Properties == "" {
+		t.Fatal("page.Properties is empty, want JSON")
+	}
+
+	var props map[string]any
+	if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+		t.Fatalf("unmarshal Properties: %v", err)
+	}
+	if props["type"] != "issue" {
+		t.Errorf("props[\"type\"] = %v, want %q", props["type"], "issue")
+	}
+	if props["status"] != "open" {
+		t.Errorf("props[\"status\"] = %v, want %q", props["status"], "open")
 	}
 }

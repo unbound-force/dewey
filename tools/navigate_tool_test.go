@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/types"
@@ -20,8 +21,15 @@ func TestGetPage_Success(t *testing.T) {
 		Content: "Hello [[World]]",
 	}, types.BlockEntity{
 		UUID:    "block-2",
-		Content: "Another block",
+		Content: "Another block with [[Second]]",
 	})
+	// Set up backlinks so the backlinks field is populated.
+	mb.linkedRefs["test-page"] = json.RawMessage(`[
+		[
+			{"name": "referrer-page", "originalName": "Referrer Page"},
+			[{"uuid": "ref-b1", "content": "See [[test-page]]"}]
+		]
+	]`)
 	nav := NewNavigate(mb)
 
 	result, _, err := nav.GetPage(context.Background(), nil, types.GetPageInput{
@@ -40,23 +48,89 @@ func TestGetPage_Success(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
-	// Should have page data.
-	if parsed["page"] == nil {
-		t.Error("expected page in result")
+	// --- Assert all required top-level keys exist ---
+	requiredKeys := []string{"page", "outgoingLinks", "backlinks", "linkCount", "blocks", "blockCount"}
+	for _, key := range requiredKeys {
+		if _, ok := parsed[key]; !ok {
+			t.Errorf("GetPage() result missing required key %q", key)
+		}
 	}
 
-	// Should report block count.
-	if parsed["blockCount"] == nil {
-		t.Error("expected blockCount in result")
+	// --- Assert page field contains expected data ---
+	pageData, ok := parsed["page"].(map[string]any)
+	if !ok {
+		t.Fatalf("page is not an object, got %T", parsed["page"])
+	}
+	if pageData["name"] != "test-page" {
+		t.Errorf("page.name = %v, want %q", pageData["name"], "test-page")
+	}
+	if pageData["originalName"] != "Test Page" {
+		t.Errorf("page.originalName = %v, want %q", pageData["originalName"], "Test Page")
 	}
 
-	// Should collect outgoing links.
+	// --- Assert blockCount is present and correct ---
+	blockCount, ok := parsed["blockCount"].(float64)
+	if !ok {
+		t.Fatalf("blockCount is not a number, got %T", parsed["blockCount"])
+	}
+	if int(blockCount) != 2 {
+		t.Errorf("blockCount = %d, want 2", int(blockCount))
+	}
+
+	// --- Assert outgoingLinks contains expected link names from mock blocks ---
 	links, ok := parsed["outgoingLinks"].([]any)
 	if !ok {
 		t.Fatal("expected outgoingLinks to be an array")
 	}
-	if len(links) != 1 || links[0] != "World" {
-		t.Errorf("outgoingLinks = %v, want [World]", links)
+	wantLinks := map[string]bool{"World": false, "Second": false}
+	for _, link := range links {
+		linkStr, ok := link.(string)
+		if !ok {
+			t.Errorf("outgoingLinks entry is not a string, got %T", link)
+			continue
+		}
+		if _, expected := wantLinks[linkStr]; expected {
+			wantLinks[linkStr] = true
+		}
+	}
+	for name, found := range wantLinks {
+		if !found {
+			t.Errorf("outgoingLinks missing expected link %q", name)
+		}
+	}
+
+	// --- Assert backlinks field exists and has correct structure ---
+	backlinks, ok := parsed["backlinks"].([]any)
+	if !ok {
+		t.Fatalf("backlinks is not an array, got %T", parsed["backlinks"])
+	}
+	if len(backlinks) != 1 {
+		t.Fatalf("backlinks has %d entries, want 1", len(backlinks))
+	}
+	bl, ok := backlinks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("backlinks[0] is not an object, got %T", backlinks[0])
+	}
+	if bl["pageName"] != "Referrer Page" {
+		t.Errorf("backlinks[0].pageName = %v, want %q", bl["pageName"], "Referrer Page")
+	}
+	blBlocks, ok := bl["blocks"].([]any)
+	if !ok {
+		t.Fatalf("backlinks[0].blocks is not an array, got %T", bl["blocks"])
+	}
+	if len(blBlocks) != 1 {
+		t.Errorf("backlinks[0].blocks has %d entries, want 1", len(blBlocks))
+	}
+
+	// --- Assert linkCount = outgoing + backlinks ---
+	linkCount, ok := parsed["linkCount"].(float64)
+	if !ok {
+		t.Fatalf("linkCount is not a number, got %T", parsed["linkCount"])
+	}
+	expectedLinkCount := len(links) + len(backlinks)
+	if int(linkCount) != expectedLinkCount {
+		t.Errorf("linkCount = %d, want %d (outgoing=%d + backlinks=%d)",
+			int(linkCount), expectedLinkCount, len(links), len(backlinks))
 	}
 }
 
@@ -72,6 +146,10 @@ func TestGetPage_NotFound(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected error result for nonexistent page")
+	}
+	text := extractText(t, result)
+	if !strings.Contains(text, "page not found") {
+		t.Errorf("error message should contain 'page not found', got: %s", text)
 	}
 }
 
@@ -111,7 +189,30 @@ func TestGetPage_Compact(t *testing.T) {
 		t.Fatal("expected blocks array in compact mode")
 	}
 	if len(blocks) != 2 {
-		t.Errorf("expected 2 blocks, got %d", len(blocks))
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+
+	// Assert blockCount matches the number of compact blocks.
+	blockCount, ok := parsed["blockCount"].(float64)
+	if !ok {
+		t.Fatalf("blockCount is not a number, got %T", parsed["blockCount"])
+	}
+	if int(blockCount) != 2 {
+		t.Errorf("blockCount = %d, want 2 in compact mode", int(blockCount))
+	}
+
+	// Assert each compact block entry has uuid and content fields.
+	for i, b := range blocks {
+		entry, ok := b.(map[string]any)
+		if !ok {
+			t.Fatalf("blocks[%d] is not an object, got %T", i, b)
+		}
+		if _, hasUUID := entry["uuid"]; !hasUUID {
+			t.Errorf("compact blocks[%d] missing 'uuid' field", i)
+		}
+		if _, hasContent := entry["content"]; !hasContent {
+			t.Errorf("compact blocks[%d] missing 'content' field", i)
+		}
 	}
 }
 
@@ -119,7 +220,7 @@ func TestGetPage_MaxBlocks(t *testing.T) {
 	mb := newMockBackend()
 	blocks := make([]types.BlockEntity, 10)
 	for i := range blocks {
-		blocks[i] = types.BlockEntity{UUID: "b-" + string(rune('a'+i)), Content: "Block"}
+		blocks[i] = types.BlockEntity{UUID: fmt.Sprintf("b-%d", i), Content: fmt.Sprintf("Block %d", i)}
 	}
 	mb.addPage(types.PageEntity{Name: "big-page"}, blocks...)
 	nav := NewNavigate(mb)
@@ -141,8 +242,27 @@ func TestGetPage_MaxBlocks(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
+	// Assert truncated flag is set.
 	if parsed["truncated"] != true {
 		t.Error("expected truncated = true when maxBlocks exceeded")
+	}
+
+	// Assert totalBlocks reports the original count before truncation.
+	totalBlocks, ok := parsed["totalBlocks"].(float64)
+	if !ok {
+		t.Fatalf("totalBlocks is not a number, got %T", parsed["totalBlocks"])
+	}
+	if int(totalBlocks) != 10 {
+		t.Errorf("totalBlocks = %d, want 10", int(totalBlocks))
+	}
+
+	// Assert blockCount reflects the truncated count.
+	blockCount, ok := parsed["blockCount"].(float64)
+	if !ok {
+		t.Fatalf("blockCount is not a number, got %T", parsed["blockCount"])
+	}
+	if int(blockCount) > 3 {
+		t.Errorf("blockCount = %d, want <= 3 (maxBlocks limit)", int(blockCount))
 	}
 }
 
@@ -152,6 +272,10 @@ func TestGetBlock_Success(t *testing.T) {
 		UUID:    "block-uuid-1",
 		Content: "Test block [[SomeLink]]",
 		Page:    &types.PageRef{Name: "test-page"},
+		Children: []types.BlockEntity{
+			{UUID: "child-a", Content: "Child A content"},
+			{UUID: "child-b", Content: "Child B content"},
+		},
 	})
 	// Set up a query result for the ancestor lookup.
 	mb.queryResults[`[:find (pull ?parent [:block/uuid :block/content])
@@ -172,14 +296,89 @@ func TestGetBlock_Success(t *testing.T) {
 		t.Fatalf("GetBlock() returned error result")
 	}
 
-	var parsed map[string]any
+	var data map[string]any
 	text := extractText(t, result)
-	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
-	if parsed["content"] != "Test block [[SomeLink]]" {
-		t.Errorf("content = %v, want %q", parsed["content"], "Test block [[SomeLink]]")
+	// --- Assert block content matches what was returned by mock ---
+	if data["content"] != "Test block [[SomeLink]]" {
+		t.Errorf("content = %v, want %q", data["content"], "Test block [[SomeLink]]")
+	}
+
+	// --- Assert uuid matches ---
+	if data["uuid"] != "block-uuid-1" {
+		t.Errorf("uuid = %v, want %q", data["uuid"], "block-uuid-1")
+	}
+
+	// --- Assert children field is present with correct entries ---
+	children, ok := data["children"].([]any)
+	if !ok {
+		t.Fatalf("children is not an array, got %T (value: %v)", data["children"], data["children"])
+	}
+	if len(children) != 2 {
+		t.Fatalf("children has %d entries, want 2", len(children))
+	}
+	child0, ok := children[0].(map[string]any)
+	if !ok {
+		t.Fatalf("children[0] is not an object, got %T", children[0])
+	}
+	if child0["uuid"] != "child-a" {
+		t.Errorf("children[0].uuid = %v, want %q", child0["uuid"], "child-a")
+	}
+	if child0["content"] != "Child A content" {
+		t.Errorf("children[0].content = %v, want %q", child0["content"], "Child A content")
+	}
+	child1, ok := children[1].(map[string]any)
+	if !ok {
+		t.Fatalf("children[1] is not an object, got %T", children[1])
+	}
+	if child1["uuid"] != "child-b" {
+		t.Errorf("children[1].uuid = %v, want %q", child1["uuid"], "child-b")
+	}
+
+	// --- Assert parsed field is present with expected structure ---
+	parsedField, ok := data["parsed"].(map[string]any)
+	if !ok {
+		t.Fatalf("parsed is not an object, got %T", data["parsed"])
+	}
+	if parsedField["raw"] != "Test block [[SomeLink]]" {
+		t.Errorf("parsed.raw = %v, want %q", parsedField["raw"], "Test block [[SomeLink]]")
+	}
+	// parsed.links should contain "SomeLink" from [[SomeLink]].
+	parsedLinks, ok := parsedField["links"].([]any)
+	if !ok {
+		t.Fatalf("parsed.links is not an array, got %T", parsedField["links"])
+	}
+	foundLink := false
+	for _, l := range parsedLinks {
+		if l == "SomeLink" {
+			foundLink = true
+			break
+		}
+	}
+	if !foundLink {
+		t.Errorf("parsed.links = %v, want to contain %q", parsedLinks, "SomeLink")
+	}
+
+	// --- Assert ancestors field is present when IncludeAncestors=true ---
+	ancestors, ok := data["ancestors"].([]any)
+	if !ok {
+		t.Fatalf("ancestors is not an array, got %T", data["ancestors"])
+	}
+	if len(ancestors) != 1 {
+		t.Fatalf("ancestors has %d entries, want 1", len(ancestors))
+	}
+	ancestor, ok := ancestors[0].(map[string]any)
+	if !ok {
+		t.Fatalf("ancestors[0] is not an object, got %T", ancestors[0])
+	}
+	if ancestor["uuid"] != "parent-uuid" {
+		t.Errorf("ancestors[0].uuid = %v, want %q", ancestor["uuid"], "parent-uuid")
+	}
+	if ancestor["content"] != "parent block" {
+		t.Errorf("ancestors[0].content = %v, want %q", ancestor["content"], "parent block")
 	}
 }
 
@@ -195,6 +394,53 @@ func TestGetBlock_NotFound(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected error result for nonexistent block")
+	}
+	text := extractText(t, result)
+	if !strings.Contains(text, "block not found") {
+		t.Errorf("error message should contain 'block not found', got: %s", text)
+	}
+}
+
+func TestGetBlock_LeafBlock_NoChildren(t *testing.T) {
+	mb := newMockBackend()
+	mb.addBlock(types.BlockEntity{
+		UUID:    "leaf-uuid",
+		Content: "A leaf block with no children",
+	})
+
+	nav := NewNavigate(mb)
+	result, _, err := nav.GetBlock(context.Background(), nil, types.GetBlockInput{
+		UUID: "leaf-uuid",
+	})
+	if err != nil {
+		t.Fatalf("GetBlock() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("GetBlock() returned error result")
+	}
+
+	var data map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &data); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	// Content should match mock.
+	if data["content"] != "A leaf block with no children" {
+		t.Errorf("content = %v, want %q", data["content"], "A leaf block with no children")
+	}
+
+	// Children should be absent or null for a leaf block (omitempty in JSON tags).
+	if children, exists := data["children"]; exists && children != nil {
+		childArr, ok := children.([]any)
+		if ok && len(childArr) > 0 {
+			t.Errorf("leaf block should have no children, got %d", len(childArr))
+		}
+	}
+
+	// parsed field should still be present even for leaf blocks.
+	if _, ok := data["parsed"].(map[string]any); !ok {
+		t.Errorf("parsed field missing or not an object, got %T", data["parsed"])
 	}
 }
 
@@ -363,9 +609,22 @@ func TestTraverse_NoPath(t *testing.T) {
 
 func TestListPages_DefaultParams(t *testing.T) {
 	mb := newMockBackend()
-	mb.addPage(types.PageEntity{Name: "alpha", OriginalName: "Alpha"})
-	mb.addPage(types.PageEntity{Name: "beta", OriginalName: "Beta"})
-	mb.addPage(types.PageEntity{Name: "gamma", OriginalName: "Gamma"})
+	mb.addPage(types.PageEntity{
+		Name:         "alpha",
+		OriginalName: "Alpha",
+		Properties:   map[string]any{"status": "active"},
+		UpdatedAt:    1700000000,
+	})
+	mb.addPage(types.PageEntity{
+		Name:         "beta",
+		OriginalName: "Beta",
+		Journal:      true,
+		UpdatedAt:    1700000100,
+	})
+	mb.addPage(types.PageEntity{
+		Name:         "gamma",
+		OriginalName: "Gamma",
+	})
 	nav := NewNavigate(mb)
 
 	result, _, err := nav.ListPages(context.Background(), nil, types.ListPagesInput{})
@@ -382,18 +641,63 @@ func TestListPages_DefaultParams(t *testing.T) {
 		t.Fatalf("unmarshal result: %v", err)
 	}
 
-	// Should return all 3 pages sorted by name.
+	// --- Assert pages count matches expected ---
 	if len(parsed) != 3 {
 		t.Fatalf("expected 3 pages, got %d", len(parsed))
 	}
-	if parsed[0]["name"] != "Alpha" {
-		t.Errorf("first page name = %v, want %q", parsed[0]["name"], "Alpha")
+
+	// --- Assert each page entry has required fields with correct types ---
+	for i, page := range parsed {
+		// name field must be present and be a string.
+		nameVal, ok := page["name"]
+		if !ok {
+			t.Errorf("pages[%d] missing 'name' field", i)
+		} else if _, isStr := nameVal.(string); !isStr {
+			t.Errorf("pages[%d].name is not a string, got %T", i, nameVal)
+		}
+
+		// journal field must be present (boolean).
+		if _, ok := page["journal"]; !ok {
+			t.Errorf("pages[%d] missing 'journal' field", i)
+		}
+
+		// properties field must be present (may be null).
+		if _, ok := page["properties"]; !ok {
+			t.Errorf("pages[%d] missing 'properties' field", i)
+		}
 	}
-	if parsed[1]["name"] != "Beta" {
-		t.Errorf("second page name = %v, want %q", parsed[1]["name"], "Beta")
+
+	// --- Assert pages are sorted by name (default sort) ---
+	wantOrder := []string{"Alpha", "Beta", "Gamma"}
+	for i, wantName := range wantOrder {
+		if parsed[i]["name"] != wantName {
+			t.Errorf("pages[%d].name = %v, want %q (sorted by name)", i, parsed[i]["name"], wantName)
+		}
 	}
-	if parsed[2]["name"] != "Gamma" {
-		t.Errorf("third page name = %v, want %q", parsed[2]["name"], "Gamma")
+
+	// --- Assert journal field values ---
+	if parsed[0]["journal"] != false {
+		t.Errorf("pages[0] (Alpha) journal = %v, want false", parsed[0]["journal"])
+	}
+	if parsed[1]["journal"] != true {
+		t.Errorf("pages[1] (Beta) journal = %v, want true", parsed[1]["journal"])
+	}
+
+	// --- Assert properties are passed through ---
+	props, ok := parsed[0]["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("pages[0].properties is not an object, got %T", parsed[0]["properties"])
+	}
+	if props["status"] != "active" {
+		t.Errorf("pages[0].properties.status = %v, want %q", props["status"], "active")
+	}
+
+	// --- Assert updatedAt is present only when > 0 ---
+	if _, ok := parsed[0]["updatedAt"]; !ok {
+		t.Error("pages[0] (Alpha) should have 'updatedAt' since UpdatedAt > 0")
+	}
+	if _, ok := parsed[2]["updatedAt"]; ok {
+		t.Error("pages[2] (Gamma) should not have 'updatedAt' since UpdatedAt is 0")
 	}
 }
 
@@ -563,6 +867,10 @@ func TestListPages_GetAllPagesError(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected error result when GetAllPages fails")
+	}
+	text := extractText(t, result)
+	if !strings.Contains(text, "failed to list pages") {
+		t.Errorf("error message should contain 'failed to list pages', got: %s", text)
 	}
 }
 

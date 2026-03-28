@@ -169,7 +169,7 @@ func newSearchCmd() *cobra.Command {
 				dbPath := filepath.Join(deweyDir, "graph.db")
 				s, err := store.New(dbPath)
 				if err == nil {
-					defer s.Close()
+					defer func() { _ = s.Close() }()
 					vs := vault.NewVaultStore(s, vp, "disk-local")
 					if n, err := vs.LoadExternalPages(vc); err != nil {
 						logger.Warn("failed to load external pages", "err", err)

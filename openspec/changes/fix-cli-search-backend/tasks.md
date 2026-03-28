@@ -1,3 +1,5 @@
+# Tasks: fix-cli-search-backend
+
 ## 1. Rewrite Search Command
 
 - [x] 1.1 Rewrite `newSearchCmd()` in `cli.go` to use the vault backend instead of the Logseq HTTP client:

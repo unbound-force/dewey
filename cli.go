@@ -1012,14 +1012,20 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	checkEmbeddingModel(w, embedEndpoint, embedModel)
 }
 
+// doctorPrint is a helper that writes diagnostic output, discarding the error
+// to satisfy errcheck (doctor output is best-effort to the terminal).
+func doctorPrint(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
 // checkDeweyInit checks whether the .dewey/ directory exists at the vault path.
 func checkDeweyInit(w io.Writer, vaultPath string) {
 	deweyDir := filepath.Join(vaultPath, ".dewey")
 	if _, err := os.Stat(deweyDir); err == nil {
-		fmt.Fprintf(w, "✓ .dewey/ found at %s\n", vaultPath)
+		doctorPrint(w, "✓ .dewey/ found at %s\n", vaultPath)
 	} else {
-		fmt.Fprintf(w, "✗ .dewey/ not found at %s\n", vaultPath)
-		fmt.Fprintf(w, "  Fix: dewey init --vault %s\n", vaultPath)
+		doctorPrint(w, "✗ .dewey/ not found at %s\n", vaultPath)
+		doctorPrint(w, "  Fix: dewey init --vault %s\n", vaultPath)
 	}
 }
 
@@ -1027,27 +1033,27 @@ func checkDeweyInit(w io.Writer, vaultPath string) {
 func checkGraphDB(w io.Writer, vaultPath string) {
 	dbPath := filepath.Join(vaultPath, ".dewey", "graph.db")
 	if _, err := os.Stat(dbPath); err != nil {
-		fmt.Fprintln(w, "✗ graph.db not found or empty")
-		fmt.Fprintln(w, "  Fix: dewey index")
+		doctorPrint(w, "✗ graph.db not found or empty\n")
+		doctorPrint(w, "  Fix: dewey index\n")
 		return
 	}
 
 	s, err := store.New(dbPath)
 	if err != nil {
-		fmt.Fprintf(w, "✗ graph.db: failed to open (%v)\n", err)
-		fmt.Fprintln(w, "  Fix: dewey index")
+		doctorPrint(w, "✗ graph.db: failed to open (%v)\n", err)
+		doctorPrint(w, "  Fix: dewey index\n")
 		return
 	}
 	defer func() { _ = s.Close() }()
 
 	pages, err := s.ListPages()
 	if err != nil || len(pages) == 0 {
-		fmt.Fprintln(w, "✗ graph.db not found or empty")
-		fmt.Fprintln(w, "  Fix: dewey index")
+		doctorPrint(w, "✗ graph.db not found or empty\n")
+		doctorPrint(w, "  Fix: dewey index\n")
 		return
 	}
 
-	fmt.Fprintf(w, "✓ graph.db: %d pages\n", len(pages))
+	doctorPrint(w, "✓ graph.db: %d pages\n", len(pages))
 }
 
 // checkOllamaReachable checks whether the Ollama API endpoint is reachable
@@ -1058,26 +1064,26 @@ func checkOllamaReachable(w io.Writer, endpoint string) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/tags", nil)
 	if err != nil {
-		fmt.Fprintf(w, "✗ Ollama not reachable at %s\n", endpoint)
-		fmt.Fprintln(w, "  Fix: brew install ollama && ollama serve")
+		doctorPrint(w, "✗ Ollama not reachable at %s\n", endpoint)
+		doctorPrint(w, "  Fix: brew install ollama && ollama serve\n")
 		return
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Fprintf(w, "✗ Ollama not reachable at %s\n", endpoint)
-		fmt.Fprintln(w, "  Fix: brew install ollama && ollama serve")
+		doctorPrint(w, "✗ Ollama not reachable at %s\n", endpoint)
+		doctorPrint(w, "  Fix: brew install ollama && ollama serve\n")
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(w, "✗ Ollama not reachable at %s (status %d)\n", endpoint, resp.StatusCode)
-		fmt.Fprintln(w, "  Fix: brew install ollama && ollama serve")
+		doctorPrint(w, "✗ Ollama not reachable at %s (status %d)\n", endpoint, resp.StatusCode)
+		doctorPrint(w, "  Fix: brew install ollama && ollama serve\n")
 		return
 	}
 
-	fmt.Fprintf(w, "✓ Ollama running at %s\n", endpoint)
+	doctorPrint(w, "✓ Ollama running at %s\n", endpoint)
 }
 
 // checkEmbeddingModel checks whether the configured embedding model is available
@@ -1085,10 +1091,10 @@ func checkOllamaReachable(w io.Writer, endpoint string) {
 func checkEmbeddingModel(w io.Writer, endpoint, model string) {
 	embedder := embed.NewOllamaEmbedder(endpoint, model)
 	if embedder.Available() {
-		fmt.Fprintf(w, "✓ %s available\n", model)
+		doctorPrint(w, "✓ %s available\n", model)
 	} else {
-		fmt.Fprintf(w, "✗ %s not available\n", model)
-		fmt.Fprintf(w, "  Fix: ollama pull %s\n", model)
+		doctorPrint(w, "✗ %s not available\n", model)
+		doctorPrint(w, "  Fix: ollama pull %s\n", model)
 	}
 }
 

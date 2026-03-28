@@ -45,12 +45,12 @@ The flag goes on the root command (inherited by serve) and on the index command 
 
 The doctor command runs these checks in order:
 
-| Check | Pass | Fail | Fix |
-|-------|------|------|-----|
-| `.dewey/` exists | `.dewey/ found at /path` | `.dewey/ not found` | `dewey init` |
-| `graph.db` exists | `graph.db: 1,234 pages` | `graph.db not found or empty` | `dewey index` |
-| Ollama reachable | `Ollama running at localhost:11434` | `Ollama not reachable` | `brew install --cask ollama-app && open -a Ollama` |
-| Embedding model | `granite-embedding:30m available` | `model not found` | `ollama pull granite-embedding:30m` |
+| Check             | Pass                               | Fail                          | Fix                                                  |
+|-------------------|-------------------------------------|-------------------------------|------------------------------------------------------|
+| `.dewey/` exists  | `.dewey/ found at /path`            | `.dewey/ not found`           | `dewey init`                                         |
+| `graph.db` exists | `graph.db: 1,234 pages`             | `graph.db not found or empty` | `dewey index`                                        |
+| Ollama reachable  | `Ollama running at localhost:11434` | `Ollama not reachable`        | `brew install --cask ollama-app && open -a Ollama`   |
+| Embedding model   | `granite-embedding:30m available`   | `model not found`             | `ollama pull granite-embedding:30m`                  |
 
 Output format: one line per check with pass/fail indicator and fix command.
 

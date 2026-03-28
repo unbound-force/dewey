@@ -1,3 +1,5 @@
+# Proposal: ollama-hard-error
+
 ## Why
 
 When Ollama is not running or the embedding model is not pulled, `dewey serve` and `dewey index` silently degrade — they log a WARN and skip embedding generation. This means users get zero semantic search results with no clear guidance on how to fix it. The warning is easy to miss in log output, especially when Dewey is started as an MCP server by an AI agent.

@@ -348,9 +348,9 @@ func registerHealthTool(srv *mcp.Server, b backend.Backend, readOnly bool, cfg *
 		Name:        "health",
 		Description: "Check server status: version, backend type, read-only mode, page count. Use to verify the server is alive and see its configuration.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, input struct{}) (*mcp.CallToolResult, any, error) {
-		backendType := "logseq"
-		if _, ok := b.(backend.HasDataScript); !ok {
-			backendType = "obsidian"
+		backendType := "obsidian"
+		if _, ok := b.(backend.HasDataScript); ok {
+			backendType = "logseq"
 		}
 
 		pages, _ := b.GetAllPages(ctx)

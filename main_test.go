@@ -35,14 +35,14 @@ func TestResolveBackendType_EnvFallback(t *testing.T) {
 	}
 }
 
-// TestResolveBackendType_DefaultLogseq verifies "logseq" is returned
+// TestResolveBackendType_DefaultObsidian verifies "obsidian" is returned
 // when both flag value and environment variable are empty.
-func TestResolveBackendType_DefaultLogseq(t *testing.T) {
+func TestResolveBackendType_DefaultObsidian(t *testing.T) {
 	t.Setenv("DEWEY_BACKEND", "")
 
 	got := resolveBackendType("")
-	if got != "logseq" {
-		t.Errorf("resolveBackendType(%q) = %q, want %q", "", got, "logseq")
+	if got != "obsidian" {
+		t.Errorf("resolveBackendType(%q) = %q, want %q", "", got, "obsidian")
 	}
 }
 
@@ -66,7 +66,7 @@ func TestResolveBackendType_Table(t *testing.T) {
 	}{
 		{"flag takes precedence", "obsidian", "logseq", "obsidian"},
 		{"env fallback", "", "obsidian", "obsidian"},
-		{"default logseq", "", "", "logseq"},
+		{"default obsidian", "", "", "obsidian"},
 		{"flag with no env", "obsidian", "", "obsidian"},
 	}
 

@@ -66,7 +66,7 @@ func newRootCmd() *cobra.Command {
 	// Register serve flags on the root command so `dewey --backend obsidian`
 	// works without the `serve` subcommand (backward compatible).
 	rootCmd.Flags().BoolVar(&readOnly, "read-only", false, "Disable all write operations")
-	rootCmd.Flags().StringVar(&backendType, "backend", "", "Backend type: logseq (default) or obsidian")
+	rootCmd.Flags().StringVar(&backendType, "backend", "", "Backend type: obsidian (default) or logseq")
 	rootCmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (required for obsidian backend)")
 	rootCmd.Flags().StringVar(&dailyFolder, "daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
 	rootCmd.Flags().StringVar(&httpAddr, "http", "", "HTTP address to listen on (e.g. :8080)")
@@ -103,7 +103,7 @@ func newServeCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Disable all write operations")
-	cmd.Flags().StringVar(&backendType, "backend", "", "Backend type: logseq (default) or obsidian")
+	cmd.Flags().StringVar(&backendType, "backend", "", "Backend type: obsidian (default) or logseq")
 	cmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (required for obsidian backend)")
 	cmd.Flags().StringVar(&dailyFolder, "daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
 	cmd.Flags().StringVar(&httpAddr, "http", "", "HTTP address to listen on (e.g. :8080)")
@@ -146,7 +146,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 }
 
 // resolveBackendType determines the backend type from the flag value,
-// falling back to the DEWEY_BACKEND environment variable, then to "logseq".
+// falling back to the DEWEY_BACKEND environment variable, then to "obsidian".
 func resolveBackendType(flagValue string) string {
 	if flagValue != "" {
 		return flagValue
@@ -154,7 +154,7 @@ func resolveBackendType(flagValue string) string {
 	if env := os.Getenv("DEWEY_BACKEND"); env != "" {
 		return env
 	}
-	return "logseq"
+	return "obsidian"
 }
 
 // initObsidianBackend initializes the Obsidian/vault backend including:

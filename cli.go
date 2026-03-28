@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,9 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/client"
+	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/parser"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/vault"
 )
 
 // newJournalCmd creates the `dewey journal` subcommand.
@@ -586,6 +590,16 @@ Fetches content from all configured sources and indexes it.`,
 			}
 			defer func() { _ = s.Close() }()
 
+			// Auto-purge orphaned sources (FR-013, T017): compare configured
+			// source IDs against source IDs in the store. Delete pages for
+			// any source that no longer appears in sources.yaml.
+			purgeOrphanedSources(s, configs)
+
+			// Create embedder for embedding generation during indexing (R4).
+			// Graceful degradation: if Ollama is unavailable, indexing proceeds
+			// without embeddings (FR-003).
+			embedder := createIndexEmbedder()
+
 			// Build last-fetched times from store.
 			lastFetchedTimes := make(map[string]time.Time)
 			storedSources, _ := s.ListSources()
@@ -600,7 +614,7 @@ Fetches content from all configured sources and indexes it.`,
 			mgr := source.NewManager(configs, cwd, cacheDir)
 			result, allDocs := mgr.FetchAll(sourceName, force, lastFetchedTimes)
 
-			totalIndexed := indexDocuments(s, allDocs, configs)
+			totalIndexed := indexDocuments(s, allDocs, configs, embedder)
 			reportSourceErrors(s, result)
 
 			logger.Info("index complete",
@@ -619,42 +633,159 @@ Fetches content from all configured sources and indexes it.`,
 	return cmd
 }
 
-// indexDocuments upserts fetched documents into the persistent store and updates
-// source records. Returns the total number of documents successfully indexed.
-func indexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig) int {
+// createIndexEmbedder creates an OllamaEmbedder for use during indexing,
+// using the same environment variables as `dewey serve` (per research R4).
+// Returns the embedder regardless of availability — callers should check
+// Available() before generating embeddings.
+func createIndexEmbedder() embed.Embedder {
+	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
+	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
+	if embedModel == "" {
+		embedModel = "granite-embedding:30m"
+	}
+	if embedEndpoint == "" {
+		embedEndpoint = "http://localhost:11434"
+	}
+
+	embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
+	if embedder.Available() {
+		logger.Info("embedding model available for indexing", "model", embedModel)
+	} else {
+		logger.Warn("embedding model not available, skipping embedding generation",
+			"model", embedModel, "endpoint", embedEndpoint)
+	}
+	return embedder
+}
+
+// purgeOrphanedSources compares configured source IDs against source IDs
+// stored in the database. Any source in the store that is not in the config
+// has its pages deleted (FR-013 auto-purge).
+func purgeOrphanedSources(s *store.Store, configs []source.SourceConfig) {
+	configIDs := make(map[string]bool, len(configs))
+	for _, cfg := range configs {
+		configIDs[cfg.ID] = true
+	}
+
+	storedSources, err := s.ListSources()
+	if err != nil {
+		logger.Warn("failed to list stored sources for purge check", "err", err)
+		return
+	}
+
+	for _, src := range storedSources {
+		if !configIDs[src.ID] {
+			deleted, err := s.DeletePagesBySource(src.ID)
+			if err != nil {
+				logger.Warn("failed to purge orphaned source pages",
+					"source", src.ID, "err", err)
+				continue
+			}
+			if deleted > 0 {
+				logger.Info("purged orphaned source",
+					"source", src.ID, "pages_deleted", deleted)
+			}
+		}
+	}
+}
+
+// indexDocuments upserts fetched documents into the persistent store with full
+// content persistence: blocks, links, and embeddings are parsed and stored
+// alongside page metadata (US2). Returns the total number of documents
+// successfully indexed.
+func indexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder) int {
 	totalIndexed := 0
 	for sourceID, docs := range allDocs {
+		start := time.Now()
+		var blockCount, linkCount, embedCount int
+
+		logger.Info("indexing source", "source", sourceID, "documents", len(docs))
+
 		for _, doc := range docs {
-			existing, _ := s.GetPage(doc.Title)
+			// Namespace external page names: sourceID/docID (per research R6, T016).
+			pageName := strings.ToLower(sourceID + "/" + doc.ID)
+
+			// Parse document content into frontmatter and blocks (T011).
+			props, blocks := vault.ParseDocument(doc.ID, doc.Content)
+
+			// Build properties JSON.
+			propsJSON := ""
+			if props != nil {
+				data, _ := json.Marshal(props)
+				propsJSON = string(data)
+			} else if doc.Properties != nil {
+				data, _ := json.Marshal(doc.Properties)
+				propsJSON = string(data)
+			}
+
+			// Upsert page record.
+			existing, _ := s.GetPage(pageName)
 			if existing != nil {
+				// Re-index: delete existing blocks and links first (FR-004 replace strategy, T012/T013).
+				if err := s.DeleteBlocksByPage(pageName); err != nil {
+					logger.Warn("failed to delete existing blocks for re-index", "page", pageName, "err", err)
+				}
+				if err := s.DeleteLinksByPage(pageName); err != nil {
+					logger.Warn("failed to delete existing links for re-index", "page", pageName, "err", err)
+				}
+
 				existing.ContentHash = doc.ContentHash
 				existing.SourceID = sourceID
 				existing.SourceDocID = doc.ID
+				existing.OriginalName = doc.Title
+				existing.Properties = propsJSON
 				if err := s.UpdatePage(existing); err != nil {
-					logger.Warn("failed to update page", "page", doc.Title, "err", err)
+					logger.Warn("failed to update page", "page", pageName, "err", err)
 					continue
 				}
 			} else {
 				page := &store.Page{
-					Name:         doc.Title,
+					Name:         pageName,
 					OriginalName: doc.Title,
 					SourceID:     sourceID,
 					SourceDocID:  doc.ID,
+					Properties:   propsJSON,
 					ContentHash:  doc.ContentHash,
 					CreatedAt:    doc.FetchedAt.UnixMilli(),
 					UpdatedAt:    doc.FetchedAt.UnixMilli(),
 				}
-				if doc.Properties != nil {
-					propsJSON, _ := json.Marshal(doc.Properties)
-					page.Properties = string(propsJSON)
-				}
 				if err := s.InsertPage(page); err != nil {
-					logger.Warn("failed to insert page", "page", doc.Title, "err", err)
+					logger.Warn("failed to insert page", "page", pageName, "err", err)
 					continue
 				}
 			}
+
+			// Persist blocks (T012) — uses shared vault.PersistBlocks to avoid duplication.
+			if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
+				logger.Warn("failed to persist blocks", "page", pageName, "err", err)
+			} else {
+				blockCount += countBlocksRecursive(blocks)
+			}
+
+			// Extract and persist links from blocks (T013) — uses shared vault.PersistLinks.
+			if err := vault.PersistLinks(s, pageName, blocks); err != nil {
+				logger.Warn("failed to persist links", "page", pageName, "err", err)
+			} else {
+				linkCount += countLinksRecursive(blocks)
+			}
+
+			// Generate and persist embeddings if embedder is available (T015).
+			if embedder != nil && embedder.Available() {
+				ec := generateIndexEmbeddings(s, embedder, pageName, blocks, nil)
+				embedCount += ec
+			}
+
 			totalIndexed++
 		}
+
+		elapsed := time.Since(start)
+		logger.Info("source indexing complete",
+			"source", sourceID,
+			"documents", len(docs),
+			"blocks", blockCount,
+			"links", linkCount,
+			"embeddings", embedCount,
+			"elapsed", elapsed.Round(time.Millisecond),
+		)
 
 		// Update source record in store.
 		existingSrc, _ := s.GetSource(sourceID)
@@ -667,19 +798,91 @@ func indexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 					break
 				}
 			}
-			_ = s.InsertSource(&store.SourceRecord{
+			if err := s.InsertSource(&store.SourceRecord{
 				ID:            sourceID,
 				Type:          srcType,
 				Name:          srcName,
 				Status:        "active",
 				LastFetchedAt: time.Now().UnixMilli(),
-			})
+			}); err != nil {
+				logger.Warn("failed to insert source record", "source", sourceID, "err", err)
+			}
 		} else {
-			_ = s.UpdateLastFetched(sourceID, time.Now().UnixMilli())
-			_ = s.UpdateSourceStatus(sourceID, "active", "")
+			if err := s.UpdateLastFetched(sourceID, time.Now().UnixMilli()); err != nil {
+				logger.Warn("failed to update source last fetched", "source", sourceID, "err", err)
+			}
+			if err := s.UpdateSourceStatus(sourceID, "active", ""); err != nil {
+				logger.Warn("failed to update source status", "source", sourceID, "err", err)
+			}
 		}
 	}
 	return totalIndexed
+}
+
+// generateIndexEmbeddings creates vector embeddings for blocks during indexing.
+// Returns the number of embeddings generated. Skips blocks with empty content.
+// Embedding failures are logged but don't block indexing (graceful degradation).
+func generateIndexEmbeddings(s *store.Store, embedder embed.Embedder, pageName string, blocks []types.BlockEntity, headingPath []string) int {
+	count := 0
+	ctx := context.Background()
+
+	for _, b := range blocks {
+		if strings.TrimSpace(b.Content) == "" {
+			continue
+		}
+
+		// Build heading path for context.
+		currentPath := headingPath
+		heading := vault.ExtractHeadingFromContent(b.Content)
+		if heading != "" {
+			currentPath = append(append([]string{}, headingPath...), heading)
+		}
+
+		// Prepare chunk with heading hierarchy context.
+		chunk := embed.PrepareChunk(pageName, currentPath, b.Content)
+
+		// Generate embedding.
+		vec, err := embedder.Embed(ctx, chunk)
+		if err != nil {
+			logger.Warn("failed to generate embedding",
+				"page", pageName, "block", b.UUID, "err", err)
+			continue
+		}
+
+		// Persist embedding.
+		if err := s.InsertEmbedding(b.UUID, embedder.ModelID(), vec, chunk); err != nil {
+			logger.Warn("failed to persist embedding",
+				"page", pageName, "block", b.UUID, "err", err)
+			continue
+		}
+		count++
+
+		// Recurse into children with updated heading path.
+		if len(b.Children) > 0 {
+			count += generateIndexEmbeddings(s, embedder, pageName, b.Children, currentPath)
+		}
+	}
+	return count
+}
+
+// countBlocksRecursive returns the total number of blocks in a tree.
+func countBlocksRecursive(blocks []types.BlockEntity) int {
+	count := len(blocks)
+	for _, b := range blocks {
+		count += countBlocksRecursive(b.Children)
+	}
+	return count
+}
+
+// countLinksRecursive returns the total number of wikilinks in a block tree.
+func countLinksRecursive(blocks []types.BlockEntity) int {
+	count := 0
+	for _, b := range blocks {
+		parsed := parser.Parse(b.Content)
+		count += len(parsed.Links)
+		count += countLinksRecursive(b.Children)
+	}
+	return count
 }
 
 // reportSourceErrors updates source status for any sources that failed
@@ -689,7 +892,9 @@ func reportSourceErrors(s *store.Store, result *source.FetchResult) {
 		if summary.Error != "" {
 			existingSrc, _ := s.GetSource(summary.SourceID)
 			if existingSrc != nil {
-				_ = s.UpdateSourceStatus(summary.SourceID, "error", summary.Error)
+				if err := s.UpdateSourceStatus(summary.SourceID, "error", summary.Error); err != nil {
+					logger.Warn("failed to update source error status", "source", summary.SourceID, "err", err)
+				}
 			}
 		}
 	}

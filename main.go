@@ -235,6 +235,21 @@ func initObsidianBackend(vaultPath, dailyFolder string) (backend.Backend, []serv
 		return nil, nil, nil, err
 	}
 
+	// Load external-source pages from store into the vault's in-memory index.
+	// This must happen after indexVault() (which loads local pages) but before
+	// BuildBacklinks() is called implicitly by the watcher, so external pages
+	// participate in backlink and search index construction (FR-005, T022).
+	if vs := vc.Store(); vs != nil {
+		extCount, err := vs.LoadExternalPages(vc)
+		if err != nil {
+			logger.Warn("failed to load external pages", "err", err)
+		} else if extCount > 0 {
+			// Rebuild backlinks and search index to include external pages.
+			vc.BuildBacklinks()
+			logger.Info("external pages loaded into vault", "count", extCount)
+		}
+	}
+
 	// Start file watcher.
 	if err := vc.Watch(); err != nil {
 		if persistentStore != nil {

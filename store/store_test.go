@@ -1377,3 +1377,181 @@ func TestUpdateLastFetched_DoesNotAffectOtherFields(t *testing.T) {
 		t.Errorf("Name = %q, want %q (should be unchanged)", got.Name, "local")
 	}
 }
+
+// --- Source-level page operations (004-unified-content-serve) ---
+
+func TestListPagesExcludingSource(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert pages from different sources.
+	localPage := testPage("local-page")
+	localPage.SourceID = "disk-local"
+	if err := s.InsertPage(localPage); err != nil {
+		t.Fatalf("InsertPage(local): %v", err)
+	}
+
+	extPage1 := testPage("github-org/issue-1")
+	extPage1.SourceID = "github-org"
+	if err := s.InsertPage(extPage1); err != nil {
+		t.Fatalf("InsertPage(ext1): %v", err)
+	}
+
+	extPage2 := testPage("web-docs/api-ref")
+	extPage2.SourceID = "web-docs"
+	if err := s.InsertPage(extPage2); err != nil {
+		t.Fatalf("InsertPage(ext2): %v", err)
+	}
+
+	// Exclude disk-local → should return the two external pages.
+	pages, err := s.ListPagesExcludingSource("disk-local")
+	if err != nil {
+		t.Fatalf("ListPagesExcludingSource: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("expected 2 pages, got %d", len(pages))
+	}
+
+	// Verify ordering (alphabetical by name).
+	if pages[0].Name != "github-org/issue-1" {
+		t.Errorf("pages[0].Name = %q, want %q", pages[0].Name, "github-org/issue-1")
+	}
+	if pages[1].Name != "web-docs/api-ref" {
+		t.Errorf("pages[1].Name = %q, want %q", pages[1].Name, "web-docs/api-ref")
+	}
+}
+
+func TestListPagesExcludingSource_NoMatches(t *testing.T) {
+	s := newTestStore(t)
+
+	localPage := testPage("only-local")
+	localPage.SourceID = "disk-local"
+	if err := s.InsertPage(localPage); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	pages, err := s.ListPagesExcludingSource("disk-local")
+	if err != nil {
+		t.Fatalf("ListPagesExcludingSource: %v", err)
+	}
+	if len(pages) != 0 {
+		t.Errorf("expected 0 pages, got %d", len(pages))
+	}
+}
+
+func TestDeletePagesBySource(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert pages from two sources.
+	for i := 0; i < 3; i++ {
+		p := testPage(fmt.Sprintf("github-org/issue-%d", i))
+		p.SourceID = "github-org"
+		p.SourceDocID = fmt.Sprintf("issue-%d", i)
+		if err := s.InsertPage(p); err != nil {
+			t.Fatalf("InsertPage(github %d): %v", i, err)
+		}
+	}
+
+	localPage := testPage("local-page")
+	localPage.SourceID = "disk-local"
+	if err := s.InsertPage(localPage); err != nil {
+		t.Fatalf("InsertPage(local): %v", err)
+	}
+
+	// Add a block to one of the github pages to verify CASCADE.
+	block := &Block{
+		UUID:     "block-uuid-1",
+		PageName: "github-org/issue-0",
+		Content:  "test block content",
+	}
+	if err := s.InsertBlock(block); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	// Delete all github pages.
+	deleted, err := s.DeletePagesBySource("github-org")
+	if err != nil {
+		t.Fatalf("DeletePagesBySource: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("deleted = %d, want 3", deleted)
+	}
+
+	// Verify local page still exists.
+	remaining, err := s.ListPages()
+	if err != nil {
+		t.Fatalf("ListPages: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining page, got %d", len(remaining))
+	}
+	if remaining[0].Name != "local-page" {
+		t.Errorf("remaining page = %q, want %q", remaining[0].Name, "local-page")
+	}
+
+	// Verify CASCADE deleted the block.
+	b, err := s.GetBlock("block-uuid-1")
+	if err != nil {
+		t.Fatalf("GetBlock: %v", err)
+	}
+	if b != nil {
+		t.Error("expected block to be CASCADE deleted, but it still exists")
+	}
+}
+
+func TestDeletePagesBySource_NoMatches(t *testing.T) {
+	s := newTestStore(t)
+
+	deleted, err := s.DeletePagesBySource("nonexistent-source")
+	if err != nil {
+		t.Fatalf("DeletePagesBySource: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("deleted = %d, want 0", deleted)
+	}
+}
+
+func TestListPagesBySource(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert pages from different sources.
+	for i := 0; i < 2; i++ {
+		p := testPage(fmt.Sprintf("github-org/issue-%d", i))
+		p.SourceID = "github-org"
+		p.SourceDocID = fmt.Sprintf("issue-%d", i)
+		if err := s.InsertPage(p); err != nil {
+			t.Fatalf("InsertPage(github %d): %v", i, err)
+		}
+	}
+
+	localPage := testPage("local-page")
+	localPage.SourceID = "disk-local"
+	if err := s.InsertPage(localPage); err != nil {
+		t.Fatalf("InsertPage(local): %v", err)
+	}
+
+	// List only github pages.
+	pages, err := s.ListPagesBySource("github-org")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("expected 2 pages, got %d", len(pages))
+	}
+	for _, p := range pages {
+		if p.SourceID != "github-org" {
+			t.Errorf("page %q has sourceID %q, want %q", p.Name, p.SourceID, "github-org")
+		}
+	}
+}
+
+func TestListPagesBySource_NoMatches(t *testing.T) {
+	s := newTestStore(t)
+
+	pages, err := s.ListPagesBySource("nonexistent")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) != 0 {
+		t.Errorf("expected 0 pages, got %d", len(pages))
+	}
+}

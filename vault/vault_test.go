@@ -1772,3 +1772,316 @@ func TestInsertContentInFile(t *testing.T) {
 		}
 	})
 }
+
+// --- Write guard tests (004-unified-content-serve T035) ---
+
+// newVaultWithReadOnlyPage creates a vault client with a read-only page and
+// a writable page for write guard testing. Returns the client, the read-only
+// page name, and a block UUID from the read-only page.
+func newVaultWithReadOnlyPage(t *testing.T) (*Client, string, string) {
+	t.Helper()
+	vaultDir := t.TempDir()
+
+	// Create a writable local page.
+	localPath := filepath.Join(vaultDir, "local-page.md")
+	if err := os.WriteFile(localPath, []byte("# Local Page\n\nLocal content."), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c := New(vaultDir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Add a read-only external page directly to the vault's pages map.
+	readOnlyBlockUUID := "ext-block-uuid-1"
+	extPage := &cachedPage{
+		entity: types.PageEntity{
+			Name:         "github-org/issue-42",
+			OriginalName: "Bug Report",
+		},
+		lowerName: "github-org/issue-42",
+		filePath:  "issue-42",
+		blocks: []types.BlockEntity{
+			{UUID: readOnlyBlockUUID, Content: "External content"},
+		},
+		sourceID: "github-org",
+		readOnly: true,
+	}
+	c.mu.Lock()
+	c.applyPageIndex(extPage)
+	c.mu.Unlock()
+
+	return c, "github-org/issue-42", readOnlyBlockUUID
+}
+
+func TestWriteGuard_AppendBlockInPage(t *testing.T) {
+	c, roPage, _ := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	// Should fail on read-only page.
+	_, err := c.AppendBlockInPage(ctx, roPage, "new content")
+	if err == nil {
+		t.Fatal("expected error for AppendBlockInPage on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "github-org") {
+		t.Errorf("error = %q, want to contain source ID 'github-org'", err.Error())
+	}
+
+	// Should succeed on writable page.
+	_, err = c.AppendBlockInPage(ctx, "local-page", "appended content")
+	if err != nil {
+		t.Errorf("AppendBlockInPage on writable page failed: %v", err)
+	}
+}
+
+func TestWriteGuard_PrependBlockInPage(t *testing.T) {
+	c, roPage, _ := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	_, err := c.PrependBlockInPage(ctx, roPage, "new content")
+	if err == nil {
+		t.Fatal("expected error for PrependBlockInPage on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+func TestWriteGuard_UpdateBlock(t *testing.T) {
+	c, _, roBlockUUID := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	err := c.UpdateBlock(ctx, roBlockUUID, "updated content")
+	if err == nil {
+		t.Fatal("expected error for UpdateBlock on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+func TestWriteGuard_RemoveBlock(t *testing.T) {
+	c, _, roBlockUUID := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	err := c.RemoveBlock(ctx, roBlockUUID)
+	if err == nil {
+		t.Fatal("expected error for RemoveBlock on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+func TestWriteGuard_InsertBlock(t *testing.T) {
+	c, _, roBlockUUID := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	_, err := c.InsertBlock(ctx, roBlockUUID, "child content", nil)
+	if err == nil {
+		t.Fatal("expected error for InsertBlock on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+func TestWriteGuard_DeletePage(t *testing.T) {
+	c, roPage, _ := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	err := c.DeletePage(ctx, roPage)
+	if err == nil {
+		t.Fatal("expected error for DeletePage on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+func TestWriteGuard_RenamePage(t *testing.T) {
+	c, roPage, _ := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	err := c.RenamePage(ctx, roPage, "new-name")
+	if err == nil {
+		t.Fatal("expected error for RenamePage on read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+func TestWriteGuard_MoveBlock(t *testing.T) {
+	c, _, roBlockUUID := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	// Get a writable block UUID from the local page.
+	c.mu.RLock()
+	localPage := c.pages["local-page"]
+	c.mu.RUnlock()
+	if localPage == nil || len(localPage.blocks) == 0 {
+		t.Fatal("local page has no blocks")
+	}
+	localBlockUUID := localPage.blocks[0].UUID
+
+	// Moving FROM read-only page should fail.
+	err := c.MoveBlock(ctx, roBlockUUID, localBlockUUID, nil)
+	if err == nil {
+		t.Fatal("expected error for MoveBlock from read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+
+	// Moving TO read-only page should also fail.
+	err = c.MoveBlock(ctx, localBlockUUID, roBlockUUID, nil)
+	if err == nil {
+		t.Fatal("expected error for MoveBlock to read-only page")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Errorf("error = %q, want to contain 'read-only'", err.Error())
+	}
+}
+
+// --- Cross-source backlink tests (004-unified-content-serve T036-T038) ---
+
+func TestCrossSourceBacklinks_ExternalToLocal(t *testing.T) {
+	vaultDir := t.TempDir()
+
+	// Create a local page "architecture".
+	archPath := filepath.Join(vaultDir, "architecture.md")
+	if err := os.WriteFile(archPath, []byte("# Architecture\n\nSystem design."), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c := New(vaultDir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Add an external page that references [[architecture]] via wikilink.
+	extPage := &cachedPage{
+		entity: types.PageEntity{
+			Name:         "github-org/issue-42",
+			OriginalName: "Bug Report",
+		},
+		lowerName: "github-org/issue-42",
+		filePath:  "issue-42",
+		blocks: []types.BlockEntity{
+			{UUID: "ext-block-1", Content: "Found a bug in [[architecture]] module."},
+		},
+		sourceID: "github-org",
+		readOnly: true,
+	}
+	c.mu.Lock()
+	c.applyPageIndex(extPage)
+	c.mu.Unlock()
+
+	// Build backlinks — should include cross-source references.
+	c.BuildBacklinks()
+
+	// Query backlinks for "architecture" — should include the external page.
+	ctx := context.Background()
+	refs, err := c.GetPageLinkedReferences(ctx, "architecture")
+	if err != nil {
+		t.Fatalf("GetPageLinkedReferences: %v", err)
+	}
+
+	// Parse the JSON response to check for the external page.
+	var result []json.RawMessage
+	if err := json.Unmarshal(refs, &result); err != nil {
+		t.Fatalf("unmarshal refs: %v", err)
+	}
+
+	if len(result) == 0 {
+		t.Fatal("expected at least one backlink reference, got 0")
+	}
+
+	// The backlink should come from the external page.
+	foundExternal := false
+	for _, entry := range result {
+		if strings.Contains(string(entry), "github-org/issue-42") || strings.Contains(string(entry), "Bug Report") {
+			foundExternal = true
+			break
+		}
+	}
+	if !foundExternal {
+		t.Errorf("external page not found in backlinks for 'architecture'. Got: %s", string(refs))
+	}
+}
+
+func TestCrossSourceBacklinks_ExternalToExternal(t *testing.T) {
+	c := New(t.TempDir())
+
+	// Add two external pages that reference each other.
+	page1 := &cachedPage{
+		entity: types.PageEntity{
+			Name:         "github-org/issue-1",
+			OriginalName: "Issue 1",
+		},
+		lowerName: "github-org/issue-1",
+		filePath:  "issue-1",
+		blocks: []types.BlockEntity{
+			{UUID: "block-1", Content: "Related to [[github-org/issue-2]]."},
+		},
+		sourceID: "github-org",
+		readOnly: true,
+	}
+	page2 := &cachedPage{
+		entity: types.PageEntity{
+			Name:         "github-org/issue-2",
+			OriginalName: "Issue 2",
+		},
+		lowerName: "github-org/issue-2",
+		filePath:  "issue-2",
+		blocks: []types.BlockEntity{
+			{UUID: "block-2", Content: "See also [[github-org/issue-1]]."},
+		},
+		sourceID: "github-org",
+		readOnly: true,
+	}
+
+	c.mu.Lock()
+	c.applyPageIndex(page1)
+	c.applyPageIndex(page2)
+	c.mu.Unlock()
+
+	c.BuildBacklinks()
+
+	ctx := context.Background()
+
+	// Check backlinks for issue-1 — should include issue-2.
+	refs1, err := c.GetPageLinkedReferences(ctx, "github-org/issue-1")
+	if err != nil {
+		t.Fatalf("GetPageLinkedReferences(issue-1): %v", err)
+	}
+	if !strings.Contains(string(refs1), "github-org/issue-2") && !strings.Contains(string(refs1), "Issue 2") {
+		t.Errorf("issue-2 not found in backlinks for issue-1. Got: %s", string(refs1))
+	}
+
+	// Check backlinks for issue-2 — should include issue-1.
+	refs2, err := c.GetPageLinkedReferences(ctx, "github-org/issue-2")
+	if err != nil {
+		t.Fatalf("GetPageLinkedReferences(issue-2): %v", err)
+	}
+	if !strings.Contains(string(refs2), "github-org/issue-1") && !strings.Contains(string(refs2), "Issue 1") {
+		t.Errorf("issue-1 not found in backlinks for issue-2. Got: %s", string(refs2))
+	}
+}
+
+func TestWriteGuard_WritablePagePassesThrough(t *testing.T) {
+	c, _, _ := newVaultWithReadOnlyPage(t)
+	ctx := context.Background()
+
+	// Verify that writable pages are not blocked by write guards.
+	// AppendBlockInPage on a writable page should succeed.
+	_, err := c.AppendBlockInPage(ctx, "local-page", "test content")
+	if err != nil {
+		t.Errorf("AppendBlockInPage on writable page should succeed: %v", err)
+	}
+}

@@ -128,7 +128,7 @@
 - [ ] T051 [US3] Run `gaze crap --format=json --coverprofile=coverage.out ./...` — contract coverage 60.6% (target ≥80% NOT MET), GazeCRAPload 36 (target ≤10 NOT MET), Q4=5 (target 0 NOT MET). GoDoc + assertion strengthening moved needle but insufficient. Remaining Q3/Q4 functions need deeper assertion work or structural changes.
 - [x] T052 [US3] Tighten CI thresholds to achieved values: --max-crapload=26 --max-gaze-crapload=36 --min-contract-coverage=60
 
-**Checkpoint**: Contract coverage at B grade (≥80%). GazeCRAPload ≤10. All Q4 functions eliminated. CI ratchet locked.
+**Checkpoint**: Contract coverage improved to 60.6% (target ≥80% not yet met). GazeCRAPload at 36 (target ≤10 not yet met). Q4 functions remain at 5 (target 0 not yet met). CI ratchet tightened to achieved values. Further iteration required.
 
 ---
 

@@ -1203,3 +1203,303 @@ func TestDiffPages_Mixed(t *testing.T) {
 		t.Errorf("expected 1 unchanged page, got %d", len(diff.unchanged))
 	}
 }
+
+// --- LoadExternalPages tests (004-unified-content-serve T025, T026) ---
+
+func TestLoadExternalPages_LoadsFromStore(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Pre-populate store with external pages and blocks.
+	extPage := &store.Page{
+		Name:         "github-org/issue-42",
+		OriginalName: "Bug Report",
+		SourceID:     "github-org",
+		SourceDocID:  "issue-42",
+		Properties:   `{"type": "issue"}`,
+		ContentHash:  "hash-42",
+		CreatedAt:    1000,
+		UpdatedAt:    2000,
+	}
+	if err := s.InsertPage(extPage); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Insert blocks for the external page.
+	rootBlock := &store.Block{
+		UUID:         "root-block-1",
+		PageName:     "github-org/issue-42",
+		Content:      "# Bug Report",
+		HeadingLevel: 1,
+		Position:     0,
+	}
+	if err := s.InsertBlock(rootBlock); err != nil {
+		t.Fatalf("InsertBlock(root): %v", err)
+	}
+	childBlock := &store.Block{
+		UUID:         "child-block-1",
+		PageName:     "github-org/issue-42",
+		ParentUUID:   sql.NullString{String: "root-block-1", Valid: true},
+		Content:      "## Steps to Reproduce",
+		HeadingLevel: 2,
+		Position:     0,
+	}
+	if err := s.InsertBlock(childBlock); err != nil {
+		t.Fatalf("InsertBlock(child): %v", err)
+	}
+
+	// Also insert a disk-local page (should NOT be loaded).
+	localPage := &store.Page{
+		Name:         "local-page",
+		OriginalName: "Local Page",
+		SourceID:     "disk-local",
+		SourceDocID:  "local-page.md",
+		ContentHash:  "hash-local",
+	}
+	if err := s.InsertPage(localPage); err != nil {
+		t.Fatalf("InsertPage(local): %v", err)
+	}
+
+	// Create vault client and load external pages.
+	vc := New(t.TempDir())
+	count, err := vs.LoadExternalPages(vc)
+	if err != nil {
+		t.Fatalf("LoadExternalPages: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("loaded %d pages, want 1", count)
+	}
+
+	// Verify the external page is in the vault's pages map.
+	vc.mu.RLock()
+	defer vc.mu.RUnlock()
+
+	cached, ok := vc.pages["github-org/issue-42"]
+	if !ok {
+		t.Fatal("external page not found in vault pages map")
+	}
+	if cached.sourceID != "github-org" {
+		t.Errorf("sourceID = %q, want %q", cached.sourceID, "github-org")
+	}
+	if !cached.readOnly {
+		t.Error("readOnly should be true for external pages")
+	}
+	if cached.entity.OriginalName != "Bug Report" {
+		t.Errorf("OriginalName = %q, want %q", cached.entity.OriginalName, "Bug Report")
+	}
+
+	// Verify block tree was reconstructed.
+	if len(cached.blocks) != 1 {
+		t.Fatalf("expected 1 root block, got %d", len(cached.blocks))
+	}
+	if cached.blocks[0].UUID != "root-block-1" {
+		t.Errorf("root block UUID = %q, want %q", cached.blocks[0].UUID, "root-block-1")
+	}
+	if len(cached.blocks[0].Children) != 1 {
+		t.Fatalf("expected 1 child block, got %d", len(cached.blocks[0].Children))
+	}
+
+	// Verify local page was NOT loaded.
+	if _, ok := vc.pages["local-page"]; ok {
+		t.Error("local page should not be loaded by LoadExternalPages")
+	}
+}
+
+func TestLoadExternalPages_SearchableAndBacklinks(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Create an external page with a wikilink to a local page.
+	extPage := &store.Page{
+		Name:         "github-org/pr-10",
+		OriginalName: "Fix Architecture",
+		SourceID:     "github-org",
+		SourceDocID:  "pr-10",
+		ContentHash:  "hash-pr10",
+	}
+	if err := s.InsertPage(extPage); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	block := &store.Block{
+		UUID:     "ext-block-1",
+		PageName: "github-org/pr-10",
+		Content:  "This PR fixes the [[architecture]] module.",
+		Position: 0,
+	}
+	if err := s.InsertBlock(block); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	// Create a vault with a local "architecture" page.
+	vaultDir := t.TempDir()
+	archPath := filepath.Join(vaultDir, "architecture.md")
+	if err := os.WriteFile(archPath, []byte("# Architecture\n\nSystem design."), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	vc := New(vaultDir, WithStore(s))
+	if err := vc.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Load external pages.
+	count, err := vs.LoadExternalPages(vc)
+	if err != nil {
+		t.Fatalf("LoadExternalPages: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("loaded %d pages, want 1", count)
+	}
+
+	// Build backlinks (includes external pages).
+	vc.BuildBacklinks()
+
+	// Verify external page is searchable via FullTextSearch.
+	// Search for "fixes" which appears in the external page's block content.
+	results, err := vc.FullTextSearch(context.Background(), "fixes", 10)
+	if err != nil {
+		t.Fatalf("FullTextSearch: %v", err)
+	}
+
+	// The search index uses OriginalName for page names in results.
+	foundExternal := false
+	for _, hit := range results {
+		if hit.PageName == "Fix Architecture" {
+			foundExternal = true
+			break
+		}
+	}
+	if !foundExternal {
+		t.Errorf("external page not found in FullTextSearch results (got %d results)", len(results))
+	}
+
+	// Verify external page appears in GetAllPages.
+	allPages, err := vc.GetAllPages(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllPages: %v", err)
+	}
+	foundInAll := false
+	for _, p := range allPages {
+		if p.Name == "github-org/pr-10" {
+			foundInAll = true
+			break
+		}
+	}
+	if !foundInAll {
+		t.Error("external page not found in GetAllPages results")
+	}
+}
+
+// --- reconstructBlockTree tests (004-unified-content-serve T010) ---
+
+func TestReconstructBlockTree_Empty(t *testing.T) {
+	result := reconstructBlockTree(nil)
+	if result != nil {
+		t.Errorf("expected nil for empty input, got %v", result)
+	}
+
+	result = reconstructBlockTree([]*store.Block{})
+	if result != nil {
+		t.Errorf("expected nil for empty slice, got %v", result)
+	}
+}
+
+func TestReconstructBlockTree_SingleRoot(t *testing.T) {
+	flat := []*store.Block{
+		{UUID: "root-1", PageName: "test", Content: "# Root Block", HeadingLevel: 1, Position: 0},
+	}
+
+	result := reconstructBlockTree(flat)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 root block, got %d", len(result))
+	}
+	if result[0].UUID != "root-1" {
+		t.Errorf("root UUID = %q, want %q", result[0].UUID, "root-1")
+	}
+	if result[0].Content != "# Root Block" {
+		t.Errorf("root Content = %q, want %q", result[0].Content, "# Root Block")
+	}
+	if len(result[0].Children) != 0 {
+		t.Errorf("expected 0 children, got %d", len(result[0].Children))
+	}
+}
+
+func TestReconstructBlockTree_MultipleRoots(t *testing.T) {
+	flat := []*store.Block{
+		{UUID: "root-1", PageName: "test", Content: "# First", HeadingLevel: 1, Position: 0},
+		{UUID: "root-2", PageName: "test", Content: "# Second", HeadingLevel: 1, Position: 1},
+	}
+
+	result := reconstructBlockTree(flat)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 root blocks, got %d", len(result))
+	}
+	if result[0].UUID != "root-1" {
+		t.Errorf("first root UUID = %q, want %q", result[0].UUID, "root-1")
+	}
+	if result[1].UUID != "root-2" {
+		t.Errorf("second root UUID = %q, want %q", result[1].UUID, "root-2")
+	}
+}
+
+func TestReconstructBlockTree_NestedBlocks(t *testing.T) {
+	flat := []*store.Block{
+		{UUID: "root-1", PageName: "test", Content: "# Root", HeadingLevel: 1, Position: 0},
+		{UUID: "child-1", PageName: "test", Content: "## Child", HeadingLevel: 2, Position: 0,
+			ParentUUID: sql.NullString{String: "root-1", Valid: true}},
+		{UUID: "grandchild-1", PageName: "test", Content: "### Grandchild", HeadingLevel: 3, Position: 0,
+			ParentUUID: sql.NullString{String: "child-1", Valid: true}},
+	}
+
+	result := reconstructBlockTree(flat)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 root block, got %d", len(result))
+	}
+
+	root := result[0]
+	if root.UUID != "root-1" {
+		t.Errorf("root UUID = %q, want %q", root.UUID, "root-1")
+	}
+	if len(root.Children) != 1 {
+		t.Fatalf("expected 1 child of root, got %d", len(root.Children))
+	}
+
+	child := root.Children[0]
+	if child.UUID != "child-1" {
+		t.Errorf("child UUID = %q, want %q", child.UUID, "child-1")
+	}
+	if len(child.Children) != 1 {
+		t.Fatalf("expected 1 grandchild, got %d", len(child.Children))
+	}
+
+	grandchild := child.Children[0]
+	if grandchild.UUID != "grandchild-1" {
+		t.Errorf("grandchild UUID = %q, want %q", grandchild.UUID, "grandchild-1")
+	}
+}
+
+func TestReconstructBlockTree_MultipleChildrenOrdered(t *testing.T) {
+	flat := []*store.Block{
+		{UUID: "root-1", PageName: "test", Content: "# Root", HeadingLevel: 1, Position: 0},
+		{UUID: "child-a", PageName: "test", Content: "## A", HeadingLevel: 2, Position: 0,
+			ParentUUID: sql.NullString{String: "root-1", Valid: true}},
+		{UUID: "child-b", PageName: "test", Content: "## B", HeadingLevel: 2, Position: 1,
+			ParentUUID: sql.NullString{String: "root-1", Valid: true}},
+		{UUID: "child-c", PageName: "test", Content: "## C", HeadingLevel: 2, Position: 2,
+			ParentUUID: sql.NullString{String: "root-1", Valid: true}},
+	}
+
+	result := reconstructBlockTree(flat)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 root, got %d", len(result))
+	}
+	if len(result[0].Children) != 3 {
+		t.Fatalf("expected 3 children, got %d", len(result[0].Children))
+	}
+
+	// Verify order matches Position.
+	expectedUUIDs := []string{"child-a", "child-b", "child-c"}
+	for i, expected := range expectedUUIDs {
+		if result[0].Children[i].UUID != expected {
+			t.Errorf("child[%d].UUID = %q, want %q", i, result[0].Children[i].UUID, expected)
+		}
+	}
+}

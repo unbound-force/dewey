@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/parser"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
 )
@@ -502,55 +501,165 @@ func extractHeading(content string) string {
 	return strings.TrimSpace(trimmed)
 }
 
+// LoadExternalPages loads all non-local pages from the persistent store into
+// the vault client's in-memory index. This makes external-source content
+// (GitHub, web crawl) queryable via all MCP tools alongside local vault pages.
+//
+// For each external page: converts store.Page → types.PageEntity, loads blocks
+// via store.GetBlocksByPage(), reconstructs the block tree via reconstructBlockTree(),
+// builds a cachedPage with sourceID and readOnly=true, and registers it via
+// applyPageIndex(). Returns the number of pages loaded.
+//
+// Design decision: External pages are marked readOnly=true to prevent write
+// operations from modifying content that doesn't exist on disk (per research R7).
+func (vs *VaultStore) LoadExternalPages(c *Client) (int, error) {
+	if vs.store == nil {
+		return 0, nil
+	}
+
+	start := time.Now()
+	logger.Info("loading external pages from store")
+
+	pages, err := vs.store.ListPagesExcludingSource("disk-local")
+	if err != nil {
+		return 0, fmt.Errorf("list external pages: %w", err)
+	}
+
+	totalBlocks := 0
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, sp := range pages {
+		// Convert store.Page → types.PageEntity.
+		entity := types.PageEntity{
+			Name:         sp.Name,
+			OriginalName: sp.OriginalName,
+			Journal:      sp.IsJournal,
+			CreatedAt:    sp.CreatedAt,
+			UpdatedAt:    sp.UpdatedAt,
+		}
+
+		// Parse properties JSON if present.
+		if sp.Properties != "" {
+			var props map[string]any
+			if err := json.Unmarshal([]byte(sp.Properties), &props); err == nil {
+				entity.Properties = props
+			}
+		}
+
+		// Load blocks from store and reconstruct tree.
+		storeBlocks, err := vs.store.GetBlocksByPage(sp.Name)
+		if err != nil {
+			logger.Warn("failed to load blocks for external page",
+				"page", sp.Name, "err", err)
+			continue
+		}
+		blocks := reconstructBlockTree(storeBlocks)
+		totalBlocks += len(storeBlocks)
+
+		// Build cachedPage with external source metadata.
+		page := &cachedPage{
+			entity:    entity,
+			lowerName: strings.ToLower(sp.Name),
+			filePath:  sp.SourceDocID,
+			blocks:    blocks,
+			sourceID:  sp.SourceID,
+			readOnly:  true,
+		}
+
+		// Register in vault's in-memory index.
+		c.applyPageIndex(page)
+	}
+
+	elapsed := time.Since(start)
+	logger.Info("external pages loaded",
+		"pages", len(pages),
+		"blocks", totalBlocks,
+		"elapsed", elapsed.Round(time.Millisecond),
+	)
+
+	return len(pages), nil
+}
+
+// reconstructBlockTree converts a flat slice of store.Block records (with
+// ParentUUID and Position fields) into a nested []types.BlockEntity tree
+// with Children populated. Root blocks (those with no parent) form the
+// returned slice. Children are ordered by Position within each parent.
+//
+// Design decision: This is the inverse of persistBlocks() — round-trip
+// fidelity is guaranteed by the schema (per research R5). The algorithm
+// processes blocks bottom-up (leaves first) to ensure children are fully
+// constructed before being attached to their parents.
+func reconstructBlockTree(flat []*store.Block) []types.BlockEntity {
+	if len(flat) == 0 {
+		return nil
+	}
+
+	// Build a map of UUID → index for lookups, and track parent-child relationships.
+	type blockInfo struct {
+		block    types.BlockEntity
+		parentID string // empty string for roots
+	}
+
+	infos := make([]blockInfo, len(flat))
+	childrenOf := make(map[string][]int) // parentUUID → child indices
+
+	// First pass: create all BlockEntity instances.
+	for i, sb := range flat {
+		infos[i] = blockInfo{
+			block: types.BlockEntity{
+				UUID:    sb.UUID,
+				Content: sb.Content,
+			},
+		}
+		if sb.ParentUUID.Valid && sb.ParentUUID.String != "" {
+			infos[i].parentID = sb.ParentUUID.String
+		}
+	}
+
+	// Build children map.
+	for i, info := range infos {
+		if info.parentID != "" {
+			childrenOf[info.parentID] = append(childrenOf[info.parentID], i)
+		}
+	}
+
+	// Recursive function to build a block with its children fully resolved.
+	var buildBlock func(idx int) types.BlockEntity
+	buildBlock = func(idx int) types.BlockEntity {
+		be := infos[idx].block
+		if childIndices, ok := childrenOf[be.UUID]; ok {
+			be.Children = make([]types.BlockEntity, len(childIndices))
+			for i, ci := range childIndices {
+				be.Children[i] = buildBlock(ci)
+			}
+		}
+		return be
+	}
+
+	// Build the tree starting from roots.
+	var roots []types.BlockEntity
+	for i, info := range infos {
+		if info.parentID == "" {
+			roots = append(roots, buildBlock(i))
+		}
+	}
+
+	return roots
+}
+
 // --- Internal helpers ---
 
 // persistBlocks recursively inserts blocks into the store.
+// Delegates to the shared PersistBlocks function.
 func (vs *VaultStore) persistBlocks(pageName string, blocks []types.BlockEntity, parentUUID sql.NullString, startPos int) error {
-	for i, b := range blocks {
-		sb := &store.Block{
-			UUID:         b.UUID,
-			PageName:     pageName,
-			ParentUUID:   parentUUID,
-			Content:      b.Content,
-			HeadingLevel: headingLevel(strings.SplitN(b.Content, "\n", 2)[0]),
-			Position:     startPos + i,
-		}
-		if err := vs.store.InsertBlock(sb); err != nil {
-			return fmt.Errorf("insert block %q: %w", b.UUID, err)
-		}
-
-		if len(b.Children) > 0 {
-			childParent := sql.NullString{String: b.UUID, Valid: true}
-			if err := vs.persistBlocks(pageName, b.Children, childParent, 0); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return PersistBlocks(vs.store, pageName, blocks, parentUUID, startPos)
 }
 
 // persistLinks extracts wikilinks from blocks and persists them to the store.
+// Delegates to the shared PersistLinks function.
 func (vs *VaultStore) persistLinks(pageName string, blocks []types.BlockEntity) error {
-	for _, b := range blocks {
-		parsed := parser.Parse(b.Content)
-		for _, link := range parsed.Links {
-			sl := &store.Link{
-				FromPage:  pageName,
-				ToPage:    link,
-				BlockUUID: b.UUID,
-			}
-			if err := vs.store.InsertLink(sl); err != nil {
-				return fmt.Errorf("insert link %q -> %q: %w", pageName, link, err)
-			}
-		}
-
-		if len(b.Children) > 0 {
-			if err := vs.persistLinks(pageName, b.Children); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return PersistLinks(vs.store, pageName, blocks)
 }
 
 // computeContentHash generates a SHA-256 hash of a page's file content.

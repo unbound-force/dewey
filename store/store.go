@@ -630,6 +630,106 @@ func (s *Store) CountPagesBySource(sourceID string) (int, error) {
 	return count, nil
 }
 
+// ListPagesExcludingSource returns all pages whose source_id does NOT match
+// the given sourceID, ordered alphabetically by name. Used by LoadExternalPages()
+// to load all non-local pages from the store into the vault's in-memory index.
+// Returns an empty slice if no matching pages exist.
+func (s *Store) ListPagesExcludingSource(sourceID string) ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
+		FROM pages WHERE source_id != ? ORDER BY name`, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("list pages excluding source %q: %w", sourceID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var pages []*Page
+	for rows.Next() {
+		p := &Page{}
+		var isJournal int
+		var sourceDocID, properties, contentHash sql.NullString
+
+		if err := rows.Scan(
+			&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
+			&properties, &contentHash, &isJournal,
+			&p.CreatedAt, &p.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan page: %w", err)
+		}
+
+		p.SourceDocID = sourceDocID.String
+		p.Properties = properties.String
+		p.ContentHash = contentHash.String
+		p.IsJournal = isJournal != 0
+		pages = append(pages, p)
+	}
+	return pages, rows.Err()
+}
+
+// DeletePagesBySource removes all pages (and their associated blocks, links,
+// and embeddings via CASCADE) belonging to the given source ID. Returns the
+// number of rows deleted. Used for orphan auto-purge when a source is removed
+// from sources.yaml (FR-013). The operation is wrapped in a transaction for
+// atomicity.
+func (s *Store) DeletePagesBySource(sourceID string) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := tx.Exec(`DELETE FROM pages WHERE source_id = ?`, sourceID)
+	if err != nil {
+		return 0, fmt.Errorf("delete pages for source %q: %w", sourceID, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("check delete result: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit transaction: %w", err)
+	}
+	return rows, nil
+}
+
+// ListPagesBySource returns all pages belonging to the given source ID,
+// ordered alphabetically by name. Used by `dewey status` for per-source
+// page count reporting (FR-010). Returns an empty slice if no pages belong
+// to the source.
+func (s *Store) ListPagesBySource(sourceID string) ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
+		FROM pages WHERE source_id = ? ORDER BY name`, sourceID)
+	if err != nil {
+		return nil, fmt.Errorf("list pages for source %q: %w", sourceID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var pages []*Page
+	for rows.Next() {
+		p := &Page{}
+		var isJournal int
+		var sourceDocID, properties, contentHash sql.NullString
+
+		if err := rows.Scan(
+			&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
+			&properties, &contentHash, &isJournal,
+			&p.CreatedAt, &p.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan page: %w", err)
+		}
+
+		p.SourceDocID = sourceDocID.String
+		p.Properties = properties.String
+		p.ContentHash = contentHash.String
+		p.IsJournal = isJournal != 0
+		pages = append(pages, p)
+	}
+	return pages, rows.Err()
+}
+
 // IsDiskSpaceError returns true if the given error indicates disk space
 // exhaustion (e.g., SQLite "database or disk is full", OS "no space left").
 // Returns false if err is nil. When disk space is insufficient, Dewey

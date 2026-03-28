@@ -58,6 +58,8 @@ type cachedPage struct {
 	lowerName string
 	filePath  string
 	blocks    []types.BlockEntity
+	sourceID  string // Origin source identifier (e.g., "disk-local", "github-myorg").
+	readOnly  bool   // True for external sources; prevents write operations (FR-008).
 }
 
 // Client implements backend.Backend for an Obsidian vault on disk.
@@ -194,6 +196,8 @@ func (c *Client) parseFile(relPath, content string, info os.FileInfo) *cachedPag
 		lowerName: lowerName,
 		filePath:  relPath,
 		blocks:    blocks,
+		sourceID:  "disk-local",
+		readOnly:  false,
 	}
 }
 
@@ -602,6 +606,11 @@ func (c *Client) AppendBlockInPage(_ context.Context, page string, content strin
 	lowerName := strings.ToLower(page)
 	cached, exists := c.pages[lowerName]
 
+	// Write guard: reject writes to read-only (external source) pages (FR-008).
+	if exists && cached.readOnly {
+		return nil, fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
+	}
+
 	var absPath string
 	var relPath string
 	if !exists {
@@ -678,6 +687,11 @@ func (c *Client) PrependBlockInPage(_ context.Context, page string, content stri
 
 	lowerName := strings.ToLower(page)
 	cached, exists := c.pages[lowerName]
+
+	// Write guard: reject writes to read-only (external source) pages (FR-008).
+	if exists && cached.readOnly {
+		return nil, fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
+	}
 
 	blockUUID, cleanContent := extractUUID(content)
 	if blockUUID == "" {
@@ -763,6 +777,11 @@ func (c *Client) InsertBlock(_ context.Context, srcBlock any, content string, op
 		return nil, fmt.Errorf("page not found for block: %s", pageName)
 	}
 
+	// Write guard: reject writes to read-only (external source) pages (FR-008).
+	if cached.readOnly {
+		return nil, fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
+	}
+
 	absPath, err := c.safePath(cached.filePath)
 	if err != nil {
 		return nil, err
@@ -831,6 +850,11 @@ func (c *Client) UpdateBlock(_ context.Context, uuid string, content string, opt
 	cached, ok := c.pages[lowerName]
 	if !ok {
 		return fmt.Errorf("page not found: %s", pageName)
+	}
+
+	// Write guard: reject writes to read-only (external source) pages (FR-008).
+	if cached.readOnly {
+		return fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
 	}
 
 	absPath, err := c.safePath(cached.filePath)
@@ -903,6 +927,11 @@ func (c *Client) RemoveBlock(_ context.Context, uuid string) error {
 		return fmt.Errorf("page not found: %s", pageName)
 	}
 
+	// Write guard: reject writes to read-only (external source) pages (FR-008).
+	if cached.readOnly {
+		return fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
+	}
+
 	absPath, err := c.safePath(cached.filePath)
 	if err != nil {
 		return err
@@ -951,6 +980,11 @@ func (c *Client) DeletePage(_ context.Context, name string) error {
 		return fmt.Errorf("page not found: %s", name)
 	}
 
+	// Write guard: reject deletion of read-only (external source) pages (FR-008).
+	if cached.readOnly {
+		return fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
+	}
+
 	absPath, err := c.safePath(cached.filePath)
 	if err != nil {
 		return err
@@ -990,6 +1024,11 @@ func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 	cached, ok := c.pages[lowerOld]
 	if !ok {
 		return fmt.Errorf("page not found: %s", oldName)
+	}
+
+	// Write guard: reject renaming of read-only (external source) pages (FR-008).
+	if cached.readOnly {
+		return fmt.Errorf("page %q is read-only (source: %s)", cached.entity.Name, cached.sourceID)
 	}
 
 	lowerNew := strings.ToLower(newName)
@@ -1143,8 +1182,15 @@ func (c *Client) MoveBlock(_ context.Context, uuid string, targetUUID string, op
 		return fmt.Errorf("target block not found: %s", targetUUID)
 	}
 
+	// Write guard: reject moves involving read-only (external source) pages (FR-008).
 	srcPage := srcLookup.page
+	if srcCached, ok := c.pages[strings.ToLower(srcPage)]; ok && srcCached.readOnly {
+		return fmt.Errorf("page %q is read-only (source: %s)", srcCached.entity.Name, srcCached.sourceID)
+	}
 	tgtPage := tgtLookup.page
+	if tgtCached, ok := c.pages[strings.ToLower(tgtPage)]; ok && tgtCached.readOnly {
+		return fmt.Errorf("page %q is read-only (source: %s)", tgtCached.entity.Name, tgtCached.sourceID)
+	}
 	srcContent := srcLookup.block.Content
 	tgtContent := tgtLookup.block.Content
 	before := parseMoveOptions(opts)

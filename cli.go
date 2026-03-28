@@ -125,9 +125,10 @@ Content can be provided as arguments or piped via stdin:
 }
 
 // newSearchCmd creates the `dewey search` subcommand.
-// Performs full-text search and prints results to stdout.
+// Performs full-text search using the vault backend (same data path as dewey serve).
 func newSearchCmd() *cobra.Command {
 	var limit int
+	var vaultPath string
 
 	cmd := &cobra.Command{
 		Use:   "search [flags] QUERY",
@@ -139,41 +140,69 @@ func newSearchCmd() *cobra.Command {
 				return fmt.Errorf("query is required")
 			}
 
-			c := client.New("", "")
+			// Resolve vault path from flag or environment variable
+			// (same logic as initObsidianBackend in main.go).
+			vp := vaultPath
+			if vp == "" {
+				vp = os.Getenv("OBSIDIAN_VAULT_PATH")
+			}
+			if vp == "" {
+				return fmt.Errorf("--vault or OBSIDIAN_VAULT_PATH required")
+			}
+
+			// Resolve to absolute path (vault.New requires absolute paths).
+			vp, err := filepath.Abs(vp)
+			if err != nil {
+				return fmt.Errorf("search: resolve vault path: %w", err)
+			}
+
+			// Create vault client and load local .md files.
+			var opts []vault.Option
+			vc := vault.New(vp, opts...)
+			if err := vc.Load(); err != nil {
+				return fmt.Errorf("search: load vault: %w", err)
+			}
+
+			// If persistent store exists, load external-source pages from graph.db.
+			deweyDir := filepath.Join(vp, ".dewey")
+			if _, err := os.Stat(deweyDir); err == nil {
+				dbPath := filepath.Join(deweyDir, "graph.db")
+				s, err := store.New(dbPath)
+				if err == nil {
+					defer s.Close()
+					vs := vault.NewVaultStore(s, vp, "disk-local")
+					if n, err := vs.LoadExternalPages(vc); err != nil {
+						logger.Warn("failed to load external pages", "err", err)
+					} else if n > 0 {
+						logger.Info("loaded external pages", "count", n)
+					}
+				}
+			}
+
+			// Build backlinks and search index.
+			vc.BuildBacklinks()
+
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			queryLower := strings.ToLower(query)
-			pages, err := c.GetAllPages(ctx)
+			hits, err := vc.FullTextSearch(ctx, query, limit)
 			if err != nil {
 				return fmt.Errorf("search: %w", err)
 			}
 
-			found := 0
-			for _, pg := range pages {
-				if found >= limit {
-					break
-				}
-				if pg.Name == "" {
-					continue
-				}
-
-				blocks, err := c.GetPageBlocksTree(ctx, pg.Name)
-				if err != nil {
-					continue
-				}
-
-				printSearchResults(blocks, queryLower, pg.OriginalName, limit, &found)
+			if len(hits) == 0 {
+				return fmt.Errorf("no results for %q", query)
 			}
 
-			if found == 0 {
-				return fmt.Errorf("no results for %q", query)
+			for _, hit := range hits {
+				fmt.Printf("%s | %s\n", hit.PageName, strings.ReplaceAll(hit.Content, "\n", " "))
 			}
 			return nil
 		},
 	}
 
 	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
+	cmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault")
 
 	return cmd
 }

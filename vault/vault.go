@@ -23,6 +23,12 @@ var logger = log.NewWithOptions(os.Stderr, log.Options{
 	Prefix: "dewey",
 })
 
+// SetLogLevel sets the logging level for the vault package.
+// Use log.DebugLevel for verbose output during diagnostics.
+func SetLogLevel(level log.Level) {
+	logger.SetLevel(level)
+}
+
 // ErrNotSupported is returned for Logseq-specific operations (DataScript queries).
 var ErrNotSupported = fmt.Errorf("operation not supported by obsidian backend")
 

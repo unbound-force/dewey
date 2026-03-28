@@ -5,6 +5,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,7 +125,7 @@ func TestInitLogseqBackend_ImplementsBackend(t *testing.T) {
 // TestExecuteServe_UnknownBackend verifies executeServe returns an error
 // for an unknown backend type.
 func TestExecuteServe_UnknownBackend(t *testing.T) {
-	err := executeServe(false, "unknown-backend", "", "", "")
+	err := executeServe(false, "unknown-backend", "", "", "", false)
 	if err == nil {
 		t.Fatal("executeServe with unknown backend should return error")
 	}
@@ -139,7 +140,7 @@ func TestExecuteServe_UnknownBackend(t *testing.T) {
 func TestExecuteServe_ObsidianRequiresVault(t *testing.T) {
 	t.Setenv("OBSIDIAN_VAULT_PATH", "")
 
-	err := executeServe(false, "obsidian", "", "", "")
+	err := executeServe(false, "obsidian", "", "", "", false)
 	if err == nil {
 		t.Fatal("executeServe with obsidian and no vault path should return error")
 	}
@@ -216,7 +217,7 @@ func TestRunServer_HTTPTransport_ContextCancellation(t *testing.T) {
 func TestInitObsidianBackend_MissingVaultPath(t *testing.T) {
 	t.Setenv("OBSIDIAN_VAULT_PATH", "")
 
-	_, _, _, err := initObsidianBackend("", "daily notes")
+	_, _, _, err := initObsidianBackend("", "daily notes", false)
 	if err == nil {
 		t.Fatal("initObsidianBackend with no vault path should return error")
 	}
@@ -236,7 +237,8 @@ func TestInitObsidianBackend_EnvVaultPath(t *testing.T) {
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	b, opts, cleanup, err := initObsidianBackend("", "daily notes")
+	// Pass noEmbeddings=true because Ollama is not running in test env.
+	b, opts, cleanup, err := initObsidianBackend("", "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -245,10 +247,9 @@ func TestInitObsidianBackend_EnvVaultPath(t *testing.T) {
 	if b == nil {
 		t.Fatal("initObsidianBackend returned nil backend")
 	}
-	// Should have at least the embedder option.
-	if len(opts) == 0 {
-		t.Error("initObsidianBackend returned no server options")
-	}
+	// With noEmbeddings=true, no embedder option is added.
+	// opts may be empty (no store, no embedder).
+	_ = opts
 }
 
 // TestInitObsidianBackend_WithPersistentStore verifies that when .dewey/
@@ -267,7 +268,8 @@ func TestInitObsidianBackend_WithPersistentStore(t *testing.T) {
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	b, opts, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	// Pass noEmbeddings=true because Ollama is not running in test env.
+	b, opts, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -277,9 +279,9 @@ func TestInitObsidianBackend_WithPersistentStore(t *testing.T) {
 		t.Fatal("initObsidianBackend returned nil backend")
 	}
 
-	// With .dewey/ present, should have at least 2 options: persistent store + embedder.
-	if len(opts) < 2 {
-		t.Errorf("expected at least 2 server options (store + embedder), got %d", len(opts))
+	// With .dewey/ present and noEmbeddings=true, should have at least 1 option (persistent store).
+	if len(opts) < 1 {
+		t.Errorf("expected at least 1 server option (store), got %d", len(opts))
 	}
 }
 
@@ -298,7 +300,9 @@ func TestInitObsidianBackend_EmbedderEnvConfig(t *testing.T) {
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	b, opts, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	// Pass noEmbeddings=true because Ollama is not running in test env
+	// (custom endpoint http://localhost:99999 is unreachable).
+	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -308,15 +312,10 @@ func TestInitObsidianBackend_EmbedderEnvConfig(t *testing.T) {
 		t.Fatal("initObsidianBackend returned nil backend")
 	}
 
-	// Should have at least the embedder option (store may or may not be present).
-	if len(opts) == 0 {
-		t.Error("initObsidianBackend returned no server options (expected at least embedder)")
-	}
-
-	// Log output should mention the custom model and warn about unavailability.
+	// Log output should mention embeddings disabled.
 	logOutput := logBuf.String()
 	if logOutput == "" {
-		t.Error("expected log output about embedding model")
+		t.Error("expected log output about embeddings disabled")
 	}
 }
 
@@ -335,7 +334,8 @@ func TestInitObsidianBackend_WithMarkdownFiles(t *testing.T) {
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	// Pass noEmbeddings=true because Ollama is not running in test env.
+	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -372,7 +372,8 @@ func TestInitObsidianBackend_FlagTakesPrecedence(t *testing.T) {
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes")
+	// Pass noEmbeddings=true because Ollama is not running in test env.
+	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -380,5 +381,69 @@ func TestInitObsidianBackend_FlagTakesPrecedence(t *testing.T) {
 
 	if b == nil {
 		t.Fatal("initObsidianBackend returned nil backend")
+	}
+}
+
+// --- --no-embeddings tests ---
+
+// TestInitObsidianBackend_NoEmbeddings_Succeeds verifies that serve starts
+// without error when Ollama is unavailable and noEmbeddings is true.
+func TestInitObsidianBackend_NoEmbeddings_Succeeds(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Point to an unreachable Ollama endpoint.
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "http://localhost:99999")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
+	if err != nil {
+		t.Fatalf("initObsidianBackend with noEmbeddings=true should succeed, got: %v", err)
+	}
+	defer cleanup()
+
+	if b == nil {
+		t.Fatal("initObsidianBackend returned nil backend")
+	}
+
+	// Log should mention embeddings disabled.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "embeddings disabled") {
+		t.Errorf("log should mention embeddings disabled, got:\n%s", logOutput)
+	}
+}
+
+// TestInitObsidianBackend_HardError_WhenOllamaUnavailable verifies that serve
+// fails with an actionable error when Ollama is unavailable and noEmbeddings is false.
+func TestInitObsidianBackend_HardError_WhenOllamaUnavailable(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Point to an unreachable Ollama endpoint.
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "http://localhost:99999")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "granite-embedding:30m")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	_, _, _, err := initObsidianBackend(tmpDir, "daily notes", false)
+	if err == nil {
+		t.Fatal("initObsidianBackend without noEmbeddings should fail when Ollama is unavailable")
+	}
+
+	errMsg := err.Error()
+	// Error should contain the model name.
+	if !strings.Contains(errMsg, "granite-embedding:30m") {
+		t.Errorf("error should contain model name, got: %q", errMsg)
+	}
+	// Error should contain the ollama pull command.
+	if !strings.Contains(errMsg, "ollama pull") {
+		t.Errorf("error should contain 'ollama pull' fix, got: %q", errMsg)
+	}
+	// Error should contain the --no-embeddings hint.
+	if !strings.Contains(errMsg, "--no-embeddings") {
+		t.Errorf("error should contain '--no-embeddings' hint, got: %q", errMsg)
 	}
 }

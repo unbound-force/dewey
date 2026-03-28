@@ -135,7 +135,9 @@ func deterministicUUID(filepath string, lineNumber int) string {
 	seed := fmt.Sprintf("%s:%d", filepath, lineNumber)
 	h := sha256.Sum256([]byte(seed))
 	hex := fmt.Sprintf("%x", h)
-	return fmt.Sprintf("%s-%s-%s-%s-%s", hex[:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
+	result := fmt.Sprintf("%s-%s-%s-%s-%s", hex[:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
+	logger.Debug("deterministic UUID", "seed", seed, "uuid", result)
+	return result
 }
 
 // uuidCommentPattern matches HTML comments containing UUIDs: <!-- id: UUID -->

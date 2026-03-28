@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -586,6 +587,7 @@ func formatDuration(d time.Duration) string {
 func newIndexCmd() *cobra.Command {
 	var sourceName string
 	var force bool
+	var noEmbeddings bool
 
 	cmd := &cobra.Command{
 		Use:   "index",
@@ -625,9 +627,12 @@ Fetches content from all configured sources and indexes it.`,
 			purgeOrphanedSources(s, configs)
 
 			// Create embedder for embedding generation during indexing (R4).
-			// Graceful degradation: if Ollama is unavailable, indexing proceeds
-			// without embeddings (FR-003).
-			embedder := createIndexEmbedder()
+			// Hard error: if Ollama is unavailable and --no-embeddings is not set,
+			// indexing fails with an actionable error message.
+			embedder, err := createIndexEmbedder(noEmbeddings)
+			if err != nil {
+				return err
+			}
 
 			// Build last-fetched times from store.
 			lastFetchedTimes := make(map[string]time.Time)
@@ -658,15 +663,21 @@ Fetches content from all configured sources and indexes it.`,
 
 	cmd.Flags().StringVar(&sourceName, "source", "", "Index only the specified source")
 	cmd.Flags().BoolVar(&force, "force", false, "Force full re-index, ignoring refresh intervals")
+	cmd.Flags().BoolVar(&noEmbeddings, "no-embeddings", false, "Skip embedding generation (disables semantic search)")
 
 	return cmd
 }
 
 // createIndexEmbedder creates an OllamaEmbedder for use during indexing,
 // using the same environment variables as `dewey serve` (per research R4).
-// Returns the embedder regardless of availability — callers should check
-// Available() before generating embeddings.
-func createIndexEmbedder() embed.Embedder {
+// When noEmbeddings is true, returns nil (no embedder). When false, checks
+// availability and returns a hard error if the model is unavailable.
+func createIndexEmbedder(noEmbeddings bool) (embed.Embedder, error) {
+	if noEmbeddings {
+		logger.Info("embeddings disabled via --no-embeddings")
+		return nil, nil
+	}
+
 	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
 	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
 	if embedModel == "" {
@@ -677,13 +688,12 @@ func createIndexEmbedder() embed.Embedder {
 	}
 
 	embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
-	if embedder.Available() {
-		logger.Info("embedding model available for indexing", "model", embedModel)
-	} else {
-		logger.Warn("embedding model not available, skipping embedding generation",
-			"model", embedModel, "endpoint", embedEndpoint)
+	if !embedder.Available() {
+		return nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey index --no-embeddings",
+			embedModel, embedEndpoint, embedModel)
 	}
-	return embedder
+	logger.Info("embedding model available for indexing", "model", embedModel)
+	return embedder, nil
 }
 
 // purgeOrphanedSources compares configured source IDs against source IDs
@@ -702,6 +712,7 @@ func purgeOrphanedSources(s *store.Store, configs []source.SourceConfig) {
 	}
 
 	for _, src := range storedSources {
+		logger.Debug("checking source for orphan purge", "source", src.ID, "inConfig", configIDs[src.ID])
 		if !configIDs[src.ID] {
 			deleted, err := s.DeletePagesBySource(src.ID)
 			if err != nil {
@@ -732,9 +743,16 @@ func indexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 		for _, doc := range docs {
 			// Namespace external page names: sourceID/docID (per research R6, T016).
 			pageName := strings.ToLower(sourceID + "/" + doc.ID)
+			logger.Debug("indexing document", "source", sourceID, "docID", doc.ID, "pageName", pageName, "contentHash", doc.ContentHash)
 
 			// Parse document content into frontmatter and blocks (T011).
-			props, blocks := vault.ParseDocument(doc.ID, doc.Content)
+			// Use pageName (source-namespaced) as the docID seed so that identical
+			// files across different sources produce unique block UUIDs (fixes #17).
+			props, blocks := vault.ParseDocument(pageName, doc.Content)
+			logger.Debug("parsed document", "page", pageName, "blocks", len(blocks), "uuidSeed", pageName)
+			if len(blocks) > 0 {
+				logger.Debug("first block UUID", "page", pageName, "uuid", blocks[0].UUID)
+			}
 
 			// Build properties JSON.
 			propsJSON := ""
@@ -748,6 +766,7 @@ func indexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 
 			// Upsert page record.
 			existing, _ := s.GetPage(pageName)
+			logger.Debug("page upsert", "page", pageName, "isUpdate", existing != nil)
 			if existing != nil {
 				// Re-index: delete existing blocks and links first (FR-004 replace strategy, T012/T013).
 				if err := s.DeleteBlocksByPage(pageName); err != nil {
@@ -926,6 +945,150 @@ func reportSourceErrors(s *store.Store, result *source.FetchResult) {
 				}
 			}
 		}
+	}
+}
+
+// --- Doctor command ---
+
+// newDoctorCmd creates the `dewey doctor` subcommand.
+// Checks all Dewey prerequisites and reports pass/fail for each
+// with actionable fix instructions.
+func newDoctorCmd() *cobra.Command {
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check Dewey prerequisites",
+		Long:  "Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Resolve vault path from flag or environment variable
+			// (same logic as search command).
+			vp := vaultPath
+			if vp == "" {
+				vp = os.Getenv("OBSIDIAN_VAULT_PATH")
+			}
+			if vp == "" {
+				var err error
+				vp, err = os.Getwd()
+				if err != nil {
+					return fmt.Errorf("get working directory: %w", err)
+				}
+			}
+
+			// Resolve to absolute path.
+			vp, err := filepath.Abs(vp)
+			if err != nil {
+				return fmt.Errorf("doctor: resolve vault path: %w", err)
+			}
+
+			w := cmd.OutOrStdout()
+			runDoctorChecks(w, vp)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
+}
+
+// runDoctorChecks executes all prerequisite checks and prints results.
+// Each check prints a pass/fail line with fix instructions on failure.
+func runDoctorChecks(w io.Writer, vaultPath string) {
+	checkDeweyInit(w, vaultPath)
+	checkGraphDB(w, vaultPath)
+
+	// Resolve embedding config for Ollama checks.
+	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
+	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
+	if embedEndpoint == "" {
+		embedEndpoint = "http://localhost:11434"
+	}
+	if embedModel == "" {
+		embedModel = "granite-embedding:30m"
+	}
+
+	checkOllamaReachable(w, embedEndpoint)
+	checkEmbeddingModel(w, embedEndpoint, embedModel)
+}
+
+// checkDeweyInit checks whether the .dewey/ directory exists at the vault path.
+func checkDeweyInit(w io.Writer, vaultPath string) {
+	deweyDir := filepath.Join(vaultPath, ".dewey")
+	if _, err := os.Stat(deweyDir); err == nil {
+		fmt.Fprintf(w, "✓ .dewey/ found at %s\n", vaultPath)
+	} else {
+		fmt.Fprintf(w, "✗ .dewey/ not found at %s\n", vaultPath)
+		fmt.Fprintf(w, "  Fix: dewey init --vault %s\n", vaultPath)
+	}
+}
+
+// checkGraphDB checks whether graph.db exists and has pages.
+func checkGraphDB(w io.Writer, vaultPath string) {
+	dbPath := filepath.Join(vaultPath, ".dewey", "graph.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Fprintln(w, "✗ graph.db not found or empty")
+		fmt.Fprintln(w, "  Fix: dewey index")
+		return
+	}
+
+	s, err := store.New(dbPath)
+	if err != nil {
+		fmt.Fprintf(w, "✗ graph.db: failed to open (%v)\n", err)
+		fmt.Fprintln(w, "  Fix: dewey index")
+		return
+	}
+	defer func() { _ = s.Close() }()
+
+	pages, err := s.ListPages()
+	if err != nil || len(pages) == 0 {
+		fmt.Fprintln(w, "✗ graph.db not found or empty")
+		fmt.Fprintln(w, "  Fix: dewey index")
+		return
+	}
+
+	fmt.Fprintf(w, "✓ graph.db: %d pages\n", len(pages))
+}
+
+// checkOllamaReachable checks whether the Ollama API endpoint is reachable
+// by making an HTTP GET to /api/tags.
+func checkOllamaReachable(w io.Writer, endpoint string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/api/tags", nil)
+	if err != nil {
+		fmt.Fprintf(w, "✗ Ollama not reachable at %s\n", endpoint)
+		fmt.Fprintln(w, "  Fix: brew install ollama && ollama serve")
+		return
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(w, "✗ Ollama not reachable at %s\n", endpoint)
+		fmt.Fprintln(w, "  Fix: brew install ollama && ollama serve")
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(w, "✗ Ollama not reachable at %s (status %d)\n", endpoint, resp.StatusCode)
+		fmt.Fprintln(w, "  Fix: brew install ollama && ollama serve")
+		return
+	}
+
+	fmt.Fprintf(w, "✓ Ollama running at %s\n", endpoint)
+}
+
+// checkEmbeddingModel checks whether the configured embedding model is available
+// in the Ollama instance.
+func checkEmbeddingModel(w io.Writer, endpoint, model string) {
+	embedder := embed.NewOllamaEmbedder(endpoint, model)
+	if embedder.Available() {
+		fmt.Fprintf(w, "✓ %s available\n", model)
+	} else {
+		fmt.Fprintf(w, "✗ %s not available\n", model)
+		fmt.Fprintf(w, "  Fix: ollama pull %s\n", model)
 	}
 }
 

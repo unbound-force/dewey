@@ -71,6 +71,8 @@ func TestEndToEnd_InitIndexStatusFlow(t *testing.T) {
 	defer func() { _ = os.Chdir(oldDir) }()
 
 	indexCmd := newIndexCmd()
+	// Pass --no-embeddings because Ollama is not running in test env.
+	indexCmd.SetArgs([]string{"--no-embeddings"})
 	if err := indexCmd.Execute(); err != nil {
 		t.Fatalf("index failed: %v", err)
 	}

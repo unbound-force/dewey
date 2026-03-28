@@ -16,6 +16,7 @@ import (
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/vault"
 )
@@ -31,6 +32,7 @@ var logger = log.NewWithOptions(os.Stderr, log.Options{
 func main() {
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
+		logger.Error(err)
 		os.Exit(1)
 	}
 }
@@ -45,21 +47,35 @@ func newRootCmd() *cobra.Command {
 	var vaultPath string
 	var dailyFolder string
 	var httpAddr string
+	var noEmbeddings bool
+	var verbose bool
 
 	rootCmd := &cobra.Command{
-		Use:     "dewey",
-		Short:   "Knowledge graph MCP server & CLI",
-		Long:    fmt.Sprintf("dewey %s — Knowledge graph MCP server & CLI", version),
-		Version: version,
+		Use:   "dewey",
+		Short: "Knowledge graph MCP server & CLI",
+		Long:  fmt.Sprintf("dewey %s — Knowledge graph MCP server & CLI", version),
+		// NOTE: Version is NOT set here to avoid Cobra's auto --version/-v flag
+		// conflicting with our --verbose/-v persistent flag. Version is available
+		// via the `dewey version` subcommand instead.
 		// SilenceUsage prevents cobra from printing usage on every error.
 		SilenceUsage: true,
 		// SilenceErrors lets us handle error formatting ourselves.
 		SilenceErrors: true,
+		// PersistentPreRunE runs before any subcommand — sets debug logging
+		// when --verbose is passed, affecting all three package loggers.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if verbose {
+				logger.SetLevel(log.DebugLevel)
+				vault.SetLogLevel(log.DebugLevel)
+				source.SetLogLevel(log.DebugLevel)
+			}
+			return nil
+		},
 		// RunE is the default action: start the MCP server.
 		// This preserves backward compatibility — running `dewey` with no
 		// subcommand starts the server, matching graphthulhu behavior.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return executeServe(readOnly, backendType, vaultPath, dailyFolder, httpAddr)
+			return executeServe(readOnly, backendType, vaultPath, dailyFolder, httpAddr, noEmbeddings)
 		},
 	}
 
@@ -70,6 +86,10 @@ func newRootCmd() *cobra.Command {
 	rootCmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (required for obsidian backend)")
 	rootCmd.Flags().StringVar(&dailyFolder, "daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
 	rootCmd.Flags().StringVar(&httpAddr, "http", "", "HTTP address to listen on (e.g. :8080)")
+	rootCmd.Flags().BoolVar(&noEmbeddings, "no-embeddings", false, "Skip embedding generation (disables semantic search)")
+
+	// Persistent flags — inherited by all subcommands.
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable debug logging")
 
 	// Add subcommands.
 	rootCmd.AddCommand(newServeCmd())
@@ -81,6 +101,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newStatusCmd())
 	rootCmd.AddCommand(newIndexCmd())
 	rootCmd.AddCommand(newSourceCmd())
+	rootCmd.AddCommand(newDoctorCmd())
 
 	return rootCmd
 }
@@ -92,13 +113,14 @@ func newServeCmd() *cobra.Command {
 	var vaultPath string
 	var dailyFolder string
 	var httpAddr string
+	var noEmbeddings bool
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Start MCP server",
 		Long:  "Start the MCP server with stdio or HTTP transport.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return executeServe(readOnly, backendType, vaultPath, dailyFolder, httpAddr)
+			return executeServe(readOnly, backendType, vaultPath, dailyFolder, httpAddr, noEmbeddings)
 		},
 	}
 
@@ -107,6 +129,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&vaultPath, "vault", "", "Path to Obsidian vault (required for obsidian backend)")
 	cmd.Flags().StringVar(&dailyFolder, "daily-folder", "daily notes", "Daily notes subfolder name (obsidian only)")
 	cmd.Flags().StringVar(&httpAddr, "http", "", "HTTP address to listen on (e.g. :8080)")
+	cmd.Flags().BoolVar(&noEmbeddings, "no-embeddings", false, "Skip embedding generation (disables semantic search)")
 
 	return cmd
 }
@@ -115,7 +138,7 @@ func newServeCmd() *cobra.Command {
 // and the explicit `serve` subcommand. It acts as a thin orchestrator,
 // delegating backend initialization, server creation, and transport to
 // focused helper functions (decomposed per plan.md T009).
-func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr string) error {
+func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr string, noEmbeddings bool) error {
 	bt := resolveBackendType(backendType)
 
 	var b backend.Backend
@@ -123,7 +146,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 
 	switch bt {
 	case "obsidian":
-		ob, opts, cleanup, err := initObsidianBackend(vaultPath, dailyFolder)
+		ob, opts, cleanup, err := initObsidianBackend(vaultPath, dailyFolder, noEmbeddings)
 		if err != nil {
 			return err
 		}
@@ -160,13 +183,13 @@ func resolveBackendType(flagValue string) string {
 // initObsidianBackend initializes the Obsidian/vault backend including:
 //   - Vault path resolution from flag or OBSIDIAN_VAULT_PATH env var
 //   - Persistent store initialization (optional, graceful degradation)
-//   - Embedder initialization (optional, graceful degradation)
+//   - Embedder initialization (hard error if unavailable, unless noEmbeddings is true)
 //   - Vault creation and indexing (incremental or full)
 //   - File watcher startup
 //
 // Returns the backend, server options, a cleanup func (for defers), and error.
 // The cleanup func closes the store and vault client — callers must defer it.
-func initObsidianBackend(vaultPath, dailyFolder string) (backend.Backend, []serverOption, func(), error) {
+func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (backend.Backend, []serverOption, func(), error) {
 	vp := vaultPath
 	if vp == "" {
 		vp = os.Getenv("OBSIDIAN_VAULT_PATH")
@@ -198,8 +221,9 @@ func initObsidianBackend(vaultPath, dailyFolder string) (backend.Backend, []serv
 		}
 	}
 
-	// Initialize embedder if configured.
-	// The embedder is optional — Dewey works without Ollama (graceful degradation).
+	// Initialize embedder based on --no-embeddings flag.
+	// When noEmbeddings is true, skip embedder creation entirely.
+	// When false, require the embedding model to be available (hard error).
 	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
 	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
 	if embedModel == "" {
@@ -209,21 +233,26 @@ func initObsidianBackend(vaultPath, dailyFolder string) (backend.Backend, []serv
 		embedEndpoint = "http://localhost:11434"
 	}
 
-	embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
-	srvOpts = append(srvOpts, WithEmbedder(embedder))
-
-	if embedder.Available() {
-		logger.Info("embedding model available", "model", embedModel)
+	var embedder *embed.OllamaEmbedder
+	if noEmbeddings {
+		logger.Info("embeddings disabled via --no-embeddings")
 	} else {
-		logger.Warn("embedding model not available, semantic search disabled",
-			"model", embedModel, "endpoint", embedEndpoint)
+		embedder = embed.NewOllamaEmbedder(embedEndpoint, embedModel)
+		if !embedder.Available() {
+			return nil, nil, nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
+				embedModel, embedEndpoint, embedModel)
+		}
+		logger.Info("embedding model available", "model", embedModel)
+		srvOpts = append(srvOpts, WithEmbedder(embedder))
 	}
 
 	vc := vault.New(vp, opts...)
 
 	// Configure embedder on the vault store for indexing pipeline integration.
-	if vs := vc.Store(); vs != nil {
-		vs.SetEmbedder(embedder)
+	if embedder != nil {
+		if vs := vc.Store(); vs != nil {
+			vs.SetEmbedder(embedder)
+		}
 	}
 
 	// Index the vault — persistent (incremental) or in-memory.

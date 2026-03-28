@@ -36,20 +36,22 @@ func TestRootCmd_Version(t *testing.T) {
 	}
 }
 
-// TestRootCmd_VersionFlag verifies --version flag works.
-func TestRootCmd_VersionFlag(t *testing.T) {
+// TestRootCmd_VersionSubcommand verifies `dewey version` subcommand works.
+// NOTE: --version flag was removed to avoid conflict with --verbose/-v.
+// Version is available via the `dewey version` subcommand.
+func TestRootCmd_VersionSubcommand(t *testing.T) {
 	cmd := newRootCmd()
 	buf := new(bytes.Buffer)
 	cmd.SetOut(buf)
-	cmd.SetArgs([]string{"--version"})
+	cmd.SetArgs([]string{"version"})
 
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute(--version) failed: %v", err)
+		t.Fatalf("Execute(version) failed: %v", err)
 	}
 
 	got := strings.TrimSpace(buf.String())
 	if !strings.Contains(got, version) {
-		t.Errorf("--version output = %q, should contain %q", got, version)
+		t.Errorf("version output = %q, should contain %q", got, version)
 	}
 }
 
@@ -558,6 +560,8 @@ func TestIndexCmd_WithDiskSource(t *testing.T) {
 	defer func() { _ = os.Chdir(oldDir) }()
 
 	cmd := newIndexCmd()
+	// Pass --no-embeddings because Ollama is not running in test env.
+	cmd.SetArgs([]string{"--no-embeddings"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("index failed: %v", err)
 	}
@@ -2257,5 +2261,190 @@ func TestIndexDocuments_GracefulDegradationWithoutEmbedder(t *testing.T) {
 	}
 	if embedCount != 0 {
 		t.Errorf("expected 0 embeddings without embedder, got %d", embedCount)
+	}
+}
+
+// --- UUID collision fix (Issue #17) ---
+
+// TestIndexDocuments_CrossSourceUUIDUniqueness verifies that identical files
+// across different sources produce unique block UUIDs. This prevents UNIQUE
+// constraint failures when indexing multiple repos with scaffolded templates.
+func TestIndexDocuments_CrossSourceUUIDUniqueness(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Same content, same relative path, different sources —
+	// simulates agents.md scaffolded by `uf init` across repos.
+	identicalContent := "# AGENTS.md\n\n## Project Overview\n\nThis is a scaffolded file.\n"
+
+	docs := map[string][]source.Document{
+		"disk-local": {
+			{
+				ID:          "agents.md",
+				Title:       "AGENTS",
+				Content:     identicalContent,
+				ContentHash: "same-hash",
+				FetchedAt:   time.Now(),
+			},
+		},
+		"disk-dewey": {
+			{
+				ID:          "agents.md",
+				Title:       "AGENTS",
+				Content:     identicalContent,
+				ContentHash: "same-hash",
+				FetchedAt:   time.Now(),
+			},
+		},
+		"disk-gaze": {
+			{
+				ID:          "agents.md",
+				Title:       "AGENTS",
+				Content:     identicalContent,
+				ContentHash: "same-hash",
+				FetchedAt:   time.Now(),
+			},
+		},
+	}
+
+	got := indexDocuments(s, docs, nil, nil)
+	if got != 3 {
+		t.Fatalf("indexDocuments() = %d, want 3", got)
+	}
+
+	// All three pages should have blocks persisted without collisions.
+	for _, pageName := range []string{"disk-local/agents.md", "disk-dewey/agents.md", "disk-gaze/agents.md"} {
+		blocks, err := s.GetBlocksByPage(pageName)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%s): %v", pageName, err)
+		}
+		if len(blocks) == 0 {
+			t.Errorf("page %s has 0 blocks — UUID collision likely dropped them", pageName)
+		}
+	}
+
+	// Verify UUIDs are unique across sources.
+	allBlocks1, _ := s.GetBlocksByPage("disk-local/agents.md")
+	allBlocks2, _ := s.GetBlocksByPage("disk-dewey/agents.md")
+	if len(allBlocks1) > 0 && len(allBlocks2) > 0 {
+		if allBlocks1[0].UUID == allBlocks2[0].UUID {
+			t.Errorf("block UUIDs should differ across sources but got same UUID: %s", allBlocks1[0].UUID)
+		}
+	}
+}
+
+// --- Doctor command tests ---
+
+// TestDoctorCmd_WithInitializedVault verifies doctor reports pass for init
+// and store checks when .dewey/ and graph.db exist with pages.
+func TestDoctorCmd_WithInitializedVault(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .dewey/ directory.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .dewey: %v", err)
+	}
+
+	// Create graph.db with a page.
+	dbPath := filepath.Join(deweyDir, "graph.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	if err := s.InsertPage(&store.Page{
+		Name:        "test-page",
+		ContentHash: "abc123",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	_ = s.Close()
+
+	cmd := newDoctorCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// .dewey/ check should pass.
+	if !strings.Contains(output, "✓ .dewey/ found") {
+		t.Errorf("doctor should report .dewey/ found, got:\n%s", output)
+	}
+
+	// graph.db check should pass with page count.
+	if !strings.Contains(output, "✓ graph.db: 1 pages") {
+		t.Errorf("doctor should report graph.db with pages, got:\n%s", output)
+	}
+
+	// Ollama checks will show fail in test env (expected).
+	// Just verify they produce output.
+	if !strings.Contains(output, "Ollama") {
+		t.Errorf("doctor should include Ollama check, got:\n%s", output)
+	}
+}
+
+// TestDoctorCmd_MissingDeweyDir verifies doctor reports fail with
+// `dewey init` fix when .dewey/ does not exist.
+func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cmd := newDoctorCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	output := buf.String()
+
+	// .dewey/ check should fail.
+	if !strings.Contains(output, "✗ .dewey/ not found") {
+		t.Errorf("doctor should report .dewey/ not found, got:\n%s", output)
+	}
+
+	// Fix should mention dewey init.
+	if !strings.Contains(output, "dewey init") {
+		t.Errorf("doctor should suggest 'dewey init' fix, got:\n%s", output)
+	}
+
+	// graph.db check should also fail.
+	if !strings.Contains(output, "✗ graph.db") {
+		t.Errorf("doctor should report graph.db not found, got:\n%s", output)
+	}
+}
+
+// TestDoctorCmd_HasFlags verifies the doctor subcommand has expected flags.
+func TestDoctorCmd_HasFlags(t *testing.T) {
+	cmd := newDoctorCmd()
+	if cmd.Flags().Lookup("vault") == nil {
+		t.Error("doctor command missing flag --vault")
+	}
+}
+
+// TestRootCmd_Help_IncludesDoctorSubcommand verifies doctor appears in help.
+func TestRootCmd_Help_IncludesDoctorSubcommand(t *testing.T) {
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute(--help) failed: %v", err)
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "doctor") {
+		t.Errorf("help output missing subcommand 'doctor'")
 	}
 }

@@ -31,12 +31,14 @@ func ParseDocument(docID, content string) (props map[string]any, blocks []types.
 // and the CLI indexing pipeline, eliminating duplication (Architect DRY finding).
 func PersistBlocks(s *store.Store, pageName string, blocks []types.BlockEntity, parentUUID sql.NullString, startPos int) error {
 	for i, b := range blocks {
+		hl := HeadingLevelFromContent(b.Content)
+		logger.Debug("inserting block", "page", pageName, "uuid", b.UUID, "headingLevel", hl, "position", startPos+i)
 		sb := &store.Block{
 			UUID:         b.UUID,
 			PageName:     pageName,
 			ParentUUID:   parentUUID,
 			Content:      b.Content,
-			HeadingLevel: HeadingLevelFromContent(b.Content),
+			HeadingLevel: hl,
 			Position:     startPos + i,
 		}
 		if err := s.InsertBlock(sb); err != nil {

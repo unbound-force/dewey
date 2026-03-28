@@ -17,6 +17,12 @@ var logger = log.NewWithOptions(os.Stderr, log.Options{
 	Prefix: "dewey",
 })
 
+// SetLogLevel sets the logging level for the source package.
+// Use log.DebugLevel for verbose output during diagnostics.
+func SetLogLevel(level log.Level) {
+	logger.SetLevel(level)
+}
+
 // Source represents a pluggable content origin. Implementations fetch documents
 // from a specific backend (disk, GitHub API, web crawl) and support incremental
 // updates via the Diff method.

@@ -34,7 +34,7 @@ homebrew_casks:
     # with signed values, then pushes the complete cask to homebrew-tap.
     skip_upload: true
     dependencies:
-      - cask: ollama
+      - cask: ollama-app
     hooks:
       post:
         install: |

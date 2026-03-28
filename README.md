@@ -349,7 +349,7 @@ Semantic search requires [Ollama](https://ollama.ai) running locally. All 37 key
 ### Install Ollama and pull the embedding model
 
 ```bash
-brew install ollama       # macOS — or download from https://ollama.ai
+brew install --cask ollama-app  # macOS — or download from https://ollama.ai
 ollama serve              # start the Ollama server (runs in background)
 ollama pull granite-embedding:30m   # IBM Granite, 63 MB, Apache 2.0
 ```

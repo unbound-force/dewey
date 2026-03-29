@@ -1098,67 +1098,132 @@ func newDoctorCmd() *cobra.Command {
 	return cmd
 }
 
+// doctorCounter tracks pass/warn/fail counts for the summary box.
+type doctorCounter struct {
+	pass int
+	warn int
+	fail int
+}
+
+// printCheck writes a formatted check line in the `uf doctor` style:
+//
+//	[PASS] name                description
+//
+// The name field is left-aligned and padded to 20 characters. The marker
+// is one of PASS, WARN, or FAIL — the counter is incremented accordingly.
+func (c *doctorCounter) printCheck(w io.Writer, marker, name, description string) {
+	switch marker {
+	case "PASS":
+		c.pass++
+	case "WARN":
+		c.warn++
+	case "FAIL":
+		c.fail++
+	}
+	_, _ = fmt.Fprintf(w, "  [%s] %-20s%s\n", marker, name, description)
+}
+
+// humanSize converts a byte count to a human-readable string (B, KB, MB, GB).
+func humanSize(bytes int64) string {
+	switch {
+	case bytes >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(1<<30))
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
+}
+
+// printSummaryBox writes the `uf doctor` style summary box with emoji counters.
+func printSummaryBox(w io.Writer, c *doctorCounter) {
+	// Build the inner content line.
+	passWord := "passed"
+	if c.pass == 1 {
+		passWord = "passed"
+	}
+	warnWord := "warnings"
+	if c.warn == 1 {
+		warnWord = "warning"
+	}
+	failWord := "failed"
+
+	inner := fmt.Sprintf("   ✅ %d %s  ⚠️  %d %s  ❌ %d %s   ",
+		c.pass, passWord, c.warn, warnWord, c.fail, failWord)
+
+	// Calculate box width from the inner content rune count.
+	// Emoji widths vary, so we use a fixed-width approach matching uf doctor.
+	boxWidth := len([]rune(inner))
+
+	topBorder := "╭" + strings.Repeat("─", boxWidth) + "╮"
+	bottomBorder := "╰" + strings.Repeat("─", boxWidth) + "╯"
+
+	_, _ = fmt.Fprintf(w, "%s\n│%s│\n%s\n", topBorder, inner, bottomBorder)
+}
+
 // runDoctorChecks executes comprehensive diagnostic checks in the style of
 // `uf doctor` — grouped sections, [PASS]/[WARN]/[FAIL] markers, descriptions
 // with paths, and Fix: hints for actionable remediation.
 func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
+	c := &doctorCounter{}
 
 	embeddingCount := -1 // -1 = not queried; set by store section if available.
-	dp("Dewey Doctor (version %s)\n\n", version)
+	dp("🩺 Dewey Doctor\n\n")
 
 	// --- Environment ---
 	dp("Environment\n")
-	dp("  [PASS] vault path       %s\n", vaultPath)
+	c.printCheck(w, "PASS", "vault", vaultPath)
 
 	deweyBin, err := os.Executable()
 	if err == nil {
-		dp("  [PASS] dewey binary     %s\n", deweyBin)
+		c.printCheck(w, "PASS", "dewey", fmt.Sprintf("v%s (%s)", version, deweyBin))
 	} else {
-		dp("  [WARN] dewey binary     could not determine path\n")
+		c.printCheck(w, "WARN", "dewey", "could not determine path")
 	}
-
-	dp("  [PASS] pid              %d\n", os.Getpid())
 	dp("\n")
 
 	// --- Workspace ---
 	dp("Workspace\n")
 	deweyDir := filepath.Join(vaultPath, ".dewey")
 	if _, err := os.Stat(deweyDir); err == nil {
-		dp("  [PASS] .dewey/          %s\n", deweyDir)
+		c.printCheck(w, "PASS", ".dewey/", fmt.Sprintf("initialized (%s)", deweyDir))
 	} else {
-		dp("  [FAIL] .dewey/          not found\n")
+		c.printCheck(w, "FAIL", ".dewey/", "not found")
 		dp("     Fix: dewey init --vault %s\n", vaultPath)
 		dp("\n")
+		printSummaryBox(w, c)
 		return // No point continuing if not initialized.
 	}
 
 	// Config files.
 	configPath := filepath.Join(deweyDir, "config.yaml")
 	if _, err := os.Stat(configPath); err == nil {
-		dp("  [PASS] config.yaml      %s\n", configPath)
+		c.printCheck(w, "PASS", "config.yaml", fmt.Sprintf("present (%s)", configPath))
 	} else {
-		dp("  [WARN] config.yaml      not found (using defaults)\n")
+		c.printCheck(w, "WARN", "config.yaml", "not found (using defaults)")
 	}
 
 	sourcesPath := filepath.Join(deweyDir, "sources.yaml")
 	if _, err := os.Stat(sourcesPath); err == nil {
 		configs, loadErr := source.LoadSourcesConfig(sourcesPath)
 		if loadErr != nil {
-			dp("  [FAIL] sources.yaml     parse error: %v\n", loadErr)
+			c.printCheck(w, "FAIL", "sources.yaml", fmt.Sprintf("parse error: %v", loadErr))
 		} else {
-			dp("  [PASS] sources.yaml     %d sources configured\n", len(configs))
+			c.printCheck(w, "PASS", "sources.yaml", fmt.Sprintf("%d sources (%s)", len(configs), sourcesPath))
 		}
 	} else {
-		dp("  [WARN] sources.yaml     not found (no external sources)\n")
+		c.printCheck(w, "WARN", "sources.yaml", "not found (no external sources)")
 	}
 
 	// Log file.
 	logPath := filepath.Join(deweyDir, "dewey.log")
 	if info, err := os.Stat(logPath); err == nil {
-		dp("  [PASS] dewey.log        %s (%d bytes)\n", logPath, info.Size())
+		c.printCheck(w, "PASS", "dewey.log", fmt.Sprintf("%s (%s)", humanSize(info.Size()), logPath))
 	} else {
-		dp("  [    ] dewey.log        not present (created on dewey serve)\n")
+		c.printCheck(w, "PASS", "dewey.log", "not present (created on dewey serve)")
 	}
 	dp("\n")
 
@@ -1167,65 +1232,39 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	dbPath := filepath.Join(deweyDir, "graph.db")
 	dbInfo, dbStatErr := os.Stat(dbPath)
 	if dbStatErr != nil {
-		dp("  [FAIL] graph.db         not found\n")
+		c.printCheck(w, "FAIL", "graph.db", "not found")
 		dp("     Fix: dewey index\n")
 		dp("\n")
 	} else {
-		dp("  [PASS] graph.db         %s (%d bytes)\n", dbPath, dbInfo.Size())
-
-		// WAL and SHM files.
-		for _, ext := range []string{"-wal", "-shm"} {
-			auxPath := dbPath + ext
-			if auxInfo, err := os.Stat(auxPath); err == nil {
-				dp("  [    ] graph.db%s     %d bytes\n", ext, auxInfo.Size())
-			}
-		}
-
-		// Lock file check.
-		lockPath := filepath.Join(deweyDir, ".dewey.lock")
-		if _, err := os.Stat(lockPath); err == nil {
-			holder := detectLockHolder(lockPath)
-			if holder != "" {
-				dp("  [WARN] .dewey.lock      LOCKED (%s)\n", holder)
-				dp("     This prevents dewey index/reindex from running.\n")
-				dp("     Fix: Stop the dewey serve process, then retry.\n")
-			} else {
-				dp("  [PASS] .dewey.lock      present but unlocked\n")
-			}
-		} else {
-			dp("  [PASS] .dewey.lock      not present (no active lock)\n")
-		}
-
 		// Try to open the store and report contents.
 		s, storeErr := store.New(dbPath)
 		if storeErr != nil {
-			dp("  [FAIL] store open       %v\n", storeErr)
+			c.printCheck(w, "FAIL", "graph.db", fmt.Sprintf("cannot open: %v", storeErr))
 			if strings.Contains(storeErr.Error(), "another Dewey process") {
 				dp("     Fix: Stop 'dewey serve' and retry, or run: dewey reindex\n")
 			}
 		} else {
 			defer func() { _ = s.Close() }()
 
-			// Page counts by source.
 			allPages, _ := s.ListPages()
-			dp("  [PASS] total pages      %d\n", len(allPages))
+			c.printCheck(w, "PASS", "graph.db", fmt.Sprintf("%s, %d pages (%s)", humanSize(dbInfo.Size()), len(allPages), dbPath))
 
+			// Sources in database.
 			sources, _ := s.ListSources()
 			if len(sources) > 0 {
 				dp("\n")
 				dp("Sources in Database\n")
 				for _, src := range sources {
 					pages, _ := s.ListPagesBySource(src.ID)
-					status := src.Status
 					lastFetched := "never"
 					if src.LastFetchedAt > 0 {
 						t := time.UnixMilli(src.LastFetchedAt)
-						lastFetched = t.Format("2006-01-02 15:04:05")
+						lastFetched = t.Format("2006-01-02 15:04")
 					}
 					if len(pages) > 0 {
-						dp("  [PASS] %-22s %d pages (status: %s, fetched: %s)\n", src.ID, len(pages), status, lastFetched)
+						c.printCheck(w, "PASS", src.ID, fmt.Sprintf("%d pages (fetched: %s)", len(pages), lastFetched))
 					} else {
-						dp("  [WARN] %-22s 0 pages (status: %s, fetched: %s)\n", src.ID, status, lastFetched)
+						c.printCheck(w, "WARN", src.ID, fmt.Sprintf("0 pages (fetched: %s)", lastFetched))
 						dp("     Fix: dewey reindex --no-embeddings\n")
 					}
 				}
@@ -1240,7 +1279,6 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp("\n")
 
 	// --- Embedding Layer ---
-	dp("Embedding Layer\n")
 	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
 	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
 	if embedEndpoint == "" {
@@ -1250,8 +1288,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		embedModel = "granite-embedding:30m"
 	}
 
-	dp("  [    ] endpoint          %s\n", embedEndpoint)
-	dp("  [    ] model             %s\n", embedModel)
+	dp("Embedding Layer (%s via %s)\n", embedModel, embedEndpoint)
 
 	// Ollama reachability.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1264,13 +1301,13 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode == http.StatusOK {
 				ollamaReachable = true
-				dp("  [PASS] ollama           running at %s\n", embedEndpoint)
+				c.printCheck(w, "PASS", "ollama", fmt.Sprintf("running (%s)", embedEndpoint))
 			} else {
-				dp("  [FAIL] ollama           status %d at %s\n", resp.StatusCode, embedEndpoint)
+				c.printCheck(w, "FAIL", "ollama", fmt.Sprintf("status %d (%s)", resp.StatusCode, embedEndpoint))
 				dp("     Fix: ollama serve\n")
 			}
 		} else {
-			dp("  [FAIL] ollama           not reachable at %s\n", embedEndpoint)
+			c.printCheck(w, "FAIL", "ollama", fmt.Sprintf("not reachable (%s)", embedEndpoint))
 			dp("     Fix: brew install --cask ollama-app && open -a Ollama\n")
 		}
 	}
@@ -1279,20 +1316,20 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	if ollamaReachable {
 		embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
 		if embedder.Available() {
-			dp("  [PASS] model            %s ready\n", embedModel)
+			c.printCheck(w, "PASS", "model", fmt.Sprintf("%s ready", embedModel))
 		} else {
-			dp("  [FAIL] model            %s not available\n", embedModel)
+			c.printCheck(w, "FAIL", "model", fmt.Sprintf("%s not available", embedModel))
 			dp("     Fix: ollama pull %s\n", embedModel)
 		}
 	} else {
-		dp("  [    ] model            skipped (ollama not reachable)\n")
+		c.printCheck(w, "WARN", "model", fmt.Sprintf("%s skipped (ollama not reachable)", embedModel))
 	}
 
 	// Embedding count — uses value queried from the already-open store above.
 	if embeddingCount > 0 {
-		dp("  [PASS] embeddings       %d in database\n", embeddingCount)
+		c.printCheck(w, "PASS", "embeddings", fmt.Sprintf("%d in database", embeddingCount))
 	} else if embeddingCount == 0 {
-		dp("  [WARN] embeddings       0 in database\n")
+		c.printCheck(w, "WARN", "embeddings", "0 in database")
 		dp("     Fix: dewey reindex (with Ollama running)\n")
 	}
 	dp("\n")
@@ -1300,32 +1337,35 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	// --- MCP Server ---
 	dp("MCP Server\n")
 
-	// Check if a dewey serve process is running.
+	// Check if a dewey serve process is running (consolidated lock check per D5).
 	lockPath := filepath.Join(deweyDir, ".dewey.lock")
 	if _, err := os.Stat(lockPath); err == nil {
 		holder := detectLockHolder(lockPath)
 		if holder != "" {
-			dp("  [PASS] serve process    running (%s)\n", holder)
+			c.printCheck(w, "PASS", "serve", fmt.Sprintf("running (%s)", holder))
 		} else {
-			dp("  [    ] serve process    not running (stale lock file)\n")
+			c.printCheck(w, "PASS", "serve", "not running (stale lock file)")
 		}
 	} else {
-		dp("  [    ] serve process    not running\n")
+		c.printCheck(w, "PASS", "serve", "not running (no lock)")
 	}
 
 	// Check opencode.json for MCP config.
 	ocPath := filepath.Join(vaultPath, "opencode.json")
 	if data, err := os.ReadFile(ocPath); err == nil {
 		if strings.Contains(string(data), "dewey") {
-			dp("  [PASS] opencode.json    dewey MCP configured (%s)\n", ocPath)
+			c.printCheck(w, "PASS", "opencode.json", fmt.Sprintf("dewey MCP configured (%s)", ocPath))
 		} else {
-			dp("  [WARN] opencode.json    exists but no dewey MCP config\n")
+			c.printCheck(w, "WARN", "opencode.json", "exists but no dewey MCP config")
 			dp("     Fix: Add dewey MCP server to opencode.json\n")
 		}
 	} else {
-		dp("  [    ] opencode.json    not found (optional)\n")
+		c.printCheck(w, "PASS", "opencode.json", "not found (optional)")
 	}
 	dp("\n")
+
+	// --- Summary ---
+	printSummaryBox(w, c)
 }
 
 // --- Source command (T051) ---

@@ -6,6 +6,7 @@ tags:
   - workflow
   - decomposition
 ---
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 
 # Speckit Workflow — Swarm Skill
@@ -110,6 +111,22 @@ After all tasks in a phase are complete:
 2. If tests fail, create a new cell to fix the failure
    before advancing to the next phase
 3. Report phase completion via `swarm_status()`
+
+## Branch Safety
+
+**CRITICAL**: All work MUST be committed and pushed on the
+current feature branch before any branch switch occurs.
+
+- After completing all phases, commit and push all changes
+  before suggesting PR creation, merging, or switching to
+  `main`.
+- Before creating a new feature branch (via `/speckit.specify`),
+  check `git status --short` for uncommitted changes. If
+  uncommitted changes exist, **STOP** and ask the user for
+  confirmation before switching branches.
+- Never silently switch branches with a dirty working tree.
+  Uncommitted changes may follow to the wrong branch or be
+  lost entirely.
 
 ## Prerequisite Skill
 

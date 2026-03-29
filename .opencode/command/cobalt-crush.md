@@ -5,6 +5,7 @@ description: >
   arguments: detects active workflow and runs /speckit.implement or
   /opsx:apply.
 ---
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 
 # Command: /cobalt-crush
@@ -91,3 +92,19 @@ implementation command to the `cobalt-crush-dev` agent:
    >   (requires a feature branch with `specs/NNN-*/tasks.md`)
    > - `/opsx:apply` — Tactical change implementation
    >   (requires an active change in `openspec/changes/`)
+
+## Branch Safety Guardrails
+
+**CRITICAL**: Before switching branches or suggesting a branch
+switch for any reason:
+
+1. Run `git status --short` to check for uncommitted changes.
+2. If uncommitted changes exist, **STOP** and warn the user.
+   Show the list of uncommitted files and ask for confirmation
+   before proceeding.
+3. Never silently switch branches with a dirty working tree --
+   uncommitted changes may follow to the wrong branch or be
+   lost entirely.
+4. When implementation is complete, all changes MUST be
+   committed and pushed on the current branch before suggesting
+   any branch switch, PR creation, or archiving.

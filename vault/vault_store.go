@@ -201,26 +201,6 @@ func (vs *VaultStore) SyncToStore(pages map[string]*cachedPage) error {
 	return nil
 }
 
-// LoadFromStore loads persisted pages from the store into the vault client's
-// in-memory index. Returns the number of pages loaded.
-//
-// Design decision: We load page metadata and content hashes from the store
-// but still re-parse .md files from disk. The store serves as a change-detection
-// cache (via content_hash), not as the authoritative content source. This ensures
-// the in-memory index always reflects the actual file content.
-func (vs *VaultStore) LoadFromStore() (int, error) {
-	if vs.store == nil {
-		return 0, nil
-	}
-
-	pages, err := vs.store.ListPages()
-	if err != nil {
-		return 0, fmt.Errorf("load pages from store: %w", err)
-	}
-
-	return len(pages), nil
-}
-
 // fileEntry holds metadata for a single vault file discovered during a walk.
 type fileEntry struct {
 	relPath string
@@ -463,7 +443,7 @@ func (vs *VaultStore) generateEmbeddings(pageName string, blocks []types.BlockEn
 
 		// Build heading path for context.
 		currentPath := headingPath
-		heading := extractHeading(b.Content)
+		heading := ExtractHeadingFromContent(b.Content)
 		if heading != "" {
 			currentPath = append(append([]string{}, headingPath...), heading)
 		}
@@ -490,22 +470,6 @@ func (vs *VaultStore) generateEmbeddings(pageName string, blocks []types.BlockEn
 			vs.generateEmbeddings(pageName, b.Children, currentPath)
 		}
 	}
-}
-
-// extractHeading returns the heading text from a block's content line,
-// stripping the leading # characters. Returns empty string for non-heading content.
-func extractHeading(content string) string {
-	firstLine := content
-	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-		firstLine = content[:idx]
-	}
-	firstLine = strings.TrimSpace(firstLine)
-	if !strings.HasPrefix(firstLine, "#") {
-		return ""
-	}
-	// Strip leading # and space.
-	trimmed := strings.TrimLeft(firstLine, "#")
-	return strings.TrimSpace(trimmed)
 }
 
 // LoadExternalPages loads all non-local pages from the persistent store into

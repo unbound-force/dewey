@@ -1133,6 +1133,7 @@ func newDoctorCmd() *cobra.Command {
 func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
 
+	embeddingCount := -1 // -1 = not queried; set by store section if available.
 	dp("Dewey Doctor (version %s)\n\n", version)
 
 	// --- Environment ---
@@ -1258,6 +1259,11 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 					}
 				}
 			}
+
+			// Query embedding count while store is still open.
+			if ec, ecErr := s.CountEmbeddings(); ecErr == nil {
+				embeddingCount = ec
+			}
 		}
 	}
 	dp("\n")
@@ -1311,19 +1317,12 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		dp("  [    ] model            skipped (ollama not reachable)\n")
 	}
 
-	// Embedding count from store.
-	if dbStatErr == nil {
-		s2, err := store.New(dbPath)
-		if err == nil {
-			count, _ := s2.CountEmbeddings()
-			if count > 0 {
-				dp("  [PASS] embeddings       %d in database\n", count)
-			} else {
-				dp("  [WARN] embeddings       0 in database\n")
-				dp("     Fix: dewey reindex (with Ollama running)\n")
-			}
-			_ = s2.Close()
-		}
+	// Embedding count — uses value queried from the already-open store above.
+	if embeddingCount > 0 {
+		dp("  [PASS] embeddings       %d in database\n", embeddingCount)
+	} else if embeddingCount == 0 {
+		dp("  [WARN] embeddings       0 in database\n")
+		dp("     Fix: dewey reindex (with Ollama running)\n")
 	}
 	dp("\n")
 

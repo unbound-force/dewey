@@ -30,6 +30,10 @@ var logger = log.NewWithOptions(os.Stderr, log.Options{
 	Prefix: "dewey",
 })
 
+// fileLoggingEnabled tracks whether setupFileLogging has been called.
+// Prevents double-setup when both --log-file and auto-serve logging apply.
+var fileLoggingEnabled bool
+
 func main() {
 	rootCmd := newRootCmd()
 	if err := rootCmd.Execute(); err != nil {
@@ -119,7 +123,7 @@ func newRootCmd() *cobra.Command {
 // and the specified file. This is critical for diagnosing MCP server issues
 // since the server runs as a child process of OpenCode with no visible stderr.
 func setupFileLogging(path string, verbose bool) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open log file %q: %w", path, err)
 	}
@@ -138,6 +142,7 @@ func setupFileLogging(path string, verbose bool) error {
 	vault.SetLogOutput(multi, level)
 	source.SetLogOutput(multi, level)
 
+	fileLoggingEnabled = true
 	logger.Info("file logging enabled", "path", path)
 	return nil
 }
@@ -178,15 +183,16 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 	bt := resolveBackendType(backendType)
 
 	// Auto-enable file logging for serve if .dewey/ exists and --log-file
-	// wasn't explicitly set. MCP servers run as child processes of AI agents
-	// with no visible stderr — the log file is the only diagnostic output.
-	if vp, err := resolveVaultPath(vaultPath); err == nil {
-		deweyDir := filepath.Join(vp, ".dewey")
-		logPath := filepath.Join(deweyDir, "dewey.log")
-		if _, err := os.Stat(deweyDir); err == nil {
-			// Only set up if not already configured via --log-file.
-			if _, seekErr := os.Stat(logPath); seekErr != nil || true {
-				_ = setupFileLogging(logPath, logger.GetLevel() == log.DebugLevel)
+	// wasn't already explicitly set. MCP servers run as child processes of AI
+	// agents with no visible stderr — the log file is the only diagnostic output.
+	if !fileLoggingEnabled {
+		if vp, err := resolveVaultPath(vaultPath); err == nil {
+			deweyDir := filepath.Join(vp, ".dewey")
+			if _, err := os.Stat(deweyDir); err == nil {
+				logPath := filepath.Join(deweyDir, "dewey.log")
+				if err := setupFileLogging(logPath, logger.GetLevel() == log.DebugLevel); err != nil {
+					logger.Warn("auto-log setup failed", "path", logPath, "err", err)
+				}
 			}
 		}
 	}

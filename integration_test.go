@@ -366,8 +366,14 @@ func TestEndToEnd_MultiSourceIdenticalFiles(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	pagesA, _ := s.ListPagesBySource("disk-repo-a")
-	pagesB, _ := s.ListPagesBySource("disk-repo-b")
+	pagesA, err := s.ListPagesBySource("disk-repo-a")
+	if err != nil {
+		t.Fatalf("ListPagesBySource(disk-repo-a): %v", err)
+	}
+	pagesB, err := s.ListPagesBySource("disk-repo-b")
+	if err != nil {
+		t.Fatalf("ListPagesBySource(disk-repo-b): %v", err)
+	}
 
 	if len(pagesA) == 0 {
 		t.Error("disk-repo-a has 0 pages")
@@ -378,8 +384,14 @@ func TestEndToEnd_MultiSourceIdenticalFiles(t *testing.T) {
 
 	// Verify both have blocks (UUID collision would prevent block insertion
 	// for the second source).
-	blocksA, _ := s.GetBlocksByPage("disk-repo-a/agents.md")
-	blocksB, _ := s.GetBlocksByPage("disk-repo-b/agents.md")
+	blocksA, err := s.GetBlocksByPage("disk-repo-a/agents.md")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(disk-repo-a/agents.md): %v", err)
+	}
+	blocksB, err := s.GetBlocksByPage("disk-repo-b/agents.md")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(disk-repo-b/agents.md): %v", err)
+	}
 
 	if len(blocksA) == 0 {
 		t.Error("disk-repo-a/agents.md has 0 blocks — UUID collision likely")

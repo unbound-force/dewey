@@ -94,10 +94,17 @@ func HeadingLevelFromContent(content string) int {
 
 // ExtractHeadingFromContent returns the heading text (without # prefix) from a
 // block's content, or empty string if not a heading. Examines only the first line.
+// This is the single implementation of heading extraction — used by both
+// VaultStore.generateEmbeddings() and the CLI indexing pipeline.
 func ExtractHeadingFromContent(content string) string {
 	firstLine := content
 	if idx := strings.IndexByte(content, '\n'); idx >= 0 {
 		firstLine = content[:idx]
 	}
-	return extractHeading(firstLine)
+	firstLine = strings.TrimSpace(firstLine)
+	if !strings.HasPrefix(firstLine, "#") {
+		return ""
+	}
+	trimmed := strings.TrimLeft(firstLine, "#")
+	return strings.TrimSpace(trimmed)
 }

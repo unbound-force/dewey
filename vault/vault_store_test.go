@@ -1002,7 +1002,7 @@ func TestGenerateEmbeddings_HeadingPathPropagation(t *testing.T) {
 	// PrepareChunk("setup", ["Installation"], content) should produce
 	// "setup > Installation\n\ncontent"
 	wantSubstring := "setup > Installation"
-	if !containsSubstring(childChunk, wantSubstring) {
+	if !strings.Contains(childChunk, wantSubstring) {
 		t.Errorf("child chunk should contain heading path %q, got:\n%s", wantSubstring, childChunk)
 	}
 }
@@ -1055,17 +1055,6 @@ func TestGenerateEmbeddings_PartialEmbedError(t *testing.T) {
 	if len(okEmb.Vector) != 3 {
 		t.Errorf("ok-block vector length = %d, want 3", len(okEmb.Vector))
 	}
-}
-
-// containsSubstring checks if s contains substr. Extracted as a helper
-// to avoid importing strings in the test file solely for this check.
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 // BenchmarkIncrementalStartup measures the time from store.Open() to ready-to-serve

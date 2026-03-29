@@ -648,8 +648,12 @@ Fetches content from all configured sources and indexes it.`,
 			mgr := source.NewManager(configs, cwd, cacheDir)
 			result, allDocs := mgr.FetchAll(sourceName, force, lastFetchedTimes)
 
-			totalIndexed := indexDocuments(s, allDocs, configs, embedder)
+			totalIndexed, indexErr := indexDocuments(s, allDocs, configs, embedder)
 			reportSourceErrors(s, result)
+
+			if indexErr != nil {
+				return fmt.Errorf("index failed: %w", indexErr)
+			}
 
 			logger.Info("index complete",
 				"documents", totalIndexed,
@@ -732,7 +736,7 @@ func purgeOrphanedSources(s *store.Store, configs []source.SourceConfig) {
 // content persistence: blocks, links, and embeddings are parsed and stored
 // alongside page metadata (US2). Returns the total number of documents
 // successfully indexed.
-func indexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder) int {
+func indexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder) (int, error) {
 	totalIndexed := 0
 	for sourceID, docs := range allDocs {
 		start := time.Now()
@@ -803,18 +807,18 @@ func indexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 			}
 
 			// Persist blocks (T012) — uses shared vault.PersistBlocks to avoid duplication.
+			// Block persistence failures (e.g., UUID collisions) are hard errors —
+			// silently dropping blocks corrupts the index.
 			if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
-				logger.Warn("failed to persist blocks", "page", pageName, "err", err)
-			} else {
-				blockCount += countBlocksRecursive(blocks)
+				return 0, fmt.Errorf("persist blocks for %s: %w", pageName, err)
 			}
+			blockCount += countBlocksRecursive(blocks)
 
 			// Extract and persist links from blocks (T013) — uses shared vault.PersistLinks.
 			if err := vault.PersistLinks(s, pageName, blocks); err != nil {
-				logger.Warn("failed to persist links", "page", pageName, "err", err)
-			} else {
-				linkCount += countLinksRecursive(blocks)
+				return 0, fmt.Errorf("persist links for %s: %w", pageName, err)
 			}
+			linkCount += countLinksRecursive(blocks)
 
 			// Generate and persist embeddings if embedder is available (T015).
 			if embedder != nil && embedder.Available() {
@@ -864,7 +868,7 @@ func indexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 			}
 		}
 	}
-	return totalIndexed
+	return totalIndexed, nil
 }
 
 // generateIndexEmbeddings creates vector embeddings for blocks during indexing.

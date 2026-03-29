@@ -1744,7 +1744,7 @@ func TestIndexDocuments_InsertNew(t *testing.T) {
 		},
 	}
 
-	got := indexDocuments(s, docs, nil, nil)
+	got, _ := indexDocuments(s, docs, nil, nil)
 	if got != 1 {
 		t.Fatalf("indexDocuments() = %d, want 1", got)
 	}
@@ -1805,7 +1805,7 @@ func TestIndexDocuments_UpdateExisting(t *testing.T) {
 		},
 	}
 
-	got := indexDocuments(s, docs, nil, nil)
+	got, _ := indexDocuments(s, docs, nil, nil)
 	if got != 1 {
 		t.Fatalf("indexDocuments() = %d, want 1", got)
 	}
@@ -1855,7 +1855,7 @@ func TestIndexDocuments_SourceRecord(t *testing.T) {
 		},
 	}
 
-	indexDocuments(s, docs, configs, nil)
+	_, _ = indexDocuments(s, docs, configs, nil)
 
 	src, err := s.GetSource("test-src")
 	if err != nil {
@@ -1896,7 +1896,7 @@ func TestIndexDocuments_WithProperties(t *testing.T) {
 		},
 	}
 
-	got := indexDocuments(s, docs, nil, nil)
+	got, _ := indexDocuments(s, docs, nil, nil)
 	if got != 1 {
 		t.Fatalf("indexDocuments() = %d, want 1", got)
 	}
@@ -1956,7 +1956,7 @@ Found a bug in [[architecture]] module.
 		},
 	}
 
-	got := indexDocuments(s, docs, nil, nil)
+	got, _ := indexDocuments(s, docs, nil, nil)
 	if got != 1 {
 		t.Fatalf("indexDocuments() = %d, want 1", got)
 	}
@@ -2016,7 +2016,7 @@ func TestIndexDocuments_ReIndexReplacesBlocks(t *testing.T) {
 			},
 		},
 	}
-	indexDocuments(s, docs1, nil, nil)
+	_, _ = indexDocuments(s, docs1, nil, nil)
 
 	blocks1, _ := s.GetBlocksByPage(pageName)
 	if len(blocks1) == 0 {
@@ -2036,7 +2036,7 @@ func TestIndexDocuments_ReIndexReplacesBlocks(t *testing.T) {
 			},
 		},
 	}
-	indexDocuments(s, docs2, nil, nil)
+	_, _ = indexDocuments(s, docs2, nil, nil)
 
 	blocks2, _ := s.GetBlocksByPage(pageName)
 	if len(blocks2) == 0 {
@@ -2229,7 +2229,7 @@ func TestIndexDocuments_GracefulDegradationWithoutEmbedder(t *testing.T) {
 	}
 
 	// Index with nil embedder (simulates Ollama unavailable).
-	got := indexDocuments(s, docs, nil, nil)
+	got, _ := indexDocuments(s, docs, nil, nil)
 	if got != 1 {
 		t.Fatalf("indexDocuments() = %d, want 1", got)
 	}
@@ -2310,7 +2310,7 @@ func TestIndexDocuments_CrossSourceUUIDUniqueness(t *testing.T) {
 		},
 	}
 
-	got := indexDocuments(s, docs, nil, nil)
+	got, _ := indexDocuments(s, docs, nil, nil)
 	if got != 3 {
 		t.Fatalf("indexDocuments() = %d, want 3", got)
 	}

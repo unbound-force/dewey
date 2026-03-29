@@ -198,6 +198,13 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		return nil, nil, nil, fmt.Errorf("--vault or OBSIDIAN_VAULT_PATH required for obsidian backend")
 	}
 
+	// Resolve to absolute path — vault.New requires absolute paths
+	// for correct file walking and UUID seed generation.
+	vp, err := filepath.Abs(vp)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve vault path: %w", err)
+	}
+
 	var srvOpts []serverOption
 
 	// Initialize persistent store if .dewey/ directory exists.

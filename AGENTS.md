@@ -191,17 +191,27 @@ gaze report ./... --coverprofile=coverage.out --max-crapload=48 --max-gaze-crapl
 
 Always run tests with `-race -count=1`. CI enforces this.
 
+### Global CLI Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--verbose` | `-v` | Enable debug logging (UUID seeds, block insertions, lock detection) |
+| `--log-file PATH` | | Write logs to file in addition to stderr |
+| `--no-embeddings` | | Skip embedding generation (on serve, index, reindex) |
+| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor) |
+
 ## Architecture
 
 MCP server + CLI tool with flat package layout:
 
 ```text
 main.go              # Entry point, Cobra root command, serve logic
-cli.go               # CLI subcommands (journal, add, search, init, index, status, source)
+cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor)
 server.go            # MCP server setup, 40 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
 vault/               # Obsidian vault backend (file parsing, indexing, watcher, persistence)
+vault/parse_export.go # Exported parsing and persistence functions (ParseDocument, PersistBlocks, PersistLinks, GenerateEmbeddings)
 tools/               # MCP tool implementations (navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic)
 types/               # Shared types (PageEntity, BlockEntity, tool inputs, semantic search types)
 parser/              # Content parser (wikilinks, tags, properties)

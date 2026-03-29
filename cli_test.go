@@ -2431,6 +2431,139 @@ func TestReindexCmd_NotInitialized(t *testing.T) {
 	}
 }
 
+// --- Doctor helper unit tests ---
+
+// TestHumanSize verifies the humanSize helper formats byte counts correctly
+// across all four branches (B, KB, MB, GB) and boundary values.
+func TestHumanSize(t *testing.T) {
+	tests := []struct {
+		bytes int64
+		want  string
+	}{
+		{0, "0 B"},
+		{1, "1 B"},
+		{512, "512 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KB"},
+		{1536, "1.5 KB"},
+		{10240, "10.0 KB"},
+		{1048576, "1.0 MB"},
+		{54235136, "51.7 MB"},
+		{1073741824, "1.0 GB"},
+		{2147483648, "2.0 GB"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := humanSize(tt.bytes)
+			if got != tt.want {
+				t.Errorf("humanSize(%d) = %q, want %q", tt.bytes, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDoctorCounter_PrintCheck verifies that printCheck increments the correct
+// counter and formats output with the expected column layout.
+func TestDoctorCounter_PrintCheck(t *testing.T) {
+	var buf bytes.Buffer
+	c := &doctorCounter{}
+
+	c.printCheck(&buf, "PASS", "vault", "/tmp/vault")
+	c.printCheck(&buf, "PASS", "dewey", "v1.4.1 (/usr/bin/dewey)")
+	c.printCheck(&buf, "WARN", "config.yaml", "not found (using defaults)")
+	c.printCheck(&buf, "FAIL", "graph.db", "not found")
+
+	if c.pass != 2 {
+		t.Errorf("pass = %d, want 2", c.pass)
+	}
+	if c.warn != 1 {
+		t.Errorf("warn = %d, want 1", c.warn)
+	}
+	if c.fail != 1 {
+		t.Errorf("fail = %d, want 1", c.fail)
+	}
+
+	output := buf.String()
+	// Verify formatted output contains correct markers and names.
+	if !strings.Contains(output, "[PASS] vault") {
+		t.Errorf("PASS line missing, got:\n%s", output)
+	}
+	if !strings.Contains(output, "[WARN] config.yaml") {
+		t.Errorf("WARN line missing, got:\n%s", output)
+	}
+	if !strings.Contains(output, "[FAIL] graph.db") {
+		t.Errorf("FAIL line missing, got:\n%s", output)
+	}
+	if !strings.Contains(output, "/tmp/vault") {
+		t.Errorf("PASS description missing, got:\n%s", output)
+	}
+}
+
+// TestPrintSummaryBox_Format verifies the summary box renders with correct
+// counts, singular/plural handling, and box-drawing borders.
+func TestPrintSummaryBox_Format(t *testing.T) {
+	tests := []struct {
+		name     string
+		counter  doctorCounter
+		wantPass string
+		wantWarn string
+		wantFail string
+	}{
+		{
+			name:     "plural warnings",
+			counter:  doctorCounter{pass: 5, warn: 2, fail: 0},
+			wantPass: "5 passed",
+			wantWarn: "2 warnings",
+			wantFail: "0 failed",
+		},
+		{
+			name:     "singular warning",
+			counter:  doctorCounter{pass: 3, warn: 1, fail: 0},
+			wantPass: "3 passed",
+			wantWarn: "1 warning",
+			wantFail: "0 failed",
+		},
+		{
+			name:     "zero everything",
+			counter:  doctorCounter{pass: 0, warn: 0, fail: 0},
+			wantPass: "0 passed",
+			wantWarn: "0 warnings",
+			wantFail: "0 failed",
+		},
+		{
+			name:     "all non-zero",
+			counter:  doctorCounter{pass: 10, warn: 3, fail: 2},
+			wantPass: "10 passed",
+			wantWarn: "3 warnings",
+			wantFail: "2 failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			printSummaryBox(&buf, &tt.counter)
+			output := buf.String()
+
+			if !strings.Contains(output, tt.wantPass) {
+				t.Errorf("summary box missing %q in:\n%s", tt.wantPass, output)
+			}
+			if !strings.Contains(output, tt.wantWarn) {
+				t.Errorf("summary box missing %q in:\n%s", tt.wantWarn, output)
+			}
+			if !strings.Contains(output, tt.wantFail) {
+				t.Errorf("summary box missing %q in:\n%s", tt.wantFail, output)
+			}
+			// Verify box borders.
+			if !strings.Contains(output, "╭") || !strings.Contains(output, "╰") {
+				t.Errorf("summary box missing borders in:\n%s", output)
+			}
+			if !strings.Contains(output, "│") {
+				t.Errorf("summary box missing side borders in:\n%s", output)
+			}
+		})
+	}
+}
+
 // --- Doctor command tests ---
 
 // TestDoctorCmd_WithInitializedVault verifies doctor reports pass for init
@@ -2487,12 +2620,15 @@ func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 		t.Errorf("doctor should include Embedding Layer section, got:\n%s", output)
 	}
 
-	// Summary box should be present.
+	// Summary box should be present with correct counts.
 	if !strings.Contains(output, "✅") {
 		t.Errorf("doctor should include summary box with pass emoji, got:\n%s", output)
 	}
 	if !strings.Contains(output, "╭") {
 		t.Errorf("doctor should include summary box border, got:\n%s", output)
+	}
+	if !strings.Contains(output, "0 failed") {
+		t.Errorf("doctor should report 0 failures in summary, got:\n%s", output)
 	}
 }
 
@@ -2525,6 +2661,17 @@ func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
 	// Summary box should still appear even on early exit.
 	if !strings.Contains(output, "✅") {
 		t.Errorf("doctor should include summary box even on early exit, got:\n%s", output)
+	}
+	if !strings.Contains(output, "1 failed") {
+		t.Errorf("doctor should report 1 failure in summary, got:\n%s", output)
+	}
+
+	// Subsequent sections should NOT appear after early exit.
+	if strings.Contains(output, "Database") {
+		t.Errorf("doctor should not show Database section on early exit, got:\n%s", output)
+	}
+	if strings.Contains(output, "Embedding Layer") {
+		t.Errorf("doctor should not show Embedding Layer section on early exit, got:\n%s", output)
 	}
 }
 

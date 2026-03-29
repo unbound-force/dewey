@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/embed"
@@ -1139,23 +1140,16 @@ func humanSize(bytes int64) string {
 
 // printSummaryBox writes the `uf doctor` style summary box with emoji counters.
 func printSummaryBox(w io.Writer, c *doctorCounter) {
-	// Build the inner content line.
-	passWord := "passed"
-	if c.pass == 1 {
-		passWord = "passed"
-	}
 	warnWord := "warnings"
 	if c.warn == 1 {
 		warnWord = "warning"
 	}
-	failWord := "failed"
 
-	inner := fmt.Sprintf("   ✅ %d %s  ⚠️  %d %s  ❌ %d %s   ",
-		c.pass, passWord, c.warn, warnWord, c.fail, failWord)
+	inner := fmt.Sprintf("   ✅ %d passed  ⚠️  %d %s  ❌ %d failed   ",
+		c.pass, c.warn, warnWord, c.fail)
 
-	// Calculate box width from the inner content rune count.
-	// Emoji widths vary, so we use a fixed-width approach matching uf doctor.
-	boxWidth := len([]rune(inner))
+	// Use display width (not rune count) so emoji render correctly in terminals.
+	boxWidth := runewidth.StringWidth(inner)
 
 	topBorder := "╭" + strings.Repeat("─", boxWidth) + "╮"
 	bottomBorder := "╰" + strings.Repeat("─", boxWidth) + "╯"

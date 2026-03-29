@@ -146,12 +146,17 @@ func (vs *VaultStore) RemovePage(pageName string) error {
 // LoadPages loads all persisted pages from the store and returns them as
 // a map of content hashes keyed by page name. This is used for incremental
 // indexing — comparing stored hashes against current file hashes.
+//
+// IMPORTANT: Only loads pages from this vault's own source (vs.sourceID,
+// typically "disk-local"). External-source pages (from dewey index) are
+// excluded so that IncrementalIndex() does not treat them as deleted
+// (they don't have corresponding .md files on disk).
 func (vs *VaultStore) LoadPages() (map[string]string, error) {
 	if vs.store == nil {
 		return nil, nil
 	}
 
-	pages, err := vs.store.ListPages()
+	pages, err := vs.store.ListPagesBySource(vs.sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("list pages from store: %w", err)
 	}
@@ -160,6 +165,8 @@ func (vs *VaultStore) LoadPages() (map[string]string, error) {
 	for _, p := range pages {
 		hashes[p.Name] = p.ContentHash
 	}
+	logger.Debug("loaded stored hashes for incremental index",
+		"source", vs.sourceID, "pages", len(hashes))
 	return hashes, nil
 }
 

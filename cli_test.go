@@ -2469,19 +2469,30 @@ func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 
 	output := buf.String()
 
-	// .dewey/ check should pass.
+	// .dewey/ check should pass with 20-char name field.
 	if !strings.Contains(output, "[PASS] .dewey/") {
 		t.Errorf("doctor should report .dewey/ pass, got:\n%s", output)
 	}
 
-	// Database section should show total pages.
-	if !strings.Contains(output, "[PASS] total pages") {
-		t.Errorf("doctor should report total pages, got:\n%s", output)
+	// Database section should show graph.db with page count.
+	if !strings.Contains(output, "[PASS] graph.db") {
+		t.Errorf("doctor should report graph.db pass, got:\n%s", output)
+	}
+	if !strings.Contains(output, "1 pages") {
+		t.Errorf("doctor should report page count, got:\n%s", output)
 	}
 
 	// Embedding Layer section should exist.
 	if !strings.Contains(output, "Embedding Layer") {
 		t.Errorf("doctor should include Embedding Layer section, got:\n%s", output)
+	}
+
+	// Summary box should be present.
+	if !strings.Contains(output, "✅") {
+		t.Errorf("doctor should include summary box with pass emoji, got:\n%s", output)
+	}
+	if !strings.Contains(output, "╭") {
+		t.Errorf("doctor should include summary box border, got:\n%s", output)
 	}
 }
 
@@ -2501,7 +2512,7 @@ func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
 
 	output := buf.String()
 
-	// .dewey/ check should fail.
+	// .dewey/ check should fail with 20-char name field.
 	if !strings.Contains(output, "[FAIL] .dewey/") {
 		t.Errorf("doctor should report .dewey/ fail, got:\n%s", output)
 	}
@@ -2509,6 +2520,11 @@ func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
 	// Fix should mention dewey init.
 	if !strings.Contains(output, "dewey init") {
 		t.Errorf("doctor should suggest 'dewey init' fix, got:\n%s", output)
+	}
+
+	// Summary box should still appear even on early exit.
+	if !strings.Contains(output, "✅") {
+		t.Errorf("doctor should include summary box even on early exit, got:\n%s", output)
 	}
 }
 

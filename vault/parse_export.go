@@ -138,7 +138,7 @@ func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string
 		vec, err := embedder.Embed(ctx, chunk)
 		if err != nil {
 			logger.Warn("failed to generate embedding",
-				"page", pageName, "block", b.UUID, "err", err)
+				"page", pageName, "block", b.UUID, "chunkLen", len(chunk), "err", err)
 			continue
 		}
 

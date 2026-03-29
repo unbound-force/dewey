@@ -3,9 +3,13 @@ package embed
 import "strings"
 
 // maxChunkChars is the approximate character limit for a chunk.
-// Granite-embedding:30m has a 512-token context window; at ~4 chars/token
-// this gives ~2000 chars. We use 2000 as a conservative limit.
-const maxChunkChars = 2000
+// Granite-embedding:30m has a 512-token context window. The original
+// estimate of ~4 chars/token was too optimistic — code blocks, YAML,
+// and special characters tokenize at closer to 2-3 chars/token.
+// At 2 chars/token (worst case), 512 tokens = 1024 chars.
+// We use 1000 as a conservative limit to prevent "input length exceeds
+// context length" errors from Ollama.
+const maxChunkChars = 1000
 
 // PrepareChunk creates an embedding-ready chunk from block content by
 // prepending the heading hierarchy context path. This provides semantic

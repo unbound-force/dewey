@@ -2,7 +2,7 @@
 
 **Feature Branch**: `004-unified-content-serve`
 **Created**: 2026-03-28
-**Status**: Draft
+**Status**: Complete
 **Input**: User description: "Unified content serve: teach dewey serve to load and query external-source content (GitHub issues, web crawl, cross-repo docs) from graph.db alongside local vault files, making all indexed content queryable via MCP tools"
 
 ## User Scenarios & Testing *(mandatory)*

@@ -210,14 +210,27 @@ Add to your `opencode.json`:
 
 ### Read-only mode
 
-To disable all write operations:
+To disable all write operations (Obsidian backend, the default):
 
 ```json
 {
   "mcp": {
     "dewey": {
       "type": "local",
-      "command": ["dewey", "--read-only"],
+      "command": ["dewey", "--read-only", "--backend", "obsidian", "--vault", "/path/to/your/vault"]
+    }
+  }
+}
+```
+
+For the Logseq backend (requires Logseq running with API enabled):
+
+```json
+{
+  "mcp": {
+    "dewey": {
+      "type": "local",
+      "command": ["dewey", "--read-only", "--backend", "logseq"],
       "env": {
         "LOGSEQ_API_URL": "http://127.0.0.1:12315",
         "LOGSEQ_API_TOKEN": "your-token-here"
@@ -245,6 +258,7 @@ This creates:
 - `.dewey/config.yaml` — embedding model and endpoint settings
 - `.dewey/sources.yaml` — content source configuration (empty by default)
 - `.dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
+- `.dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
 
 Add `.dewey/` to your `.gitignore`. The index is machine-local and rebuilt from source files.
 
@@ -254,7 +268,7 @@ Add `.dewey/` to your `.gitignore`. The index is machine-local and rebuilt from 
 |----------|---------|-------------|
 | `LOGSEQ_API_URL` | `http://127.0.0.1:12315` | Logseq HTTP API endpoint |
 | `LOGSEQ_API_TOKEN` | (required for Logseq) | Bearer token from Logseq settings |
-| `DEWEY_BACKEND` | `logseq` | Backend type: `logseq` or `obsidian` |
+| `DEWEY_BACKEND` | `obsidian` | Backend type: `obsidian` (default) or `logseq` |
 | `OBSIDIAN_VAULT_PATH` | — | Path to Obsidian vault root |
 | `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama embedding model name |
 | `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |

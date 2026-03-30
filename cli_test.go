@@ -2485,13 +2485,13 @@ func TestDoctorCounter_PrintCheck(t *testing.T) {
 
 	output := buf.String()
 	// Verify formatted output contains correct markers and names.
-	if !strings.Contains(output, "[PASS] vault") {
+	if !strings.Contains(output, "✅ vault") {
 		t.Errorf("PASS line missing, got:\n%s", output)
 	}
-	if !strings.Contains(output, "[WARN] config.yaml") {
+	if !strings.Contains(output, "⚠️ config.yaml") {
 		t.Errorf("WARN line missing, got:\n%s", output)
 	}
-	if !strings.Contains(output, "[FAIL] graph.db") {
+	if !strings.Contains(output, "❌ graph.db") {
 		t.Errorf("FAIL line missing, got:\n%s", output)
 	}
 	if !strings.Contains(output, "/tmp/vault") {
@@ -2602,13 +2602,13 @@ func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 
 	output := buf.String()
 
-	// .dewey/ check should pass with 20-char name field.
-	if !strings.Contains(output, "[PASS] .dewey/") {
+	// .dewey/ check should pass with emoji marker.
+	if !strings.Contains(output, "✅ .dewey/") {
 		t.Errorf("doctor should report .dewey/ pass, got:\n%s", output)
 	}
 
 	// Database section should show graph.db with page count.
-	if !strings.Contains(output, "[PASS] graph.db") {
+	if !strings.Contains(output, "✅ graph.db") {
 		t.Errorf("doctor should report graph.db pass, got:\n%s", output)
 	}
 	if !strings.Contains(output, "1 pages") {
@@ -2653,8 +2653,8 @@ func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
 
 	output := buf.String()
 
-	// .dewey/ check should fail with 20-char name field.
-	if !strings.Contains(output, "[FAIL] .dewey/") {
+	// .dewey/ check should fail with emoji marker.
+	if !strings.Contains(output, "❌ .dewey/") {
 		t.Errorf("doctor should report .dewey/ fail, got:\n%s", output)
 	}
 

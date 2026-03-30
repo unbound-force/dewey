@@ -5,6 +5,7 @@ description: >
   to wrap up any feature or OpenSpec branch.
 ---
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 
 # Command: /finale
 

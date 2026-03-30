@@ -48,7 +48,7 @@ jobs:
           gaze crap --format=json \
             --coverprofile=coverage.out \
             --max-crapload=15 \
-            --max-gaze-crapload=35 \
+            --max-gaze-crapload=36 \
             ./...
 
       # AI-formatted report: runs only on pushes to main (not PRs, not

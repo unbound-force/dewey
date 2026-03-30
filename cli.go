@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/client"
@@ -1108,20 +1109,25 @@ type doctorCounter struct {
 
 // printCheck writes a formatted check line in the `uf doctor` style:
 //
-//	[PASS] name                description
+//	✅ name                description
 //
 // The name field is left-aligned and padded to 20 characters. The marker
-// is one of PASS, WARN, or FAIL — the counter is incremented accordingly.
+// is one of PASS, WARN, or FAIL — the counter is incremented accordingly
+// and the corresponding emoji (✅, ⚠️, ❌) is displayed.
 func (c *doctorCounter) printCheck(w io.Writer, marker, name, description string) {
+	var emoji string
 	switch marker {
 	case "PASS":
 		c.pass++
+		emoji = "✅"
 	case "WARN":
 		c.warn++
+		emoji = "⚠️"
 	case "FAIL":
 		c.fail++
+		emoji = "❌"
 	}
-	_, _ = fmt.Fprintf(w, "  [%s] %-20s%s\n", marker, name, description)
+	_, _ = fmt.Fprintf(w, "  %s %-20s%s\n", emoji, name, description)
 }
 
 // humanSize converts a byte count to a human-readable string (B, KB, MB, GB).
@@ -1158,17 +1164,22 @@ func printSummaryBox(w io.Writer, c *doctorCounter) {
 }
 
 // runDoctorChecks executes comprehensive diagnostic checks in the style of
-// `uf doctor` — grouped sections, [PASS]/[WARN]/[FAIL] markers, descriptions
+// `uf doctor` — grouped sections, ✅/⚠️/❌ emoji markers, descriptions
 // with paths, and Fix: hints for actionable remediation.
 func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
 	c := &doctorCounter{}
 
+	// Lipgloss styles matching uf doctor (format.go).
+	renderer := lipgloss.NewRenderer(w)
+	boldStyle := renderer.NewStyle().Bold(true)
+	section := func(name string) { fmt.Fprintln(w, boldStyle.Render(name)) }
+
 	embeddingCount := -1 // -1 = not queried; set by store section if available.
 	dp("🩺 Dewey Doctor\n\n")
 
 	// --- Environment ---
-	dp("Environment\n")
+	section("Environment")
 	c.printCheck(w, "PASS", "vault", vaultPath)
 
 	deweyBin, err := os.Executable()
@@ -1180,7 +1191,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp("\n")
 
 	// --- Workspace ---
-	dp("Workspace\n")
+	section("Workspace")
 	deweyDir := filepath.Join(vaultPath, ".dewey")
 	if _, err := os.Stat(deweyDir); err == nil {
 		c.printCheck(w, "PASS", ".dewey/", fmt.Sprintf("initialized (%s)", deweyDir))
@@ -1222,7 +1233,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp("\n")
 
 	// --- Database ---
-	dp("Database\n")
+	section("Database")
 	dbPath := filepath.Join(deweyDir, "graph.db")
 	dbInfo, dbStatErr := os.Stat(dbPath)
 	if dbStatErr != nil {
@@ -1247,7 +1258,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			sources, _ := s.ListSources()
 			if len(sources) > 0 {
 				dp("\n")
-				dp("Sources in Database\n")
+				section("Sources in Database")
 				for _, src := range sources {
 					pages, _ := s.ListPagesBySource(src.ID)
 					lastFetched := "never"
@@ -1259,7 +1270,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 						c.printCheck(w, "PASS", src.ID, fmt.Sprintf("%d pages (fetched: %s)", len(pages), lastFetched))
 					} else {
 						c.printCheck(w, "WARN", src.ID, fmt.Sprintf("0 pages (fetched: %s)", lastFetched))
-						dp("     Fix: dewey reindex --no-embeddings\n")
+						dp("     Fix: dewey reindex\n")
 					}
 				}
 			}
@@ -1282,7 +1293,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		embedModel = "granite-embedding:30m"
 	}
 
-	dp("Embedding Layer (%s via %s)\n", embedModel, embedEndpoint)
+	section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
 
 	// Ollama reachability.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1329,7 +1340,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp("\n")
 
 	// --- MCP Server ---
-	dp("MCP Server\n")
+	section("MCP Server")
 
 	// Check if a dewey serve process is running (consolidated lock check per D5).
 	lockPath := filepath.Join(deweyDir, ".dewey.lock")

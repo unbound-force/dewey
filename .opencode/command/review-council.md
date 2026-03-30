@@ -2,6 +2,7 @@
 description: Run the reviewer governance council to audit codebase or spec compliance.
 ---
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 # Command: /review-council
 
@@ -122,9 +123,72 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
 ### Instructions
 
-1. **Replicate CI checks locally before delegating to council agents.** Read `.github/workflows/` to identify the exact commands CI runs, then execute those same commands. Any failure is a CRITICAL finding that must be fixed before the council review begins. Do not rely on a memorized list of commands — always derive them from the workflow files, which are the source of truth. This catches failures (e.g. linter violations) that code reading alone cannot reliably detect.
+1. **Run local quality gates before delegating to
+   council agents.** This step has two phases that
+   MUST execute in order. Both phases apply only to
+   Code Review Mode -- Spec Review Mode skips them.
+
+   #### Phase 1a -- CI Checks (mandatory, hard gate)
+
+   a. Read all files in `.github/workflows/` to
+      identify the exact commands CI runs. Do not
+      rely on a memorized list -- the workflow files
+      are the source of truth.
+
+   b. Execute each CI command locally in the order
+      they appear in the workflow (typically:
+      `go build ./...`, `go vet ./...`,
+      `go test -race -count=1 ./...`, plus any
+      coverage ratchet steps).
+
+   c. **If any command fails**: **STOP immediately.**
+      Report each failure as a CRITICAL finding with
+      the full error output. Do NOT proceed to Phase
+      1b or to step 2 (Divisor agent delegation).
+      The rationale: reviewing code that doesn't
+      compile or pass tests is wasted work.
+
+   d. **If all commands pass**: report success and
+      proceed to Phase 1b.
+
+   #### Phase 1b -- Gaze Quality Analysis (conditional)
+
+   a. Check if `gaze` is available:
+      ```bash
+      which gaze
+      ```
+
+   b. **If `gaze` is available**: invoke the
+      `gaze-reporter` agent via the Task tool
+      (subagent_type: `gaze-reporter`) with prompt
+      `"full"` to produce a comprehensive quality
+      report (CRAP scores, quality metrics,
+      classification, health assessment). Capture
+      the agent's output as the **Gaze Report**.
+
+   c. **If `gaze` is NOT available**: skip with an
+      informational note:
+      > "Gaze not installed -- skipping quality
+      > analysis. Install with
+      > `brew install unbound-force/tap/gaze`."
+
+      Proceed to step 2 without Gaze data.
 
 2. Delegate the review to all **discovered** reviewer agents in parallel using the Task tool. For each discovered agent, use the focus area from the Known Reviewer Roles reference table to provide targeted context. For any discovered agent not in the table, use a generic prompt: "Review the current changes for quality, correctness, and compliance. Return your verdict (APPROVE or REQUEST CHANGES) along with all findings."
+
+   **When Gaze data is available** (from Phase 1b):
+   append a "Quality Context" section to each Divisor
+   agent's review prompt containing the Gaze Report
+   summary. This gives agents -- particularly
+   `divisor-testing` -- access to concrete CRAP
+   scores, coverage percentages, quadrant
+   distributions, and prioritized recommendations.
+   Instruct agents to reference this data in their
+   findings where relevant.
+
+   **When Gaze data is NOT available**: use the
+   standard prompt without a "Quality Context"
+   section. Agents review based on file reading only.
 
    For each agent, instruct it to review the current changes and return its verdict (**APPROVE** or **REQUEST CHANGES**) along with all findings.
 

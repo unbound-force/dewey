@@ -71,7 +71,9 @@ func createSource(cfg SourceConfig, basePath, cacheDir string) Source {
 }
 
 // createDiskSource creates a DiskSource from config, resolving the path
-// relative to basePath when no explicit path is configured.
+// relative to basePath when no explicit path is configured. Reads
+// optional "ignore" ([]string of gitignore-compatible patterns) and
+// "recursive" (bool, default true) from the config map.
 func createDiskSource(cfg SourceConfig, basePath string) Source {
 	path := "."
 	if p, ok := cfg.Config["path"].(string); ok {
@@ -80,7 +82,22 @@ func createDiskSource(cfg SourceConfig, basePath string) Source {
 	if path == "." {
 		path = basePath
 	}
-	return NewDiskSource(cfg.ID, cfg.Name, path)
+
+	var opts []DiskSourceOption
+
+	// Extract ignore patterns from config. YAML parsing delivers
+	// list values as []any, so we use extractStringList to convert.
+	if patterns := extractStringList(cfg.Config["ignore"]); len(patterns) > 0 {
+		opts = append(opts, WithIgnorePatterns(patterns))
+	}
+
+	// Extract recursive flag from config. Defaults to true when absent,
+	// matching the DiskSource constructor default.
+	if r, ok := cfg.Config["recursive"].(bool); ok {
+		opts = append(opts, WithRecursive(r))
+	}
+
+	return NewDiskSource(cfg.ID, cfg.Name, path, opts...)
 }
 
 // createGitHubSource creates a GitHubSource from config, extracting the

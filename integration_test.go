@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -407,5 +408,108 @@ func TestEndToEnd_MultiSourceIdenticalFiles(t *testing.T) {
 		if blocksA[0].UUID == blocksB[0].UUID {
 			t.Errorf("block UUIDs collide across sources: %s", blocksA[0].UUID)
 		}
+	}
+}
+
+// TestEndToEnd_GitignoreRespected verifies the full pipeline: a vault with a
+// .gitignore file excludes matching directories from the in-memory index.
+// Files inside ignored directories (e.g., node_modules/) must not appear as
+// pages, while non-ignored files must be indexed normally.
+//
+// This is the end-to-end integration test for spec 006-unified-ignore (T029).
+//
+// PARALLEL SAFETY: This test can run in parallel — it does NOT use os.Chdir
+// or mutate any process-global state. All paths are relative to t.TempDir().
+func TestEndToEnd_GitignoreRespected(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Step 1: Create vault structure with .gitignore and test files.
+	//
+	// Layout:
+	//   .gitignore              → contains "node_modules/"
+	//   node_modules/pkg/README.md  → should be EXCLUDED
+	//   docs/guide.md              → should be INCLUDED
+	//   .dewey/config.yaml         → minimal config
+	//   .dewey/sources.yaml        → empty sources
+
+	// Write .gitignore that excludes node_modules/.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// Create node_modules/pkg/README.md (should be excluded by .gitignore).
+	nodeModulesDir := filepath.Join(tmpDir, "node_modules", "pkg")
+	if err := os.MkdirAll(nodeModulesDir, 0o755); err != nil {
+		t.Fatalf("mkdir node_modules/pkg: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nodeModulesDir, "README.md"), []byte("# Package Readme\n\nThis should be excluded."), 0o644); err != nil {
+		t.Fatalf("write node_modules/pkg/README.md: %v", err)
+	}
+
+	// Create docs/guide.md (should be included).
+	docsDir := filepath.Join(tmpDir, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "guide.md"), []byte("# Guide\n\nThis should be included."), 0o644); err != nil {
+		t.Fatalf("write docs/guide.md: %v", err)
+	}
+
+	// Create .dewey/ directory with minimal config.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .dewey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte("embedding:\n  model: test\n"), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte("sources: []\n"), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
+
+	// Step 2: Initialize vault with store.
+	dbPath := filepath.Join(deweyDir, "graph.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	vc := vault.New(tmpDir, vault.WithStore(s))
+	if err := vc.Load(); err != nil {
+		t.Fatalf("vault.Load: %v", err)
+	}
+	vc.BuildBacklinks()
+
+	// Step 3: Verify the in-memory index via GetAllPages.
+	ctx := context.Background()
+	pages, err := vc.GetAllPages(ctx)
+	if err != nil {
+		t.Fatalf("GetAllPages: %v", err)
+	}
+
+	// Build a set of page names for easy lookup.
+	pageNames := make(map[string]bool)
+	for _, p := range pages {
+		pageNames[strings.ToLower(p.Name)] = true
+	}
+
+	// docs/guide MUST be in the index.
+	if !pageNames["docs/guide"] {
+		t.Error("expected page \"docs/guide\" to be in the vault index, but it was not found")
+	}
+
+	// node_modules/pkg/README MUST NOT be in the index.
+	if pageNames["node_modules/pkg/readme"] {
+		t.Error("expected page \"node_modules/pkg/README\" to be excluded by .gitignore, but it was found in the vault index")
+	}
+
+	// Total page count should be exactly 1 (only docs/guide).
+	if len(pages) != 1 {
+		names := make([]string, 0, len(pages))
+		for _, p := range pages {
+			names = append(names, p.Name)
+		}
+		t.Errorf("expected 1 page in vault index, got %d: %v", len(pages), names)
 	}
 }

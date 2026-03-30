@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/ignore"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
 )
@@ -216,8 +217,9 @@ type pageDiff struct {
 }
 
 // walkVault scans the vault directory and returns a map of page names to content
-// hashes, and a map of page names to file metadata. Hidden directories are skipped.
-func walkVault(vaultPath string) (currentFiles map[string]string, fileContents map[string]fileEntry, err error) {
+// hashes, and a map of page names to file metadata. The provided matcher is
+// used to skip directories and files matching gitignore patterns.
+func walkVault(vaultPath string, matcher *ignore.Matcher) (currentFiles map[string]string, fileContents map[string]fileEntry, err error) {
 	currentFiles = make(map[string]string)
 	fileContents = make(map[string]fileEntry)
 
@@ -225,8 +227,14 @@ func walkVault(vaultPath string) (currentFiles map[string]string, fileContents m
 		if walkErr != nil {
 			return nil // skip errors
 		}
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
-			return filepath.SkipDir
+		// Use the ignore matcher to skip directories and files matching
+		// gitignore patterns. This replaces the previous inline
+		// strings.HasPrefix(info.Name(), ".") check.
+		if matcher.ShouldSkip(info.Name(), info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
 			return nil
@@ -304,7 +312,11 @@ func (vs *VaultStore) IncrementalIndex(c *Client) (stats IndexStats, err error) 
 		return stats, fmt.Errorf("load stored hashes: %w", err)
 	}
 
-	currentFiles, fileContents, err := walkVault(c.vaultPath)
+	// Use the client's matcher for ignore filtering. The matcher is always
+	// initialized by vault.New(), so it is guaranteed to be non-nil.
+	matcher := c.matcher
+
+	currentFiles, fileContents, err := walkVault(c.vaultPath, matcher)
 	if err != nil {
 		return stats, err
 	}

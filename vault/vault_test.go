@@ -2074,6 +2074,111 @@ func TestCrossSourceBacklinks_ExternalToExternal(t *testing.T) {
 	}
 }
 
+// --- Ignore pattern integration tests (006-unified-ignore Phase 3) ---
+
+func TestLoad_GitignoreRespected(t *testing.T) {
+	vaultDir := t.TempDir()
+
+	// Create a .gitignore that excludes node_modules/.
+	gitignorePath := filepath.Join(vaultDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile .gitignore: %v", err)
+	}
+
+	// Create node_modules/pkg/README.md (should be ignored).
+	nmDir := filepath.Join(vaultDir, "node_modules", "pkg")
+	if err := os.MkdirAll(nmDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nmDir, "README.md"), []byte("# Package README"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create docs/guide.md (should be indexed).
+	docsDir := filepath.Join(vaultDir, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "guide.md"), []byte("# Guide"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c := New(vaultDir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ctx := context.Background()
+	pages, err := c.GetAllPages(ctx)
+	if err != nil {
+		t.Fatalf("GetAllPages: %v", err)
+	}
+
+	foundGuide := false
+	for _, p := range pages {
+		if strings.Contains(p.Name, "node_modules") {
+			t.Errorf("node_modules page should be ignored, found: %s", p.Name)
+		}
+		if p.Name == "docs/guide" {
+			foundGuide = true
+		}
+	}
+	if !foundGuide {
+		t.Error("docs/guide should be indexed but was not found")
+	}
+}
+
+func TestLoad_NoGitignore(t *testing.T) {
+	vaultDir := t.TempDir()
+
+	// Create src/main.md.
+	srcDir := filepath.Join(vaultDir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "main.md"), []byte("# Main"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create docs/guide.md.
+	docsDir := filepath.Join(vaultDir, "docs")
+	if err := os.MkdirAll(docsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(docsDir, "guide.md"), []byte("# Guide"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// No .gitignore file — backward compatibility test.
+	c := New(vaultDir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ctx := context.Background()
+	pages, err := c.GetAllPages(ctx)
+	if err != nil {
+		t.Fatalf("GetAllPages: %v", err)
+	}
+
+	foundMain := false
+	foundGuide := false
+	for _, p := range pages {
+		if p.Name == "src/main" {
+			foundMain = true
+		}
+		if p.Name == "docs/guide" {
+			foundGuide = true
+		}
+	}
+	if !foundMain {
+		t.Error("src/main should be indexed but was not found")
+	}
+	if !foundGuide {
+		t.Error("docs/guide should be indexed but was not found")
+	}
+}
+
 func TestWriteGuard_WritablePagePassesThrough(t *testing.T) {
 	c, _, _ := newVaultWithReadOnlyPage(t)
 	ctx := context.Background()

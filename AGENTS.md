@@ -294,6 +294,8 @@ specs/
 - SQLite via `modernc.org/sqlite` — single database `.dewey/graph.db` containing pages, blocks, links, embeddings, sources, metadata tables (004-unified-content-serve)
 - Go 1.25 (per `go.mod`) + `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `github.com/mattn/go-runewidth` (terminal width — already used by summary box) (005-doctor-emoji-markers)
 - N/A (no storage changes) (005-doctor-emoji-markers)
+- Go 1.25 (per `go.mod`) + `github.com/fsnotify/fsnotify` (file watcher), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `gopkg.in/yaml.v3` (config parsing) (006-unified-ignore)
+- N/A (no storage changes — this feature modifies filesystem walking, not the SQLite store) (006-unified-ignore)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 

@@ -310,8 +310,32 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	var opts []vault.Option
 	opts = append(opts, vault.WithDailyFolder(dailyFolder))
 
-	var persistentStore *store.Store
+	// Read ignore patterns from sources.yaml disk-local config (T026).
+	// This connects the sources.yaml "ignore" field to the vault walker
+	// at serve time, so patterns configured via `dewey source` are
+	// applied during incremental indexing and file watching.
 	deweyDir := filepath.Join(vp, ".dewey")
+	sourcesPath := filepath.Join(deweyDir, "sources.yaml")
+	if configs, err := source.LoadSourcesConfig(sourcesPath); err == nil {
+		for _, cfg := range configs {
+			if cfg.Type != "disk" {
+				continue
+			}
+			// Match the disk-local source: either by ID "disk-local" or
+			// by being the first disk source with path ".".
+			pathVal, _ := cfg.Config["path"].(string)
+			if cfg.ID == "disk-local" || pathVal == "." {
+				if patterns := extractIgnorePatterns(cfg.Config); len(patterns) > 0 {
+					opts = append(opts, vault.WithIgnorePatterns(patterns))
+					logger.Info("vault ignore patterns loaded from sources.yaml",
+						"source", cfg.ID, "patterns", len(patterns))
+				}
+				break
+			}
+		}
+	}
+
+	var persistentStore *store.Store
 	if _, err := os.Stat(deweyDir); err == nil {
 		dbPath := filepath.Join(deweyDir, "graph.db")
 		s, err := store.New(dbPath)
@@ -505,6 +529,32 @@ func newVersionCmd() *cobra.Command {
 			cmd.Println(version)
 		},
 	}
+}
+
+// extractIgnorePatterns extracts the "ignore" field from a source config map
+// as a string slice. YAML parsing delivers list values as []any, so this
+// function handles the type assertion. Returns nil if the field is absent
+// or not a list.
+func extractIgnorePatterns(config map[string]any) []string {
+	raw, ok := config["ignore"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		// Single string value.
+		if s, ok := raw.(string); ok {
+			return []string{s}
+		}
+		return nil
+	}
+	var patterns []string
+	for _, item := range items {
+		if s, ok := item.(string); ok {
+			patterns = append(patterns, s)
+		}
+	}
+	return patterns
 }
 
 // checkGraphVersionControl warns if the Logseq graph is not git-controlled.

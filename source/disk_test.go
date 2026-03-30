@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/unbound-force/dewey/ignore"
 )
 
 func createTestVault(t *testing.T) string {
@@ -475,7 +477,14 @@ func TestWalkDiskFiles_FiltersCorrectly(t *testing.T) {
 		}
 	}
 
-	files, err := walkDiskFiles(dir)
+	// Build a default matcher (no .gitignore, no extra patterns) to match
+	// the previous behavior of walkDiskFiles which only skipped hidden dirs.
+	matcher, mErr := ignore.NewMatcher(filepath.Join(dir, ".gitignore"), nil)
+	if mErr != nil {
+		t.Fatalf("NewMatcher: %v", mErr)
+	}
+
+	files, err := walkDiskFiles(dir, matcher, true)
 	if err != nil {
 		t.Fatalf("walkDiskFiles: %v", err)
 	}
@@ -519,5 +528,242 @@ func TestDiskSource_Meta(t *testing.T) {
 	}
 	if meta.Status != "active" {
 		t.Errorf("status = %q, want %q", meta.Status, "active")
+	}
+}
+
+// TestDiskSource_IgnorePatterns verifies that extra ignore patterns from
+// sources.yaml configuration are applied during List, excluding matched
+// directories and their contents.
+func TestDiskSource_IgnorePatterns(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a vault with docs/ and drafts/ directories.
+	layout := map[string]string{
+		"docs/guide.md": "# Guide\nUser guide content.",
+		"drafts/wip.md": "# WIP\nWork in progress.",
+	}
+	for name, content := range layout {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	ds := NewDiskSource("disk-test", "test", dir,
+		WithIgnorePatterns([]string{"drafts"}),
+	)
+
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Build a set of document IDs for easy lookup.
+	docIDs := make(map[string]bool)
+	for _, doc := range docs {
+		docIDs[doc.ID] = true
+	}
+
+	// docs/guide.md should be included.
+	if !docIDs["docs/guide.md"] {
+		t.Error("expected docs/guide.md to be included, but it was not")
+	}
+
+	// drafts/wip.md should be excluded by the ignore pattern.
+	if docIDs["drafts/wip.md"] {
+		t.Error("expected drafts/wip.md to be excluded by ignore pattern, but it was included")
+	}
+
+	// Verify we got exactly 1 document.
+	if len(docs) != 1 {
+		t.Errorf("expected 1 document, got %d", len(docs))
+		for _, doc := range docs {
+			t.Logf("  included: %s", doc.ID)
+		}
+	}
+}
+
+// TestDiskSource_RecursiveFalse verifies that WithRecursive(false) limits
+// List to only files in the base directory — no files from subdirectories
+// are returned.
+func TestDiskSource_RecursiveFalse(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a vault with root-level and nested files.
+	layout := map[string]string{
+		"README.md":        "# README\nRoot-level file.",
+		"docs/guide.md":    "# Guide\nSubdirectory file.",
+		"sub/deep/file.md": "# Deep\nNested subdirectory file.",
+	}
+	for name, content := range layout {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	ds := NewDiskSource("disk-test", "test", dir,
+		WithRecursive(false),
+	)
+
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Build a set of document IDs for easy lookup.
+	docIDs := make(map[string]bool)
+	for _, doc := range docs {
+		docIDs[doc.ID] = true
+	}
+
+	// Only README.md (root level) should be returned.
+	if !docIDs["README.md"] {
+		t.Error("expected README.md to be included (root level), but it was not")
+	}
+
+	// docs/guide.md should NOT be returned (subdirectory).
+	if docIDs["docs/guide.md"] {
+		t.Error("expected docs/guide.md to be excluded (subdirectory), but it was included")
+	}
+
+	// sub/deep/file.md should NOT be returned (nested subdirectory).
+	if docIDs["sub/deep/file.md"] {
+		t.Error("expected sub/deep/file.md to be excluded (nested subdirectory), but it was included")
+	}
+
+	// Verify we got exactly 1 document.
+	if len(docs) != 1 {
+		t.Errorf("expected 1 document, got %d", len(docs))
+		for _, doc := range docs {
+			t.Logf("  included: %s", doc.ID)
+		}
+	}
+}
+
+// TestDiskSource_RecursiveDefault verifies that the default behavior (no
+// WithRecursive option) traverses all subdirectories and returns all .md
+// files at every depth level.
+func TestDiskSource_RecursiveDefault(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a vault with root-level and nested files.
+	layout := map[string]string{
+		"README.md":        "# README\nRoot-level file.",
+		"docs/guide.md":    "# Guide\nSubdirectory file.",
+		"sub/deep/file.md": "# Deep\nNested subdirectory file.",
+	}
+	for name, content := range layout {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	// No WithRecursive option — default behavior should be recursive=true.
+	ds := NewDiskSource("disk-test", "test", dir)
+
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Build a set of document IDs for easy lookup.
+	docIDs := make(map[string]bool)
+	for _, doc := range docs {
+		docIDs[doc.ID] = true
+	}
+
+	// All three files should be returned.
+	for _, expected := range []string{"README.md", "docs/guide.md", "sub/deep/file.md"} {
+		if !docIDs[expected] {
+			t.Errorf("expected %s to be included, but it was not", expected)
+		}
+	}
+
+	// Verify we got exactly 3 documents.
+	if len(docs) != 3 {
+		t.Errorf("expected 3 documents, got %d", len(docs))
+		for _, doc := range docs {
+			t.Logf("  included: %s", doc.ID)
+		}
+	}
+}
+
+// TestDiskSource_UnionMerge verifies that .gitignore patterns and extra
+// ignore patterns from sources.yaml are merged (union semantics). Both
+// sets of patterns should apply simultaneously.
+func TestDiskSource_UnionMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a .gitignore that excludes node_modules/.
+	gitignoreContent := "node_modules/\n"
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// Create directories and files.
+	layout := map[string]string{
+		"node_modules/pkg/README.md": "# Pkg\nPackage readme.",
+		"drafts/wip.md":              "# WIP\nWork in progress.",
+		"docs/guide.md":              "# Guide\nUser guide content.",
+	}
+	for name, content := range layout {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	// Extra patterns exclude "drafts"; .gitignore excludes "node_modules/".
+	// Both should apply (union merge).
+	ds := NewDiskSource("disk-test", "test", dir,
+		WithIgnorePatterns([]string{"drafts"}),
+	)
+
+	docs, err := ds.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	// Build a set of document IDs for easy lookup.
+	docIDs := make(map[string]bool)
+	for _, doc := range docs {
+		docIDs[doc.ID] = true
+	}
+
+	// docs/guide.md should be included — not matched by any pattern.
+	if !docIDs["docs/guide.md"] {
+		t.Error("expected docs/guide.md to be included, but it was not")
+	}
+
+	// node_modules/pkg/README.md should be excluded by .gitignore pattern.
+	if docIDs["node_modules/pkg/README.md"] {
+		t.Error("expected node_modules/pkg/README.md to be excluded by .gitignore, but it was included")
+	}
+
+	// drafts/wip.md should be excluded by extra ignore pattern.
+	if docIDs["drafts/wip.md"] {
+		t.Error("expected drafts/wip.md to be excluded by extra ignore pattern, but it was included")
+	}
+
+	// Verify we got exactly 1 document.
+	if len(docs) != 1 {
+		t.Errorf("expected 1 document, got %d", len(docs))
+		for _, doc := range docs {
+			t.Logf("  included: %s", doc.ID)
+		}
 	}
 }

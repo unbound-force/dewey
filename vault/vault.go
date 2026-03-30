@@ -14,6 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
 	"github.com/unbound-force/dewey/backend"
+	"github.com/unbound-force/dewey/ignore"
 	"github.com/unbound-force/dewey/parser"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
@@ -79,15 +80,17 @@ type cachedPage struct {
 // Client implements backend.Backend for an Obsidian vault on disk.
 // It reads all .md files on initialization and serves queries from memory.
 type Client struct {
-	vaultPath   string
-	dailyFolder string                  // e.g. "daily notes"
-	pages       map[string]*cachedPage  // lowercase name → page
-	backlinks   map[string][]backlink   // lowercase target → backlinks
-	blockIndex  map[string]*blockLookup // uuid → block + page
-	searchIndex *SearchIndex            // inverted index for full-text search
-	mu          sync.RWMutex            // protects all maps above
-	watcher     *fsnotify.Watcher       // file system watcher
-	vaultStore  *VaultStore             // optional persistent store adapter (nil when no .dewey/)
+	vaultPath      string
+	dailyFolder    string                  // e.g. "daily notes"
+	ignorePatterns []string                // extra ignore patterns from sources.yaml
+	pages          map[string]*cachedPage  // lowercase name → page
+	backlinks      map[string][]backlink   // lowercase target → backlinks
+	blockIndex     map[string]*blockLookup // uuid → block + page
+	searchIndex    *SearchIndex            // inverted index for full-text search
+	mu             sync.RWMutex            // protects all maps above
+	watcher        *fsnotify.Watcher       // file system watcher
+	vaultStore     *VaultStore             // optional persistent store adapter (nil when no .dewey/)
+	matcher        *ignore.Matcher         // gitignore-compatible path matcher (built lazily in Load)
 }
 
 // blockLookup stores a block and its page for UUID-based retrieval.
@@ -115,7 +118,17 @@ func WithStore(s *store.Store) Option {
 	}
 }
 
+// WithIgnorePatterns configures additional ignore patterns (from sources.yaml)
+// that are merged with .gitignore rules when the vault Client is constructed.
+// These patterns use gitignore syntax and are evaluated alongside the
+// .gitignore file found at the vault root.
+func WithIgnorePatterns(patterns []string) Option {
+	return func(c *Client) { c.ignorePatterns = patterns }
+}
+
 // New creates a new Obsidian vault client. Call Load() to index the vault.
+// The ignore matcher is built eagerly so it is available to all startup paths
+// (Load, IncrementalIndex, FullIndex) without requiring Load() to be called first.
 func New(vaultPath string, opts ...Option) *Client {
 	c := &Client{
 		vaultPath:   vaultPath,
@@ -128,6 +141,20 @@ func New(vaultPath string, opts ...Option) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	// Build the ignore matcher from .gitignore + extra patterns.
+	// This must happen after options are applied (ignorePatterns is set by WithIgnorePatterns).
+	// Errors are non-fatal — NewMatcher returns a valid matcher even on failure.
+	matcher, err := ignore.NewMatcher(
+		filepath.Join(c.vaultPath, ".gitignore"),
+		c.ignorePatterns,
+	)
+	if err != nil {
+		logger.Warn("failed to build ignore matcher, using defaults", "err", err)
+		matcher, _ = ignore.NewMatcher("", nil)
+	}
+	c.matcher = matcher
+
 	return c
 }
 
@@ -138,14 +165,20 @@ func (c *Client) Store() *VaultStore {
 
 // Load reads all .md files in the vault and builds the in-memory index.
 func (c *Client) Load() error {
-	return filepath.Walk(c.vaultPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	return filepath.Walk(c.vaultPath, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
 			return nil // skip errors
 		}
 
-		// Skip hidden directories (.obsidian, .git, etc).
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
-			return filepath.SkipDir
+		// Use the ignore matcher to skip directories and files matching
+		// gitignore patterns. This replaces the previous inline
+		// strings.HasPrefix(info.Name(), ".") check, extending coverage
+		// to user-defined patterns (e.g., node_modules/, *.log).
+		if c.matcher.ShouldSkip(info.Name(), info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if info.IsDir() {
 			return nil
@@ -154,8 +187,8 @@ func (c *Client) Load() error {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
-		if err != nil {
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
 			return nil // skip unreadable files
 		}
 
@@ -297,7 +330,10 @@ func (c *Client) Watch() error {
 	return nil
 }
 
-// addWatcherDirs recursively adds directories to the watcher, skipping hidden dirs.
+// addWatcherDirs recursively adds directories to the watcher, skipping
+// directories that match ignore patterns. The root directory itself is
+// never skipped even if its name starts with "." (e.g., a vault at
+// /home/user/.notes).
 func (c *Client) addWatcherDirs(root string) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -306,8 +342,9 @@ func (c *Client) addWatcherDirs(root string) error {
 		if !info.IsDir() {
 			return nil
 		}
-		// Skip hidden directories (.obsidian, .git, etc).
-		if strings.HasPrefix(info.Name(), ".") && path != root {
+		// Preserve the root guard: the vault root itself should never be
+		// skipped, even if its name starts with "." or matches a pattern.
+		if path != root && c.matcher.ShouldSkip(info.Name(), true) {
 			return filepath.SkipDir
 		}
 		return c.watcher.Add(path)
@@ -340,14 +377,16 @@ func (c *Client) handleEvent(event fsnotify.Event) {
 		return
 	}
 
-	// Skip hidden directories.
-	if strings.Contains(event.Name, "/.") {
-		return
-	}
-
+	// Compute relative path for ignore matching. ShouldSkipPath checks
+	// each path component against ignore patterns, replacing the previous
+	// inline strings.Contains(event.Name, "/.") check.
 	relPath, err := filepath.Rel(c.vaultPath, event.Name)
 	if err != nil {
 		logger.Error("failed to get relative path", "file", event.Name, "err", err)
+		return
+	}
+
+	if c.matcher.ShouldSkipPath(relPath) {
 		return
 	}
 

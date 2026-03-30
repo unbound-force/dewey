@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/unbound-force/dewey/ignore"
 )
 
 // DiskSource implements the Source interface for local Markdown files.
@@ -17,23 +19,65 @@ type DiskSource struct {
 	name     string
 	basePath string
 
+	// ignorePatterns holds extra gitignore-compatible patterns from
+	// sources.yaml configuration. These are merged with .gitignore
+	// patterns via the ignore.Matcher (union merge semantics).
+	ignorePatterns []string
+
+	// recursive controls whether subdirectories are traversed during
+	// List and Diff walks. Defaults to true.
+	recursive bool
+
 	// storedHashes holds content hashes from the last fetch, keyed by
 	// relative file path. Used by Diff to detect changes.
 	storedHashes map[string]string
 	lastFetched  time.Time
 }
 
+// DiskSourceOption configures optional behavior for a DiskSource.
+// Use With* constructors to create options.
+type DiskSourceOption func(*DiskSource)
+
+// WithIgnorePatterns returns a DiskSourceOption that sets additional
+// gitignore-compatible patterns for the DiskSource. These patterns
+// are merged with any .gitignore file found in the source's base
+// directory (union merge semantics per FR-005).
+func WithIgnorePatterns(patterns []string) DiskSourceOption {
+	return func(d *DiskSource) {
+		d.ignorePatterns = patterns
+	}
+}
+
+// WithRecursive returns a DiskSourceOption that controls whether
+// subdirectories are traversed during List and Diff walks. When
+// false, only files in the base directory are included.
+func WithRecursive(recursive bool) DiskSourceOption {
+	return func(d *DiskSource) {
+		d.recursive = recursive
+	}
+}
+
 // NewDiskSource creates a DiskSource for the given directory path.
 // Returns a ready-to-use source with an empty stored hashes map.
 // Call [DiskSource.SetStoredHashes] before [DiskSource.Diff] to enable
 // incremental change detection.
-func NewDiskSource(id, name, basePath string) *DiskSource {
-	return &DiskSource{
+//
+// Options are applied after defaults. The default configuration is
+// recursive=true with no extra ignore patterns. The variadic opts
+// parameter ensures backward compatibility — existing callers that
+// pass zero options continue to work unchanged.
+func NewDiskSource(id, name, basePath string, opts ...DiskSourceOption) *DiskSource {
+	d := &DiskSource{
 		id:           id,
 		name:         name,
 		basePath:     basePath,
+		recursive:    true,
 		storedHashes: make(map[string]string),
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // SetStoredHashes sets the previously known content hashes for change
@@ -46,20 +90,43 @@ func (d *DiskSource) SetStoredHashes(hashes map[string]string) {
 }
 
 // List returns all .md files in the source directory as Documents,
-// skipping hidden directories (e.g., .dewey/, .git/) and unreadable files.
+// skipping ignored entries (hidden directories, .gitignore patterns,
+// and configured ignore patterns) and unreadable files.
 // Updates the source's lastFetched timestamp on success.
-// Returns an error if the directory walk itself fails.
+// Returns an error if the directory walk itself fails or the ignore
+// matcher cannot be constructed.
 func (d *DiskSource) List() ([]Document, error) {
+	matcher, err := ignore.NewMatcher(
+		filepath.Join(d.basePath, ".gitignore"),
+		d.ignorePatterns,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build ignore matcher for %q: %w", d.basePath, err)
+	}
+
 	var docs []Document
 
-	err := filepath.Walk(d.basePath, func(path string, info os.FileInfo, walkErr error) error {
+	err = filepath.Walk(d.basePath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return nil // skip errors
 		}
-		// Skip hidden directories (e.g., .dewey/, .git/).
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
+
+		// Use the unified ignore matcher for skip decisions.
+		// This replaces the previous inline strings.HasPrefix(name, ".")
+		// check with the full gitignore-compatible matcher, supporting
+		// .gitignore patterns, extra patterns, and hidden-dir baseline.
+		if matcher.ShouldSkip(info.Name(), info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Non-recursive mode: skip subdirectories (but not basePath itself).
+		if !d.recursive && info.IsDir() && path != d.basePath {
 			return filepath.SkipDir
 		}
+
 		if info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
 			return nil
 		}
@@ -122,7 +189,15 @@ func (d *DiskSource) Fetch(id string) (*Document, error) {
 // Decomposed into walkDiskFiles (directory scan) and diffFileChanges
 // (hash comparison) to keep each function under cyclomatic complexity 10.
 func (d *DiskSource) Diff() ([]Change, error) {
-	currentFiles, err := walkDiskFiles(d.basePath)
+	matcher, err := ignore.NewMatcher(
+		filepath.Join(d.basePath, ".gitignore"),
+		d.ignorePatterns,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build ignore matcher for diff %q: %w", d.basePath, err)
+	}
+
+	currentFiles, err := walkDiskFiles(d.basePath, matcher, d.recursive)
 	if err != nil {
 		return nil, err
 	}
@@ -131,19 +206,31 @@ func (d *DiskSource) Diff() ([]Change, error) {
 }
 
 // walkDiskFiles walks basePath and returns a map of relPath → SHA-256
-// content hash for every .md file found. Hidden directories (names
-// starting with ".") are skipped entirely. Unreadable files are
-// silently ignored, matching the List behavior.
-func walkDiskFiles(basePath string) (map[string]string, error) {
+// content hash for every .md file found. The provided matcher determines
+// which entries to skip (hidden directories, .gitignore patterns, extra
+// patterns). When recursive is false, subdirectories are not traversed.
+// Unreadable files are silently ignored, matching the List behavior.
+func walkDiskFiles(basePath string, matcher *ignore.Matcher, recursive bool) (map[string]string, error) {
 	files := make(map[string]string) // relPath → hash
 
 	err := filepath.Walk(basePath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if info.IsDir() && strings.HasPrefix(info.Name(), ".") {
+
+		// Use the unified ignore matcher for skip decisions.
+		if matcher.ShouldSkip(info.Name(), info.IsDir()) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Non-recursive mode: skip subdirectories (but not basePath itself).
+		if !recursive && info.IsDir() && path != basePath {
 			return filepath.SkipDir
 		}
+
 		if info.IsDir() || !strings.HasSuffix(info.Name(), ".md") {
 			return nil
 		}

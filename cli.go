@@ -14,10 +14,12 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/log"
 	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/ignore"
 	"github.com/unbound-force/dewey/parser"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
@@ -257,6 +259,8 @@ sources:
     name: local
     config:
       path: "."
+      # ignore: [pattern1, pattern2]  # additional patterns beyond .gitignore
+      # recursive: true               # set false to index only top-level files
 `
 			if err := os.WriteFile(sourcesPath, []byte(sourcesContent), 0o644); err != nil {
 				return fmt.Errorf("write sources.yaml: %w", err)
@@ -1130,6 +1134,24 @@ func (c *doctorCounter) printCheck(w io.Writer, marker, name, description string
 	_, _ = fmt.Fprintf(w, "  %s %-20s%s\n", emoji, name, description)
 }
 
+// countExcludedDirs walks the vault directory and counts how many directories
+// would be skipped by the ignore matcher. Used by the doctor verbose report
+// to show the impact of .gitignore and ignore patterns.
+func countExcludedDirs(vaultPath string, matcher *ignore.Matcher) int {
+	count := 0
+	_ = filepath.Walk(vaultPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !info.IsDir() || path == vaultPath {
+			return nil
+		}
+		if matcher.ShouldSkip(info.Name(), true) {
+			count++
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return count
+}
+
 // humanSize converts a byte count to a human-readable string (B, KB, MB, GB).
 func humanSize(bytes int64) string {
 	switch {
@@ -1229,6 +1251,21 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		c.printCheck(w, "PASS", "dewey.log", fmt.Sprintf("%s (%s)", humanSize(info.Size()), logPath))
 	} else {
 		c.printCheck(w, "PASS", "dewey.log", "not present (created on dewey serve)")
+	}
+
+	// Verbose mode: report ignore rules and excluded directories.
+	// Only shown when --verbose / -v is active (logger level is DebugLevel).
+	if logger.GetLevel() == log.DebugLevel {
+		matcher, matcherErr := ignore.NewMatcher(
+			filepath.Join(vaultPath, ".gitignore"),
+			nil, // no extra patterns — just .gitignore baseline
+		)
+		if matcherErr == nil {
+			excludedDirs := countExcludedDirs(vaultPath, matcher)
+			if excludedDirs > 0 {
+				c.printCheck(w, "PASS", "ignore rules", fmt.Sprintf("%d directories excluded", excludedDirs))
+			}
+		}
 	}
 	dp("\n")
 

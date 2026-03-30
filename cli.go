@@ -1173,7 +1173,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	// Lipgloss styles matching uf doctor (format.go).
 	renderer := lipgloss.NewRenderer(w)
 	boldStyle := renderer.NewStyle().Bold(true)
-	section := func(name string) { fmt.Fprintln(w, boldStyle.Render(name)) }
+	section := func(name string) { _, _ = fmt.Fprintln(w, boldStyle.Render(name)) }
 
 	embeddingCount := -1 // -1 = not queried; set by store section if available.
 	dp("🩺 Dewey Doctor\n\n")

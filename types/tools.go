@@ -243,6 +243,14 @@ type SemanticSearchResult struct {
 	IndexedAt  string  `json:"indexed_at"`
 }
 
+// --- Learning tool inputs ---
+
+// StoreLearningInput is the input for the dewey_store_learning MCP tool.
+type StoreLearningInput struct {
+	Information string `json:"information" jsonschema:"The learning text to store. Required."`
+	Tags        string `json:"tags,omitempty" jsonschema:"Optional comma-separated tags for filtering (e.g. 'gotcha, vault-walker, 006-unified-ignore')"`
+}
+
 // --- Journal tool inputs ---
 
 type JournalRangeInput struct {

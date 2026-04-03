@@ -81,6 +81,12 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) *mcp.Serv
 
 	semantic := tools.NewSemantic(cfg.embedder, cfg.store)
 	registerSemanticTools(srv, semantic)
+
+	if !readOnly {
+		learning := tools.NewLearning(cfg.embedder, cfg.store)
+		registerLearningTools(srv, learning)
+	}
+
 	registerHealthTool(srv, b, readOnly, &cfg)
 
 	// Vault management tools (Obsidian-specific).
@@ -339,6 +345,15 @@ func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) {
 		Name:        "dewey_semantic_search_filtered",
 		Description: "Semantic search constrained by metadata filters (source type, repository, properties).",
 	}, semantic.SemanticSearchFiltered)
+}
+
+// registerLearningTools registers the store_learning MCP tool for persisting
+// agent learnings into the knowledge graph with optional embeddings.
+func registerLearningTools(srv *mcp.Server, learning *tools.Learning) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "dewey_store_learning",
+		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via dewey_semantic_search. Use to build semantic memory across sessions.",
+	}, learning.StoreLearning)
 }
 
 // registerHealthTool registers the health check tool that reports server status,

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -288,6 +290,114 @@ func resolveBackendType(flagValue string) string {
 	return "obsidian"
 }
 
+// OllamaState represents the lifecycle state of the Ollama embedding server.
+type OllamaState int
+
+const (
+	// OllamaExternal indicates Ollama was already running (not started by Dewey).
+	OllamaExternal OllamaState = iota
+	// OllamaManaged indicates Ollama was auto-started by Dewey as a subprocess.
+	OllamaManaged
+	// OllamaUnavailable indicates Ollama is not running and could not be started.
+	OllamaUnavailable
+)
+
+// String returns a human-readable label for the Ollama state.
+func (s OllamaState) String() string {
+	switch s {
+	case OllamaExternal:
+		return "external"
+	case OllamaManaged:
+		return "managed"
+	case OllamaUnavailable:
+		return "unavailable"
+	default:
+		return "unknown"
+	}
+}
+
+// ollamaStarter abstracts Ollama subprocess launching for testability.
+type ollamaStarter interface {
+	Start() error
+}
+
+// execOllamaStarter starts Ollama via os/exec with process group detachment.
+// FR-004: Dewey starts Ollama but does not own its shutdown lifecycle.
+type execOllamaStarter struct{}
+
+func (s *execOllamaStarter) Start() error {
+	cmd := exec.Command("ollama", "serve")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start() // Start, not Run — don't wait for exit
+}
+
+// isLocalEndpoint reports whether the given endpoint URL refers to the
+// local machine. Auto-start is only attempted for local endpoints.
+func isLocalEndpoint(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == ""
+}
+
+// ollamaHealthCheck reports whether Ollama is reachable and healthy at
+// the given endpoint. It sends GET /api/tags with a 2-second timeout.
+func ollamaHealthCheck(endpoint string) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(endpoint + "/api/tags")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// ensureOllama checks if Ollama is running and optionally auto-starts it.
+// When autoStart is false (e.g., dewey doctor), it only probes without
+// starting a subprocess.
+func ensureOllama(endpoint string, autoStart bool, starter ollamaStarter) (OllamaState, error) {
+	// Step 1: Check if already running.
+	if ollamaHealthCheck(endpoint) {
+		return OllamaExternal, nil
+	}
+
+	// Step 2: If auto-start disabled or remote endpoint, report unavailable.
+	if !autoStart || !isLocalEndpoint(endpoint) {
+		return OllamaUnavailable, nil
+	}
+
+	// Step 3: Check if ollama binary is in PATH.
+	if _, err := exec.LookPath("ollama"); err != nil {
+		return OllamaUnavailable, nil
+	}
+
+	// Step 4: Start Ollama subprocess.
+	if err := starter.Start(); err != nil {
+		return OllamaUnavailable, fmt.Errorf("start ollama: %w", err)
+	}
+	logger.Info("auto-starting Ollama")
+
+	// Step 5: Poll for readiness with bounded timeout.
+	const (
+		pollInterval = 500 * time.Millisecond
+		maxWait      = 30 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	for time.Now().Before(deadline) {
+		time.Sleep(pollInterval)
+		if ollamaHealthCheck(endpoint) {
+			logger.Info("Ollama is ready", "state", OllamaManaged)
+			return OllamaManaged, nil
+		}
+	}
+
+	return OllamaUnavailable, fmt.Errorf("ollama did not become ready within %s", maxWait)
+}
+
 // initObsidianBackend initializes the Obsidian/vault backend including:
 //   - Vault path resolution from flag or OBSIDIAN_VAULT_PATH env var
 //   - Persistent store initialization (optional, graceful degradation)
@@ -366,13 +476,28 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	if noEmbeddings {
 		logger.Info("embeddings disabled via --no-embeddings")
 	} else {
-		embedder = embed.NewOllamaEmbedder(embedEndpoint, embedModel)
-		if !embedder.Available() {
-			return nil, nil, nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
-				embedModel, embedEndpoint, embedModel)
+		// Ensure Ollama is running (auto-start if needed).
+		ollamaState, err := ensureOllama(embedEndpoint, true, &execOllamaStarter{})
+		if err != nil {
+			logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
 		}
-		logger.Info("embedding model available", "model", embedModel)
-		srvOpts = append(srvOpts, WithEmbedder(embedder))
+		logger.Info("ollama state", "state", ollamaState, "endpoint", embedEndpoint)
+
+		if ollamaState == OllamaUnavailable {
+			// Graceful degradation: keyword-only mode when Ollama is not installed.
+			logger.Info("semantic search unavailable — ollama not installed",
+				"install", "brew install ollama")
+		} else {
+			// Ollama is running (External or Managed) — check model availability.
+			// This remains a hard error: the user has Ollama but hasn't pulled the model.
+			embedder = embed.NewOllamaEmbedder(embedEndpoint, embedModel)
+			if !embedder.Available() {
+				return nil, nil, nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
+					embedModel, embedEndpoint, embedModel)
+			}
+			logger.Info("embedding model available", "model", embedModel)
+			srvOpts = append(srvOpts, WithEmbedder(embedder))
+		}
 	}
 
 	vc := vault.New(vp, opts...)

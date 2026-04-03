@@ -296,6 +296,7 @@ specs/
 - N/A (no storage changes) (005-doctor-emoji-markers)
 - Go 1.25 (per `go.mod`) + `github.com/fsnotify/fsnotify` (file watcher), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `gopkg.in/yaml.v3` (config parsing) (006-unified-ignore)
 - N/A (no storage changes — this feature modifies filesystem walking, not the SQLite store) (006-unified-ignore)
+- Go 1.25 (per `go.mod`) + `os/exec` (subprocess), `net/http` (health check), `github.com/charmbracelet/log` (logging), `github.com/spf13/cobra` (CLI) (007-ollama-autostart)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 

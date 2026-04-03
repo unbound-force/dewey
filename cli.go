@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -835,8 +835,10 @@ func detectLockHolder(lockPath string) string {
 
 // createIndexEmbedder creates an OllamaEmbedder for use during indexing,
 // using the same environment variables as `dewey serve` (per research R4).
-// When noEmbeddings is true, returns nil (no embedder). When false, checks
-// availability and returns a hard error if the model is unavailable.
+// When noEmbeddings is true, returns nil (no embedder). When false, attempts
+// to ensure Ollama is running (auto-start if needed) and checks model
+// availability. Returns nil when Ollama is unavailable (graceful degradation)
+// and a hard error only when Ollama is running but the model is not pulled.
 func createIndexEmbedder(noEmbeddings bool) (embed.Embedder, error) {
 	if noEmbeddings {
 		logger.Info("embeddings disabled via --no-embeddings")
@@ -852,6 +854,22 @@ func createIndexEmbedder(noEmbeddings bool) (embed.Embedder, error) {
 		embedEndpoint = "http://localhost:11434"
 	}
 
+	// Ensure Ollama is running (auto-start if needed).
+	ollamaState, err := ensureOllama(embedEndpoint, true, &execOllamaStarter{})
+	if err != nil {
+		logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
+	}
+	logger.Info("ollama state", "state", ollamaState, "endpoint", embedEndpoint)
+
+	if ollamaState == OllamaUnavailable {
+		// Graceful degradation: proceed without embeddings when Ollama is not installed.
+		logger.Info("semantic search unavailable — ollama not installed",
+			"install", "brew install ollama")
+		return nil, nil
+	}
+
+	// Ollama is running (External or Managed) — check model availability.
+	// This remains a hard error: the user has Ollama but hasn't pulled the model.
 	embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
 	if !embedder.Available() {
 		return nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey index --no-embeddings",
@@ -1332,25 +1350,22 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 
 	section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
 
-	// Ollama reachability.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	// Ollama state check via ensureOllama (autoStart=false for doctor —
+	// doctor is diagnostic-only, it should never start subprocesses).
+	ollamaState, _ := ensureOllama(embedEndpoint, false, nil)
 	ollamaReachable := false
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, embedEndpoint+"/api/tags", nil)
-	if reqErr == nil {
-		resp, doErr := http.DefaultClient.Do(req)
-		if doErr == nil {
-			defer func() { _ = resp.Body.Close() }()
-			if resp.StatusCode == http.StatusOK {
-				ollamaReachable = true
-				c.printCheck(w, "PASS", "ollama", fmt.Sprintf("running (%s)", embedEndpoint))
-			} else {
-				c.printCheck(w, "FAIL", "ollama", fmt.Sprintf("status %d (%s)", resp.StatusCode, embedEndpoint))
-				dp("     Fix: ollama serve\n")
-			}
+	switch ollamaState {
+	case OllamaExternal:
+		ollamaReachable = true
+		c.printCheck(w, "PASS", "ollama", fmt.Sprintf("running (external) (%s)", embedEndpoint))
+	case OllamaUnavailable:
+		// Distinguish between "not running" (binary exists) and "not installed" (optional).
+		// Per composability principle: Ollama is optional, so absence is PASS, not FAIL.
+		if _, lookErr := exec.LookPath("ollama"); lookErr == nil {
+			c.printCheck(w, "WARN", "ollama", "not running")
+			dp("     Fix: ollama serve\n")
 		} else {
-			c.printCheck(w, "FAIL", "ollama", fmt.Sprintf("not reachable (%s)", embedEndpoint))
-			dp("     Fix: brew install --cask ollama-app && open -a Ollama\n")
+			c.printCheck(w, "PASS", "ollama", "not installed (optional)")
 		}
 	}
 

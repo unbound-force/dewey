@@ -1,13 +1,18 @@
 // PARALLEL SAFETY: Tests in this file MUST NOT use t.Parallel().
 // They mutate the package-level logger output for log assertions.
+// Some tests (TestEnsureOllama_BinaryNotFound) also manipulate PATH.
 package main
 
 import (
 	"bytes"
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,35 +422,233 @@ func TestInitObsidianBackend_NoEmbeddings_Succeeds(t *testing.T) {
 	}
 }
 
-// TestInitObsidianBackend_HardError_WhenOllamaUnavailable verifies that serve
-// fails with an actionable error when Ollama is unavailable and noEmbeddings is false.
-func TestInitObsidianBackend_HardError_WhenOllamaUnavailable(t *testing.T) {
+// TestInitObsidianBackend_GracefulDegradation_WhenOllamaUnavailable verifies that
+// serve succeeds in keyword-only mode when Ollama is unavailable (not running at
+// a remote endpoint). This tests the 007-ollama-autostart graceful degradation:
+// instead of a hard error, Dewey logs the unavailability and proceeds without
+// embeddings.
+func TestInitObsidianBackend_GracefulDegradation_WhenOllamaUnavailable(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Point to an unreachable Ollama endpoint.
-	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "http://localhost:99999")
+	// Point to a remote (non-local) unreachable endpoint so ensureOllama
+	// skips the auto-start attempt and returns OllamaUnavailable immediately.
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "http://remote-host:99999")
 	t.Setenv("DEWEY_EMBEDDING_MODEL", "granite-embedding:30m")
 
 	var logBuf bytes.Buffer
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	_, _, _, err := initObsidianBackend(tmpDir, "daily notes", false)
-	if err == nil {
-		t.Fatal("initObsidianBackend without noEmbeddings should fail when Ollama is unavailable")
+	_, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", false)
+	if err != nil {
+		t.Fatalf("initObsidianBackend should succeed with graceful degradation, got error: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
 	}
 
-	errMsg := err.Error()
-	// Error should contain the model name.
-	if !strings.Contains(errMsg, "granite-embedding:30m") {
-		t.Errorf("error should contain model name, got: %q", errMsg)
+	logOutput := logBuf.String()
+	// Should log that semantic search is unavailable.
+	if !strings.Contains(logOutput, "semantic search unavailable") {
+		t.Errorf("log should contain 'semantic search unavailable', got: %q", logOutput)
 	}
-	// Error should contain the ollama pull command.
-	if !strings.Contains(errMsg, "ollama pull") {
-		t.Errorf("error should contain 'ollama pull' fix, got: %q", errMsg)
+	// Should log the ollama state as unavailable.
+	if !strings.Contains(logOutput, "unavailable") {
+		t.Errorf("log should contain 'unavailable' state, got: %q", logOutput)
 	}
-	// Error should contain the --no-embeddings hint.
-	if !strings.Contains(errMsg, "--no-embeddings") {
-		t.Errorf("error should contain '--no-embeddings' hint, got: %q", errMsg)
+}
+
+// --- OllamaState tests (T011) ---
+
+// TestOllamaState_String verifies the String() method returns the correct
+// human-readable label for each OllamaState value, including unknown states.
+func TestOllamaState_String(t *testing.T) {
+	tests := []struct {
+		state OllamaState
+		want  string
+	}{
+		{OllamaExternal, "external"},
+		{OllamaManaged, "managed"},
+		{OllamaUnavailable, "unavailable"},
+		{OllamaState(99), "unknown"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.want, func(t *testing.T) {
+			got := tc.state.String()
+			if got != tc.want {
+				t.Errorf("OllamaState(%d).String() = %q, want %q", int(tc.state), got, tc.want)
+			}
+		})
+	}
+}
+
+// --- isLocalEndpoint tests (T012) ---
+
+// TestIsLocalEndpoint verifies that isLocalEndpoint correctly identifies
+// local vs remote endpoints across various URL formats.
+func TestIsLocalEndpoint(t *testing.T) {
+	tests := []struct {
+		endpoint string
+		want     bool
+	}{
+		{"http://localhost:11434", true},
+		{"http://127.0.0.1:11434", true},
+		{"http://[::1]:11434", true},
+		{"http://gpu-server:11434", false},
+		{"http://192.168.1.100:11434", false},
+		{"", true},        // empty hostname defaults to localhost
+		{"://bad", false}, // malformed URL
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.endpoint, func(t *testing.T) {
+			got := isLocalEndpoint(tc.endpoint)
+			if got != tc.want {
+				t.Errorf("isLocalEndpoint(%q) = %v, want %v", tc.endpoint, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- ollamaHealthCheck tests (T013) ---
+
+// TestOllamaHealthCheck_Healthy verifies that ollamaHealthCheck returns true
+// when the endpoint responds with HTTP 200 on /api/tags.
+func TestOllamaHealthCheck_Healthy(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if !ollamaHealthCheck(server.URL) {
+		t.Errorf("ollamaHealthCheck(%q) = false, want true", server.URL)
+	}
+}
+
+// TestOllamaHealthCheck_Unreachable verifies that ollamaHealthCheck returns
+// false when the endpoint is not reachable (port 0 = no listener).
+func TestOllamaHealthCheck_Unreachable(t *testing.T) {
+	if ollamaHealthCheck("http://127.0.0.1:0") {
+		t.Error("ollamaHealthCheck(unreachable) = true, want false")
+	}
+}
+
+// --- ensureOllama tests (T014-T018) ---
+
+// mockStarter records whether Start() was called, for testing ensureOllama
+// without launching real subprocesses.
+type mockStarter struct {
+	called bool
+}
+
+func (m *mockStarter) Start() error {
+	m.called = true
+	return nil
+}
+
+// TestEnsureOllama_AlreadyRunning verifies that when Ollama is already
+// reachable, ensureOllama returns OllamaExternal without calling Start().
+func TestEnsureOllama_AlreadyRunning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	mock := &mockStarter{}
+	state, err := ensureOllama(server.URL, true, mock)
+	if err != nil {
+		t.Fatalf("ensureOllama() error = %v, want nil", err)
+	}
+	if state != OllamaExternal {
+		t.Errorf("ensureOllama() state = %v, want OllamaExternal", state)
+	}
+	if mock.called {
+		t.Error("Start() should not be called when Ollama is already running")
+	}
+}
+
+// TestEnsureOllama_BinaryNotFound verifies that ensureOllama returns
+// OllamaUnavailable when the ollama binary is not in PATH.
+// PARALLEL SAFETY: Manipulates PATH, must not run in parallel.
+func TestEnsureOllama_BinaryNotFound(t *testing.T) {
+	// Save and restore PATH.
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", "")
+	defer func() { _ = os.Setenv("PATH", origPath) }()
+
+	mock := &mockStarter{}
+	state, err := ensureOllama("http://localhost:99999", true, mock)
+	if err != nil {
+		t.Fatalf("ensureOllama() error = %v, want nil", err)
+	}
+	if state != OllamaUnavailable {
+		t.Errorf("ensureOllama() state = %v, want OllamaUnavailable", state)
+	}
+	if mock.called {
+		t.Error("Start() should not be called when binary is not in PATH")
+	}
+}
+
+// TestEnsureOllama_RemoteEndpoint verifies that ensureOllama does not attempt
+// to start Ollama when the endpoint is a remote host (non-local).
+func TestEnsureOllama_RemoteEndpoint(t *testing.T) {
+	mock := &mockStarter{}
+	state, err := ensureOllama("http://gpu-server:11434", true, mock)
+	if err != nil {
+		t.Fatalf("ensureOllama() error = %v, want nil", err)
+	}
+	if state != OllamaUnavailable {
+		t.Errorf("ensureOllama() state = %v, want OllamaUnavailable", state)
+	}
+	if mock.called {
+		t.Error("Start() should not be called for remote endpoints")
+	}
+}
+
+// TestEnsureOllama_StartSuccess verifies that ensureOllama starts Ollama
+// and returns OllamaManaged when the binary is available and the server
+// becomes ready after starting.
+func TestEnsureOllama_StartSuccess(t *testing.T) {
+	// Skip if ollama binary is not in PATH — this test requires LookPath to succeed.
+	if _, err := exec.LookPath("ollama"); err != nil {
+		t.Skip("ollama not in PATH")
+	}
+
+	// Counter-based server: first health check fails (503), subsequent ones succeed (200).
+	// This simulates Ollama starting up after the subprocess is launched.
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	mock := &mockStarter{}
+	state, err := ensureOllama(server.URL, true, mock)
+	if err != nil {
+		t.Fatalf("ensureOllama() error = %v, want nil", err)
+	}
+	if state != OllamaManaged {
+		t.Errorf("ensureOllama() state = %v, want OllamaManaged", state)
+	}
+	if !mock.called {
+		t.Error("Start() should be called when Ollama needs to be started")
+	}
+}
+
+// TestEnsureOllama_AutoStartDisabled verifies that ensureOllama returns
+// OllamaUnavailable without panicking when autoStart is false and the
+// starter is nil (doctor mode).
+func TestEnsureOllama_AutoStartDisabled(t *testing.T) {
+	state, err := ensureOllama("http://localhost:99999", false, nil)
+	if err != nil {
+		t.Fatalf("ensureOllama() error = %v, want nil", err)
+	}
+	if state != OllamaUnavailable {
+		t.Errorf("ensureOllama() state = %v, want OllamaUnavailable", state)
 	}
 }

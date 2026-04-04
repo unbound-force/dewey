@@ -309,7 +309,7 @@ func TestNewServer_RegistersTools(t *testing.T) {
 		// Journal
 		"journal_range", "journal_search",
 		// Semantic
-		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+		"semantic_search", "similar", "semantic_search_filtered",
 		// Health
 		"health",
 	}
@@ -378,7 +378,7 @@ func TestNewServer_ReadOnlyMode(t *testing.T) {
 		"search", "query_properties", "find_by_tag",
 		"graph_overview", "find_connections", "knowledge_gaps", "list_orphans", "topic_clusters",
 		"journal_range", "journal_search",
-		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+		"semantic_search", "similar", "semantic_search_filtered",
 		"health",
 	}
 	for _, name := range readTools {
@@ -456,7 +456,7 @@ func TestNewServer_WithEmbedderOption(t *testing.T) {
 	tools := listServerTools(t, srv)
 
 	semanticTools := []string{
-		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+		"semantic_search", "similar", "semantic_search_filtered",
 	}
 	for _, name := range semanticTools {
 		if !containsTool(tools, name) {
@@ -491,7 +491,7 @@ func TestNewServer_WithPersistentStoreOption(t *testing.T) {
 
 	// Semantic tools should also be registered (they use the store).
 	for _, name := range []string{
-		"dewey_semantic_search", "dewey_similar", "dewey_semantic_search_filtered",
+		"semantic_search", "similar", "semantic_search_filtered",
 	} {
 		if !containsTool(tools, name) {
 			t.Errorf("semantic tool %q should be registered with persistent store option", name)

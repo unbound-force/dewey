@@ -332,17 +332,17 @@ func registerWhiteboardTools(srv *mcp.Server, whiteboard *tools.Whiteboard) {
 // registerSemanticTools registers vector-based semantic search tools.
 func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) {
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "dewey_semantic_search",
+		Name:        "semantic_search",
 		Description: "Find documents semantically similar to a natural language query, ranked by cosine similarity. Returns results with provenance metadata.",
 	}, semantic.SemanticSearch)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "dewey_similar",
+		Name:        "similar",
 		Description: "Given a document (by page name or block UUID), find the most similar documents in the index.",
 	}, semantic.Similar)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "dewey_semantic_search_filtered",
+		Name:        "semantic_search_filtered",
 		Description: "Semantic search constrained by metadata filters (source type, repository, properties).",
 	}, semantic.SemanticSearchFiltered)
 }
@@ -351,8 +351,8 @@ func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) {
 // agent learnings into the knowledge graph with optional embeddings.
 func registerLearningTools(srv *mcp.Server, learning *tools.Learning) {
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "dewey_store_learning",
-		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via dewey_semantic_search. Use to build semantic memory across sessions.",
+		Name:        "store_learning",
+		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via semantic_search. Use to build semantic memory across sessions.",
 	}, learning.StoreLearning)
 }
 

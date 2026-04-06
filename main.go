@@ -122,6 +122,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newReindexCmd())
 	rootCmd.AddCommand(newSourceCmd())
 	rootCmd.AddCommand(newDoctorCmd())
+	rootCmd.AddCommand(newManifestCmd())
 
 	return rootCmd
 }

@@ -64,6 +64,8 @@ func createSource(cfg SourceConfig, basePath, cacheDir string) Source {
 		return createGitHubSource(cfg)
 	case "web":
 		return createWebSource(cfg, cacheDir)
+	case "code":
+		return createCodeSource(cfg, basePath)
 	default:
 		logger.Warn("unknown source type, skipping", "type", cfg.Type, "id", cfg.ID)
 		return nil
@@ -98,6 +100,42 @@ func createDiskSource(cfg SourceConfig, basePath string) Source {
 	}
 
 	return NewDiskSource(cfg.ID, cfg.Name, path, opts...)
+}
+
+// createCodeSource creates a CodeSource from config, extracting path,
+// languages, and optional include/exclude/ignore/recursive settings
+// from the config map. Resolves the path relative to basePath when
+// configured as "." (same pattern as createDiskSource).
+func createCodeSource(cfg SourceConfig, basePath string) Source {
+	path := "."
+	if p, ok := cfg.Config["path"].(string); ok {
+		path = p
+	}
+	if path == "." {
+		path = basePath
+	}
+
+	languages := extractStringList(cfg.Config["languages"])
+
+	var opts []CodeSourceOption
+
+	if patterns := extractStringList(cfg.Config["ignore"]); len(patterns) > 0 {
+		opts = append(opts, WithCodeIgnorePatterns(patterns))
+	}
+
+	if patterns := extractStringList(cfg.Config["include"]); len(patterns) > 0 {
+		opts = append(opts, WithCodeInclude(patterns))
+	}
+
+	if patterns := extractStringList(cfg.Config["exclude"]); len(patterns) > 0 {
+		opts = append(opts, WithCodeExclude(patterns))
+	}
+
+	if r, ok := cfg.Config["recursive"].(bool); ok {
+		opts = append(opts, WithCodeRecursive(r))
+	}
+
+	return NewCodeSource(cfg.ID, cfg.Name, path, languages, opts...)
 }
 
 // createGitHubSource creates a GitHubSource from config, extracting the

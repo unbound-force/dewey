@@ -214,7 +214,34 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `--verbose` | `-v` | Enable debug logging (UUID seeds, block insertions, lock detection) |
 | `--log-file PATH` | | Write logs to file in addition to stderr |
 | `--no-embeddings` | | Skip embedding generation (on serve, index, reindex) |
-| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor) |
+| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor, manifest) |
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `dewey serve` | Start the MCP server (default when no subcommand) |
+| `dewey init` | Initialize `.dewey/` directory with config and sources |
+| `dewey index` | Build or update the knowledge graph index from configured sources |
+| `dewey reindex` | Delete and rebuild the index from scratch |
+| `dewey status` | Show index status (page/block/link counts, source info) |
+| `dewey search` | Full-text search across the knowledge graph |
+| `dewey source` | Manage content sources (add, list, remove) |
+| `dewey doctor` | Run diagnostic checks on the index and environment |
+| `dewey manifest` | Generate `.dewey/manifest.md` — a structured summary of CLI commands, MCP tools, and exported packages discovered via AST parsing of Go source files |
+| `dewey journal` | Append a block to a Logseq journal page |
+| `dewey add` | Append a block to a named Logseq page |
+
+### Content Source Types
+
+| Type | Description | Required Config |
+|------|-------------|-----------------|
+| `disk` | Local markdown files | `path` |
+| `github` | GitHub issues, PRs, discussions | `org`, `repos` |
+| `web` | Web page crawling | `urls` |
+| `code` | Source code indexing via language-aware AST chunking | `path`, `languages` |
+
+The `code` source type uses the `chunker/` package to parse source files and extract high-signal blocks (exported functions, types, constants, Cobra commands, MCP tool registrations). Each source file produces one Document with markdown-formatted declarations. Test files (e.g., `*_test.go`) are automatically excluded.
 
 ## Architecture
 
@@ -222,7 +249,7 @@ MCP server + CLI tool with flat package layout:
 
 ```text
 main.go              # Entry point, Cobra root command, serve logic
-cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor)
+cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest)
 server.go            # MCP server setup, 40 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
@@ -234,7 +261,8 @@ parser/              # Content parser (wikilinks, tags, properties)
 graph/               # In-memory graph construction + algorithms
 store/               # SQLite persistence layer (pages, blocks, links, embeddings, sources)
 embed/               # Embedding generation (Ollama client, chunker)
-source/              # Pluggable content sources (disk, GitHub, web crawl, manager)
+source/              # Pluggable content sources (disk, GitHub, web crawl, code, manager)
+chunker/             # Language-aware source code parsing (Chunker interface, Go implementation, registry)
 ```
 
 ### Key Patterns
@@ -300,6 +328,7 @@ Specs are numbered with 3-digit zero-padded prefixes:
 specs/
   001-core-implementation/     # Persistence, vector search, content sources, CLI (Complete)
   002-quality-ratchets/        # Gaze CI, CRAPload reduction, contract coverage (In Progress)
+  010-code-source-index/       # Code source indexing, Go chunker, manifest generation (In Progress)
 ```
 
 ## Active Technologies
@@ -313,6 +342,8 @@ specs/
 - Go 1.25 (per `go.mod`) + `github.com/fsnotify/fsnotify` (file watcher), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `gopkg.in/yaml.v3` (config parsing) (006-unified-ignore)
 - N/A (no storage changes — this feature modifies filesystem walking, not the SQLite store) (006-unified-ignore)
 - Go 1.25 (per `go.mod`) + `os/exec` (subprocess), `net/http` (health check), `github.com/charmbracelet/log` (logging), `github.com/spf13/cobra` (CLI) (007-ollama-autostart)
+- Go 1.25 (per `go.mod`) + `go/parser`, `go/ast`, `go/token`, `go/format` (all stdlib — AST parsing for code chunking), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging) (010-code-source-index)
+- N/A (no storage changes — code source documents flow through existing SQLite pipeline) (010-code-source-index)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 

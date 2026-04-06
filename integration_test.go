@@ -4,12 +4,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	_ "github.com/unbound-force/dewey/chunker" // Register Go chunker for code source tests.
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/vault"
@@ -511,5 +513,218 @@ func TestEndToEnd_GitignoreRespected(t *testing.T) {
 			names = append(names, p.Name)
 		}
 		t.Errorf("expected 1 page in vault index, got %d: %v", len(pages), names)
+	}
+}
+
+// TestEndToEnd_CodeSourceIndex verifies the full code source pipeline:
+// configure a type:code source → fetch documents → index into store →
+// verify pages and blocks contain exported declarations.
+//
+// This validates SC-001 (CLI command discovery) and SC-002 (API discovery)
+// from spec 010-code-source-index.
+//
+// PARALLEL SAFETY: This test does NOT use os.Chdir or mutate process-global
+// state. All paths are relative to t.TempDir(). It can run in parallel.
+func TestEndToEnd_CodeSourceIndex(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Step 1: Create a Go source file with an exported function + doc comment.
+	// This is the file that should be indexed by the code source.
+	libContent := `package mathlib
+
+// Add returns the sum of two integers.
+// It handles arbitrary int values.
+func Add(a, b int) int {
+	return a + b
+}
+
+// Subtract returns the difference of two integers.
+func Subtract(a, b int) int {
+	return a - b
+}
+
+// internal is unexported and should NOT appear in the index.
+func internal() {}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "lib.go"), []byte(libContent), 0o644); err != nil {
+		t.Fatalf("write lib.go: %v", err)
+	}
+
+	// Create a test file — should be excluded by the code source (FR-014).
+	testContent := `package mathlib
+
+import "testing"
+
+func TestAdd(t *testing.T) {
+	if Add(1, 2) != 3 {
+		t.Error("expected 3")
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "lib_test.go"), []byte(testContent), 0o644); err != nil {
+		t.Fatalf("write lib_test.go: %v", err)
+	}
+
+	// Step 2: Create .dewey/ directory with sources.yaml and config.yaml.
+	deweyDir := filepath.Join(tmpDir, ".dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .dewey: %v", err)
+	}
+
+	sourcesYAML := `sources:
+  - id: code-local
+    type: code
+    name: local-code
+    config:
+      path: "` + tmpDir + `"
+      languages:
+        - go
+`
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesYAML), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte("embedding:\n  model: test\n"), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	// Step 3: Run the indexing pipeline manually (same pattern as
+	// TestEndToEnd_ExternalPagesSurviveServeStartup).
+	dbPath := filepath.Join(deweyDir, "graph.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Load sources config.
+	configs, err := source.LoadSourcesConfig(filepath.Join(deweyDir, "sources.yaml"))
+	if err != nil {
+		t.Fatalf("load sources config: %v", err)
+	}
+	if len(configs) != 1 {
+		t.Fatalf("expected 1 source config, got %d", len(configs))
+	}
+	if configs[0].Type != "code" {
+		t.Fatalf("expected source type 'code', got %q", configs[0].Type)
+	}
+
+	// Create source manager and fetch documents.
+	mgr := source.NewManager(configs, tmpDir, filepath.Join(deweyDir, "cache"))
+	result, allDocs := mgr.FetchAll("", true, nil)
+
+	if result.TotalErrs > 0 {
+		t.Fatalf("fetch had %d errors", result.TotalErrs)
+	}
+
+	docs, ok := allDocs["code-local"]
+	if !ok || len(docs) == 0 {
+		t.Fatal("no documents fetched from code-local source")
+	}
+
+	// Step 4: Index documents into the store (same pipeline as cli.go indexDocuments).
+	for _, doc := range docs {
+		pageName := strings.ToLower("code-local/" + doc.ID)
+
+		_, blocks := vault.ParseDocument(pageName, doc.Content)
+
+		page := &store.Page{
+			Name:        pageName,
+			SourceID:    "code-local",
+			SourceDocID: doc.ID,
+			ContentHash: doc.ContentHash,
+			CreatedAt:   doc.FetchedAt.UnixMilli(),
+			UpdatedAt:   doc.FetchedAt.UnixMilli(),
+		}
+		if err := s.InsertPage(page); err != nil {
+			t.Fatalf("insert page %q: %v", pageName, err)
+		}
+
+		if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
+			t.Fatalf("persist blocks for %q: %v", pageName, err)
+		}
+
+		if err := vault.PersistLinks(s, pageName, blocks); err != nil {
+			t.Fatalf("persist links for %q: %v", pageName, err)
+		}
+	}
+
+	// Step 5: Verify the store has pages from the code source.
+	pages, err := s.ListPagesBySource("code-local")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) == 0 {
+		t.Fatal("expected at least 1 page from code-local source, got 0")
+	}
+
+	// Verify lib.go was indexed (page name is namespaced: code-local/lib.go).
+	foundLib := false
+	for _, p := range pages {
+		if strings.Contains(p.Name, "lib.go") {
+			foundLib = true
+		}
+	}
+	if !foundLib {
+		names := make([]string, 0, len(pages))
+		for _, p := range pages {
+			names = append(names, p.Name)
+		}
+		t.Errorf("expected a page containing 'lib.go', got pages: %v", names)
+	}
+
+	// Step 6: Verify the page content contains the exported function signature.
+	// The code source formats blocks as markdown with ## headings per declaration.
+	libPageName := strings.ToLower("code-local/lib.go")
+	blocks, err := s.GetBlocksByPage(libPageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(%q): %v", libPageName, err)
+	}
+	if len(blocks) == 0 {
+		t.Fatalf("expected blocks for %q, got 0", libPageName)
+	}
+
+	// Collect all block content to search for expected declarations.
+	var allContent strings.Builder
+	for _, b := range blocks {
+		allContent.WriteString(b.Content)
+		allContent.WriteString("\n")
+	}
+	content := allContent.String()
+
+	// Exported function Add should be present.
+	if !strings.Contains(content, "Add") {
+		t.Error("expected block content to contain exported function 'Add'")
+	}
+
+	// Exported function Subtract should be present.
+	if !strings.Contains(content, "Subtract") {
+		t.Error("expected block content to contain exported function 'Subtract'")
+	}
+
+	// Doc comment should be preserved.
+	if !strings.Contains(content, "returns the sum") {
+		t.Error("expected block content to contain doc comment 'returns the sum'")
+	}
+
+	// Step 7: Verify test file content is NOT in the store.
+	// The code source should skip *_test.go files (FR-014).
+	testPageName := strings.ToLower("code-local/lib_test.go")
+	testBlocks, err := s.GetBlocksByPage(testPageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(%q): %v", testPageName, err)
+	}
+	if len(testBlocks) > 0 {
+		t.Error("test file lib_test.go should NOT be indexed, but found blocks for it")
+	}
+
+	// Also verify no page exists for the test file.
+	testPage, _ := s.GetPage(testPageName)
+	if testPage != nil {
+		t.Error("test file lib_test.go should NOT have a page in the store")
+	}
+
+	// Verify unexported function is not in the content.
+	if strings.Contains(content, "internal") {
+		t.Error("unexported function 'internal' should NOT appear in indexed content")
 	}
 }

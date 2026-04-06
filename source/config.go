@@ -112,6 +112,17 @@ func validateSourceConfig(src *SourceConfig) error {
 		if _, ok := src.Config["urls"]; !ok {
 			return fmt.Errorf("web source requires 'urls' in config")
 		}
+	case "code":
+		// Code sources require path and languages.
+		if src.Config == nil {
+			return fmt.Errorf("code source requires config with 'path' and 'languages'")
+		}
+		if p, ok := src.Config["path"].(string); !ok || p == "" {
+			return fmt.Errorf("code source requires 'path' in config")
+		}
+		if langs := extractStringList(src.Config["languages"]); len(langs) == 0 {
+			return fmt.Errorf("code source requires 'languages' in config")
+		}
 	default:
 		return fmt.Errorf("unknown source type: %s", src.Type)
 	}

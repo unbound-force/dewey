@@ -161,7 +161,7 @@ func newSearchCmd() *cobra.Command {
 			}
 
 			// If persistent store exists, load external-source pages from graph.db.
-			deweyDir := filepath.Join(vp, ".dewey")
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 			if _, err := os.Stat(deweyDir); err == nil {
 				dbPath := filepath.Join(deweyDir, "graph.db")
 				s, err := store.New(dbPath)
@@ -205,7 +205,7 @@ func newSearchCmd() *cobra.Command {
 }
 
 // newInitCmd creates the `dewey init` subcommand.
-// Initializes a .dewey/ directory with default configuration.
+// Initializes a .uf/dewey/ directory with default configuration.
 // Idempotent — running twice does not error (per CLI contract).
 func newInitCmd() *cobra.Command {
 	var vaultPath string
@@ -213,7 +213,7 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize Dewey configuration",
-		Long:  "Create .dewey/ directory with default config.yaml and sources.yaml.",
+		Long:  "Create .uf/dewey/ directory with default config.yaml and sources.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if vaultPath == "" {
 				var err error
@@ -223,7 +223,7 @@ func newInitCmd() *cobra.Command {
 				}
 			}
 
-			deweyDir := filepath.Join(vaultPath, ".dewey")
+			deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
 
 			// Check if already initialized (idempotent).
 			if _, err := os.Stat(deweyDir); err == nil {
@@ -231,9 +231,9 @@ func newInitCmd() *cobra.Command {
 				return nil
 			}
 
-			// Create .dewey/ directory.
+			// Create .uf/dewey/ directory (MkdirAll creates .uf/ parent too — D3).
 			if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-				return fmt.Errorf("create .dewey/ directory: %w", err)
+				return fmt.Errorf("create .uf/dewey/ directory: %w", err)
 			}
 
 			// Write default config.yaml.
@@ -267,7 +267,7 @@ sources:
 				return fmt.Errorf("write sources.yaml: %w", err)
 			}
 
-			// Append granular .dewey/ runtime artifact patterns to .gitignore.
+			// Append granular .uf/dewey/ runtime artifact patterns to .gitignore.
 			// Only runtime artifacts (db, log, lock) are ignored — sources.yaml
 			// and config.yaml remain trackable for team sharing.
 			gitignorePath := filepath.Join(vaultPath, ".gitignore")
@@ -276,24 +276,27 @@ sources:
 				if err == nil {
 					text := string(content)
 					switch {
+					case strings.Contains(text, ".uf/dewey/graph.db"):
+						// Current granular patterns already present — skip.
 					case strings.Contains(text, ".dewey/graph.db"):
-						// New granular patterns already present — skip.
+						// Old granular patterns — inform user to update.
+						logger.Info("old .dewey/ gitignore patterns found — update to .uf/dewey/ patterns")
 					case strings.Contains(text, ".dewey/"):
 						// Legacy blanket pattern — don't modify, inform user.
-						logger.Info("existing .dewey/ gitignore pattern found — update manually to track sources.yaml and config.yaml")
+						logger.Info("existing .dewey/ gitignore pattern found — update to .uf/dewey/ patterns")
 					default:
-						// No .dewey patterns — append granular patterns.
+						// No dewey patterns — append granular patterns.
 						f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
 						if err == nil {
 							defer func() { _ = f.Close() }()
 							if len(content) > 0 && content[len(content)-1] != '\n' {
 								_, _ = f.WriteString("\n")
 							}
-							_, _ = f.WriteString(".dewey/graph.db\n")
-							_, _ = f.WriteString(".dewey/graph.db-shm\n")
-							_, _ = f.WriteString(".dewey/graph.db-wal\n")
-							_, _ = f.WriteString(".dewey/dewey.log\n")
-							_, _ = f.WriteString(".dewey/.dewey.lock\n")
+							_, _ = f.WriteString(".uf/dewey/graph.db\n")
+							_, _ = f.WriteString(".uf/dewey/graph.db-shm\n")
+							_, _ = f.WriteString(".uf/dewey/graph.db-wal\n")
+							_, _ = f.WriteString(".uf/dewey/dewey.log\n")
+							_, _ = f.WriteString(".uf/dewey/dewey.lock\n")
 						}
 					}
 				}
@@ -360,7 +363,7 @@ func newStatusCmd() *cobra.Command {
 				return err
 			}
 
-			deweyDir := filepath.Join(vp, ".dewey")
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
 				return fmt.Errorf("not initialized. Run 'dewey init' first")
 			}
@@ -617,7 +620,7 @@ Fetches content from all configured sources and indexes it.`,
 				return err
 			}
 
-			deweyDir := filepath.Join(vp, ".dewey")
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
 				return fmt.Errorf("not initialized. Run 'dewey init' first")
 			}
@@ -703,13 +706,13 @@ func newReindexCmd() *cobra.Command {
 		Short: "Delete and rebuild the index from scratch",
 		Long: `Remove the existing graph.db and rebuild the index from scratch.
 
-This is equivalent to manually deleting .dewey/graph.db and its WAL/SHM
+This is equivalent to manually deleting .uf/dewey/graph.db and its WAL/SHM
 files, then running 'dewey index --force'. Use this when:
   - Upgrading Dewey to a version with schema or indexing changes
   - The index is corrupted (UUID collisions, foreign key errors)
   - You want a guaranteed clean slate
 
-The command removes: graph.db, graph.db-wal, graph.db-shm, .dewey.lock`,
+The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reindexStart := time.Now()
@@ -718,7 +721,7 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, .dewey.lock`,
 				return err
 			}
 
-			deweyDir := filepath.Join(vp, ".dewey")
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
 				return fmt.Errorf("not initialized. Run 'dewey init' first")
 			}
@@ -728,7 +731,7 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, .dewey.lock`,
 			// Acquire the lock FIRST to prevent TOCTOU race conditions.
 			// If another dewey process holds the lock, we fail immediately
 			// instead of checking and then racing to remove files.
-			lockPath := filepath.Join(deweyDir, ".dewey.lock")
+			lockPath := filepath.Join(deweyDir, "dewey.lock")
 			lockFile, lockErr := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 			if lockErr == nil {
 				if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -829,7 +832,7 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, .dewey.lock`,
 	return cmd
 }
 
-// detectLockHolder checks if the .dewey.lock file is held by another process.
+// detectLockHolder checks if the dewey.lock file is held by another process.
 // Returns a description of the holder (e.g., "PID 12345 dewey serve --vault /path")
 // or empty string if unlocked. When the lock is held but no PID was written
 // (pre-T011 lock files), returns a generic "lock held" message.
@@ -1258,11 +1261,11 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 
 	// --- Workspace ---
 	section("Workspace")
-	deweyDir := filepath.Join(vaultPath, ".dewey")
+	deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
 	if _, err := os.Stat(deweyDir); err == nil {
-		c.printCheck(w, "PASS", ".dewey/", fmt.Sprintf("initialized (%s)", deweyDir))
+		c.printCheck(w, "PASS", ".uf/dewey/", fmt.Sprintf("initialized (%s)", deweyDir))
 	} else {
-		c.printCheck(w, "FAIL", ".dewey/", "not found")
+		c.printCheck(w, "FAIL", ".uf/dewey/", "not found")
 		dp("     Fix: dewey init --vault %s\n", vaultPath)
 		dp("\n")
 		printSummaryBox(w, c)
@@ -1421,7 +1424,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	section("MCP Server")
 
 	// Check if a dewey serve process is running (consolidated lock check per D5).
-	lockPath := filepath.Join(deweyDir, ".dewey.lock")
+	lockPath := filepath.Join(deweyDir, "dewey.lock")
 	if _, err := os.Stat(lockPath); err == nil {
 		holder := detectLockHolder(lockPath)
 		if holder != "" {
@@ -1498,7 +1501,7 @@ Examples:
 				return fmt.Errorf("get working directory: %w", err)
 			}
 
-			deweyDir := filepath.Join(cwd, ".dewey")
+			deweyDir := filepath.Join(cwd, deweyWorkspaceDir)
 			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
 				return fmt.Errorf("not initialized. Run 'dewey init' first")
 			}
@@ -1629,7 +1632,7 @@ func buildWebSource(webURL, webName, refresh string, depth int) (source.SourceCo
 
 // newManifestCmd creates the `dewey manifest` subcommand.
 // Walks Go source files in the vault path, runs the chunker to extract
-// declarations, and generates .dewey/manifest.md with sections for CLI
+// declarations, and generates .uf/dewey/manifest.md with sections for CLI
 // Commands, MCP Tools, and Exported Packages. Empty sections are omitted.
 // Per contracts/manifest-command.md.
 func newManifestCmd() *cobra.Command {
@@ -1638,7 +1641,7 @@ func newManifestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "manifest",
 		Short: "Generate project manifest from source code",
-		Long: `Walk Go source files and generate .dewey/manifest.md with sections
+		Long: `Walk Go source files and generate .uf/dewey/manifest.md with sections
 for CLI Commands, MCP Tools, and Exported Packages.
 
 The manifest uses the same chunker infrastructure as the code source indexer.
@@ -1657,9 +1660,9 @@ It is idempotent — running twice produces the same output for the same input.`
 
 			manifestContent := formatManifest(blocks)
 
-			deweyDir := filepath.Join(vp, ".dewey")
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 			if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-				return fmt.Errorf("create .dewey/ directory: %w", err)
+				return fmt.Errorf("create .uf/dewey/ directory: %w", err)
 			}
 
 			manifestPath := filepath.Join(deweyDir, "manifest.md")

@@ -10,7 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SourceConfig represents a single source entry from .dewey/sources.yaml.
+// SourceConfig represents a single source entry from .uf/dewey/sources.yaml.
 type SourceConfig struct {
 	ID              string         `yaml:"id"`
 	Type            string         `yaml:"type"`
@@ -19,13 +19,13 @@ type SourceConfig struct {
 	RefreshInterval string         `yaml:"refresh_interval,omitempty"`
 }
 
-// SourcesFile represents the top-level structure of .dewey/sources.yaml.
+// SourcesFile represents the top-level structure of .uf/dewey/sources.yaml.
 type SourcesFile struct {
 	Sources []SourceConfig `yaml:"sources"`
 }
 
 // LoadSourcesConfig reads and parses the sources configuration file at
-// the given path (typically .dewey/sources.yaml). Returns (nil, nil) if
+// the given path (typically .uf/dewey/sources.yaml). Returns (nil, nil) if
 // the file does not exist. Validates each source entry for required
 // fields and type-specific configuration.
 //
@@ -56,7 +56,7 @@ func LoadSourcesConfig(path string) ([]SourceConfig, error) {
 }
 
 // SaveSourcesConfig writes the sources configuration to the given path
-// (typically .dewey/sources.yaml) with a descriptive YAML header comment.
+// (typically .uf/dewey/sources.yaml) with a descriptive YAML header comment.
 // Overwrites any existing file at the path.
 //
 // Returns an error if the configuration cannot be marshaled to YAML or

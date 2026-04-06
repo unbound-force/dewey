@@ -221,14 +221,14 @@ Always run tests with `-race -count=1`. CI enforces this.
 | Command | Description |
 |---------|-------------|
 | `dewey serve` | Start the MCP server (default when no subcommand) |
-| `dewey init` | Initialize `.dewey/` directory with config and sources |
+| `dewey init` | Initialize `.uf/dewey/` directory with config and sources |
 | `dewey index` | Build or update the knowledge graph index from configured sources |
 | `dewey reindex` | Delete and rebuild the index from scratch |
 | `dewey status` | Show index status (page/block/link counts, source info) |
 | `dewey search` | Full-text search across the knowledge graph |
 | `dewey source` | Manage content sources (add, list, remove) |
 | `dewey doctor` | Run diagnostic checks on the index and environment |
-| `dewey manifest` | Generate `.dewey/manifest.md` — a structured summary of CLI commands, MCP tools, and exported packages discovered via AST parsing of Go source files |
+| `dewey manifest` | Generate `.uf/dewey/manifest.md` — a structured summary of CLI commands, MCP tools, and exported packages discovered via AST parsing of Go source files |
 | `dewey journal` | Append a block to a Logseq journal page |
 | `dewey add` | Append a block to a named Logseq page |
 
@@ -332,11 +332,11 @@ specs/
 ```
 
 ## Active Technologies
-- SQLite via `modernc.org/sqlite` -- single database `.dewey/graph.db` containing the knowledge graph index (pages, blocks, links) and vector embeddings (001-core-implementation)
+- SQLite via `modernc.org/sqlite` -- single database `.uf/dewey/graph.db` containing the knowledge graph index (pages, blocks, links) and vector embeddings (001-core-implementation)
 - Go 1.25 (per `go.mod`) + Gaze v1.4.6 (`go install github.com/unbound-force/gaze/cmd/gaze@latest`) (002-quality-ratchets)
 - N/A (quality improvement, no storage changes) (002-quality-ratchets)
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` (pure-Go SQLite), `github.com/modelcontextprotocol/go-sdk` (MCP), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `github.com/k3a/html2text` (web crawl) (004-unified-content-serve)
-- SQLite via `modernc.org/sqlite` — single database `.dewey/graph.db` containing pages, blocks, links, embeddings, sources, metadata tables (004-unified-content-serve)
+- SQLite via `modernc.org/sqlite` — single database `.uf/dewey/graph.db` containing pages, blocks, links, embeddings, sources, metadata tables (004-unified-content-serve)
 - Go 1.25 (per `go.mod`) + `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `github.com/mattn/go-runewidth` (terminal width — already used by summary box) (005-doctor-emoji-markers)
 - N/A (no storage changes) (005-doctor-emoji-markers)
 - Go 1.25 (per `go.mod`) + `github.com/fsnotify/fsnotify` (file watcher), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging), `gopkg.in/yaml.v3` (config parsing) (006-unified-ignore)

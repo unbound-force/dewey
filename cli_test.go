@@ -219,7 +219,7 @@ func TestReadContentFromArgs_Empty(t *testing.T) {
 
 // --- Init command tests ---
 
-// TestInitCmd_CreatesDirectory verifies dewey init creates .dewey/ directory.
+// TestInitCmd_CreatesDirectory verifies dewey init creates .uf/dewey/ directory.
 func TestInitCmd_CreatesDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -230,9 +230,9 @@ func TestInitCmd_CreatesDirectory(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
-		t.Fatal(".dewey/ directory was not created")
+		t.Fatal(".uf/dewey/ directory was not created")
 	}
 }
 
@@ -246,7 +246,7 @@ func TestInitCmd_DefaultConfig(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	configPath := filepath.Join(tmpDir, ".dewey", "config.yaml")
+	configPath := filepath.Join(tmpDir, deweyWorkspaceDir, "config.yaml")
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config.yaml: %v", err)
@@ -271,7 +271,7 @@ func TestInitCmd_DefaultSources(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	sourcesPath := filepath.Join(tmpDir, ".dewey", "sources.yaml")
+	sourcesPath := filepath.Join(tmpDir, deweyWorkspaceDir, "sources.yaml")
 	content, err := os.ReadFile(sourcesPath)
 	if err != nil {
 		t.Fatalf("read sources.yaml: %v", err)
@@ -305,11 +305,11 @@ func TestInitCmd_Idempotent(t *testing.T) {
 	}
 }
 
-// TestInitCmd_GitignoreAppend verifies granular .dewey/ patterns are added to .gitignore.
+// TestInitCmd_GitignoreAppend verifies granular .uf/dewey/ patterns are added to .gitignore.
 func TestInitCmd_GitignoreAppend(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a .gitignore without any .dewey patterns.
+	// Create a .gitignore without any dewey patterns.
 	gitignorePath := filepath.Join(tmpDir, ".gitignore")
 	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
@@ -327,17 +327,17 @@ func TestInitCmd_GitignoreAppend(t *testing.T) {
 	}
 	text := string(content)
 	// Verify granular runtime artifact patterns.
-	for _, pattern := range []string{".dewey/graph.db", ".dewey/graph.db-shm", ".dewey/graph.db-wal", ".dewey/dewey.log", ".dewey/.dewey.lock"} {
+	for _, pattern := range []string{".uf/dewey/graph.db", ".uf/dewey/graph.db-shm", ".uf/dewey/graph.db-wal", ".uf/dewey/dewey.log", ".uf/dewey/dewey.lock"} {
 		if !strings.Contains(text, pattern) {
 			t.Errorf(".gitignore should contain %q, got:\n%s", pattern, text)
 		}
 	}
-	// Verify the blanket .dewey/ is NOT written.
-	// Check that ".dewey/" only appears as part of the granular patterns, not standalone.
+	// Verify the blanket .uf/dewey/ is NOT written.
+	// Check that ".uf/dewey/" only appears as part of the granular patterns, not standalone.
 	lines := strings.Split(text, "\n")
 	for _, line := range lines {
-		if strings.TrimSpace(line) == ".dewey/" {
-			t.Errorf(".gitignore should NOT contain blanket '.dewey/', got:\n%s", text)
+		if strings.TrimSpace(line) == ".uf/dewey/" {
+			t.Errorf(".gitignore should NOT contain blanket '.uf/dewey/', got:\n%s", text)
 		}
 	}
 }
@@ -348,7 +348,7 @@ func TestInitCmd_GitignoreAlreadyPresent(t *testing.T) {
 
 	// Create a .gitignore that already has the new granular patterns.
 	gitignorePath := filepath.Join(tmpDir, ".gitignore")
-	existing := ".dewey/graph.db\n.dewey/graph.db-shm\n.dewey/graph.db-wal\n.dewey/dewey.log\n.dewey/.dewey.lock\n"
+	existing := ".uf/dewey/graph.db\n.uf/dewey/graph.db-shm\n.uf/dewey/graph.db-wal\n.uf/dewey/dewey.log\n.uf/dewey/dewey.lock\n"
 	if err := os.WriteFile(gitignorePath, []byte(existing), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
@@ -364,9 +364,9 @@ func TestInitCmd_GitignoreAlreadyPresent(t *testing.T) {
 		t.Fatalf("read .gitignore: %v", err)
 	}
 	// Count occurrences of the key pattern — should be exactly 1 (no duplicate).
-	count := strings.Count(string(content), ".dewey/graph.db\n")
+	count := strings.Count(string(content), ".uf/dewey/graph.db\n")
 	if count != 1 {
-		t.Errorf(".dewey/graph.db appears %d times in .gitignore, want 1", count)
+		t.Errorf(".uf/dewey/graph.db appears %d times in .gitignore, want 1", count)
 	}
 }
 
@@ -396,15 +396,15 @@ func TestInitCmd_GitignoreLegacyPattern(t *testing.T) {
 	if !strings.Contains(text, ".dewey/\n") {
 		t.Errorf("legacy .dewey/ pattern should be preserved, got:\n%s", text)
 	}
-	// New patterns should NOT be added alongside legacy.
-	if strings.Contains(text, ".dewey/graph.db") {
+	// New .uf/dewey/ patterns should NOT be added alongside legacy.
+	if strings.Contains(text, ".uf/dewey/graph.db") {
 		t.Errorf("granular patterns should NOT be added when legacy pattern exists, got:\n%s", text)
 	}
 }
 
 // --- Status command tests ---
 
-// TestStatusCmd_Uninitialized verifies status fails when .dewey/ doesn't exist.
+// TestStatusCmd_Uninitialized verifies status fails when .uf/dewey/ doesn't exist.
 func TestStatusCmd_Uninitialized(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -430,7 +430,7 @@ func TestStatusCmd_TextOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Initialize.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -466,7 +466,7 @@ func TestStatusCmd_JSONOutput(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Initialize.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestRootCmd_Help_IncludesNewSubcommands(t *testing.T) {
 
 // --- Index command tests (T058B) ---
 
-// TestIndexCmd_Uninitialized verifies index fails when .dewey/ doesn't exist.
+// TestIndexCmd_Uninitialized verifies index fails when .uf/dewey/ doesn't exist.
 func TestIndexCmd_Uninitialized(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -576,8 +576,8 @@ func TestIndexCmd_HasFlags(t *testing.T) {
 func TestIndexCmd_WithDiskSource(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .dewey/ with sources.yaml.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Create .uf/dewey/ with sources.yaml.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestSourceAddCmd_GitHub(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Initialize.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestSourceAddCmd_GitHub(t *testing.T) {
 func TestSourceAddCmd_Web(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestSourceAddCmd_Web(t *testing.T) {
 func TestSourceAddCmd_DuplicateRejection(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestSourceAddCmd_DuplicateRejection(t *testing.T) {
 func TestSourceAddCmd_InvalidType(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -2387,7 +2387,7 @@ func TestIndexDocuments_CrossSourceUUIDUniqueness(t *testing.T) {
 // database files and rebuilds the index from scratch.
 func TestReindexCmd_CleanReindex(t *testing.T) {
 	tmpDir := t.TempDir()
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -2413,7 +2413,7 @@ func TestReindexCmd_CleanReindex(t *testing.T) {
 	}
 
 	// Create stale database files to simulate a dirty state.
-	for _, name := range []string{"graph.db", "graph.db-wal", "graph.db-shm", ".dewey.lock"} {
+	for _, name := range []string{"graph.db", "graph.db-wal", "graph.db-shm", "dewey.lock"} {
 		if err := os.WriteFile(filepath.Join(deweyDir, name), []byte("stale"), 0o644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
@@ -2450,7 +2450,7 @@ func TestReindexCmd_CleanReindex(t *testing.T) {
 }
 
 // TestReindexCmd_NotInitialized verifies that reindex fails with a clear
-// error when .dewey/ does not exist.
+// error when .uf/dewey/ does not exist.
 func TestReindexCmd_NotInitialized(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -2465,7 +2465,7 @@ func TestReindexCmd_NotInitialized(t *testing.T) {
 
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("reindex should fail without .dewey/")
+		t.Fatal("reindex should fail without .uf/dewey/")
 	}
 	if !strings.Contains(err.Error(), "not initialized") {
 		t.Errorf("error = %q, want to contain 'not initialized'", err.Error())
@@ -2608,14 +2608,14 @@ func TestPrintSummaryBox_Format(t *testing.T) {
 // --- Doctor command tests ---
 
 // TestDoctorCmd_WithInitializedVault verifies doctor reports pass for init
-// and store checks when .dewey/ and graph.db exist with pages.
+// and store checks when .uf/dewey/ and graph.db exist with pages.
 func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .dewey/ directory.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Create .uf/dewey/ directory.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 
 	// Create graph.db with a page.
@@ -2643,9 +2643,9 @@ func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 
 	output := buf.String()
 
-	// .dewey/ check should pass with emoji marker.
-	if !strings.Contains(output, "✅ .dewey/") {
-		t.Errorf("doctor should report .dewey/ pass, got:\n%s", output)
+	// .uf/dewey/ check should pass with emoji marker.
+	if !strings.Contains(output, "✅ .uf/dewey/") {
+		t.Errorf("doctor should report .uf/dewey/ pass, got:\n%s", output)
 	}
 
 	// Database section should show graph.db with page count.
@@ -2679,7 +2679,7 @@ func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 }
 
 // TestDoctorCmd_MissingDeweyDir verifies doctor reports fail with
-// `dewey init` fix when .dewey/ does not exist.
+// `dewey init` fix when .uf/dewey/ does not exist.
 func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -2694,9 +2694,9 @@ func TestDoctorCmd_MissingDeweyDir(t *testing.T) {
 
 	output := buf.String()
 
-	// .dewey/ check should fail with emoji marker.
-	if !strings.Contains(output, "❌ .dewey/") {
-		t.Errorf("doctor should report .dewey/ fail, got:\n%s", output)
+	// .uf/dewey/ check should fail with emoji marker.
+	if !strings.Contains(output, "❌ .uf/dewey/") {
+		t.Errorf("doctor should report .uf/dewey/ fail, got:\n%s", output)
 	}
 
 	// Fix should mention dewey init.
@@ -2743,7 +2743,7 @@ func TestInitCmd_SourcesYAMLContainsRecursiveComment(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	sourcesPath := filepath.Join(tmpDir, ".dewey", "sources.yaml")
+	sourcesPath := filepath.Join(tmpDir, deweyWorkspaceDir, "sources.yaml")
 	content, err := os.ReadFile(sourcesPath)
 	if err != nil {
 		t.Fatalf("read sources.yaml: %v", err)
@@ -2768,10 +2768,10 @@ func TestInitCmd_SourcesYAMLContainsRecursiveComment(t *testing.T) {
 func TestDoctorCmd_VerboseIgnoreReporting(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .dewey/ directory so doctor doesn't exit early.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Create .uf/dewey/ directory so doctor doesn't exit early.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 
 	// Create config.yaml (expected by doctor).
@@ -2833,10 +2833,10 @@ func TestDoctorCmd_VerboseIgnoreReporting(t *testing.T) {
 func TestDoctorCmd_NonVerboseNoIgnoreReport(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .dewey/ directory so doctor doesn't exit early.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Create .uf/dewey/ directory so doctor doesn't exit early.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 
 	// Create .gitignore with a pattern.
@@ -2872,7 +2872,7 @@ func TestDoctorCmd_NonVerboseNoIgnoreReport(t *testing.T) {
 // --- Manifest command tests (T009) ---
 
 // TestManifestCmd_GeneratesManifest verifies that `dewey manifest` creates
-// .dewey/manifest.md with expected sections when Go source files containing
+// .uf/dewey/manifest.md with expected sections when Go source files containing
 // a Cobra command and an exported function are present.
 func TestManifestCmd_GeneratesManifest(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -2906,8 +2906,8 @@ func ExportedFunc() string {
 		t.Fatalf("manifest failed: %v", err)
 	}
 
-	// Verify .dewey/manifest.md exists.
-	manifestPath := filepath.Join(tmpDir, ".dewey", "manifest.md")
+	// Verify .uf/dewey/manifest.md exists.
+	manifestPath := filepath.Join(tmpDir, deweyWorkspaceDir, "manifest.md")
 	content, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("read manifest.md: %v", err)
@@ -2962,7 +2962,7 @@ func registerTools(srv *mcp.Server) {
 		t.Fatalf("manifest failed: %v", err)
 	}
 
-	manifestPath := filepath.Join(tmpDir, ".dewey", "manifest.md")
+	manifestPath := filepath.Join(tmpDir, deweyWorkspaceDir, "manifest.md")
 	content, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("read manifest.md: %v", err)
@@ -2998,7 +2998,7 @@ func TestManifestCmd_EmptyRepo(t *testing.T) {
 		t.Fatalf("manifest should not fail on empty repo: %v", err)
 	}
 
-	manifestPath := filepath.Join(tmpDir, ".dewey", "manifest.md")
+	manifestPath := filepath.Join(tmpDir, deweyWorkspaceDir, "manifest.md")
 	content, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("read manifest.md: %v", err)
@@ -3038,7 +3038,7 @@ func TestHelper() string {
 		t.Fatalf("manifest should not fail: %v", err)
 	}
 
-	manifestPath := filepath.Join(tmpDir, ".dewey", "manifest.md")
+	manifestPath := filepath.Join(tmpDir, deweyWorkspaceDir, "manifest.md")
 	content, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("read manifest.md: %v", err)
@@ -3072,7 +3072,7 @@ func DoWork() {}
 		t.Fatalf("manifest failed: %v", err)
 	}
 
-	manifestPath := filepath.Join(tmpDir, ".dewey", "manifest.md")
+	manifestPath := filepath.Join(tmpDir, deweyWorkspaceDir, "manifest.md")
 	content, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("read manifest.md: %v", err)
@@ -3114,7 +3114,7 @@ func Hello() string { return "hello" }
 		t.Fatalf("first manifest failed: %v", err)
 	}
 
-	manifestPath := filepath.Join(tmpDir, ".dewey", "manifest.md")
+	manifestPath := filepath.Join(tmpDir, deweyWorkspaceDir, "manifest.md")
 	content1, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatalf("read first manifest: %v", err)
@@ -3155,15 +3155,15 @@ func stripTimestampLine(content string) string {
 	return strings.Join(lines, "\n")
 }
 
-// TestManifestCmd_CreatesDirectory verifies that .dewey/ is created
+// TestManifestCmd_CreatesDirectory verifies that .uf/dewey/ is created
 // automatically if it doesn't exist.
 func TestManifestCmd_CreatesDirectory(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Verify .dewey/ doesn't exist yet.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Verify .uf/dewey/ doesn't exist yet.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if _, err := os.Stat(deweyDir); !os.IsNotExist(err) {
-		t.Fatal(".dewey/ should not exist before manifest")
+		t.Fatal(".uf/dewey/ should not exist before manifest")
 	}
 
 	// Create a minimal Go file.
@@ -3182,9 +3182,9 @@ func main() {}
 		t.Fatalf("manifest failed: %v", err)
 	}
 
-	// Verify .dewey/ was created.
+	// Verify .uf/dewey/ was created.
 	if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
-		t.Fatal(".dewey/ should be created by manifest command")
+		t.Fatal(".uf/dewey/ should be created by manifest command")
 	}
 
 	// Verify manifest.md exists.

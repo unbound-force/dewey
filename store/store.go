@@ -1,6 +1,6 @@
 // Package store provides SQLite-backed persistence for the Dewey knowledge graph.
 // It stores pages, blocks, links, embeddings, and index metadata in a single
-// .dewey/graph.db file using modernc.org/sqlite (pure Go, no CGO).
+// .uf/dewey/graph.db file using modernc.org/sqlite (pure Go, no CGO).
 package store
 
 import (
@@ -48,7 +48,7 @@ func SetLogOutput(w io.Writer, level log.Level) {
 type Store struct {
 	db       *sql.DB
 	path     string
-	lockFile *os.File // File lock for .dewey/ directory (nil for :memory:).
+	lockFile *os.File // File lock for .uf/dewey/ directory (nil for :memory:).
 }
 
 // New opens (or creates) a SQLite database at the given path and applies
@@ -102,7 +102,7 @@ func New(path string) (*Store, error) {
 	// Acquire file lock for non-memory databases (T059).
 	// Prevents concurrent write corruption from multiple Dewey processes.
 	if path != ":memory:" {
-		lockPath := filepath.Join(filepath.Dir(path), ".dewey.lock")
+		lockPath := filepath.Join(filepath.Dir(path), "dewey.lock")
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 		if err != nil {
 			_ = db.Close()

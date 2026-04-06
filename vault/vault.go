@@ -96,7 +96,7 @@ type Client struct {
 	searchIndex    *SearchIndex            // inverted index for full-text search
 	mu             sync.RWMutex            // protects all maps above
 	watcher        *fsnotify.Watcher       // file system watcher
-	vaultStore     *VaultStore             // optional persistent store adapter (nil when no .dewey/)
+	vaultStore     *VaultStore             // optional persistent store adapter (nil when no .uf/dewey/)
 	matcher        *ignore.Matcher         // gitignore-compatible path matcher (built lazily in Load)
 }
 

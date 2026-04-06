@@ -50,7 +50,7 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		return errorResult("information parameter is required and must not be empty"), nil, nil
 	}
 	if l.store == nil {
-		return errorResult("store_learning requires persistent storage. Configure --vault with a .dewey/ directory."), nil, nil
+		return errorResult("store_learning requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
 	}
 
 	// Generate unique page name and document ID using Unix millisecond timestamp.

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -259,16 +260,16 @@ func TestInitObsidianBackend_EnvVaultPath(t *testing.T) {
 	_ = opts
 }
 
-// TestInitObsidianBackend_WithPersistentStore verifies that when .dewey/
+// TestInitObsidianBackend_WithPersistentStore verifies that when .uf/dewey/
 // exists in the vault path, a persistent store is initialized and included
 // in the server options.
 func TestInitObsidianBackend_WithPersistentStore(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create .dewey/ directory to trigger store initialization.
-	deweyDir := tmpDir + "/.dewey"
+	// Create .uf/dewey/ directory to trigger store initialization.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 
 	var logBuf bytes.Buffer
@@ -286,7 +287,7 @@ func TestInitObsidianBackend_WithPersistentStore(t *testing.T) {
 		t.Fatal("initObsidianBackend returned nil backend")
 	}
 
-	// With .dewey/ present and noEmbeddings=true, should have at least 1 option (persistent store).
+	// With .uf/dewey/ present and noEmbeddings=true, should have at least 1 option (persistent store).
 	if len(opts) < 1 {
 		t.Errorf("expected at least 1 server option (store), got %d", len(opts))
 	}

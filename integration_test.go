@@ -46,10 +46,10 @@ func TestEndToEnd_InitIndexStatusFlow(t *testing.T) {
 		t.Fatalf("init failed: %v", err)
 	}
 
-	// Verify .dewey/ was created.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Verify .uf/dewey/ was created.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
-		t.Fatal(".dewey/ directory was not created")
+		t.Fatal(".uf/dewey/ directory was not created")
 	}
 
 	// Verify config.yaml exists.
@@ -164,7 +164,7 @@ func TestEndToEnd_SourceAddAndIndex(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Initialize.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -229,8 +229,8 @@ func TestEndToEnd_ExternalPagesSurviveServeStartup(t *testing.T) {
 		t.Fatalf("write local .md: %v", err)
 	}
 
-	// Initialize .dewey/ and create store.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Initialize .uf/dewey/ and create store.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -327,9 +327,9 @@ func TestEndToEnd_MultiSourceIdenticalFiles(t *testing.T) {
 	}
 
 	// Initialize dewey.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 	sourcesYAML := `sources:
   - id: disk-repo-a
@@ -431,8 +431,8 @@ func TestEndToEnd_GitignoreRespected(t *testing.T) {
 	//   .gitignore              → contains "node_modules/"
 	//   node_modules/pkg/README.md  → should be EXCLUDED
 	//   docs/guide.md              → should be INCLUDED
-	//   .dewey/config.yaml         → minimal config
-	//   .dewey/sources.yaml        → empty sources
+	//   .uf/dewey/config.yaml      → minimal config
+	//   .uf/dewey/sources.yaml     → empty sources
 
 	// Write .gitignore that excludes node_modules/.
 	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte("node_modules/\n"), 0o644); err != nil {
@@ -457,10 +457,10 @@ func TestEndToEnd_GitignoreRespected(t *testing.T) {
 		t.Fatalf("write docs/guide.md: %v", err)
 	}
 
-	// Create .dewey/ directory with minimal config.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Create .uf/dewey/ directory with minimal config.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte("embedding:\n  model: test\n"), 0o644); err != nil {
 		t.Fatalf("write config.yaml: %v", err)
@@ -565,10 +565,10 @@ func TestAdd(t *testing.T) {
 		t.Fatalf("write lib_test.go: %v", err)
 	}
 
-	// Step 2: Create .dewey/ directory with sources.yaml and config.yaml.
-	deweyDir := filepath.Join(tmpDir, ".dewey")
+	// Step 2: Create .uf/dewey/ directory with sources.yaml and config.yaml.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
 	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .dewey: %v", err)
+		t.Fatalf("mkdir .uf/dewey: %v", err)
 	}
 
 	sourcesYAML := `sources:

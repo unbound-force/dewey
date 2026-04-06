@@ -27,6 +27,11 @@ import (
 
 var version = "dev"
 
+// deweyWorkspaceDir is the workspace directory name relative to the vault root.
+// All Dewey runtime artifacts (graph.db, dewey.log, dewey.lock) live here.
+// Uses the .uf/<tool>/ namespace per ecosystem convention (D1).
+const deweyWorkspaceDir = ".uf/dewey"
+
 // logger is the application-wide structured logger.
 // Replaces fmt.Fprintf(os.Stderr, ...) per convention pack CS-008.
 var logger = log.NewWithOptions(os.Stderr, log.Options{
@@ -210,12 +215,12 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 	serveStart := time.Now()
 	bt := resolveBackendType(backendType)
 
-	// Auto-enable file logging for serve if .dewey/ exists and --log-file
+	// Auto-enable file logging for serve if .uf/dewey/ exists and --log-file
 	// wasn't already explicitly set. MCP servers run as child processes of AI
 	// agents with no visible stderr — the log file is the only diagnostic output.
 	if !fileLoggingEnabled {
 		if vp, err := resolveVaultPath(vaultPath); err == nil {
-			deweyDir := filepath.Join(vp, ".dewey")
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 			if _, err := os.Stat(deweyDir); err == nil {
 				logPath := filepath.Join(deweyDir, "dewey.log")
 				if err := setupFileLogging(logPath, logger.GetLevel() == log.DebugLevel); err != nil {
@@ -291,8 +296,8 @@ func resolveVaultPath(flagValue string) (string, error) {
 
 // resolveVaultPathOrCwd resolves the vault path from a flag value, falling
 // back to OBSIDIAN_VAULT_PATH env var, then to the current working directory.
-// This is used by commands that operate on the .dewey/ directory (index, reindex,
-// status, doctor) where CWD is a reasonable default.
+// This is used by commands that operate on the .uf/dewey/ directory (index,
+// reindex, status, doctor) where CWD is a reasonable default.
 func resolveVaultPathOrCwd(flagValue string) (string, error) {
 	vp := flagValue
 	if vp == "" {
@@ -453,7 +458,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 
 	var srvOpts []serverOption
 
-	// Initialize persistent store if .dewey/ directory exists.
+	// Initialize persistent store if .uf/dewey/ directory exists.
 	// The store is optional — Dewey works without it (backward compat).
 	var opts []vault.Option
 	opts = append(opts, vault.WithDailyFolder(dailyFolder))
@@ -462,7 +467,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	// This connects the sources.yaml "ignore" field to the vault walker
 	// at serve time, so patterns configured via `dewey source` are
 	// applied during incremental indexing and file watching.
-	deweyDir := filepath.Join(vp, ".dewey")
+	deweyDir := filepath.Join(vp, deweyWorkspaceDir)
 	sourcesPath := filepath.Join(deweyDir, "sources.yaml")
 	if configs, err := source.LoadSourcesConfig(sourcesPath); err == nil {
 		for _, cfg := range configs {

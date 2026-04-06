@@ -246,21 +246,21 @@ On startup with the Logseq backend, Dewey checks if your graph directory is git-
 
 ### Persistence
 
-Dewey stores its index in `.dewey/graph.db` (SQLite). The database holds pages, blocks, links, vector embeddings, and source metadata. After the first full index, subsequent sessions load from the persistent index and only reprocess changed files — startup is near-instant.
+Dewey stores its index in `.uf/dewey/graph.db` (SQLite). The database holds pages, blocks, links, vector embeddings, and source metadata. After the first full index, subsequent sessions load from the persistent index and only reprocess changed files — startup is near-instant.
 
-Run `dewey init` to create the `.dewey/` directory with default configuration:
+Run `dewey init` to create the `.uf/dewey/` directory with default configuration:
 
 ```bash
 dewey init
 ```
 
 This creates:
-- `.dewey/config.yaml` — embedding model and endpoint settings
-- `.dewey/sources.yaml` — content source configuration (empty by default)
-- `.dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
-- `.dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
+- `.uf/dewey/config.yaml` — embedding model and endpoint settings
+- `.uf/dewey/sources.yaml` — content source configuration (empty by default)
+- `.uf/dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
+- `.uf/dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
 
-Add `.dewey/` to your `.gitignore`. The index is machine-local and rebuilt from source files.
+Add `.uf/dewey/` to your `.gitignore`. The index is machine-local and rebuilt from source files.
 
 ### Environment variables
 
@@ -281,13 +281,13 @@ Add `.dewey/` to your `.gitignore`. The index is machine-local and rebuilt from 
 | `--verbose` | `-v` | Enable debug logging (shows UUID seeds, block insertions, lock detection) |
 | `--log-file PATH` | | Write logs to file in addition to stderr |
 
-When running as an MCP server (`dewey serve`), Dewey automatically logs to `.dewey/dewey.log` for diagnostics. The log file is truncated when it exceeds 10 MB.
+When running as an MCP server (`dewey serve`), Dewey automatically logs to `.uf/dewey/dewey.log` for diagnostics. The log file is truncated when it exceeds 10 MB.
 
 ## CLI Commands
 
 ### dewey init
 
-Initialize a Dewey configuration in the current directory. Creates `.dewey/` with default `config.yaml` and `sources.yaml`.
+Initialize a Dewey configuration in the current directory. Creates `.uf/dewey/` with default `config.yaml` and `sources.yaml`.
 
 ```bash
 dewey init [--vault PATH]
@@ -349,7 +349,7 @@ dewey source add web --url URL [--name NAME] [--depth N] [--refresh INTERVAL]
 
 ## Content Sources
 
-Dewey indexes content from three pluggable source types. Configure them in `.dewey/sources.yaml`:
+Dewey indexes content from three pluggable source types. Configure them in `.uf/dewey/sources.yaml`:
 
 ```yaml
 sources:
@@ -416,7 +416,7 @@ The output shows embedding coverage. If Ollama is running and the model is pulle
 
 ### Configuration
 
-The embedding model and endpoint are configurable via environment variables or `.dewey/config.yaml`:
+The embedding model and endpoint are configurable via environment variables or `.uf/dewey/config.yaml`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -384,7 +384,7 @@ func (vs *VaultStore) IncrementalIndex(c *Client) (stats IndexStats, err error) 
 }
 
 // FullIndex performs a complete index of all vault files and persists to store.
-// Used on first run when no .dewey/graph.db exists, or after corruption recovery.
+// Used on first run when no .uf/dewey/graph.db exists, or after corruption recovery.
 func (vs *VaultStore) FullIndex(c *Client) error {
 	// Load all files into memory (existing vault.Client behavior).
 	if err := c.Load(); err != nil {

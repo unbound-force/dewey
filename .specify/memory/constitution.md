@@ -83,7 +83,7 @@ inspecting Dewey's internals.
 The `health` and `dewey status` tools MUST report index state: page
 count, source freshness, embedding coverage, and backend type. The
 system MUST be auditable at rest -- a human or agent can inspect
-`.dewey/` artifacts to understand what is indexed and when it was
+`.uf/dewey/` artifacts to understand what is indexed and when it was
 last updated.
 
 **Rationale**: AI agents make decisions based on retrieved context.
@@ -145,7 +145,7 @@ or library APIs.
 
 **Storage**: SQLite for persistent indexes (knowledge graph and
 vector embeddings). No external database servers. All state MUST be
-contained within the `.dewey/` directory in the repository root.
+contained within the `.uf/dewey/` directory in the repository root.
 
 **Embedding**: Ollama API for local model inference. No data MUST
 leave the developer's machine for core functionality. The embedding

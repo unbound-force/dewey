@@ -266,19 +266,34 @@ sources:
 				return fmt.Errorf("write sources.yaml: %w", err)
 			}
 
-			// Append .dewey/ to .gitignore if it exists and doesn't already contain it.
+			// Append granular .dewey/ runtime artifact patterns to .gitignore.
+			// Only runtime artifacts (db, log, lock) are ignored — sources.yaml
+			// and config.yaml remain trackable for team sharing.
 			gitignorePath := filepath.Join(vaultPath, ".gitignore")
 			if _, err := os.Stat(gitignorePath); err == nil {
 				content, err := os.ReadFile(gitignorePath)
-				if err == nil && !strings.Contains(string(content), ".dewey/") {
-					f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
-					if err == nil {
-						defer func() { _ = f.Close() }()
-						// Ensure we start on a new line.
-						if len(content) > 0 && content[len(content)-1] != '\n' {
-							_, _ = f.WriteString("\n")
+				if err == nil {
+					text := string(content)
+					switch {
+					case strings.Contains(text, ".dewey/graph.db"):
+						// New granular patterns already present — skip.
+					case strings.Contains(text, ".dewey/"):
+						// Legacy blanket pattern — don't modify, inform user.
+						logger.Info("existing .dewey/ gitignore pattern found — update manually to track sources.yaml and config.yaml")
+					default:
+						// No .dewey patterns — append granular patterns.
+						f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
+						if err == nil {
+							defer func() { _ = f.Close() }()
+							if len(content) > 0 && content[len(content)-1] != '\n' {
+								_, _ = f.WriteString("\n")
+							}
+							_, _ = f.WriteString(".dewey/graph.db\n")
+							_, _ = f.WriteString(".dewey/graph.db-shm\n")
+							_, _ = f.WriteString(".dewey/graph.db-wal\n")
+							_, _ = f.WriteString(".dewey/dewey.log\n")
+							_, _ = f.WriteString(".dewey/.dewey.lock\n")
 						}
-						_, _ = f.WriteString(".dewey/\n")
 					}
 				}
 			}

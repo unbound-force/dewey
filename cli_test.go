@@ -305,11 +305,11 @@ func TestInitCmd_Idempotent(t *testing.T) {
 	}
 }
 
-// TestInitCmd_GitignoreAppend verifies .dewey/ is added to .gitignore.
+// TestInitCmd_GitignoreAppend verifies granular .dewey/ patterns are added to .gitignore.
 func TestInitCmd_GitignoreAppend(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a .gitignore without .dewey/.
+	// Create a .gitignore without any .dewey patterns.
 	gitignorePath := filepath.Join(tmpDir, ".gitignore")
 	if err := os.WriteFile(gitignorePath, []byte("node_modules/\n"), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
@@ -325,26 +325,34 @@ func TestInitCmd_GitignoreAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	if !strings.Contains(string(content), ".dewey/") {
-		t.Error(".gitignore should contain .dewey/")
+	text := string(content)
+	// Verify granular runtime artifact patterns.
+	for _, pattern := range []string{".dewey/graph.db", ".dewey/graph.db-shm", ".dewey/graph.db-wal", ".dewey/dewey.log", ".dewey/.dewey.lock"} {
+		if !strings.Contains(text, pattern) {
+			t.Errorf(".gitignore should contain %q, got:\n%s", pattern, text)
+		}
+	}
+	// Verify the blanket .dewey/ is NOT written.
+	// Check that ".dewey/" only appears as part of the granular patterns, not standalone.
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == ".dewey/" {
+			t.Errorf(".gitignore should NOT contain blanket '.dewey/', got:\n%s", text)
+		}
 	}
 }
 
-// TestInitCmd_GitignoreAlreadyPresent verifies .dewey/ is not duplicated.
+// TestInitCmd_GitignoreAlreadyPresent verifies granular patterns are not duplicated.
 func TestInitCmd_GitignoreAlreadyPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create a .gitignore that already has .dewey/.
+	// Create a .gitignore that already has the new granular patterns.
 	gitignorePath := filepath.Join(tmpDir, ".gitignore")
-	if err := os.WriteFile(gitignorePath, []byte(".dewey/\n"), 0o644); err != nil {
+	existing := ".dewey/graph.db\n.dewey/graph.db-shm\n.dewey/graph.db-wal\n.dewey/dewey.log\n.dewey/.dewey.lock\n"
+	if err := os.WriteFile(gitignorePath, []byte(existing), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
 
-	// We need to remove .dewey/ first so init actually runs.
-	// Actually, init will see .dewey/ already exists and return early.
-	// So let's test the gitignore logic separately by not having .dewey/ yet.
-	// The init command checks for .dewey/ existence first.
-	// Since .dewey/ doesn't exist, init will create it and check .gitignore.
 	cmd := newInitCmd()
 	cmd.SetArgs([]string{"--vault", tmpDir})
 	if err := cmd.Execute(); err != nil {
@@ -355,10 +363,42 @@ func TestInitCmd_GitignoreAlreadyPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read .gitignore: %v", err)
 	}
-	// Count occurrences — should be exactly 1.
-	count := strings.Count(string(content), ".dewey/")
+	// Count occurrences of the key pattern — should be exactly 1 (no duplicate).
+	count := strings.Count(string(content), ".dewey/graph.db\n")
 	if count != 1 {
-		t.Errorf(".dewey/ appears %d times in .gitignore, want 1", count)
+		t.Errorf(".dewey/graph.db appears %d times in .gitignore, want 1", count)
+	}
+}
+
+// TestInitCmd_GitignoreLegacyPattern verifies that the old .dewey/ pattern
+// is preserved and an informational message is logged.
+func TestInitCmd_GitignoreLegacyPattern(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a .gitignore with the legacy blanket pattern.
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(".dewey/\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	content, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	text := string(content)
+	// Legacy pattern should be preserved — not modified.
+	if !strings.Contains(text, ".dewey/\n") {
+		t.Errorf("legacy .dewey/ pattern should be preserved, got:\n%s", text)
+	}
+	// New patterns should NOT be added alongside legacy.
+	if strings.Contains(text, ".dewey/graph.db") {
+		t.Errorf("granular patterns should NOT be added when legacy pattern exists, got:\n%s", text)
 	}
 }
 

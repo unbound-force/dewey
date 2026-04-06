@@ -37,7 +37,8 @@ func WithPersistentStore(s *store.Store) serverOption {
 // Tools requiring DataScript are only registered if the backend supports it.
 // The embedder and persistent store are optional — semantic search tools
 // are always registered but return clear error messages when unavailable.
-func newServer(b backend.Backend, readOnly bool, opts ...serverOption) *mcp.Server {
+// Returns the server and the total number of registered tools.
+func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Server, int) {
 	var cfg serverConfig
 	for _, opt := range opts {
 		opt(&cfg)
@@ -58,36 +59,37 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) *mcp.Serv
 	analyze := tools.NewAnalyze(b)
 	journal := tools.NewJournal(b)
 
-	registerNavigateTools(srv, nav, hasDataScript)
-	registerSearchTools(srv, search, hasDataScript)
-	registerAnalyzeTools(srv, analyze)
+	var toolCount int
+	toolCount += registerNavigateTools(srv, nav, hasDataScript)
+	toolCount += registerSearchTools(srv, search, hasDataScript)
+	toolCount += registerAnalyzeTools(srv, analyze)
 
 	if !readOnly {
 		write := tools.NewWrite(b)
 		decision := tools.NewDecision(b)
-		registerWriteTools(srv, write)
-		registerDecisionTools(srv, decision)
+		toolCount += registerWriteTools(srv, write)
+		toolCount += registerDecisionTools(srv, decision)
 	}
 
-	registerJournalTools(srv, journal)
+	toolCount += registerJournalTools(srv, journal)
 
 	if hasDataScript {
 		flashcard := tools.NewFlashcard(b)
-		registerFlashcardTools(srv, flashcard, readOnly)
+		toolCount += registerFlashcardTools(srv, flashcard, readOnly)
 
 		whiteboard := tools.NewWhiteboard(b)
-		registerWhiteboardTools(srv, whiteboard)
+		toolCount += registerWhiteboardTools(srv, whiteboard)
 	}
 
 	semantic := tools.NewSemantic(cfg.embedder, cfg.store)
-	registerSemanticTools(srv, semantic)
+	toolCount += registerSemanticTools(srv, semantic)
 
 	if !readOnly {
 		learning := tools.NewLearning(cfg.embedder, cfg.store)
-		registerLearningTools(srv, learning)
+		toolCount += registerLearningTools(srv, learning)
 	}
 
-	registerHealthTool(srv, b, readOnly, &cfg)
+	toolCount += registerHealthTool(srv, b, readOnly, &cfg)
 
 	// Vault management tools (Obsidian-specific).
 	if vaultClient, ok := b.(*vault.Client); ok && !readOnly {
@@ -106,13 +108,17 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) *mcp.Serv
 				Content: []mcp.Content{&mcp.TextContent{Text: "Vault reloaded successfully"}},
 			}, nil
 		})
+		toolCount++
 	}
 
-	return srv
+	return srv, toolCount
 }
 
 // registerNavigateTools registers page, block, link, and traversal tools.
-func registerNavigateTools(srv *mcp.Server, nav *tools.Navigate, hasDataScript bool) {
+// Returns the number of tools registered.
+func registerNavigateTools(srv *mcp.Server, nav *tools.Navigate, hasDataScript bool) int {
+	count := 5
+
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_page",
 		Description: "Get a Logseq page with its full recursive block tree, properties, tags, and parsed links. Every block includes extracted [[links]], ((references)), #tags, and key:: value properties. Use maxBlocks to limit output size for large pages.",
@@ -143,11 +149,17 @@ func registerNavigateTools(srv *mcp.Server, nav *tools.Navigate, hasDataScript b
 			Name:        "get_references",
 			Description: "Get all blocks that reference a specific block via ((uuid)) block references. Returns the referencing blocks with their page context.",
 		}, nav.GetReferences)
+		count++
 	}
+
+	return count
 }
 
 // registerSearchTools registers full-text search, property query, tag, and DataScript tools.
-func registerSearchTools(srv *mcp.Server, search *tools.Search, hasDataScript bool) {
+// Returns the number of tools registered.
+func registerSearchTools(srv *mcp.Server, search *tools.Search, hasDataScript bool) int {
+	count := 3
+
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "search",
 		Description: "Full-text search across all blocks in the knowledge graph. Returns matching blocks with surrounding context (parent chain and sibling blocks) so you understand where each match sits.",
@@ -168,11 +180,15 @@ func registerSearchTools(srv *mcp.Server, search *tools.Search, hasDataScript bo
 			Name:        "query_datalog",
 			Description: "Execute raw DataScript/Datalog queries against the Logseq database. This is the most powerful query mechanism — can find anything. Example: [:find (pull ?b [*]) :where [?b :block/marker \"TODO\"]] finds all TODO blocks.",
 		}, search.QueryDatalog)
+		count++
 	}
+
+	return count
 }
 
 // registerAnalyzeTools registers graph overview, connections, gaps, orphans, and clusters tools.
-func registerAnalyzeTools(srv *mcp.Server, analyze *tools.Analyze) {
+// Returns the number of tools registered.
+func registerAnalyzeTools(srv *mcp.Server, analyze *tools.Analyze) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "graph_overview",
 		Description: "Get a high-level overview of the entire knowledge graph: total pages, blocks, links, most connected pages, orphan count, namespace breakdown. Builds an in-memory graph for analysis.",
@@ -197,10 +213,13 @@ func registerAnalyzeTools(srv *mcp.Server, analyze *tools.Analyze) {
 		Name:        "topic_clusters",
 		Description: "Discover topic clusters by finding connected components in the knowledge graph. Returns groups of densely connected pages with their hub (most connected page in each cluster).",
 	}, analyze.TopicClusters)
+
+	return 5
 }
 
 // registerWriteTools registers page and block write/mutation tools.
-func registerWriteTools(srv *mcp.Server, write *tools.Write) {
+// Returns the number of tools registered.
+func registerWriteTools(srv *mcp.Server, write *tools.Write) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "create_page",
 		Description: "Create a new Logseq page with optional properties and initial blocks. Use properties for metadata like type::, status::, etc.",
@@ -253,10 +272,13 @@ func registerWriteTools(srv *mcp.Server, write *tools.Write) {
 		Name:        "link_pages",
 		Description: "Create a bidirectional connection between two pages by adding a link block to each. Optionally include context describing the relationship.",
 	}, write.LinkPages)
+
+	return 10
 }
 
 // registerDecisionTools registers decision tracking and analysis health tools.
-func registerDecisionTools(srv *mcp.Server, decision *tools.Decision) {
+// Returns the number of tools registered.
+func registerDecisionTools(srv *mcp.Server, decision *tools.Decision) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "decision_check",
 		Description: "Surface all tracked decisions in the knowledge graph. Returns open, overdue, and optionally resolved decisions with deadline status. Use at session start to check what needs attention.",
@@ -281,10 +303,13 @@ func registerDecisionTools(srv *mcp.Server, decision *tools.Decision) {
 		Name:        "analysis_health",
 		Description: "Audit analysis, strategy, and assessment pages for graph connectivity. A page is healthy if it has 3+ outgoing links or contains a decision. Finds isolated analyses that don't connect back to the knowledge graph.",
 	}, decision.AnalysisHealth)
+
+	return 5
 }
 
 // registerJournalTools registers journal range and search tools.
-func registerJournalTools(srv *mcp.Server, journal *tools.Journal) {
+// Returns the number of tools registered.
+func registerJournalTools(srv *mcp.Server, journal *tools.Journal) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "journal_range",
 		Description: "Get journal entries across a date range. Returns journal pages with their full block trees. Dates in YYYY-MM-DD format.",
@@ -294,10 +319,13 @@ func registerJournalTools(srv *mcp.Server, journal *tools.Journal) {
 		Name:        "journal_search",
 		Description: "Search within journal entries specifically. Optionally filter by date range. Returns matching blocks with their journal date context.",
 	}, journal.JournalSearch)
+
+	return 2
 }
 
 // registerFlashcardTools registers flashcard overview, due, and create tools.
-func registerFlashcardTools(srv *mcp.Server, flashcard *tools.Flashcard, readOnly bool) {
+// Returns the number of tools registered.
+func registerFlashcardTools(srv *mcp.Server, flashcard *tools.Flashcard, readOnly bool) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "flashcard_overview",
 		Description: "Get SRS (spaced repetition) statistics: total cards, cards due for review, new vs reviewed cards, average repetitions. Gives a snapshot of the flashcard collection health.",
@@ -308,16 +336,21 @@ func registerFlashcardTools(srv *mcp.Server, flashcard *tools.Flashcard, readOnl
 		Description: "Get flashcards currently due for review. Returns card content, page, and SRS properties (ease factor, interval, repeats). Prioritizes new cards and overdue reviews.",
 	}, flashcard.FlashcardDue)
 
+	count := 2
 	if !readOnly {
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "flashcard_create",
 			Description: "Create a new flashcard on a page. Adds a block with #card tag (front/question) and a child block (back/answer). The card will appear in Logseq's flashcard review system.",
 		}, flashcard.FlashcardCreate)
+		count++
 	}
+
+	return count
 }
 
 // registerWhiteboardTools registers whiteboard list and detail tools.
-func registerWhiteboardTools(srv *mcp.Server, whiteboard *tools.Whiteboard) {
+// Returns the number of tools registered.
+func registerWhiteboardTools(srv *mcp.Server, whiteboard *tools.Whiteboard) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_whiteboards",
 		Description: "List all Logseq whiteboards in the graph. Whiteboards are infinite canvas spaces where concepts are visually arranged and connected.",
@@ -327,10 +360,13 @@ func registerWhiteboardTools(srv *mcp.Server, whiteboard *tools.Whiteboard) {
 		Name:        "get_whiteboard",
 		Description: "Get a whiteboard's content including embedded pages, block references, visual connections between elements, and any text content. Reveals how concepts are spatially organized.",
 	}, whiteboard.GetWhiteboard)
+
+	return 2
 }
 
 // registerSemanticTools registers vector-based semantic search tools.
-func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) {
+// Returns the number of tools registered.
+func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "semantic_search",
 		Description: "Find documents semantically similar to a natural language query, ranked by cosine similarity. Returns results with provenance metadata.",
@@ -345,20 +381,26 @@ func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) {
 		Name:        "semantic_search_filtered",
 		Description: "Semantic search constrained by metadata filters (source type, repository, properties).",
 	}, semantic.SemanticSearchFiltered)
+
+	return 3
 }
 
 // registerLearningTools registers the store_learning MCP tool for persisting
 // agent learnings into the knowledge graph with optional embeddings.
-func registerLearningTools(srv *mcp.Server, learning *tools.Learning) {
+// Returns the number of tools registered.
+func registerLearningTools(srv *mcp.Server, learning *tools.Learning) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "store_learning",
 		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via semantic_search. Use to build semantic memory across sessions.",
 	}, learning.StoreLearning)
+
+	return 1
 }
 
 // registerHealthTool registers the health check tool that reports server status,
 // embedding coverage, and source information.
-func registerHealthTool(srv *mcp.Server, b backend.Backend, readOnly bool, cfg *serverConfig) {
+// Returns the number of tools registered.
+func registerHealthTool(srv *mcp.Server, b backend.Backend, readOnly bool, cfg *serverConfig) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "health",
 		Description: "Check server status: version, backend type, read-only mode, page count. Use to verify the server is alive and see its configuration.",
@@ -439,4 +481,6 @@ func registerHealthTool(srv *mcp.Server, b backend.Backend, readOnly bool, cfg *
 			Content: []mcp.Content{&mcp.TextContent{Text: string(data)}},
 		}, nil, nil
 	})
+
+	return 1
 }

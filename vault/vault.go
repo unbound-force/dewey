@@ -22,7 +22,9 @@ import (
 
 // logger is the package-level structured logger for vault operations.
 var logger = log.NewWithOptions(os.Stderr, log.Options{
-	Prefix: "dewey",
+	Prefix:          "dewey/vault",
+	ReportTimestamp: true,
+	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
 })
 
 // SetLogLevel sets the logging level for the vault package.
@@ -34,7 +36,12 @@ func SetLogLevel(level log.Level) {
 // SetLogOutput replaces the vault package logger with one that writes to
 // the given writer at the given level. Used to enable file logging.
 func SetLogOutput(w io.Writer, level log.Level) {
-	newLogger := log.NewWithOptions(w, log.Options{Prefix: "dewey", Level: level})
+	newLogger := log.NewWithOptions(w, log.Options{
+		Prefix:          "dewey/vault",
+		Level:           level,
+		ReportTimestamp: true,
+		TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+	})
 	*logger = *newLogger
 }
 
@@ -167,6 +174,7 @@ func (c *Client) Store() *VaultStore {
 func (c *Client) Load() error {
 	return filepath.Walk(c.vaultPath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
+			logger.Debug("skipping path", "path", path, "err", walkErr)
 			return nil // skip errors
 		}
 
@@ -189,6 +197,7 @@ func (c *Client) Load() error {
 
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
+			logger.Debug("skipping unreadable file", "path", path, "err", readErr)
 			return nil // skip unreadable files
 		}
 
@@ -337,6 +346,7 @@ func (c *Client) Watch() error {
 func (c *Client) addWatcherDirs(root string) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			logger.Debug("skipping watcher path", "path", path, "err", err)
 			return nil // skip errors
 		}
 		if !info.IsDir() {

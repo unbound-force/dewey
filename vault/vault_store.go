@@ -225,6 +225,7 @@ func walkVault(vaultPath string, matcher *ignore.Matcher) (currentFiles map[stri
 
 	walkErr := filepath.Walk(vaultPath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
+			logger.Debug("skipping path", "path", path, "err", walkErr)
 			return nil // skip errors
 		}
 		// Use the ignore matcher to skip directories and files matching
@@ -242,6 +243,7 @@ func walkVault(vaultPath string, matcher *ignore.Matcher) (currentFiles map[stri
 
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
+			logger.Debug("skipping unreadable file", "path", path, "err", readErr)
 			return nil // skip unreadable files
 		}
 

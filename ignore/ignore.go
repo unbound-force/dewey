@@ -10,6 +10,7 @@ package ignore
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,13 +20,27 @@ import (
 
 // logger is the package-level structured logger for ignore operations.
 var logger = log.NewWithOptions(os.Stderr, log.Options{
-	Prefix: "dewey",
+	Prefix:          "dewey/ignore",
+	ReportTimestamp: true,
+	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
 })
 
 // SetLogLevel sets the logging level for the ignore package.
 // Use log.DebugLevel for verbose output during diagnostics.
 func SetLogLevel(level log.Level) {
 	logger.SetLevel(level)
+}
+
+// SetLogOutput replaces the ignore package logger with one that writes to
+// the given writer at the given level. Used to enable file logging.
+func SetLogOutput(w io.Writer, level log.Level) {
+	newLogger := log.NewWithOptions(w, log.Options{
+		Prefix:          "dewey/ignore",
+		Level:           level,
+		ReportTimestamp: true,
+		TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+	})
+	*logger = *newLogger
 }
 
 // pattern represents a single parsed ignore rule from a .gitignore file

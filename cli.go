@@ -814,7 +814,9 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, .dewey.lock`,
 }
 
 // detectLockHolder checks if the .dewey.lock file is held by another process.
-// Returns a description of the holder (e.g., "PID 12345") or empty string if unlocked.
+// Returns a description of the holder (e.g., "PID 12345 dewey serve --vault /path")
+// or empty string if unlocked. When the lock is held but no PID was written
+// (pre-T011 lock files), returns a generic "lock held" message.
 func detectLockHolder(lockPath string) string {
 	f, err := os.OpenFile(lockPath, os.O_RDWR, 0o644)
 	if err != nil {
@@ -825,8 +827,16 @@ func detectLockHolder(lockPath string) string {
 	// Try to acquire a non-blocking exclusive lock.
 	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err != nil {
-		// Lock is held by another process. Try to find who.
-		return fmt.Sprintf("lock file %s is held (try: lsof %s)", lockPath, lockPath)
+		// Lock is held by another process. Read PID info written by T011.
+		data, readErr := os.ReadFile(lockPath)
+		if readErr == nil {
+			firstLine := strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
+			if firstLine != "" {
+				return fmt.Sprintf("PID %s", firstLine)
+			}
+		}
+		// Lock held but no PID data (old-format lock file).
+		return "lock held (unknown process)"
 	}
 	// We got the lock — release it, no one is holding it.
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
@@ -1402,6 +1412,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			c.printCheck(w, "PASS", "serve", fmt.Sprintf("running (%s)", holder))
 		} else {
 			c.printCheck(w, "PASS", "serve", "not running (stale lock file)")
+			dp("     Fix: rm %s\n", lockPath)
 		}
 	} else {
 		c.printCheck(w, "PASS", "serve", "not running (no lock)")

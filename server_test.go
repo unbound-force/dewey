@@ -148,7 +148,7 @@ func TestNewServer_SemanticToolsRegistered(t *testing.T) {
 	e := &mockEmbedderForHealth{available: true, model: "test-model"}
 
 	// This should not panic — all tools should register successfully.
-	srv := newServer(vc, false, WithEmbedder(e), WithPersistentStore(s))
+	srv, _ := newServer(vc, false, WithEmbedder(e), WithPersistentStore(s))
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -159,7 +159,7 @@ func TestNewServer_WithoutEmbedder(t *testing.T) {
 	tmpDir := t.TempDir()
 	vc := vault.New(tmpDir)
 
-	srv := newServer(vc, false)
+	srv, _ := newServer(vc, false)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -285,7 +285,7 @@ func TestWithPersistentStore(t *testing.T) {
 // query_datalog, flashcard_*, whiteboard_*) must be absent.
 func TestNewServer_RegistersTools(t *testing.T) {
 	b := &serverMockBackend{}
-	srv := newServer(b, false)
+	srv, _ := newServer(b, false)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -342,7 +342,7 @@ func TestNewServer_RegistersTools(t *testing.T) {
 // registered when readOnly is true.
 func TestNewServer_ReadOnlyMode(t *testing.T) {
 	b := &serverMockBackend{}
-	srv := newServer(b, true)
+	srv, _ := newServer(b, true)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -392,7 +392,7 @@ func TestNewServer_ReadOnlyMode(t *testing.T) {
 // registered when the backend implements backend.HasDataScript.
 func TestNewServer_DataScriptBackend(t *testing.T) {
 	b := &serverMockBackendWithDataScript{}
-	srv := newServer(b, false)
+	srv, _ := newServer(b, false)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -417,7 +417,7 @@ func TestNewServer_DataScriptBackend(t *testing.T) {
 // tools remain.
 func TestNewServer_DataScriptReadOnly(t *testing.T) {
 	b := &serverMockBackendWithDataScript{}
-	srv := newServer(b, true)
+	srv, _ := newServer(b, true)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -448,7 +448,7 @@ func TestNewServer_WithEmbedderOption(t *testing.T) {
 	b := &serverMockBackend{}
 	e := &mockEmbedderForHealth{available: true, model: "test-model"}
 
-	srv := newServer(b, false, WithEmbedder(e))
+	srv, _ := newServer(b, false, WithEmbedder(e))
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -477,7 +477,7 @@ func TestNewServer_WithPersistentStoreOption(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	srv := newServer(b, false, WithPersistentStore(s))
+	srv, _ := newServer(b, false, WithPersistentStore(s))
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -505,7 +505,7 @@ func TestNewServer_VaultBackendRegistersReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	vc := vault.New(tmpDir)
 
-	srv := newServer(vc, false)
+	srv, _ := newServer(vc, false)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -523,7 +523,7 @@ func TestNewServer_VaultBackendReadOnlyNoReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	vc := vault.New(tmpDir)
 
-	srv := newServer(vc, true)
+	srv, _ := newServer(vc, true)
 	if srv == nil {
 		t.Fatal("newServer returned nil")
 	}
@@ -584,7 +584,7 @@ func TestNewServer_ToolCount(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newServer(tc.backend, tc.readOnly)
+			srv, _ := newServer(tc.backend, tc.readOnly)
 			tools := listServerTools(t, srv)
 
 			if len(tools) < tc.wantMin || len(tools) > tc.wantMax {
@@ -651,7 +651,7 @@ func callHealthTool(t *testing.T, srv *mcp.Server) map[string]any {
 func TestRegisterHealthTool_MinimalConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	vc := vault.New(tmpDir)
-	srv := newServer(vc, false)
+	srv, _ := newServer(vc, false)
 
 	parsed := callHealthTool(t, srv)
 
@@ -706,7 +706,7 @@ func TestRegisterHealthTool_WithStore(t *testing.T) {
 		ID: "disk-local", Type: "disk", Status: "ok", LastFetchedAt: 1000,
 	})
 
-	srv := newServer(vc, false, WithPersistentStore(s))
+	srv, _ := newServer(vc, false, WithPersistentStore(s))
 	parsed := callHealthTool(t, srv)
 
 	dewey, ok := parsed["dewey"].(map[string]any)
@@ -750,7 +750,7 @@ func TestRegisterHealthTool_WithEmbedder(t *testing.T) {
 	vc := vault.New(tmpDir)
 
 	e := &mockEmbedderForHealth{available: true, model: "granite-embedding:30m"}
-	srv := newServer(vc, false, WithEmbedder(e))
+	srv, _ := newServer(vc, false, WithEmbedder(e))
 
 	parsed := callHealthTool(t, srv)
 
@@ -770,7 +770,7 @@ func TestRegisterHealthTool_WithEmbedder(t *testing.T) {
 // Ping() returns an error.
 func TestRegisterHealthTool_PingError(t *testing.T) {
 	mb := &serverMockBackendWithPingError{}
-	srv := newServer(mb, false)
+	srv, _ := newServer(mb, false)
 
 	parsed := callHealthTool(t, srv)
 

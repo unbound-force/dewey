@@ -108,6 +108,7 @@ func (d *DiskSource) List() ([]Document, error) {
 
 	err = filepath.Walk(d.basePath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
+			logger.Debug("skipping path", "path", path, "err", walkErr)
 			return nil // skip errors
 		}
 
@@ -133,6 +134,7 @@ func (d *DiskSource) List() ([]Document, error) {
 
 		content, err := os.ReadFile(path)
 		if err != nil {
+			logger.Debug("skipping unreadable file", "path", path, "err", err)
 			return nil // skip unreadable files
 		}
 
@@ -215,6 +217,7 @@ func walkDiskFiles(basePath string, matcher *ignore.Matcher, recursive bool) (ma
 
 	err := filepath.Walk(basePath, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
+			logger.Debug("skipping path", "path", path, "err", walkErr)
 			return nil
 		}
 
@@ -237,6 +240,7 @@ func walkDiskFiles(basePath string, matcher *ignore.Matcher, recursive bool) (ma
 
 		content, err := os.ReadFile(path)
 		if err != nil {
+			logger.Debug("skipping unreadable file", "path", path, "err", err)
 			return nil
 		}
 

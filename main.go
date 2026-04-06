@@ -19,6 +19,7 @@ import (
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/ignore"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/vault"
@@ -29,7 +30,9 @@ var version = "dev"
 // logger is the application-wide structured logger.
 // Replaces fmt.Fprintf(os.Stderr, ...) per convention pack CS-008.
 var logger = log.NewWithOptions(os.Stderr, log.Options{
-	Prefix: "dewey",
+	Prefix:          "dewey",
+	ReportTimestamp: true,
+	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
 })
 
 // fileLoggingEnabled tracks whether setupFileLogging has been called.
@@ -76,6 +79,8 @@ func newRootCmd() *cobra.Command {
 				logger.SetLevel(log.DebugLevel)
 				vault.SetLogLevel(log.DebugLevel)
 				source.SetLogLevel(log.DebugLevel)
+				ignore.SetLogLevel(log.DebugLevel)
+				store.SetLogLevel(log.DebugLevel)
 			}
 			if logFile != "" {
 				if err := setupFileLogging(logFile, verbose); err != nil {
@@ -150,11 +155,18 @@ func setupFileLogging(path string, verbose bool) error {
 		level = log.DebugLevel
 	}
 
-	// Replace all three package loggers with multi-writer versions.
-	newLogger := log.NewWithOptions(multi, log.Options{Prefix: "dewey", Level: level})
+	// Replace all package loggers with multi-writer versions.
+	newLogger := log.NewWithOptions(multi, log.Options{
+		Prefix:          "dewey",
+		Level:           level,
+		ReportTimestamp: true,
+		TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+	})
 	*logger = *newLogger
 	vault.SetLogOutput(multi, level)
 	source.SetLogOutput(multi, level)
+	ignore.SetLogOutput(multi, level)
+	store.SetLogOutput(multi, level)
 
 	fileLoggingEnabled = true
 	logger.Info("file logging enabled", "path", path)
@@ -194,6 +206,7 @@ func newServeCmd() *cobra.Command {
 // delegating backend initialization, server creation, and transport to
 // focused helper functions (decomposed per plan.md T009).
 func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr string, noEmbeddings bool) error {
+	serveStart := time.Now()
 	bt := resolveBackendType(backendType)
 
 	// Auto-enable file logging for serve if .dewey/ exists and --log-file
@@ -230,13 +243,29 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 		return fmt.Errorf("unknown backend %q (use logseq or obsidian)", bt)
 	}
 
-	srv := newServer(b, readOnly, srvOpts...)
+	srv, toolCount := newServer(b, readOnly, srvOpts...)
 
 	// Set up signal handling for graceful shutdown (SIGINT, SIGTERM).
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return runServer(ctx, srv, httpAddr)
+	// Determine transport type for the "server ready" log line.
+	transportType := "stdio"
+	if httpAddr != "" {
+		transportType = "http"
+	}
+	logger.Info("server ready", "transport", transportType, "tools", toolCount, "startup", time.Since(serveStart))
+
+	if err := runServer(ctx, srv, httpAddr); err != nil {
+		return err
+	}
+
+	// Log clean shutdown for stdio transport. HTTP transport already logs
+	// "shutting down HTTP server" in its shutdown goroutine.
+	if httpAddr == "" {
+		logger.Info("server stopped", "transport", "stdio")
+	}
+	return nil
 }
 
 // resolveVaultPath resolves the vault path from a flag value, falling back
@@ -385,13 +414,20 @@ func ensureOllama(endpoint string, autoStart bool, starter ollamaStarter) (Ollam
 	const (
 		pollInterval = 500 * time.Millisecond
 		maxWait      = 30 * time.Second
+		logInterval  = 5 * time.Second
 	)
-	deadline := time.Now().Add(maxWait)
+	start := time.Now()
+	lastLog := start
+	deadline := start.Add(maxWait)
 	for time.Now().Before(deadline) {
 		time.Sleep(pollInterval)
 		if ollamaHealthCheck(endpoint) {
 			logger.Info("Ollama is ready", "state", OllamaManaged)
 			return OllamaManaged, nil
+		}
+		if time.Since(lastLog) >= logInterval {
+			logger.Debug("waiting for Ollama", "elapsed", time.Since(start).Truncate(time.Second), "timeout", maxWait)
+			lastLog = time.Now()
 		}
 	}
 
@@ -412,6 +448,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	logger.Info("vault path resolved", "path", vp)
 
 	var srvOpts []serverOption
 
@@ -448,6 +485,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	var persistentStore *store.Store
 	if _, err := os.Stat(deweyDir); err == nil {
 		dbPath := filepath.Join(deweyDir, "graph.db")
+		storeStart := time.Now()
 		s, err := store.New(dbPath)
 		if err != nil {
 			logger.Warn("failed to open persistent store, continuing without persistence",
@@ -456,7 +494,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 			persistentStore = s
 			opts = append(opts, vault.WithStore(s))
 			srvOpts = append(srvOpts, WithPersistentStore(s))
-			logger.Info("persistent store opened", "path", dbPath)
+			logger.Info("persistent store opened", "path", dbPath, "elapsed", time.Since(storeStart))
 		}
 	}
 
@@ -477,11 +515,12 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		logger.Info("embeddings disabled via --no-embeddings")
 	} else {
 		// Ensure Ollama is running (auto-start if needed).
+		ollamaStart := time.Now()
 		ollamaState, err := ensureOllama(embedEndpoint, true, &execOllamaStarter{})
 		if err != nil {
 			logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
 		}
-		logger.Info("ollama state", "state", ollamaState, "endpoint", embedEndpoint)
+		logger.Info("ollama state", "state", ollamaState, "endpoint", embedEndpoint, "elapsed", time.Since(ollamaStart))
 
 		if ollamaState == OllamaUnavailable {
 			// Graceful degradation: keyword-only mode when Ollama is not installed.
@@ -510,6 +549,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	}
 
 	// Index the vault — persistent (incremental) or in-memory.
+	indexStart := time.Now()
 	if err := indexVault(vc); err != nil {
 		// Close store on error — caller won't get the cleanup func.
 		if persistentStore != nil {
@@ -517,6 +557,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		}
 		return nil, nil, nil, err
 	}
+	logger.Info("vault indexed", "elapsed", time.Since(indexStart))
 
 	// Load external-source pages from store into the vault's in-memory index.
 	// This must happen after indexVault() (which loads local pages) but before
@@ -534,12 +575,14 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	}
 
 	// Start file watcher.
+	watchStart := time.Now()
 	if err := vc.Watch(); err != nil {
 		if persistentStore != nil {
 			_ = persistentStore.Close()
 		}
 		return nil, nil, nil, fmt.Errorf("failed to start watcher: %w", err)
 	}
+	logger.Info("file watcher started", "elapsed", time.Since(watchStart))
 
 	// Build cleanup func that closes vault client and persistent store.
 	// Order matters: close vault first (stops watcher), then store.

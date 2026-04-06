@@ -15,7 +15,9 @@ import (
 // Consolidates the previously separate githubLogger, webLogger, and managerLogger
 // into a single declaration to reduce duplication.
 var logger = log.NewWithOptions(os.Stderr, log.Options{
-	Prefix: "dewey",
+	Prefix:          "dewey/source",
+	ReportTimestamp: true,
+	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
 })
 
 // SetLogLevel sets the logging level for the source package.
@@ -27,7 +29,12 @@ func SetLogLevel(level log.Level) {
 // SetLogOutput replaces the source package logger with one that writes to
 // the given writer at the given level. Used to enable file logging.
 func SetLogOutput(w io.Writer, level log.Level) {
-	newLogger := log.NewWithOptions(w, log.Options{Prefix: "dewey", Level: level})
+	newLogger := log.NewWithOptions(w, log.Options{
+		Prefix:          "dewey/source",
+		Level:           level,
+		ReportTimestamp: true,
+		TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+	})
 	*logger = *newLogger
 }
 

@@ -6,13 +6,41 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/log"
 	_ "modernc.org/sqlite" // Pure-Go SQLite driver registration.
 )
+
+// logger is the package-level structured logger for store operations.
+var logger = log.NewWithOptions(os.Stderr, log.Options{
+	Prefix:          "dewey/store",
+	ReportTimestamp: true,
+	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+})
+
+// SetLogLevel sets the logging level for the store package.
+// Use log.DebugLevel for verbose output during diagnostics.
+func SetLogLevel(level log.Level) {
+	logger.SetLevel(level)
+}
+
+// SetLogOutput replaces the store package logger with one that writes to
+// the given writer at the given level. Used to enable file logging.
+func SetLogOutput(w io.Writer, level log.Level) {
+	newLogger := log.NewWithOptions(w, log.Options{
+		Prefix:          "dewey/store",
+		Level:           level,
+		ReportTimestamp: true,
+		TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+	})
+	*logger = *newLogger
+}
 
 // Store wraps a SQLite database connection for knowledge graph persistence.
 // It manages pages, blocks, links, embeddings, and index metadata.
@@ -86,6 +114,9 @@ func New(path string) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("another Dewey process is using this database: %w", err)
 		}
+		// Write PID and command for diagnostic identification (best-effort).
+		_, _ = fmt.Fprintf(lockFile, "%d %s\n", os.Getpid(), strings.Join(os.Args, " "))
+		logger.Debug("lock acquired", "pid", os.Getpid(), "path", lockPath)
 		s.lockFile = lockFile
 	}
 
@@ -101,6 +132,9 @@ func New(path string) (*Store, error) {
 // Returns an error if the database connection cannot be closed cleanly.
 func (s *Store) Close() error {
 	if s.lockFile != nil {
+		logger.Debug("lock released")
+		// Truncate PID data so stale lock files don't contain misleading info.
+		_ = s.lockFile.Truncate(0)
 		// Release the advisory lock before closing the file descriptor.
 		_ = syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
 		_ = s.lockFile.Close()

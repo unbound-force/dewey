@@ -457,6 +457,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	logger.Info("vault path resolved", "path", vp)
 
 	var srvOpts []serverOption
+	srvOpts = append(srvOpts, WithVaultPath(vp))
 
 	// Initialize persistent store if .uf/dewey/ directory exists.
 	// The store is optional — Dewey works without it (backward compat).

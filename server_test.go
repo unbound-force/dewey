@@ -310,6 +310,10 @@ func TestNewServer_RegistersTools(t *testing.T) {
 		"journal_range", "journal_search",
 		// Semantic
 		"semantic_search", "similar", "semantic_search_filtered",
+		// Learning
+		"store_learning",
+		// Indexing
+		"index", "reindex",
 		// Health
 		"health",
 	}
@@ -354,6 +358,8 @@ func TestNewServer_ReadOnlyMode(t *testing.T) {
 		"create_page", "append_blocks", "update_block", "delete_block",
 		"upsert_blocks", "move_block", "delete_page", "rename_page",
 		"bulk_update_properties", "link_pages",
+		// Learning and indexing tools are also write-only.
+		"store_learning", "index", "reindex",
 	}
 	for _, name := range writeTools {
 		if containsTool(tools, name) {
@@ -549,8 +555,8 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "non-DataScript read-write",
 			backend:  &serverMockBackend{},
 			readOnly: false,
-			wantMin:  30, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + health(1) = 34
-			wantMax:  35,
+			wantMin:  32, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(1) + indexing(2) + health(1) = 37
+			wantMax:  37,
 		},
 		{
 			name:     "non-DataScript read-only",
@@ -563,8 +569,8 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "DataScript read-write",
 			backend:  &serverMockBackendWithDataScript{},
 			readOnly: false,
-			wantMin:  38, // above + get_references + query_datalog + flashcard(3) + whiteboard(2) = 41
-			wantMax:  42,
+			wantMin:  40, // above + get_references + query_datalog + flashcard(3) + whiteboard(2) = 44
+			wantMax:  44,
 		},
 		{
 			name:     "DataScript read-only",
@@ -577,8 +583,8 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "vault read-write",
 			backend:  vault.New(t.TempDir()),
 			readOnly: false,
-			wantMin:  31, // non-DataScript read-write + reload
-			wantMax:  36,
+			wantMin:  33, // non-DataScript read-write + reload
+			wantMax:  38,
 		},
 	}
 

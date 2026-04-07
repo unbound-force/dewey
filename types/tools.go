@@ -243,6 +243,16 @@ type SemanticSearchResult struct {
 	IndexedAt  string  `json:"indexed_at"`
 }
 
+// --- Indexing tool inputs ---
+
+// IndexInput defines the parameters for the index MCP tool.
+type IndexInput struct {
+	SourceID string `json:"source_id,omitempty" jsonschema:"Optional source ID to re-index only that source. If omitted all configured sources are indexed."`
+}
+
+// ReindexInput defines the parameters for the reindex MCP tool.
+type ReindexInput struct{}
+
 // --- Learning tool inputs ---
 
 // StoreLearningInput is the input for the dewey_store_learning MCP tool.

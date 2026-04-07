@@ -15,8 +15,9 @@ import (
 
 // serverConfig holds optional dependencies for the MCP server.
 type serverConfig struct {
-	embedder embed.Embedder
-	store    *store.Store
+	embedder  embed.Embedder
+	store     *store.Store
+	vaultPath string
 }
 
 // serverOption configures the MCP server.
@@ -30,6 +31,12 @@ func WithEmbedder(e embed.Embedder) serverOption {
 // WithPersistentStore sets the SQLite store for semantic search tools.
 func WithPersistentStore(s *store.Store) serverOption {
 	return func(c *serverConfig) { c.store = s }
+}
+
+// WithVaultPath sets the vault root path for tools that need to locate
+// configuration files (e.g., sources.yaml for indexing tools).
+func WithVaultPath(p string) serverOption {
+	return func(c *serverConfig) { c.vaultPath = p }
 }
 
 // newServer creates and configures the MCP server with all tools registered.
@@ -87,6 +94,9 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 	if !readOnly {
 		learning := tools.NewLearning(cfg.embedder, cfg.store)
 		toolCount += registerLearningTools(srv, learning)
+
+		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath)
+		toolCount += registerIndexingTools(srv, indexing)
 	}
 
 	toolCount += registerHealthTool(srv, b, readOnly, &cfg)
@@ -395,6 +405,24 @@ func registerLearningTools(srv *mcp.Server, learning *tools.Learning) int {
 	}, learning.StoreLearning)
 
 	return 1
+}
+
+// registerIndexingTools registers the index and reindex MCP tools for
+// triggering source re-indexing while the server is running. These are
+// write operations — excluded in read-only mode (per plan D4, D8).
+// Returns the number of tools registered.
+func registerIndexingTools(srv *mcp.Server, indexing *tools.Indexing) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "index",
+		Description: "Fetch and index configured content sources. Updates the knowledge graph with new and changed content from disk, GitHub, web, and code sources. Optionally filter to a single source by ID.",
+	}, indexing.Index)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "reindex",
+		Description: "Delete and rebuild all external source content in the index. Preserves local vault content and stored learnings. Use when the index is stale or corrupted.",
+	}, indexing.Reindex)
+
+	return 2
 }
 
 // registerHealthTool registers the health check tool that reports server status,

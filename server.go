@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/backend"
@@ -15,9 +17,11 @@ import (
 
 // serverConfig holds optional dependencies for the MCP server.
 type serverConfig struct {
-	embedder  embed.Embedder
-	store     *store.Store
-	vaultPath string
+	embedder   embed.Embedder
+	store      *store.Store
+	vaultPath  string
+	indexReady *atomic.Bool
+	indexMutex *sync.Mutex
 }
 
 // serverOption configures the MCP server.
@@ -37,6 +41,19 @@ func WithPersistentStore(s *store.Store) serverOption {
 // configuration files (e.g., sources.yaml for indexing tools).
 func WithVaultPath(p string) serverOption {
 	return func(c *serverConfig) { c.vaultPath = p }
+}
+
+// WithIndexReady sets the atomic flag that tracks background indexing status.
+// When non-nil, the health tool reports whether indexing is still in progress.
+func WithIndexReady(ready *atomic.Bool) serverOption {
+	return func(c *serverConfig) { c.indexReady = ready }
+}
+
+// WithIndexMutex sets the shared mutex for indexing mutual exclusion.
+// This mutex is shared between the background startup indexing goroutine
+// and the index/reindex MCP tools to prevent concurrent indexing operations.
+func WithIndexMutex(mu *sync.Mutex) serverOption {
+	return func(c *serverConfig) { c.indexMutex = mu }
 }
 
 // newServer creates and configures the MCP server with all tools registered.
@@ -95,7 +112,7 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 		learning := tools.NewLearning(cfg.embedder, cfg.store)
 		toolCount += registerLearningTools(srv, learning)
 
-		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath)
+		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex)
 		toolCount += registerIndexingTools(srv, indexing)
 	}
 
@@ -499,6 +516,11 @@ func registerHealthTool(srv *mcp.Server, b backend.Backend, readOnly bool, cfg *
 		} else {
 			deweyInfo["embeddingModel"] = ""
 			deweyInfo["embeddingAvailable"] = false
+		}
+
+		// Report background indexing status when the flag is available (FR-007, D2).
+		if cfg.indexReady != nil {
+			deweyInfo["indexing"] = !cfg.indexReady.Load()
 		}
 
 		result["dewey"] = deweyInfo

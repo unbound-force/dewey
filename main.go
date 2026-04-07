@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -233,21 +235,36 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 
 	var b backend.Backend
 	var srvOpts []serverOption
+	var deferredIndex func() error
+
+	// Shared mutex for indexing mutual exclusion between background startup
+	// indexing and the index/reindex MCP tools (spec 012, D1).
+	indexMu := &sync.Mutex{}
+	// Atomic flag tracking whether background indexing has completed.
+	// Starts false; set to true when the background goroutine finishes (D2).
+	indexReady := &atomic.Bool{}
 
 	switch bt {
 	case "obsidian":
-		ob, opts, cleanup, err := initObsidianBackend(vaultPath, dailyFolder, noEmbeddings)
+		ob, opts, cleanup, deferred, err := initObsidianBackend(vaultPath, dailyFolder, noEmbeddings)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
 		b = ob
 		srvOpts = opts
+		deferredIndex = deferred
 	case "logseq":
 		b = initLogseqBackend()
+		// Logseq backend has no deferred indexing — mark ready immediately.
+		indexReady.Store(true)
 	default:
 		return fmt.Errorf("unknown backend %q (use logseq or obsidian)", bt)
 	}
+
+	// Pass the shared index mutex and readiness flag to the server config
+	// so the index/reindex MCP tools and health tool can use them.
+	srvOpts = append(srvOpts, WithIndexMutex(indexMu), WithIndexReady(indexReady))
 
 	srv, toolCount := newServer(b, readOnly, srvOpts...)
 
@@ -260,7 +277,31 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 	if httpAddr != "" {
 		transportType = "http"
 	}
+	// The "server ready" log line MUST appear BEFORE background indexing
+	// starts (FR-010, spec 009). This signals to the MCP client that the
+	// server is accepting connections.
 	logger.Info("server ready", "transport", transportType, "tools", toolCount, "startup", time.Since(serveStart))
+
+	// Launch background indexing goroutine before srv.Run() blocks on
+	// stdio/HTTP. The goroutine holds indexMu during indexing so the
+	// index/reindex MCP tools return "already in progress" if called
+	// during startup indexing (spec 012, T004).
+	if deferredIndex != nil {
+		go func() {
+			indexStart := time.Now()
+			logger.Info("background indexing started")
+
+			indexMu.Lock()
+			defer indexMu.Unlock()
+			defer indexReady.Store(true)
+
+			if err := deferredIndex(); err != nil {
+				logger.Error("background indexing failed", "err", err, "elapsed", time.Since(indexStart))
+				return
+			}
+			logger.Info("background indexing complete", "elapsed", time.Since(indexStart))
+		}()
+	}
 
 	if err := runServer(ctx, srv, httpAddr); err != nil {
 		return err
@@ -440,19 +481,21 @@ func ensureOllama(endpoint string, autoStart bool, starter ollamaStarter) (Ollam
 	return OllamaUnavailable, fmt.Errorf("ollama did not become ready within %s", maxWait)
 }
 
-// initObsidianBackend initializes the Obsidian/vault backend including:
-//   - Vault path resolution from flag or OBSIDIAN_VAULT_PATH env var
-//   - Persistent store initialization (optional, graceful degradation)
-//   - Embedder initialization (hard error if unavailable, unless noEmbeddings is true)
-//   - Vault creation and indexing (incremental or full)
-//   - File watcher startup
+// initObsidianBackend initializes the Obsidian/vault backend (fast path).
+// Vault indexing, external page loading, and file watcher startup are
+// deferred to the caller for background execution (spec 012, D3).
 //
 // Returns the backend, server options, a cleanup func (for defers), and error.
 // The cleanup func closes the store and vault client — callers must defer it.
-func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (backend.Backend, []serverOption, func(), error) {
+//
+// The returned deferredIndex function performs the slow operations (indexVault,
+// LoadExternalPages, Watch) and must be called by the caller — typically in a
+// background goroutine so the MCP server can start accepting connections
+// immediately.
+func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (backend.Backend, []serverOption, func(), func() error, error) {
 	vp, err := resolveVaultPath(vaultPath)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	logger.Info("vault path resolved", "path", vp)
 
@@ -538,7 +581,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 			// This remains a hard error: the user has Ollama but hasn't pulled the model.
 			embedder = embed.NewOllamaEmbedder(embedEndpoint, embedModel)
 			if !embedder.Available() {
-				return nil, nil, nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
+				return nil, nil, nil, nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
 					embedModel, embedEndpoint, embedModel)
 			}
 			logger.Info("embedding model available", "model", embedModel)
@@ -555,42 +598,6 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		}
 	}
 
-	// Index the vault — persistent (incremental) or in-memory.
-	indexStart := time.Now()
-	if err := indexVault(vc); err != nil {
-		// Close store on error — caller won't get the cleanup func.
-		if persistentStore != nil {
-			_ = persistentStore.Close()
-		}
-		return nil, nil, nil, err
-	}
-	logger.Info("vault indexed", "elapsed", time.Since(indexStart))
-
-	// Load external-source pages from store into the vault's in-memory index.
-	// This must happen after indexVault() (which loads local pages) but before
-	// BuildBacklinks() is called implicitly by the watcher, so external pages
-	// participate in backlink and search index construction (FR-005, T022).
-	if vs := vc.Store(); vs != nil {
-		extCount, err := vs.LoadExternalPages(vc)
-		if err != nil {
-			logger.Warn("failed to load external pages", "err", err)
-		} else if extCount > 0 {
-			// Rebuild backlinks and search index to include external pages.
-			vc.BuildBacklinks()
-			logger.Info("external pages loaded into vault", "count", extCount)
-		}
-	}
-
-	// Start file watcher.
-	watchStart := time.Now()
-	if err := vc.Watch(); err != nil {
-		if persistentStore != nil {
-			_ = persistentStore.Close()
-		}
-		return nil, nil, nil, fmt.Errorf("failed to start watcher: %w", err)
-	}
-	logger.Info("file watcher started", "elapsed", time.Since(watchStart))
-
 	// Build cleanup func that closes vault client and persistent store.
 	// Order matters: close vault first (stops watcher), then store.
 	cleanup := func() {
@@ -600,7 +607,40 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		}
 	}
 
-	return vc, srvOpts, cleanup, nil
+	// Build deferred indexing function. This performs the slow operations
+	// (indexVault, LoadExternalPages, Watch) that were previously inline.
+	// The caller runs this in a background goroutine (spec 012, T004).
+	deferredIndex := func() error {
+		// Index the vault — persistent (incremental) or in-memory.
+		if err := indexVault(vc); err != nil {
+			return fmt.Errorf("index vault: %w", err)
+		}
+
+		// Load external-source pages from store into the vault's in-memory index.
+		// This must happen after indexVault() (which loads local pages) but before
+		// BuildBacklinks() is called implicitly by the watcher, so external pages
+		// participate in backlink and search index construction (FR-005, T022).
+		if vs := vc.Store(); vs != nil {
+			extCount, err := vs.LoadExternalPages(vc)
+			if err != nil {
+				logger.Warn("failed to load external pages", "err", err)
+			} else if extCount > 0 {
+				// Rebuild backlinks and search index to include external pages.
+				vc.BuildBacklinks()
+				logger.Info("external pages loaded into vault", "count", extCount)
+			}
+		}
+
+		// Start file watcher.
+		if err := vc.Watch(); err != nil {
+			logger.Error("failed to start file watcher", "err", err)
+			// Non-fatal: the server works without file watching (D5).
+		}
+
+		return nil
+	}
+
+	return vc, srvOpts, cleanup, deferredIndex, nil
 }
 
 // indexVault performs vault indexing using the appropriate strategy:

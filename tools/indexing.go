@@ -51,20 +51,27 @@ var indexingLogger = log.NewWithOptions(os.Stderr, log.Options{
 // struct pattern. This enables testing with in-memory stores and nil
 // embedders.
 type Indexing struct {
-	mu        sync.Mutex
+	mu        *sync.Mutex
 	store     *store.Store
 	embedder  embed.Embedder
 	vaultPath string
 }
 
 // NewIndexing creates a new Indexing tool handler with the given store,
-// embedder, and vault path. The embedder may be nil — indexing proceeds
-// without embedding generation when unavailable (graceful degradation).
-// The store must be non-nil for the tools to function; a clear error is
-// returned at call time if it is nil. The vaultPath is the vault root
-// directory (not the .uf/dewey/ workspace).
-func NewIndexing(s *store.Store, e embed.Embedder, vaultPath string) *Indexing {
-	return &Indexing{store: s, embedder: e, vaultPath: vaultPath}
+// embedder, vault path, and optional shared mutex. The embedder may be
+// nil — indexing proceeds without embedding generation when unavailable
+// (graceful degradation). The store must be non-nil for the tools to
+// function; a clear error is returned at call time if it is nil. The
+// vaultPath is the vault root directory (not the .uf/dewey/ workspace).
+//
+// The mu parameter enables shared mutual exclusion with background startup
+// indexing (per D1, spec 012). When mu is non-nil, it replaces the internal
+// mutex. When mu is nil, an internal mutex is created (backward compatible).
+func NewIndexing(s *store.Store, e embed.Embedder, vaultPath string, mu *sync.Mutex) *Indexing {
+	if mu == nil {
+		mu = &sync.Mutex{}
+	}
+	return &Indexing{store: s, embedder: e, vaultPath: vaultPath, mu: mu}
 }
 
 // indexSummary is the structured JSON response returned by both Index

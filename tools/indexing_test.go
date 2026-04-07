@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/unbound-force/dewey/store"
@@ -15,7 +16,7 @@ import (
 // TestIndexing_Index_NilStore verifies that calling Index with a nil store
 // returns an error result mentioning persistent storage (FR-008).
 func TestIndexing_Index_NilStore(t *testing.T) {
-	ix := NewIndexing(nil, nil, t.TempDir())
+	ix := NewIndexing(nil, nil, t.TempDir(), nil)
 
 	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
 	if err != nil {
@@ -37,7 +38,7 @@ func TestIndexing_Index_NilStore(t *testing.T) {
 // TestIndexing_Reindex_NilStore verifies that calling Reindex with a nil store
 // returns an error result mentioning persistent storage (FR-008).
 func TestIndexing_Reindex_NilStore(t *testing.T) {
-	ix := NewIndexing(nil, nil, t.TempDir())
+	ix := NewIndexing(nil, nil, t.TempDir(), nil)
 
 	result, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
 	if err != nil {
@@ -70,7 +71,7 @@ func TestIndexing_Index_NoSources(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	ix := NewIndexing(s, nil, tmpDir)
+	ix := NewIndexing(s, nil, tmpDir, nil)
 
 	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
 	if err != nil {
@@ -95,7 +96,7 @@ func TestIndexing_Index_NoSources(t *testing.T) {
 // operation.
 func TestIndexing_Index_ConcurrentCallRejected(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir())
+	ix := NewIndexing(s, nil, t.TempDir(), nil)
 
 	// Simulate an in-progress operation by locking the mutex.
 	ix.mu.Lock()
@@ -123,7 +124,7 @@ func TestIndexing_Index_ConcurrentCallRejected(t *testing.T) {
 // error result (FR-005). The mutex is shared between Index and Reindex.
 func TestIndexing_Reindex_ConcurrentCallRejected(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir())
+	ix := NewIndexing(s, nil, t.TempDir(), nil)
 
 	// Simulate an in-progress operation by locking the mutex.
 	ix.mu.Lock()
@@ -219,7 +220,7 @@ func TestIndexing_Reindex_PreservesProtectedSources(t *testing.T) {
 		t.Fatalf("InsertSource(github-org): %v", err)
 	}
 
-	ix := NewIndexing(s, nil, tmpDir)
+	ix := NewIndexing(s, nil, tmpDir, nil)
 
 	result, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
 	if err != nil {
@@ -279,7 +280,7 @@ func TestIndexing_Reindex_PreservesProtectedSources(t *testing.T) {
 // between Index and Reindex — locking via one blocks the other (FR-005).
 func TestIndexing_Index_CrossMutexRejection(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir())
+	ix := NewIndexing(s, nil, t.TempDir(), nil)
 
 	// Lock the mutex as if Reindex is running.
 	ix.mu.Lock()
@@ -298,4 +299,114 @@ func TestIndexing_Index_CrossMutexRejection(t *testing.T) {
 	if !strings.Contains(text, "already in progress") {
 		t.Errorf("error message = %q, should mention 'already in progress'", text)
 	}
+}
+
+// --- External mutex injection tests (T007, spec 012) ---
+
+// TestIndexing_ExternalMutex_SharedLock verifies that when an external mutex
+// is injected via NewIndexing(), locking it externally prevents Index() from
+// proceeding — it returns "already in progress". This is the mechanism that
+// enables mutual exclusion between background startup indexing and the
+// index/reindex MCP tools (spec 012, D1).
+func TestIndexing_ExternalMutex_SharedLock(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+
+	// Create the .uf/dewey/ directory with sources.yaml so Index() can
+	// proceed past the config loading step (when the mutex is unlocked).
+	deweyDir := filepath.Join(tmpDir, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Create an external mutex and lock it — simulating background indexing
+	// holding the lock during startup.
+	mu := &sync.Mutex{}
+	mu.Lock()
+
+	// Pass the locked external mutex to NewIndexing.
+	ix := NewIndexing(s, nil, tmpDir, mu)
+
+	// Call Index() — should return "already in progress" because the
+	// external mutex is locked.
+	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
+	if err != nil {
+		t.Fatalf("Index returned Go error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when external mutex is locked")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "already in progress") {
+		t.Errorf("error message = %q, should mention 'already in progress'", text)
+	}
+
+	// Unlock the external mutex — simulating background indexing completion.
+	mu.Unlock()
+
+	// Call Index() again — should now proceed past the mutex check.
+	// It will return "no sources configured" because sources.yaml doesn't
+	// exist, which is fine — the point is it got past the mutex.
+	result2, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
+	if err != nil {
+		t.Fatalf("Index (after unlock) returned Go error: %v", err)
+	}
+	if result2 == nil {
+		t.Fatal("expected non-nil result after unlock")
+	}
+
+	// The result should be an error about no sources, NOT "already in progress".
+	text2 := resultText(result2)
+	if strings.Contains(text2, "already in progress") {
+		t.Errorf("after unlock, should not get 'already in progress', got: %q", text2)
+	}
+}
+
+// TestIndexing_ExternalMutex_NilFallback verifies that passing nil for the
+// mutex parameter creates an internal mutex — backward compatible behavior.
+// The internal mutex still provides mutual exclusion between Index and Reindex.
+func TestIndexing_ExternalMutex_NilFallback(t *testing.T) {
+	s := newTestStore(t)
+
+	// Pass nil mutex — NewIndexing should create an internal one.
+	ix := NewIndexing(s, nil, t.TempDir(), nil)
+
+	// Verify the internal mutex works by locking it and checking rejection.
+	// PARALLEL SAFETY: We access ix.mu directly because this is a package-
+	// internal test (tools_test package has access to unexported fields).
+	ix.mu.Lock()
+
+	// Index should be rejected because the internal mutex is locked.
+	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
+	if err != nil {
+		t.Fatalf("Index returned Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when internal mutex is locked")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "already in progress") {
+		t.Errorf("error message = %q, should mention 'already in progress'", text)
+	}
+
+	// Also verify Reindex is blocked by the same internal mutex.
+	result2, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
+	if err != nil {
+		t.Fatalf("Reindex returned Go error: %v", err)
+	}
+	if !result2.IsError {
+		t.Fatal("expected error result for Reindex when internal mutex is locked")
+	}
+
+	text2 := resultText(result2)
+	if !strings.Contains(text2, "already in progress") {
+		t.Errorf("Reindex error message = %q, should mention 'already in progress'", text2)
+	}
+
+	ix.mu.Unlock()
 }

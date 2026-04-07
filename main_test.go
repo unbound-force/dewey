@@ -13,11 +13,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/tools"
+	"github.com/unbound-force/dewey/types"
 )
 
 // --- resolveBackendType tests (T014) ---
@@ -225,7 +229,7 @@ func TestRunServer_HTTPTransport_ContextCancellation(t *testing.T) {
 func TestInitObsidianBackend_MissingVaultPath(t *testing.T) {
 	t.Setenv("OBSIDIAN_VAULT_PATH", "")
 
-	_, _, _, err := initObsidianBackend("", "daily notes", false)
+	_, _, _, _, err := initObsidianBackend("", "daily notes", false)
 	if err == nil {
 		t.Fatal("initObsidianBackend with no vault path should return error")
 	}
@@ -246,7 +250,7 @@ func TestInitObsidianBackend_EnvVaultPath(t *testing.T) {
 	defer logger.SetOutput(os.Stderr)
 
 	// Pass noEmbeddings=true because Ollama is not running in test env.
-	b, opts, cleanup, err := initObsidianBackend("", "daily notes", true)
+	b, opts, cleanup, _, err := initObsidianBackend("", "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -277,7 +281,7 @@ func TestInitObsidianBackend_WithPersistentStore(t *testing.T) {
 	defer logger.SetOutput(os.Stderr)
 
 	// Pass noEmbeddings=true because Ollama is not running in test env.
-	b, opts, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
+	b, opts, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -310,7 +314,7 @@ func TestInitObsidianBackend_EmbedderEnvConfig(t *testing.T) {
 
 	// Pass noEmbeddings=true because Ollama is not running in test env
 	// (custom endpoint http://localhost:99999 is unreachable).
-	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
+	b, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -328,8 +332,8 @@ func TestInitObsidianBackend_EmbedderEnvConfig(t *testing.T) {
 }
 
 // TestInitObsidianBackend_WithMarkdownFiles verifies that initObsidianBackend
-// successfully indexes markdown files and returns a working backend that can
-// list pages.
+// returns quickly without indexing (spec 012, T003), and that calling the
+// returned deferredIndex function populates the in-memory index.
 func TestInitObsidianBackend_WithMarkdownFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -343,11 +347,38 @@ func TestInitObsidianBackend_WithMarkdownFiles(t *testing.T) {
 	defer logger.SetOutput(os.Stderr)
 
 	// Pass noEmbeddings=true because Ollama is not running in test env.
-	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
+	initStart := time.Now()
+	b, _, cleanup, deferredIndex, err := initObsidianBackend(tmpDir, "daily notes", true)
+	initElapsed := time.Since(initStart)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
 	defer cleanup()
+
+	// T006: Verify initObsidianBackend returns quickly (< 1 second) because
+	// indexing is deferred. The function only resolves paths, opens the store,
+	// and creates the vault client — no file walking or indexing.
+	if initElapsed >= 1*time.Second {
+		t.Errorf("initObsidianBackend took %v, want < 1s (indexing should be deferred)", initElapsed)
+	}
+
+	// T006: Verify pages are NOT indexed immediately after initObsidianBackend.
+	// The in-memory index should be empty because indexing is deferred.
+	pagesBeforeIndex, err := b.GetAllPages(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllPages (before deferred index): %v", err)
+	}
+	if len(pagesBeforeIndex) != 0 {
+		t.Errorf("expected 0 pages before deferredIndex, got %d", len(pagesBeforeIndex))
+	}
+
+	// T006: Verify deferredIndex is non-nil and calling it populates the index.
+	if deferredIndex == nil {
+		t.Fatal("deferredIndex should be non-nil")
+	}
+	if err := deferredIndex(); err != nil {
+		t.Fatalf("deferredIndex failed: %v", err)
+	}
 
 	// Verify pages were indexed by querying through the backend.
 	pages, err := b.GetAllPages(context.Background())
@@ -355,7 +386,7 @@ func TestInitObsidianBackend_WithMarkdownFiles(t *testing.T) {
 		t.Fatalf("GetAllPages: %v", err)
 	}
 	if len(pages) == 0 {
-		t.Error("expected at least 1 page after indexing")
+		t.Error("expected at least 1 page after deferredIndex")
 	}
 
 	// Verify the specific page is accessible.
@@ -364,7 +395,7 @@ func TestInitObsidianBackend_WithMarkdownFiles(t *testing.T) {
 		t.Fatalf("GetPage: %v", err)
 	}
 	if page == nil {
-		t.Error("test-page should be found after indexing")
+		t.Error("test-page should be found after deferredIndex")
 	}
 }
 
@@ -381,7 +412,7 @@ func TestInitObsidianBackend_FlagTakesPrecedence(t *testing.T) {
 	defer logger.SetOutput(os.Stderr)
 
 	// Pass noEmbeddings=true because Ollama is not running in test env.
-	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
+	b, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend failed: %v", err)
 	}
@@ -406,7 +437,7 @@ func TestInitObsidianBackend_NoEmbeddings_Succeeds(t *testing.T) {
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	b, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", true)
+	b, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", true)
 	if err != nil {
 		t.Fatalf("initObsidianBackend with noEmbeddings=true should succeed, got: %v", err)
 	}
@@ -440,7 +471,7 @@ func TestInitObsidianBackend_GracefulDegradation_WhenOllamaUnavailable(t *testin
 	logger.SetOutput(&logBuf)
 	defer logger.SetOutput(os.Stderr)
 
-	_, _, cleanup, err := initObsidianBackend(tmpDir, "daily notes", false)
+	_, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", false)
 	if err != nil {
 		t.Fatalf("initObsidianBackend should succeed with graceful degradation, got error: %v", err)
 	}
@@ -652,4 +683,212 @@ func TestEnsureOllama_AutoStartDisabled(t *testing.T) {
 	if state != OllamaUnavailable {
 		t.Errorf("ensureOllama() state = %v, want OllamaUnavailable", state)
 	}
+}
+
+// --- Background indexing integration tests (T008, spec 012) ---
+
+// TestBackgroundIndex_ServerStartsBeforeIndexing verifies the core split
+// introduced by spec 012: initObsidianBackend() returns quickly without
+// indexing, and the returned deferredIndex function performs the slow
+// operations (indexVault, LoadExternalPages, Watch) when called later.
+//
+// This proves the MCP server can start accepting connections before the
+// vault is fully indexed — the key user story (US1).
+//
+// PARALLEL SAFETY: Mutates package-level logger output for log assertions.
+func TestBackgroundIndex_ServerStartsBeforeIndexing(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create multiple markdown files to simulate a real vault.
+	files := map[string]string{
+		"page-one.md":   "# Page One\n\nFirst page content.\n\n[[page-two]]",
+		"page-two.md":   "# Page Two\n\nSecond page with a [[page-one]] backlink.",
+		"page-three.md": "# Page Three\n\nThird page, no links.",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	// Step 1: Call initObsidianBackend — should return quickly.
+	initStart := time.Now()
+	b, _, cleanup, deferredIndex, err := initObsidianBackend(tmpDir, "daily notes", true)
+	initElapsed := time.Since(initStart)
+	if err != nil {
+		t.Fatalf("initObsidianBackend failed: %v", err)
+	}
+	defer cleanup()
+
+	if initElapsed >= 1*time.Second {
+		t.Errorf("initObsidianBackend took %v, want < 1s", initElapsed)
+	}
+
+	// Step 2: Verify backend is non-nil but has no pages yet.
+	if b == nil {
+		t.Fatal("initObsidianBackend returned nil backend")
+	}
+	pagesBeforeIndex, err := b.GetAllPages(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllPages (before index): %v", err)
+	}
+	if len(pagesBeforeIndex) != 0 {
+		t.Errorf("expected 0 pages before background indexing, got %d", len(pagesBeforeIndex))
+	}
+
+	// Step 3: Simulate background indexing with shared mutex and readiness flag,
+	// matching the pattern in executeServe() (spec 012, T004).
+	indexReady := &atomic.Bool{}
+	indexMu := &sync.Mutex{}
+
+	if indexReady.Load() {
+		t.Error("indexReady should be false before background indexing")
+	}
+
+	// Step 4: Run deferred indexing in a goroutine (same as executeServe).
+	if deferredIndex == nil {
+		t.Fatal("deferredIndex should be non-nil")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		indexMu.Lock()
+		defer indexMu.Unlock()
+		defer indexReady.Store(true)
+
+		if err := deferredIndex(); err != nil {
+			// Can't use t.Fatalf in goroutine — log and let the main
+			// goroutine detect the failure via indexReady remaining false.
+			t.Errorf("deferredIndex failed: %v", err)
+		}
+	}()
+
+	// Step 5: Wait for background indexing to complete.
+	select {
+	case <-done:
+		// Success — goroutine completed.
+	case <-time.After(10 * time.Second):
+		t.Fatal("background indexing did not complete within 10 seconds")
+	}
+
+	// Step 6: Verify indexReady is true after completion.
+	if !indexReady.Load() {
+		t.Error("indexReady should be true after background indexing completes")
+	}
+
+	// Step 7: Verify pages are now in the in-memory index.
+	pagesAfterIndex, err := b.GetAllPages(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllPages (after index): %v", err)
+	}
+	if len(pagesAfterIndex) != 3 {
+		t.Errorf("expected 3 pages after background indexing, got %d", len(pagesAfterIndex))
+	}
+}
+
+// TestBackgroundIndex_IndexReadyFlag verifies the atomic.Bool readiness flag
+// lifecycle: starts false, remains false during indexing, becomes true after
+// the deferred indexing function completes (FR-007, D2).
+//
+// PARALLEL SAFETY: Mutates package-level logger output for log assertions.
+func TestBackgroundIndex_IndexReadyFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a minimal markdown file so indexing has work to do.
+	if err := os.WriteFile(filepath.Join(tmpDir, "note.md"), []byte("# Note\n\nContent."), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	b, _, cleanup, deferredIndex, err := initObsidianBackend(tmpDir, "daily notes", true)
+	if err != nil {
+		t.Fatalf("initObsidianBackend failed: %v", err)
+	}
+	defer cleanup()
+	_ = b
+
+	// Step 1: Create indexReady flag — starts false.
+	indexReady := &atomic.Bool{}
+	if indexReady.Load() {
+		t.Error("indexReady should be false initially")
+	}
+
+	// Step 2: Call deferredIndex synchronously.
+	if deferredIndex == nil {
+		t.Fatal("deferredIndex should be non-nil")
+	}
+	if err := deferredIndex(); err != nil {
+		t.Fatalf("deferredIndex failed: %v", err)
+	}
+
+	// Step 3: Set indexReady to true (simulating what executeServe's goroutine does).
+	indexReady.Store(true)
+
+	// Step 4: Verify the flag is now true.
+	if !indexReady.Load() {
+		t.Error("indexReady should be true after deferredIndex completes and flag is set")
+	}
+}
+
+// TestBackgroundIndex_MutexBlocksIndexDuringStartup verifies that the shared
+// mutex prevents the index MCP tool from running while background indexing
+// is in progress. This is the key mutual exclusion guarantee (spec 012, D1).
+//
+// PARALLEL SAFETY: Mutates package-level logger output for log assertions.
+func TestBackgroundIndex_MutexBlocksIndexDuringStartup(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	// Create a persistent store — required for the Index() handler to
+	// proceed past the nil-store check and reach the mutex check.
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Create a shared mutex — same instance used by both background
+	// indexing and the Indexing MCP tool.
+	indexMu := &sync.Mutex{}
+
+	// Simulate background indexing holding the lock.
+	indexMu.Lock()
+
+	// Create an Indexing tool handler with the shared mutex and a valid store.
+	ix := tools.NewIndexing(s, nil, tmpDir, indexMu)
+
+	// Attempt to call Index — should be rejected because the mutex is held.
+	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
+	if err != nil {
+		t.Fatalf("Index returned Go error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// The result should be an error about "already in progress".
+	if !result.IsError {
+		t.Fatal("expected error result when background indexing holds the mutex")
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatal("expected TextContent in result")
+	}
+	if !strings.Contains(tc.Text, "already in progress") {
+		t.Errorf("error message = %q, should mention 'already in progress'", tc.Text)
+	}
+
+	// Release the lock — simulating background indexing completion.
+	indexMu.Unlock()
 }

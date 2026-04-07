@@ -137,8 +137,30 @@ func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string
 
 		vec, err := embedder.Embed(ctx, chunk)
 		if err != nil {
+			// Check for context-length overflow and retry with truncated chunk.
+			if strings.Contains(err.Error(), "context length") {
+				runes := []rune(chunk)
+				truncated := string(runes[:len(runes)/2])
+				logger.Debug("retrying embedding with truncated chunk",
+					"page", pageName, "block", b.UUID,
+					"originalLen", len(runes), "truncatedLen", len(runes)/2)
+				vec, err = embedder.Embed(ctx, truncated)
+				if err == nil {
+					// Retry succeeded — store the embedding with the truncated chunk.
+					if storeErr := s.InsertEmbedding(b.UUID, embedder.ModelID(), vec, truncated); storeErr != nil {
+						logger.Warn("failed to persist embedding after retry",
+							"page", pageName, "block", b.UUID, "err", storeErr)
+					} else {
+						count++
+					}
+					if len(b.Children) > 0 {
+						count += GenerateEmbeddings(s, embedder, pageName, b.Children, currentPath)
+					}
+					continue
+				}
+			}
 			logger.Warn("failed to generate embedding",
-				"page", pageName, "block", b.UUID, "chunkLen", len(chunk), "err", err)
+				"page", pageName, "block", b.UUID, "chunkLen", len([]rune(chunk)), "err", err)
 			continue
 		}
 

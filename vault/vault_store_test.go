@@ -1057,6 +1057,87 @@ func TestGenerateEmbeddings_PartialEmbedError(t *testing.T) {
 	}
 }
 
+// TestGenerateEmbeddings_RetryOnContextOverflow verifies that when the embedder
+// returns a "context length" error, GenerateEmbeddings retries with a truncated
+// chunk and stores the embedding on success.
+func TestGenerateEmbeddings_RetryOnContextOverflow(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	callCount := 0
+	me := &mockEmbedder{
+		available: true,
+		modelID:   "test-model",
+		embedFn: func(_ context.Context, text string) ([]float32, error) {
+			callCount++
+			if callCount == 1 {
+				// First call: context too long.
+				return nil, fmt.Errorf("the input length exceeds the context length")
+			}
+			// Second call (truncated): succeed.
+			return []float32{0.4, 0.5, 0.6}, nil
+		},
+	}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "overflow-block", Content: "Some content that is pretend-long"},
+	}
+
+	insertTestPageAndBlocks(t, s, "overflow-page", blocks)
+
+	count := GenerateEmbeddings(s, me, "overflow-page", blocks, nil)
+	if count != 1 {
+		t.Errorf("GenerateEmbeddings count = %d, want 1 (retry should succeed)", count)
+	}
+	if callCount != 2 {
+		t.Errorf("embedder called %d times, want 2 (original + retry)", callCount)
+	}
+
+	// Verify embedding was stored.
+	emb, err := s.GetEmbedding("overflow-block", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding: %v", err)
+	}
+	if emb == nil {
+		t.Fatal("overflow-block should have an embedding after retry")
+	}
+}
+
+// TestGenerateEmbeddings_RetryFailsBoth verifies that when both the original
+// and retry embedding calls fail, the block is skipped with a warning.
+func TestGenerateEmbeddings_RetryFailsBoth(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	me := &mockEmbedder{
+		available: true,
+		modelID:   "test-model",
+		embedFn: func(_ context.Context, _ string) ([]float32, error) {
+			return nil, fmt.Errorf("the input length exceeds the context length")
+		},
+	}
+	vs.SetEmbedder(me)
+
+	blocks := []types.BlockEntity{
+		{UUID: "double-fail-block", Content: "Content that always fails"},
+	}
+
+	insertTestPageAndBlocks(t, s, "double-fail-page", blocks)
+
+	count := GenerateEmbeddings(s, me, "double-fail-page", blocks, nil)
+	if count != 0 {
+		t.Errorf("GenerateEmbeddings count = %d, want 0 (both attempts failed)", count)
+	}
+
+	// Verify no embedding was stored.
+	emb, err := s.GetEmbedding("double-fail-block", "test-model")
+	if err != nil {
+		t.Fatalf("GetEmbedding: %v", err)
+	}
+	if emb != nil {
+		t.Error("double-fail-block should have no embedding after both attempts failed")
+	}
+}
+
 // BenchmarkIncrementalStartup measures the time from store.Open() to ready-to-serve
 // for a vault with 200 files and <10 changes. Target: <2s per SC-001.
 // This is the benchmark test for T066.

@@ -136,8 +136,8 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		propsMap["category"] = input.Category
 	}
 	// Preserve backward-compatible tags field if provided.
-	if input.Tags != "" {
-		propsMap["tags"] = input.Tags
+	if input.Tags != "" { //nolint:staticcheck // SA1019: intentionally reading deprecated field
+		propsMap["tags"] = input.Tags //nolint:staticcheck
 	}
 	propsJSON, err := json.Marshal(propsMap)
 	if err != nil {

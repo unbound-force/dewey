@@ -166,7 +166,10 @@ func TestLint_StaleDecision(t *testing.T) {
 
 	foundStale := false
 	for _, f := range findings {
-		finding := f.(map[string]any)
+		finding, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
 		if finding["type"] == "stale_decision" {
 			foundStale = true
 			if finding["identity"] != "auth-config-1" {
@@ -260,7 +263,10 @@ func TestLint_UncompiledLearnings(t *testing.T) {
 	findings, _ := parsed["findings"].([]any)
 	uncompiledIdentities := make(map[string]bool)
 	for _, f := range findings {
-		finding := f.(map[string]any)
+		finding, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
 		if finding["type"] == "uncompiled" {
 			id, _ := finding["identity"].(string)
 			uncompiledIdentities[id] = true
@@ -319,7 +325,10 @@ func TestLint_EmbeddingGaps(t *testing.T) {
 	findings, _ := parsed["findings"].([]any)
 	foundGap := false
 	for _, f := range findings {
-		finding := f.(map[string]any)
+		finding, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
 		if finding["type"] == "embedding_gap" {
 			foundGap = true
 			if finding["page"] != "test-page" {
@@ -435,7 +444,10 @@ func TestLint_Contradictions(t *testing.T) {
 	findings, _ := parsed["findings"].([]any)
 	foundContradiction := false
 	for _, f := range findings {
-		finding := f.(map[string]any)
+		finding, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
 		if finding["type"] == "contradiction" {
 			foundContradiction = true
 			identities, ok := finding["identities"].([]any)

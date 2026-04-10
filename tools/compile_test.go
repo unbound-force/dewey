@@ -427,7 +427,10 @@ func TestCompile_SynthesizerUnavailable(t *testing.T) {
 		t.Fatal("expected non-empty clusters in prompt mode")
 	}
 
-	cluster := clusters[0].(map[string]any)
+	cluster, ok := clusters[0].(map[string]any)
+	if !ok {
+		t.Fatal("cluster is not map[string]any")
+	}
 	if cluster["topic"] == nil || cluster["topic"] == "" {
 		t.Error("cluster missing topic")
 	}
@@ -548,7 +551,10 @@ func TestCompileIncremental_SingleTag(t *testing.T) {
 		t.Fatalf("expected 1 article (auth only), got %d", len(articles))
 	}
 
-	article := articles[0].(map[string]any)
+	article, ok := articles[0].(map[string]any)
+	if !ok {
+		t.Fatal("article is not map[string]any")
+	}
 	if article["topic"] != "Auth" {
 		t.Errorf("article topic = %v, want 'Auth'", article["topic"])
 	}

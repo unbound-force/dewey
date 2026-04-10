@@ -319,7 +319,7 @@ Three GitHub Actions workflows:
 ## Sibling Repositories
 
 | Repo | Purpose | Constitution | Status |
-|------|---------|-------------|--------|
+|------|---------|--------------|--------|
 | `unbound-force/unbound-force` | Meta repo (specs, governance, CLI) | v1.1.0 (org constitution) | Active |
 | `unbound-force/gaze` | Go static analysis (tester hero) | v1.3.0 (Accuracy, Minimal Assumptions, Actionable Output, Testability) | Active |
 | `unbound-force/website` | Public website (Hugo + Doks) | v1.0.0 (Content Accuracy, Minimal Footprint, Visitor Clarity) | Active |

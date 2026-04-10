@@ -70,8 +70,9 @@ func resolveTag(input types.StoreLearningInput) string {
 		return normalizeTag(input.Tag)
 	}
 	// Backward compatibility: extract first tag from comma-separated Tags field.
+	//nolint:staticcheck // SA1019: intentionally reading deprecated field for backward compat
 	if input.Tags != "" {
-		parts := strings.SplitN(input.Tags, ",", 2)
+		parts := strings.SplitN(input.Tags, ",", 2) //nolint:staticcheck
 		first := strings.TrimSpace(parts[0])
 		if first != "" {
 			return normalizeTag(first)

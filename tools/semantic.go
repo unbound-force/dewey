@@ -70,7 +70,7 @@ func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest,
 	}
 
 	// Convert to output format with provenance metadata.
-	output := toSemanticResults(results)
+	output := toSemanticResults(results, s.store)
 
 	res, err := jsonTextResult(output)
 	return res, nil, err
@@ -108,7 +108,7 @@ func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input 
 	}
 
 	filtered := filterSimilarResults(results, input.UUID, limit)
-	output := toSemanticResults(filtered)
+	output := toSemanticResults(filtered, s.store)
 
 	res, err := jsonTextResult(output)
 	return res, nil, err
@@ -224,28 +224,73 @@ func (s *Semantic) SemanticSearchFiltered(ctx context.Context, req *mcp.CallTool
 		HasTag:      input.HasTag,
 	}
 
+	// When tier filtering is requested, fetch extra results to account for
+	// post-query filtering. The tier filter is applied after similarity ranking
+	// because the store's SearchFilters does not support tier natively.
+	// Design decision: Post-query filter chosen over modifying store/ to keep
+	// this change scoped to the tools layer (Single Responsibility Principle).
+	fetchLimit := limit
+	if input.Tier != "" {
+		fetchLimit = limit * 3 // Over-fetch to compensate for post-filter reduction.
+		if fetchLimit < 30 {
+			fetchLimit = 30
+		}
+	}
+
 	// Search with filters.
-	results, err := s.store.SearchSimilarFiltered(s.embedder.ModelID(), queryVec, filters, limit, threshold)
+	results, err := s.store.SearchSimilarFiltered(s.embedder.ModelID(), queryVec, filters, fetchLimit, threshold)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Search failed: %v", err)), nil, nil
 	}
 
-	output := toSemanticResults(results)
+	// Apply tier post-filter when requested (FR-024).
+	if input.Tier != "" {
+		results = filterResultsByTier(results, input.Tier, s.store)
+	}
+
+	// Enforce the original limit after tier filtering.
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	output := toSemanticResults(results, s.store)
 
 	res, err := jsonTextResult(output)
 	return res, nil, err
 }
 
 // toSemanticResults converts store.SimilarityResult to types.SemanticSearchResult
-// with ISO 8601 timestamps for the MCP response.
-func toSemanticResults(results []store.SimilarityResult) []types.SemanticSearchResult {
+// with ISO 8601 timestamps and page-level metadata (tier, category, created_at)
+// for the MCP response. The store parameter is used to look up page metadata
+// that isn't carried by SimilarityResult (FR-004, 013-knowledge-compile).
+//
+// Design decision: Page metadata is looked up per unique page name (not per
+// result) to avoid N+1 queries when multiple results reference the same page.
+// A nil store is handled gracefully — metadata fields are left empty.
+func toSemanticResults(results []store.SimilarityResult, st *store.Store) []types.SemanticSearchResult {
+	// Build a cache of page metadata keyed by page name to avoid N+1 lookups.
+	pageCache := make(map[string]*store.Page)
+	if st != nil {
+		for _, r := range results {
+			if r.PageName != "" {
+				if _, ok := pageCache[r.PageName]; !ok {
+					page, err := st.GetPage(r.PageName)
+					if err == nil && page != nil {
+						pageCache[r.PageName] = page
+					}
+				}
+			}
+		}
+	}
+
 	output := make([]types.SemanticSearchResult, len(results))
 	for i, r := range results {
 		indexedAt := ""
 		if r.IndexedAt > 0 {
 			indexedAt = time.UnixMilli(r.IndexedAt).UTC().Format(time.RFC3339)
 		}
-		output[i] = types.SemanticSearchResult{
+
+		result := types.SemanticSearchResult{
 			DocumentID: r.BlockUUID,
 			Page:       r.PageName,
 			Content:    r.Content,
@@ -255,6 +300,52 @@ func toSemanticResults(results []store.SimilarityResult) []types.SemanticSearchR
 			OriginURL:  r.OriginURL,
 			IndexedAt:  indexedAt,
 		}
+
+		// Enrich with page-level metadata when available.
+		if page, ok := pageCache[r.PageName]; ok {
+			result.Tier = page.Tier
+			result.Category = page.Category
+			if page.CreatedAt > 0 {
+				result.CreatedAt = time.UnixMilli(page.CreatedAt).UTC().Format(time.RFC3339)
+			}
+		}
+
+		output[i] = result
 	}
 	return output
+}
+
+// filterResultsByTier removes results whose page tier does not match the
+// requested tier. Uses the store to look up page metadata. Results with
+// unknown pages (no page metadata) are excluded when a tier filter is active.
+// This is a post-query filter applied after similarity ranking (FR-024).
+func filterResultsByTier(results []store.SimilarityResult, tier string, st *store.Store) []store.SimilarityResult {
+	if st == nil {
+		return results
+	}
+
+	// Build page cache for tier lookups.
+	pageCache := make(map[string]*store.Page)
+	for _, r := range results {
+		if r.PageName != "" {
+			if _, ok := pageCache[r.PageName]; !ok {
+				page, err := st.GetPage(r.PageName)
+				if err == nil && page != nil {
+					pageCache[r.PageName] = page
+				}
+			}
+		}
+	}
+
+	filtered := make([]store.SimilarityResult, 0, len(results))
+	for _, r := range results {
+		page, ok := pageCache[r.PageName]
+		if !ok {
+			continue // Unknown page — exclude when tier filter is active.
+		}
+		if page.Tier == tier {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }

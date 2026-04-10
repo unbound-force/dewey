@@ -1,9 +1,12 @@
 package store
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // schemaVersion is the current schema version. Incremented when the schema changes.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // migrate applies database schema migrations. On first run, it creates all
 // tables. On subsequent runs, it checks the schema_version metadata and
@@ -52,9 +55,87 @@ func (s *Store) migrate() error {
 	}
 
 	// Apply forward migrations from currentVersion to schemaVersion.
-	// Currently only version 1 exists, so no migrations to apply.
-	// Future migrations would be applied here sequentially.
+	// Each migration runs in a transaction for atomicity.
+	migrations := map[int]func() error{
+		1: s.migrateV1toV2,
+	}
+
+	for v := currentVersion; v < schemaVersion; v++ {
+		migrateFn, ok := migrations[v]
+		if !ok {
+			return fmt.Errorf("no migration path from version %d to %d", v, v+1)
+		}
+		if err := migrateFn(); err != nil {
+			return fmt.Errorf("migrate v%d to v%d: %w", v, v+1, err)
+		}
+	}
+
 	return nil
+}
+
+// migrateV1toV2 adds tier and category columns to the pages table
+// for contamination separation (FR-020) and category-aware compilation (FR-008).
+// Existing learning pages are backfilled with tier = 'draft'.
+// Existing compiled pages (if any) are backfilled with tier = 'draft'.
+// All other pages default to tier = 'authored'.
+//
+// The migration is idempotent: re-running it on a v2 schema is safe because
+// ALTER TABLE errors for duplicate columns are silently ignored.
+func (s *Store) migrateV1toV2() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Add tier column. modernc.org/sqlite does not support ADD COLUMN IF NOT EXISTS,
+	// so we attempt the ALTER and ignore "duplicate column" errors for idempotency.
+	if _, err := tx.Exec(`ALTER TABLE pages ADD COLUMN tier TEXT DEFAULT 'authored'`); err != nil {
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("add tier column: %w", err)
+		}
+	}
+
+	// Add category column.
+	if _, err := tx.Exec(`ALTER TABLE pages ADD COLUMN category TEXT`); err != nil {
+		if !isDuplicateColumnError(err) {
+			return fmt.Errorf("add category column: %w", err)
+		}
+	}
+
+	// Backfill: learning pages are draft tier.
+	if _, err := tx.Exec(`UPDATE pages SET tier = 'draft' WHERE source_id = 'learning'`); err != nil {
+		return fmt.Errorf("backfill learning tier: %w", err)
+	}
+
+	// Backfill: compiled pages are draft tier.
+	if _, err := tx.Exec(`UPDATE pages SET tier = 'draft' WHERE source_id = 'compiled'`); err != nil {
+		return fmt.Errorf("backfill compiled tier: %w", err)
+	}
+
+	// Create index for tier-filtered search performance.
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pages_tier ON pages(tier)`); err != nil {
+		return fmt.Errorf("create tier index: %w", err)
+	}
+
+	// Update schema version.
+	if _, err := tx.Exec(`UPDATE metadata SET value = '2' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// isDuplicateColumnError returns true if the error indicates an attempt to
+// add a column that already exists. modernc.org/sqlite does not support
+// ADD COLUMN IF NOT EXISTS, so we detect this error for idempotency.
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate column") ||
+		strings.Contains(msg, "already exists")
 }
 
 // createSchema creates all tables for a fresh database.
@@ -72,8 +153,11 @@ func (s *Store) createSchema() error {
 			is_journal INTEGER DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL,
+			tier TEXT DEFAULT 'authored',
+			category TEXT,
 			UNIQUE(source_id, source_doc_id)
 		);
+		CREATE INDEX IF NOT EXISTS idx_pages_tier ON pages(tier);
 
 		-- Blocks table
 		CREATE TABLE IF NOT EXISTS blocks (

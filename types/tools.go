@@ -226,12 +226,15 @@ type SemanticSearchFilteredInput struct {
 	SourceID    string  `json:"source_id,omitempty" jsonschema:"Filter by specific source identifier (e.g., github-gaze)"`
 	HasProperty string  `json:"has_property,omitempty" jsonschema:"Filter to pages with this frontmatter property key"`
 	HasTag      string  `json:"has_tag,omitempty" jsonschema:"Filter to pages with this tag"`
+	Tier        string  `json:"tier,omitempty" jsonschema:"Filter by trust tier: authored, validated, or draft"`
 	Limit       int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
 	Threshold   float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
 }
 
 // SemanticSearchResult represents a single result from semantic search.
 // Includes provenance metadata per Constitution III (Observable Quality).
+// CreatedAt, Tier, and Category provide temporal and trust metadata for
+// knowledge compilation and contamination separation (013-knowledge-compile FR-004, FR-024).
 type SemanticSearchResult struct {
 	DocumentID string  `json:"document_id"`
 	Page       string  `json:"page"`
@@ -241,6 +244,9 @@ type SemanticSearchResult struct {
 	SourceID   string  `json:"source_id"`
 	OriginURL  string  `json:"origin_url,omitempty"`
 	IndexedAt  string  `json:"indexed_at"`
+	CreatedAt  string  `json:"created_at,omitempty"`
+	Tier       string  `json:"tier,omitempty"`
+	Category   string  `json:"category,omitempty"`
 }
 
 // --- Indexing tool inputs ---
@@ -256,9 +262,14 @@ type ReindexInput struct{}
 // --- Learning tool inputs ---
 
 // StoreLearningInput is the input for the dewey_store_learning MCP tool.
+// BREAKING CHANGE: `tags` (plural, optional) replaced by `tag` (singular, required).
 type StoreLearningInput struct {
 	Information string `json:"information" jsonschema:"The learning text to store. Required."`
-	Tags        string `json:"tags,omitempty" jsonschema:"Optional comma-separated tags for filtering (e.g. 'gotcha, vault-walker, 006-unified-ignore')"`
+	Tag         string `json:"tag" jsonschema:"Required topic tag for this learning (e.g., authentication, vault-walker)"`
+	Category    string `json:"category,omitempty" jsonschema:"Optional category: decision, pattern, gotcha, context, reference"`
+	// Deprecated: Use Tag instead. If provided and Tag is empty, the first
+	// tag from the comma-separated list is used for backward compatibility.
+	Tags string `json:"tags,omitempty" jsonschema:"DEPRECATED: Use 'tag' instead. If provided and 'tag' is empty, first tag is used."`
 }
 
 // --- Journal tool inputs ---
@@ -273,4 +284,30 @@ type JournalSearchInput struct {
 	Query string `json:"query" jsonschema:"Text to search for in journal entries"`
 	From  string `json:"from,omitempty" jsonschema:"Start date filter (YYYY-MM-DD)"`
 	To    string `json:"to,omitempty" jsonschema:"End date filter (YYYY-MM-DD)"`
+}
+
+// --- Compile tool inputs ---
+
+// CompileInput is the input for the dewey_compile MCP tool.
+type CompileInput struct {
+	// Incremental limits compilation to specific learning identities.
+	// When empty, all learnings are compiled (full rebuild).
+	Incremental []string `json:"incremental,omitempty" jsonschema:"Optional list of learning identities to compile incrementally (e.g., ['authentication-3']). When empty, performs full rebuild."`
+}
+
+// --- Lint tool inputs ---
+
+// LintInput is the input for the dewey_lint MCP tool.
+type LintInput struct {
+	// Fix enables auto-repair of mechanical issues (e.g., regenerate
+	// missing embeddings). Does not fix semantic issues.
+	Fix bool `json:"fix,omitempty" jsonschema:"Auto-repair mechanical issues (missing embeddings). Default: false"`
+}
+
+// --- Promote tool inputs ---
+
+// PromoteInput is the input for the dewey_promote MCP tool.
+type PromoteInput struct {
+	// Page is the page name to promote from draft to validated.
+	Page string `json:"page" jsonschema:"Page name to promote from draft to validated tier (e.g., 'learning/authentication-3')."`
 }

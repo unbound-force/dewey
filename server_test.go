@@ -314,6 +314,8 @@ func TestNewServer_RegistersTools(t *testing.T) {
 		"store_learning",
 		// Indexing
 		"index", "reindex",
+		// Knowledge compilation (013-knowledge-compile)
+		"compile", "lint", "promote",
 		// Health
 		"health",
 	}
@@ -358,8 +360,9 @@ func TestNewServer_ReadOnlyMode(t *testing.T) {
 		"create_page", "append_blocks", "update_block", "delete_block",
 		"upsert_blocks", "move_block", "delete_page", "rename_page",
 		"bulk_update_properties", "link_pages",
-		// Learning and indexing tools are also write-only.
+		// Learning, indexing, and knowledge compilation tools are also write-only.
 		"store_learning", "index", "reindex",
+		"compile", "lint", "promote",
 	}
 	for _, name := range writeTools {
 		if containsTool(tools, name) {
@@ -555,8 +558,8 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "non-DataScript read-write",
 			backend:  &serverMockBackend{},
 			readOnly: false,
-			wantMin:  32, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(1) + indexing(2) + health(1) = 37
-			wantMax:  37,
+			wantMin:  35, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(1) + indexing(2) + compile(1) + lint(1) + promote(1) + health(1) = 40
+			wantMax:  40,
 		},
 		{
 			name:     "non-DataScript read-only",
@@ -569,8 +572,8 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "DataScript read-write",
 			backend:  &serverMockBackendWithDataScript{},
 			readOnly: false,
-			wantMin:  40, // above + get_references + query_datalog + flashcard(3) + whiteboard(2) = 44
-			wantMax:  44,
+			wantMin:  43, // above + get_references + query_datalog + flashcard(3) + whiteboard(2) = 47
+			wantMax:  47,
 		},
 		{
 			name:     "DataScript read-only",
@@ -583,8 +586,8 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "vault read-write",
 			backend:  vault.New(t.TempDir()),
 			readOnly: false,
-			wantMin:  33, // non-DataScript read-write + reload
-			wantMax:  38,
+			wantMin:  36, // non-DataScript read-write + reload
+			wantMax:  41,
 		},
 	}
 

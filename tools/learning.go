@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,6 +16,19 @@ import (
 	"github.com/unbound-force/dewey/types"
 	"github.com/unbound-force/dewey/vault"
 )
+
+// validCategories defines the allowed values for the category field.
+// Learnings without a category are treated as "context" during compilation.
+var validCategories = map[string]bool{
+	"decision":  true,
+	"pattern":   true,
+	"gotcha":    true,
+	"context":   true,
+	"reference": true,
+}
+
+// tagNormalizer strips characters that are not alphanumeric or hyphens.
+var tagNormalizer = regexp.MustCompile(`[^a-z0-9-]`)
 
 // Learning implements the dewey_store_learning MCP tool for persisting
 // agent learnings (insights, patterns, gotchas) into the knowledge graph.
@@ -37,14 +52,48 @@ func NewLearning(e embed.Embedder, s *store.Store) *Learning {
 	return &Learning{embedder: e, store: s}
 }
 
+// normalizeTag lowercases, trims whitespace, replaces spaces with hyphens,
+// and strips non-alphanumeric characters (except hyphens) from a tag string.
+// Example: "My Tag Name" → "my-tag-name".
+func normalizeTag(tag string) string {
+	tag = strings.TrimSpace(tag)
+	tag = strings.ToLower(tag)
+	tag = strings.ReplaceAll(tag, " ", "-")
+	tag = tagNormalizer.ReplaceAllString(tag, "")
+	return tag
+}
+
+// resolveTag determines the effective tag from the input, applying the
+// priority: tag > tags (first value) > "general". Returns the normalized tag.
+func resolveTag(input types.StoreLearningInput) string {
+	if input.Tag != "" {
+		return normalizeTag(input.Tag)
+	}
+	// Backward compatibility: extract first tag from comma-separated Tags field.
+	if input.Tags != "" {
+		parts := strings.SplitN(input.Tags, ",", 2)
+		first := strings.TrimSpace(parts[0])
+		if first != "" {
+			return normalizeTag(first)
+		}
+	}
+	return "general"
+}
+
 // StoreLearning handles the dewey_store_learning MCP tool. Persists a
-// learning (insight, pattern, gotcha) into the knowledge graph with optional
-// tags. The learning is parsed into blocks, stored in SQLite, and optionally
-// embedded for semantic search.
+// learning into the knowledge graph with a required topic tag and optional
+// category. The learning receives a {tag}-{sequence} identity (e.g.,
+// "authentication-3") and is stored with tier "draft".
 //
-// Returns a JSON result with the learning's UUID, page name, and a status
-// message. Returns an MCP error result (not a Go error) if the input is
-// invalid or the store is unavailable.
+// Returns a JSON result with the learning's identity, page name, and
+// status message. Returns an MCP error result (not a Go error) if the
+// input is invalid or the store is unavailable.
+//
+// BREAKING CHANGE from spec 008: The `tags` parameter (plural, optional,
+// comma-separated) is replaced by `tag` (singular, required). For backward
+// compatibility, if `tags` is provided but `tag` is not, the first tag
+// from the comma-separated list is used. If neither is provided, defaults
+// to "general".
 func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, input types.StoreLearningInput) (*mcp.CallToolResult, any, error) {
 	if input.Information == "" {
 		return errorResult("information parameter is required and must not be empty"), nil, nil
@@ -53,22 +102,47 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		return errorResult("store_learning requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
 	}
 
-	// Generate unique page name and document ID using Unix millisecond timestamp.
-	// The learning/ namespace keeps learnings visually distinct from vault pages.
-	timestamp := time.Now().UnixMilli()
-	pageName := fmt.Sprintf("learning/%d", timestamp)
-	docID := fmt.Sprintf("learning-%d", timestamp)
-
-	// Build properties JSON with tags if provided (FR-004).
-	properties := "{}"
-	if input.Tags != "" {
-		propsMap := map[string]string{"tags": input.Tags}
-		propsJSON, err := json.Marshal(propsMap)
-		if err != nil {
-			return errorResult(fmt.Sprintf("failed to marshal properties: %v", err)), nil, nil
-		}
-		properties = string(propsJSON)
+	// Validate category if provided — must be one of the allowed values.
+	// Empty category is allowed (treated as "context" during compilation).
+	if input.Category != "" && !validCategories[input.Category] {
+		return errorResult(fmt.Sprintf(
+			"invalid category %q. Valid categories: decision, pattern, gotcha, context, reference",
+			input.Category,
+		)), nil, nil
 	}
+
+	// Resolve the effective tag using priority: tag > tags > "general".
+	tag := resolveTag(input)
+
+	// Determine the next sequence number for this tag namespace.
+	seq, err := l.store.NextLearningSequence(tag)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to determine learning sequence: %v", err)), nil, nil
+	}
+
+	// Build the {tag}-{sequence} identity and page name.
+	identity := fmt.Sprintf("%s-%d", tag, seq)
+	pageName := fmt.Sprintf("learning/%s", identity)
+	docID := fmt.Sprintf("learning-%s", identity)
+
+	// Build properties JSON with tag, category, and created_at (FR-004, FR-005).
+	now := time.Now()
+	propsMap := map[string]string{
+		"tag":        tag,
+		"created_at": now.UTC().Format(time.RFC3339),
+	}
+	if input.Category != "" {
+		propsMap["category"] = input.Category
+	}
+	// Preserve backward-compatible tags field if provided.
+	if input.Tags != "" {
+		propsMap["tags"] = input.Tags
+	}
+	propsJSON, err := json.Marshal(propsMap)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to marshal properties: %v", err)), nil, nil
+	}
+	properties := string(propsJSON)
 
 	// Compute a short content hash for deduplication support.
 	hash := sha256.Sum256([]byte(input.Information))
@@ -77,6 +151,7 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	// Insert the page with source_id "learning" to distinguish from other
 	// content sources (FR-003). This ensures learnings are never deleted by
 	// dewey reindex (which only purges configured sources).
+	// Tier is always "draft" for learnings. Category is set from input.
 	page := &store.Page{
 		Name:         pageName,
 		OriginalName: pageName,
@@ -84,6 +159,8 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		SourceDocID:  docID,
 		Properties:   properties,
 		ContentHash:  contentHash,
+		Tier:         "draft",
+		Category:     input.Category,
 	}
 	if err := l.store.InsertPage(page); err != nil {
 		return errorResult(fmt.Sprintf("failed to store learning: %v", err)), nil, nil
@@ -114,9 +191,13 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 
 	result := map[string]any{
-		"uuid":    learningUUID,
-		"page":    pageName,
-		"message": "Learning stored successfully." + embeddingMsg,
+		"uuid":       learningUUID,
+		"identity":   identity,
+		"page":       pageName,
+		"tag":        tag,
+		"category":   input.Category,
+		"created_at": now.UTC().Format(time.RFC3339),
+		"message":    "Learning stored successfully." + embeddingMsg,
 	}
 
 	res, err := jsonTextResult(result)

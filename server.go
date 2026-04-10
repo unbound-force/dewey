@@ -114,6 +114,19 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 
 		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex)
 		toolCount += registerIndexingTools(srv, indexing)
+
+		// Knowledge compilation tools (013-knowledge-compile, T032/T033).
+		// MCP path: pass nil synthesizer — the compile tool returns clusters
+		// with synthesis prompts, and the calling agent performs synthesis.
+		// This avoids requiring a local LLM for MCP server operation.
+		compile := tools.NewCompile(cfg.store, cfg.embedder, nil, cfg.vaultPath)
+		toolCount += registerCompileTools(srv, compile)
+
+		lint := tools.NewLint(cfg.store, cfg.embedder)
+		toolCount += registerLintTools(srv, lint)
+
+		promote := tools.NewPromote(cfg.store)
+		toolCount += registerPromoteTools(srv, promote)
 	}
 
 	toolCount += registerHealthTool(srv, b, readOnly, &cfg)
@@ -440,6 +453,45 @@ func registerIndexingTools(srv *mcp.Server, indexing *tools.Indexing) int {
 	}, indexing.Reindex)
 
 	return 2
+}
+
+// registerCompileTools registers the compile MCP tool for synthesizing
+// stored learnings into compiled knowledge articles. Write operation —
+// excluded in read-only mode.
+// Returns the number of tools registered.
+func registerCompileTools(srv *mcp.Server, compile *tools.Compile) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "compile",
+		Description: "Synthesize stored learnings into compiled knowledge articles. Groups learnings by topic, resolves contradictions temporally, and produces current-state articles with history.",
+	}, compile.Compile)
+
+	return 1
+}
+
+// registerLintTools registers the lint MCP tool for scanning the knowledge
+// base for quality issues. Write operation when fix=true — excluded in
+// read-only mode.
+// Returns the number of tools registered.
+func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "lint",
+		Description: "Scan the knowledge base for quality issues: stale decisions, uncompiled learnings, embedding gaps, and potential contradictions.",
+	}, lint.Lint)
+
+	return 1
+}
+
+// registerPromoteTools registers the promote MCP tool for transitioning
+// pages from draft to validated tier. Write operation — excluded in
+// read-only mode.
+// Returns the number of tools registered.
+func registerPromoteTools(srv *mcp.Server, promote *tools.Promote) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "promote",
+		Description: "Promote a draft learning or compiled article to validated status after human review.",
+	}, promote.Promote)
+
+	return 1
 }
 
 // registerHealthTool registers the health check tool that reports server status,

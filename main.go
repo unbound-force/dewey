@@ -130,6 +130,9 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newSourceCmd())
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newManifestCmd())
+	rootCmd.AddCommand(newCompileCmd())
+	rootCmd.AddCommand(newLintCmd())
+	rootCmd.AddCommand(newPromoteCmd())
 
 	return rootCmd
 }

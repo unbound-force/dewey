@@ -904,3 +904,448 @@ func TestSemanticSearch_ProvenanceMetadata(t *testing.T) {
 		t.Error("indexed_at should not be empty")
 	}
 }
+
+// --- Phase 3 tests: Search metadata enrichment (013-knowledge-compile) ---
+
+// newTestStoreWithTieredData creates an in-memory store with pages of different
+// tiers and categories for testing metadata enrichment and tier filtering.
+func newTestStoreWithTieredData(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Insert pages with different tiers and categories.
+	// Each page needs a unique (source_id, source_doc_id) pair per the schema constraint.
+	pages := []*store.Page{
+		{
+			Name: "authored-spec", OriginalName: "authored-spec",
+			SourceID: "disk-local", SourceDocID: "spec.md",
+			ContentHash: "aaa", CreatedAt: 1000, UpdatedAt: 2000,
+			Tier: "authored",
+		},
+		{
+			Name: "learning/auth-1", OriginalName: "learning/auth-1",
+			SourceID: "learning", SourceDocID: "learning/auth-1",
+			ContentHash: "bbb", CreatedAt: 3000, UpdatedAt: 4000,
+			Tier: "draft", Category: "decision",
+		},
+		{
+			Name: "learning/perf-1", OriginalName: "learning/perf-1",
+			SourceID: "learning", SourceDocID: "learning/perf-1",
+			ContentHash: "ccc", CreatedAt: 5000, UpdatedAt: 6000,
+			Tier: "draft", Category: "pattern",
+		},
+		{
+			Name: "validated-learning", OriginalName: "validated-learning",
+			SourceID: "learning", SourceDocID: "validated-learning",
+			ContentHash: "ddd", CreatedAt: 7000, UpdatedAt: 8000,
+			Tier: "validated", Category: "gotcha",
+		},
+	}
+	for _, p := range pages {
+		if err := s.InsertPage(p); err != nil {
+			t.Fatalf("InsertPage(%s): %v", p.Name, err)
+		}
+	}
+
+	// Insert blocks for each page.
+	blocks := []*store.Block{
+		{UUID: "block-spec", PageName: "authored-spec", Content: "## Spec\nAuthentication spec.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-auth", PageName: "learning/auth-1", Content: "## Auth\nUse Option A for auth.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-perf", PageName: "learning/perf-1", Content: "## Perf\nCache frequently.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-validated", PageName: "validated-learning", Content: "## Gotcha\nWatch for race conditions.", HeadingLevel: 2, Position: 0},
+	}
+	for _, b := range blocks {
+		if err := s.InsertBlock(b); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", b.UUID, err)
+		}
+	}
+
+	// Insert embeddings with distinct vectors so we can control search results.
+	embeddings := []struct {
+		uuid  string
+		vec   []float32
+		chunk string
+	}{
+		{"block-spec", []float32{1, 0, 0, 0}, "authored-spec > Spec\n\nAuthentication spec."},
+		{"block-auth", []float32{0.9, 0.1, 0, 0}, "learning/auth-1 > Auth\n\nUse Option A for auth."},
+		{"block-perf", []float32{0, 1, 0, 0}, "learning/perf-1 > Perf\n\nCache frequently."},
+		{"block-validated", []float32{0, 0, 1, 0}, "validated-learning > Gotcha\n\nWatch for race conditions."},
+	}
+	for _, e := range embeddings {
+		if err := s.InsertEmbedding(e.uuid, "test-model", e.vec, e.chunk); err != nil {
+			t.Fatalf("InsertEmbedding(%s): %v", e.uuid, err)
+		}
+	}
+
+	return s
+}
+
+// TestSemanticSearch_MetadataEnrichment verifies that search results include
+// created_at, tier, and category metadata from page data (FR-004).
+func TestSemanticSearch_MetadataEnrichment(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	// Query vector close to block-auth (learning with category=decision, tier=draft).
+	e.vectors["auth query"] = []float32{0.85, 0.15, 0, 0}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearch(context.Background(), nil, types.SemanticSearchInput{
+		Query:     "auth query",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearch error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearch returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected results, got none")
+	}
+
+	// Find the learning/auth-1 result (should be near the top).
+	var authResult *types.SemanticSearchResult
+	var specResult *types.SemanticSearchResult
+	for i := range results {
+		switch results[i].Page {
+		case "learning/auth-1":
+			authResult = &results[i]
+		case "authored-spec":
+			specResult = &results[i]
+		}
+	}
+
+	// Verify learning result has tier, category, and created_at.
+	if authResult == nil {
+		t.Fatal("expected learning/auth-1 in results")
+	}
+	if authResult.Tier != "draft" {
+		t.Errorf("learning tier = %q, want %q", authResult.Tier, "draft")
+	}
+	if authResult.Category != "decision" {
+		t.Errorf("learning category = %q, want %q", authResult.Category, "decision")
+	}
+	if authResult.CreatedAt == "" {
+		t.Error("learning created_at should not be empty")
+	}
+	// Verify created_at is a valid RFC3339 timestamp.
+	if !strings.Contains(authResult.CreatedAt, "T") {
+		t.Errorf("created_at = %q, want RFC3339 format", authResult.CreatedAt)
+	}
+
+	// Verify authored page has tier but no category (non-learning pages).
+	if specResult == nil {
+		t.Fatal("expected authored-spec in results")
+	}
+	if specResult.Tier != "authored" {
+		t.Errorf("authored tier = %q, want %q", specResult.Tier, "authored")
+	}
+	if specResult.Category != "" {
+		t.Errorf("authored category = %q, want empty (non-learning page)", specResult.Category)
+	}
+	if specResult.CreatedAt == "" {
+		t.Error("authored created_at should not be empty")
+	}
+}
+
+// TestSemanticSearch_TierMetadataOnAllResults verifies that all results
+// include tier metadata, regardless of source type.
+func TestSemanticSearch_TierMetadataOnAllResults(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	// Broad query that matches everything.
+	e.vectors["broad query"] = []float32{0.5, 0.5, 0.5, 0.5}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearch(context.Background(), nil, types.SemanticSearchInput{
+		Query:     "broad query",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearch error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearch returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	if len(results) < 4 {
+		t.Fatalf("expected at least 4 results, got %d", len(results))
+	}
+
+	// Every result should have a non-empty tier.
+	for i, r := range results {
+		if r.Tier == "" {
+			t.Errorf("results[%d] (page=%s) tier should not be empty", i, r.Page)
+		}
+		if r.CreatedAt == "" {
+			t.Errorf("results[%d] (page=%s) created_at should not be empty", i, r.Page)
+		}
+	}
+}
+
+// TestSemanticSearchFiltered_TierFilter verifies that tier filtering returns
+// only pages matching the requested tier (FR-024).
+func TestSemanticSearchFiltered_TierFilter(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	// Broad query to match all pages.
+	e.vectors["all pages"] = []float32{0.5, 0.5, 0.5, 0.5}
+
+	sem := NewSemantic(e, s)
+
+	// Filter for "authored" tier — should only return authored-spec.
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "all pages",
+		Tier:      "authored",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for tier=authored")
+	}
+
+	// All results should have tier=authored.
+	for i, r := range results {
+		if r.Tier != "authored" {
+			t.Errorf("results[%d] tier = %q, want %q (tier filter should exclude non-authored)", i, r.Tier, "authored")
+		}
+	}
+
+	// Specifically, no learning pages should appear.
+	for _, r := range results {
+		if strings.HasPrefix(r.Page, "learning/") {
+			t.Errorf("learning page %q should not appear with tier=authored filter", r.Page)
+		}
+	}
+}
+
+// TestSemanticSearchFiltered_TierFilterDraft verifies draft tier filtering
+// returns only draft pages (learnings).
+func TestSemanticSearchFiltered_TierFilterDraft(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	e.vectors["draft query"] = []float32{0.5, 0.5, 0.5, 0.5}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "draft query",
+		Tier:      "draft",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Should return the 2 draft pages (learning/auth-1 and learning/perf-1).
+	if len(results) != 2 {
+		t.Fatalf("expected 2 draft results, got %d", len(results))
+	}
+
+	for i, r := range results {
+		if r.Tier != "draft" {
+			t.Errorf("results[%d] tier = %q, want %q", i, r.Tier, "draft")
+		}
+	}
+}
+
+// TestSemanticSearchFiltered_NoTierFilter verifies that omitting the tier
+// filter returns all results (backward compatibility).
+func TestSemanticSearchFiltered_NoTierFilter(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	e.vectors["no filter query"] = []float32{0.5, 0.5, 0.5, 0.5}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "no filter query",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Without tier filter, all 4 pages should appear.
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results without tier filter, got %d", len(results))
+	}
+}
+
+// TestSemanticSearchFiltered_TierFilterNoMatch verifies that filtering by
+// a tier with no matching pages returns empty results.
+func TestSemanticSearchFiltered_TierFilterNoMatch(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	e.vectors["no match query"] = []float32{0.5, 0.5, 0.5, 0.5}
+
+	sem := NewSemantic(e, s)
+
+	// Filter for a tier that doesn't exist in the test data.
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "no match query",
+		Tier:      "nonexistent",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for nonexistent tier, got %d", len(results))
+	}
+}
+
+// TestSemanticSearch_NonLearningPageEmptyCategory verifies that non-learning
+// pages have empty category in search results.
+func TestSemanticSearch_NonLearningPageEmptyCategory(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	// Query vector close to block-spec (authored page, no category).
+	e.vectors["spec query"] = []float32{1, 0, 0, 0}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearch(context.Background(), nil, types.SemanticSearchInput{
+		Query:     "spec query",
+		Limit:     1,
+		Threshold: 0.5,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearch error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearch returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	// The top result should be the authored-spec page with no category.
+	r := results[0]
+	if r.Page != "authored-spec" {
+		t.Errorf("page = %q, want %q", r.Page, "authored-spec")
+	}
+	if r.Category != "" {
+		t.Errorf("category = %q, want empty for non-learning page", r.Category)
+	}
+	if r.Tier != "authored" {
+		t.Errorf("tier = %q, want %q", r.Tier, "authored")
+	}
+}
+
+// TestSemanticSearchFiltered_TierWithOtherFilters verifies that tier filtering
+// works correctly when combined with other filters (e.g., source_id).
+func TestSemanticSearchFiltered_TierWithOtherFilters(t *testing.T) {
+	s := newTestStoreWithTieredData(t)
+	e := newMockEmbedder(true)
+	e.vectors["combined filter"] = []float32{0.5, 0.5, 0.5, 0.5}
+
+	sem := NewSemantic(e, s)
+
+	// Filter for tier=draft AND source_id=learning.
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "combined filter",
+		Tier:      "draft",
+		SourceID:  "learning",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Should return only draft learning pages (auth-1 and perf-1, not validated-learning).
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results for tier=draft + source_id=learning, got %d", len(results))
+	}
+
+	for i, r := range results {
+		if r.Tier != "draft" {
+			t.Errorf("results[%d] tier = %q, want %q", i, r.Tier, "draft")
+		}
+		if r.SourceID != "learning" {
+			t.Errorf("results[%d] source_id = %q, want %q", i, r.SourceID, "learning")
+		}
+	}
+}

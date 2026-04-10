@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 40 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, and semantic search categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, and pluggable content sources (disk, GitHub, web crawl).
+Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 43 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, and promote categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, and pluggable content sources (disk, GitHub, web crawl).
 
 - **Language**: Go 1.25+
 - **Module**: `github.com/unbound-force/dewey`
@@ -231,6 +231,9 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey manifest` | Generate `.uf/dewey/manifest.md` — a structured summary of CLI commands, MCP tools, and exported packages discovered via AST parsing of Go source files |
 | `dewey journal` | Append a block to a Logseq journal page |
 | `dewey add` | Append a block to a named Logseq page |
+| `dewey compile` | Synthesize stored learnings into compiled knowledge articles |
+| `dewey lint` | Scan the knowledge base for quality issues (stale decisions, embedding gaps, contradictions) |
+| `dewey promote` | Promote a page from `draft` tier to `validated` |
 
 ### Content Source Types
 
@@ -249,14 +252,15 @@ MCP server + CLI tool with flat package layout:
 
 ```text
 main.go              # Entry point, Cobra root command, serve logic
-cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest)
-server.go            # MCP server setup, 40 tool registrations
+cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote)
+server.go            # MCP server setup, 43 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
 vault/               # Obsidian vault backend (file parsing, indexing, watcher, persistence)
 vault/parse_export.go # Exported parsing and persistence functions (ParseDocument, PersistBlocks, PersistLinks, GenerateEmbeddings)
-tools/               # MCP tool implementations (navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic)
+tools/               # MCP tool implementations (navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic, compile, lint, promote)
 types/               # Shared types (PageEntity, BlockEntity, tool inputs, semantic search types)
+llm/                 # LLM synthesis interface (Synthesizer, OllamaSynthesizer, NoopSynthesizer for tests)
 parser/              # Content parser (wikilinks, tags, properties)
 graph/               # In-memory graph construction + algorithms
 store/               # SQLite persistence layer (pages, blocks, links, embeddings, sources)
@@ -272,6 +276,7 @@ chunker/             # Language-aware source code parsing (Chunker interface, Go
 - **Graceful degradation**: Semantic search tools return clear error messages when Ollama is unavailable. All keyword-based tools continue to work.
 - **Cobra CLI**: Root command doubles as `serve` for backward compatibility.
 - **charmbracelet/log**: Structured logging throughout. No `fmt.Fprintf` to stderr.
+- **Trust tiers**: Pages have a `tier` field (`authored`, `draft`, `validated`) and optional `category` field for knowledge provenance tracking (013-knowledge-compile).
 
 ## Coding Conventions
 
@@ -329,6 +334,7 @@ specs/
   001-core-implementation/     # Persistence, vector search, content sources, CLI (Complete)
   002-quality-ratchets/        # Gaze CI, CRAPload reduction, contract coverage (In Progress)
   010-code-source-index/       # Code source indexing, Go chunker, manifest generation (In Progress)
+  013-knowledge-compile/       # Knowledge compilation, temporal intelligence, linting, trust tiers (In Progress)
 ```
 
 ## Active Technologies
@@ -348,6 +354,8 @@ specs/
 - N/A (no storage changes — MCP tools wrap existing indexing pipeline, no new tables or schema changes) (011-live-reindex)
 - Go 1.25 (per `go.mod`) + `sync/atomic` (readiness flag), `sync` (shared mutex), `github.com/modelcontextprotocol/go-sdk` (MCP SDK), `github.com/charmbracelet/log` (logging) (012-background-index)
 - N/A (no storage changes — restructures startup sequence, no new tables or schema changes) (012-background-index)
+- Go 1.25 (per `go.mod`) + `modernc.org/sqlite` (pure-Go SQLite, schema migration v1→v2), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — 3 new tools: compile, lint, promote), `github.com/spf13/cobra` (CLI — 3 new commands), `github.com/charmbracelet/log` (logging), `github.com/unbound-force/dewey/embed` (Ollama embeddings for clustering), `net/http` (Ollama /api/generate for LLM synthesis) (013-knowledge-compile)
+- SQLite schema v1→v2: `pages` table gains `tier TEXT DEFAULT 'authored'` and `category TEXT` columns + `idx_pages_tier` index. New `llm/` package for LLM synthesis interface. (013-knowledge-compile)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 

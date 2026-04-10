@@ -518,6 +518,17 @@ memory.
    Display the learnings in the output so they are not
    lost.
 
+5. **Incremental compilation**: after storing learnings,
+   trigger incremental compilation to merge new learnings
+   into compiled articles:
+
+   Call the Dewey MCP tool `compile` with the identities
+   of the learnings just stored (from the
+   `dewey_store_learning` responses).
+
+   If compile fails, log the error but do NOT block the
+   retrospective — compilation failure is non-blocking.
+
 ### 10. Step 8 -- Demo
 
 Present structured demo instructions to the developer.

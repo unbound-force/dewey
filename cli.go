@@ -16,14 +16,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/mattn/go-runewidth"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/chunker"
 	"github.com/unbound-force/dewey/client"
 	"github.com/unbound-force/dewey/embed"
 	"github.com/unbound-force/dewey/ignore"
+	"github.com/unbound-force/dewey/llm"
 	"github.com/unbound-force/dewey/parser"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/tools"
 	"github.com/unbound-force/dewey/types"
 	"github.com/unbound-force/dewey/vault"
 )
@@ -1895,4 +1898,308 @@ func saveSourceConfig(sourcesPath string, existing []source.SourceConfig, newSou
 		return fmt.Errorf("save sources config: %w", err)
 	}
 	return nil
+}
+
+// --- Compile command (T034, 013-knowledge-compile Phase 7) ---
+
+// readCompileModel extracts the compile_model value from config.yaml
+// using simple line parsing (same approach as readEmbeddingModel).
+// Returns empty string if not configured — compile will run without
+// LLM synthesis, returning prompts only.
+func readCompileModel(deweyDir string) string {
+	configPath := filepath.Join(deweyDir, "config.yaml")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(configData), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "compile_model:") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "compile_model:"))
+		}
+	}
+	return ""
+}
+
+// newCompileCmd creates the `dewey compile` subcommand.
+// Synthesizes stored learnings into compiled knowledge articles.
+// Uses OllamaSynthesizer from config when available; otherwise returns
+// clusters with synthesis prompts for manual execution.
+func newCompileCmd() *cobra.Command {
+	var incremental []string
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "compile",
+		Short: "Compile learnings into knowledge articles",
+		Long: `Synthesize stored learnings into compiled knowledge articles.
+
+Groups learnings by topic tag, resolves contradictions temporally
+(newer wins), and produces current-state articles with history.
+
+When a compile_model is configured in .uf/dewey/config.yaml, uses
+Ollama for LLM synthesis. Otherwise, outputs clusters with synthesis
+prompts for manual execution.
+
+Examples:
+  dewey compile                          # full rebuild
+  dewey compile -i auth-3 -i auth-4      # incremental`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			vp, err := resolveVaultPathOrCwd(vaultPath)
+			if err != nil {
+				return err
+			}
+
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
+			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
+				return fmt.Errorf("not initialized. Run 'dewey init' first")
+			}
+
+			// Open store.
+			dbPath := filepath.Join(deweyDir, "graph.db")
+			s, err := store.New(dbPath)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer func() { _ = s.Close() }()
+
+			// Create embedder (optional — used for semantic refinement).
+			embedder, err := createIndexEmbedder(false)
+			if err != nil {
+				// Non-fatal for compile: proceed without embedder.
+				logger.Warn("embedder unavailable, compiling without semantic refinement", "err", err)
+			}
+
+			// Create synthesizer from config (CLI path uses Ollama).
+			var synth llm.Synthesizer
+			compileModel := readCompileModel(deweyDir)
+			if compileModel != "" {
+				embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
+				if embedEndpoint == "" {
+					embedEndpoint = "http://localhost:11434"
+				}
+				ollamaSynth := llm.NewOllamaSynthesizer(embedEndpoint, compileModel)
+				if ollamaSynth.Available() {
+					synth = ollamaSynth
+					logger.Info("compile model available", "model", compileModel)
+				} else {
+					logger.Warn("compile model not available, returning prompts only",
+						"model", compileModel,
+						"fix", fmt.Sprintf("ollama pull %s", compileModel))
+				}
+			}
+
+			// Create compile tool and run.
+			compile := tools.NewCompile(s, embedder, synth, vp)
+			input := types.CompileInput{Incremental: incremental}
+
+			start := time.Now()
+			result, _, mcpErr := compile.Compile(context.Background(), nil, input)
+			if mcpErr != nil {
+				return fmt.Errorf("compile failed: %w", mcpErr)
+			}
+
+			elapsed := time.Since(start)
+
+			// Print result.
+			if result.IsError {
+				for _, c := range result.Content {
+					if tc, ok := c.(*mcp.TextContent); ok {
+						return fmt.Errorf("compile: %s", tc.Text)
+					}
+				}
+				return fmt.Errorf("compile failed")
+			}
+
+			for _, c := range result.Content {
+				if tc, ok := c.(*mcp.TextContent); ok {
+					fmt.Println(tc.Text)
+				}
+			}
+
+			logger.Info("compile complete", "elapsed", elapsed.Round(time.Millisecond))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringArrayVarP(&incremental, "incremental", "i", nil,
+		"Learning identities to compile incrementally (repeatable)")
+	cmd.Flags().StringVar(&vaultPath, "vault", "",
+		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
+}
+
+// --- Lint command (T035, 013-knowledge-compile Phase 7) ---
+
+// newLintCmd creates the `dewey lint` subcommand.
+// Scans the knowledge base for quality issues and optionally auto-fixes them.
+func newLintCmd() *cobra.Command {
+	var fix bool
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "lint",
+		Short: "Check knowledge base quality",
+		Long: `Scan the knowledge base for quality issues:
+  - Stale decisions (>30 days without review)
+  - Uncompiled learnings (not in any compiled article)
+  - Embedding gaps (pages with blocks but no embeddings)
+  - Potential contradictions (similar learnings with same tag)
+
+Use --fix to auto-repair mechanical issues (e.g., regenerate
+missing embeddings). Semantic issues require human intervention.
+
+Exit code 0 if clean, 1 if issues found.`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			vp, err := resolveVaultPathOrCwd(vaultPath)
+			if err != nil {
+				return err
+			}
+
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
+			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
+				return fmt.Errorf("not initialized. Run 'dewey init' first")
+			}
+
+			// Open store.
+			dbPath := filepath.Join(deweyDir, "graph.db")
+			s, err := store.New(dbPath)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer func() { _ = s.Close() }()
+
+			// Create embedder (optional — used for fix mode and contradiction check).
+			var embedder embed.Embedder
+			if fix {
+				embedder, err = createIndexEmbedder(false)
+				if err != nil {
+					logger.Warn("embedder unavailable, fix mode limited", "err", err)
+				}
+			}
+
+			// Create lint tool and run.
+			lint := tools.NewLint(s, embedder)
+			input := types.LintInput{Fix: fix}
+
+			result, _, mcpErr := lint.Lint(context.Background(), nil, input)
+			if mcpErr != nil {
+				return fmt.Errorf("lint failed: %w", mcpErr)
+			}
+
+			// Print result.
+			if result.IsError {
+				for _, c := range result.Content {
+					if tc, ok := c.(*mcp.TextContent); ok {
+						return fmt.Errorf("lint: %s", tc.Text)
+					}
+				}
+				return fmt.Errorf("lint failed")
+			}
+
+			for _, c := range result.Content {
+				if tc, ok := c.(*mcp.TextContent); ok {
+					fmt.Println(tc.Text)
+				}
+			}
+
+			// Parse result to determine exit code.
+			// If any findings exist, exit with code 1.
+			for _, c := range result.Content {
+				if tc, ok := c.(*mcp.TextContent); ok {
+					var parsed map[string]any
+					if err := json.Unmarshal([]byte(tc.Text), &parsed); err == nil {
+						if status, ok := parsed["status"].(string); ok && status != "clean" {
+							os.Exit(1)
+						}
+					}
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&fix, "fix", false, "Auto-fix mechanical issues (e.g., regenerate missing embeddings)")
+	cmd.Flags().StringVar(&vaultPath, "vault", "",
+		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
+}
+
+// --- Promote command (T036, 013-knowledge-compile Phase 7) ---
+
+// newPromoteCmd creates the `dewey promote` subcommand.
+// Promotes a draft page to validated tier after human review.
+func newPromoteCmd() *cobra.Command {
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "promote PAGE_NAME",
+		Short: "Promote a draft page to validated",
+		Long: `Promote a draft learning or compiled article to validated status
+after human review. Only pages with tier=draft can be promoted.
+
+Examples:
+  dewey promote learning/authentication-3
+  dewey promote compiled/authentication`,
+		SilenceUsage: true,
+		Args:         cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pageName := args[0]
+
+			vp, err := resolveVaultPathOrCwd(vaultPath)
+			if err != nil {
+				return err
+			}
+
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
+			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
+				return fmt.Errorf("not initialized. Run 'dewey init' first")
+			}
+
+			// Open store.
+			dbPath := filepath.Join(deweyDir, "graph.db")
+			s, err := store.New(dbPath)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer func() { _ = s.Close() }()
+
+			// Create promote tool and run.
+			promote := tools.NewPromote(s)
+			input := types.PromoteInput{Page: pageName}
+
+			result, _, mcpErr := promote.Promote(context.Background(), nil, input)
+			if mcpErr != nil {
+				return fmt.Errorf("promote failed: %w", mcpErr)
+			}
+
+			// Print result.
+			if result.IsError {
+				for _, c := range result.Content {
+					if tc, ok := c.(*mcp.TextContent); ok {
+						return fmt.Errorf("promote: %s", tc.Text)
+					}
+				}
+				return fmt.Errorf("promote failed")
+			}
+
+			for _, c := range result.Content {
+				if tc, ok := c.(*mcp.TextContent); ok {
+					fmt.Println(tc.Text)
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&vaultPath, "vault", "",
+		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
 }

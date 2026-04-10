@@ -127,8 +127,9 @@ func TestNew_SchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMeta(schema_version): %v", err)
 	}
-	if version != "1" {
-		t.Errorf("schema_version = %q, want %q", version, "1")
+	want := fmt.Sprintf("%d", schemaVersion)
+	if version != want {
+		t.Errorf("schema_version = %q, want %q", version, want)
 	}
 }
 
@@ -808,8 +809,9 @@ func TestMigrate_MissingSchemaVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMeta: %v", err)
 	}
-	if version != "1" {
-		t.Errorf("schema_version = %q, want %q", version, "1")
+	want := fmt.Sprintf("%d", schemaVersion)
+	if version != want {
+		t.Errorf("schema_version = %q, want %q", version, want)
 	}
 }
 

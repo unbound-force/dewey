@@ -160,6 +160,8 @@ type Page struct {
 	IsJournal    bool
 	CreatedAt    int64
 	UpdatedAt    int64
+	Tier         string // "authored", "validated", or "draft"
+	Category     string // "decision", "pattern", "gotcha", "context", "reference", or ""
 }
 
 // Block represents a heading-delimited section within a page.
@@ -194,12 +196,18 @@ func (s *Store) InsertPage(p *Page) error {
 		p.UpdatedAt = now
 	}
 
+	// Default tier to "authored" if not explicitly set, matching the schema default.
+	tier := p.Tier
+	if tier == "" {
+		tier = "authored"
+	}
+
 	_, err := s.db.Exec(`
-		INSERT INTO pages (name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO pages (name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.Name, p.OriginalName, p.SourceID, p.SourceDocID,
 		p.Properties, p.ContentHash, boolToInt(p.IsJournal),
-		p.CreatedAt, p.UpdatedAt,
+		p.CreatedAt, p.UpdatedAt, tier, p.Category,
 	)
 	if err != nil {
 		return fmt.Errorf("insert page %q: %w", p.Name, err)
@@ -213,14 +221,14 @@ func (s *Store) InsertPage(p *Page) error {
 func (s *Store) GetPage(name string) (*Page, error) {
 	p := &Page{}
 	var isJournal int
-	var sourceDocID, properties, contentHash sql.NullString
+	var sourceDocID, properties, contentHash, tier, category sql.NullString
 
 	err := s.db.QueryRow(`
-		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
 		FROM pages WHERE name = ?`, name).Scan(
 		&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
 		&properties, &contentHash, &isJournal,
-		&p.CreatedAt, &p.UpdatedAt,
+		&p.CreatedAt, &p.UpdatedAt, &tier, &category,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -233,6 +241,8 @@ func (s *Store) GetPage(name string) (*Page, error) {
 	p.Properties = properties.String
 	p.ContentHash = contentHash.String
 	p.IsJournal = isJournal != 0
+	p.Tier = tier.String
+	p.Category = category.String
 	return p, nil
 }
 
@@ -241,34 +251,14 @@ func (s *Store) GetPage(name string) (*Page, error) {
 // the query or row scanning fails.
 func (s *Store) ListPages() ([]*Page, error) {
 	rows, err := s.db.Query(`
-		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
 		FROM pages ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list pages: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var pages []*Page
-	for rows.Next() {
-		p := &Page{}
-		var isJournal int
-		var sourceDocID, properties, contentHash sql.NullString
-
-		if err := rows.Scan(
-			&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
-			&properties, &contentHash, &isJournal,
-			&p.CreatedAt, &p.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan page: %w", err)
-		}
-
-		p.SourceDocID = sourceDocID.String
-		p.Properties = properties.String
-		p.ContentHash = contentHash.String
-		p.IsJournal = isJournal != 0
-		pages = append(pages, p)
-	}
-	return pages, rows.Err()
+	return scanPages(rows)
 }
 
 // UpdatePage updates an existing page's mutable fields and sets UpdatedAt
@@ -282,11 +272,12 @@ func (s *Store) UpdatePage(p *Page) error {
 
 	result, err := s.db.Exec(`
 		UPDATE pages SET original_name = ?, source_id = ?, source_doc_id = ?,
-		properties = ?, content_hash = ?, is_journal = ?, updated_at = ?
+		properties = ?, content_hash = ?, is_journal = ?, updated_at = ?,
+		tier = ?, category = ?
 		WHERE name = ?`,
 		p.OriginalName, p.SourceID, p.SourceDocID,
 		p.Properties, p.ContentHash, boolToInt(p.IsJournal),
-		p.UpdatedAt, p.Name,
+		p.UpdatedAt, p.Tier, p.Category, p.Name,
 	)
 	if err != nil {
 		return fmt.Errorf("update page %q: %w", p.Name, err)
@@ -670,34 +661,14 @@ func (s *Store) CountPagesBySource(sourceID string) (int, error) {
 // Returns an empty slice if no matching pages exist.
 func (s *Store) ListPagesExcludingSource(sourceID string) ([]*Page, error) {
 	rows, err := s.db.Query(`
-		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
 		FROM pages WHERE source_id != ? ORDER BY name`, sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("list pages excluding source %q: %w", sourceID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var pages []*Page
-	for rows.Next() {
-		p := &Page{}
-		var isJournal int
-		var sourceDocID, properties, contentHash sql.NullString
-
-		if err := rows.Scan(
-			&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
-			&properties, &contentHash, &isJournal,
-			&p.CreatedAt, &p.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan page: %w", err)
-		}
-
-		p.SourceDocID = sourceDocID.String
-		p.Properties = properties.String
-		p.ContentHash = contentHash.String
-		p.IsJournal = isJournal != 0
-		pages = append(pages, p)
-	}
-	return pages, rows.Err()
+	return scanPages(rows)
 }
 
 // DeletePagesBySource removes all pages (and their associated blocks, links,
@@ -734,23 +705,30 @@ func (s *Store) DeletePagesBySource(sourceID string) (int64, error) {
 // to the source.
 func (s *Store) ListPagesBySource(sourceID string) ([]*Page, error) {
 	rows, err := s.db.Query(`
-		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
 		FROM pages WHERE source_id = ? ORDER BY name`, sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("list pages for source %q: %w", sourceID, err)
 	}
 	defer func() { _ = rows.Close() }()
 
+	return scanPages(rows)
+}
+
+// scanPages scans rows from a page query into a slice of Page pointers.
+// Consolidates the repeated scan logic across ListPages, ListPagesExcludingSource,
+// ListPagesBySource, and ListLearningPages (DRY — extracted after 3+ duplications).
+func scanPages(rows *sql.Rows) ([]*Page, error) {
 	var pages []*Page
 	for rows.Next() {
 		p := &Page{}
 		var isJournal int
-		var sourceDocID, properties, contentHash sql.NullString
+		var sourceDocID, properties, contentHash, tier, category sql.NullString
 
 		if err := rows.Scan(
 			&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
 			&properties, &contentHash, &isJournal,
-			&p.CreatedAt, &p.UpdatedAt,
+			&p.CreatedAt, &p.UpdatedAt, &tier, &category,
 		); err != nil {
 			return nil, fmt.Errorf("scan page: %w", err)
 		}
@@ -759,9 +737,85 @@ func (s *Store) ListPagesBySource(sourceID string) ([]*Page, error) {
 		p.Properties = properties.String
 		p.ContentHash = contentHash.String
 		p.IsJournal = isJournal != 0
+		p.Tier = tier.String
+		p.Category = category.String
 		pages = append(pages, p)
 	}
 	return pages, rows.Err()
+}
+
+// --- Learning and knowledge compilation helpers (013-knowledge-compile) ---
+
+// NextLearningSequence returns the next sequence number for a learning
+// with the given tag. Counts existing learning pages with the same tag
+// prefix and returns count + 1. Used by the store_learning MCP tool to
+// generate {tag}-{sequence} identities (FR-001).
+func (s *Store) NextLearningSequence(tag string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM pages
+		WHERE source_id = 'learning'
+		AND name LIKE 'learning/' || ? || '-%'`, tag).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count learning pages for tag %q: %w", tag, err)
+	}
+	return count + 1, nil
+}
+
+// ListLearningPages returns all pages with source_id = 'learning',
+// ordered by name. Used by lint to enumerate all learnings.
+func (s *Store) ListLearningPages() ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
+		FROM pages WHERE source_id = 'learning' ORDER BY name`)
+	if err != nil {
+		return nil, fmt.Errorf("list learning pages: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanPages(rows)
+}
+
+// PagesWithoutEmbeddings returns pages that have blocks but no
+// embeddings. Used by lint to detect embedding gaps (FR-017).
+func (s *Store) PagesWithoutEmbeddings() ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT p.name, p.original_name, p.source_id, p.source_doc_id,
+			p.properties, p.content_hash, p.is_journal, p.created_at, p.updated_at,
+			p.tier, p.category
+		FROM pages p
+		JOIN blocks b ON b.page_name = p.name
+		LEFT JOIN embeddings e ON e.block_uuid = b.uuid
+		WHERE e.block_uuid IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("pages without embeddings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanPages(rows)
+}
+
+// UpdatePageTier updates a page's tier column and refreshes the updated_at
+// timestamp. Returns an error if the page doesn't exist or the update fails.
+// Used by the promote MCP tool to transition pages from draft to validated (FR-023).
+func (s *Store) UpdatePageTier(name, tier string) error {
+	now := time.Now().UnixMilli()
+	result, err := s.db.Exec(`
+		UPDATE pages SET tier = ?, updated_at = ? WHERE name = ?`,
+		tier, now, name,
+	)
+	if err != nil {
+		return fmt.Errorf("update page tier %q: %w", name, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check update result: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("page not found: %s", name)
+	}
+	return nil
 }
 
 // IsDiskSpaceError returns true if the given error indicates disk space

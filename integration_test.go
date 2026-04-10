@@ -6,14 +6,20 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	_ "github.com/unbound-force/dewey/chunker" // Register Go chunker for code source tests.
+	"github.com/unbound-force/dewey/llm"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/tools"
+	"github.com/unbound-force/dewey/types"
 	"github.com/unbound-force/dewey/vault"
 )
 
@@ -727,4 +733,214 @@ func TestAdd(t *testing.T) {
 	if strings.Contains(content, "internal") {
 		t.Error("unexported function 'internal' should NOT appear in indexed content")
 	}
+}
+
+// TestEndToEnd_StoreCompileSearch verifies the full knowledge compilation
+// pipeline: store learnings → compile → verify compiled articles exist
+// in the store and filesystem.
+//
+// This validates SC-002 (temporal contradiction resolution) and SC-007
+// (knowledge evolution) from spec 013-knowledge-compile.
+//
+// PARALLEL SAFETY: This test does NOT use os.Chdir or mutate process-global
+// state. All paths are relative to t.TempDir(). It can run in parallel.
+func TestEndToEnd_StoreCompileSearch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Step 1: Create .uf/dewey/ directory structure.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+
+	// Step 2: Open store with schema v2.
+	dbPath := filepath.Join(deweyDir, "graph.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Step 3: Store 3 learnings via the tools/learning handler.
+	// Two "auth" decisions (temporal contradiction) and one "performance" pattern.
+	learning := tools.NewLearning(nil, s) // nil embedder — no Ollama in tests.
+
+	// Learning 1: auth decision — "Use Option A"
+	result1, _, err := learning.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "Use Option A for authentication because it supports SSO.",
+		Tag:         "auth",
+		Category:    "decision",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning 1 error: %v", err)
+	}
+	if result1.IsError {
+		t.Fatalf("StoreLearning 1 returned error: %s", extractText(result1))
+	}
+
+	// Small delay to ensure distinct timestamps for temporal ordering.
+	time.Sleep(10 * time.Millisecond)
+
+	// Learning 2: auth decision — "Switch to Option B" (contradicts Learning 1).
+	result2, _, err := learning.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "Switch to Option B for authentication due to rate limiting issues with Option A.",
+		Tag:         "auth",
+		Category:    "decision",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning 2 error: %v", err)
+	}
+	if result2.IsError {
+		t.Fatalf("StoreLearning 2 returned error: %s", extractText(result2))
+	}
+
+	// Learning 3: performance pattern — "Use connection pooling"
+	result3, _, err := learning.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "Use connection pooling for database access to reduce latency under load.",
+		Tag:         "performance",
+		Category:    "pattern",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning 3 error: %v", err)
+	}
+	if result3.IsError {
+		t.Fatalf("StoreLearning 3 returned error: %s", extractText(result3))
+	}
+
+	// Step 4: Create a Compile tool with NoopSynthesizer.
+	synth := &llm.NoopSynthesizer{
+		Response: "## Current State\n\nCompiled article content from learnings.",
+		Avail:    true,
+		Model:    "test-noop",
+	}
+	compile := tools.NewCompile(s, nil, synth, tmpDir)
+
+	// Step 5: Call CompileAll (no incremental identities).
+	compileResult, _, err := compile.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	if compileResult.IsError {
+		t.Fatalf("Compile returned error: %s", extractText(compileResult))
+	}
+
+	// Parse the compile result to verify summary.
+	compileText := extractText(compileResult)
+	var compileSummary map[string]any
+	if err := json.Unmarshal([]byte(compileText), &compileSummary); err != nil {
+		t.Fatalf("unmarshal compile result: %v\ntext: %s", err, compileText)
+	}
+
+	if compileSummary["status"] != "compiled" {
+		t.Errorf("compile status = %v, want 'compiled'", compileSummary["status"])
+	}
+	totalArticles, _ := compileSummary["total_articles"].(float64)
+	if totalArticles != 2 {
+		t.Errorf("total_articles = %v, want 2 (auth + performance)", totalArticles)
+	}
+
+	// Step 6: Verify compiled articles exist in the store.
+
+	// 6a: Auth compiled article.
+	authPage, err := s.GetPage("compiled/auth")
+	if err != nil {
+		t.Fatalf("GetPage(compiled/auth): %v", err)
+	}
+	if authPage == nil {
+		t.Fatal("compiled/auth page not found in store")
+	}
+	if authPage.SourceID != "compiled" {
+		t.Errorf("auth page source_id = %q, want %q", authPage.SourceID, "compiled")
+	}
+	if authPage.Tier != "draft" {
+		t.Errorf("auth page tier = %q, want %q", authPage.Tier, "draft")
+	}
+
+	// 6b: Performance compiled article.
+	perfPage, err := s.GetPage("compiled/performance")
+	if err != nil {
+		t.Fatalf("GetPage(compiled/performance): %v", err)
+	}
+	if perfPage == nil {
+		t.Fatal("compiled/performance page not found in store")
+	}
+	if perfPage.SourceID != "compiled" {
+		t.Errorf("performance page source_id = %q, want %q", perfPage.SourceID, "compiled")
+	}
+
+	// 6c: Verify compiled articles have blocks (searchable content).
+	authBlocks, err := s.GetBlocksByPage("compiled/auth")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(compiled/auth): %v", err)
+	}
+	if len(authBlocks) == 0 {
+		t.Error("compiled/auth has 0 blocks — article content was not persisted")
+	}
+
+	perfBlocks, err := s.GetBlocksByPage("compiled/performance")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(compiled/performance): %v", err)
+	}
+	if len(perfBlocks) == 0 {
+		t.Error("compiled/performance has 0 blocks — article content was not persisted")
+	}
+
+	// 6d: Verify _index.md exists in .uf/dewey/compiled/.
+	indexPath := filepath.Join(deweyDir, "compiled", "_index.md")
+	indexData, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("failed to read _index.md: %v", err)
+	}
+	indexContent := string(indexData)
+	if !strings.Contains(indexContent, "Auth") {
+		t.Error("_index.md missing Auth topic")
+	}
+	if !strings.Contains(indexContent, "Performance") {
+		t.Error("_index.md missing Performance topic")
+	}
+
+	// 6e: Verify compiled article files exist on disk.
+	authArticlePath := filepath.Join(deweyDir, "compiled", "auth.md")
+	if _, err := os.Stat(authArticlePath); os.IsNotExist(err) {
+		t.Error("auth.md not written to filesystem")
+	}
+	perfArticlePath := filepath.Join(deweyDir, "compiled", "performance.md")
+	if _, err := os.Stat(perfArticlePath); os.IsNotExist(err) {
+		t.Error("performance.md not written to filesystem")
+	}
+
+	// 6f: Verify the original learnings still exist (compilation doesn't delete them).
+	learningPages, err := s.ListLearningPages()
+	if err != nil {
+		t.Fatalf("ListLearningPages: %v", err)
+	}
+	if len(learningPages) != 3 {
+		t.Errorf("expected 3 learning pages after compilation, got %d", len(learningPages))
+	}
+}
+
+// extractText extracts the text content from a CallToolResult.
+// Used by integration tests to read MCP tool response text.
+func extractText(result *mcp.CallToolResult) string {
+	if result == nil || len(result.Content) == 0 {
+		return ""
+	}
+	// The Content field is []ContentPart. Each part has a Text field.
+	// Use fmt.Sprintf to extract — the mcp package types are not directly
+	// accessible from the main package, so we marshal and extract.
+	data, err := json.Marshal(result.Content)
+	if err != nil {
+		return fmt.Sprintf("<marshal error: %v>", err)
+	}
+	var parts []map[string]any
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return string(data)
+	}
+	var texts []string
+	for _, p := range parts {
+		if text, ok := p["text"].(string); ok {
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, "\n")
 }

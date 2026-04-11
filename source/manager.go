@@ -2,6 +2,7 @@ package source
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 )
 
@@ -81,9 +82,11 @@ func createDiskSource(cfg SourceConfig, basePath string) Source {
 	if p, ok := cfg.Config["path"].(string); ok {
 		path = p
 	}
-	if path == "." {
-		path = basePath
+	rawPath := path
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(basePath, path)
 	}
+	logger.Debug("resolved source path", "source", cfg.ID, "raw", rawPath, "resolved", path)
 
 	var opts []DiskSourceOption
 
@@ -104,16 +107,18 @@ func createDiskSource(cfg SourceConfig, basePath string) Source {
 
 // createCodeSource creates a CodeSource from config, extracting path,
 // languages, and optional include/exclude/ignore/recursive settings
-// from the config map. Resolves the path relative to basePath when
-// configured as "." (same pattern as createDiskSource).
+// from the config map. Resolves all relative paths against basePath
+// (same pattern as createDiskSource).
 func createCodeSource(cfg SourceConfig, basePath string) Source {
 	path := "."
 	if p, ok := cfg.Config["path"].(string); ok {
 		path = p
 	}
-	if path == "." {
-		path = basePath
+	rawPath := path
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(basePath, path)
 	}
+	logger.Debug("resolved source path", "source", cfg.ID, "raw", rawPath, "resolved", path)
 
 	languages := extractStringList(cfg.Config["languages"])
 

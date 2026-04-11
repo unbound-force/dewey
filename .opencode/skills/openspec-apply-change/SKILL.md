@@ -33,6 +33,45 @@ Implement tasks from an OpenSpec change.
      > "Must be on branch `opsx/<change-name>` to implement this change.
      > Run: `git checkout opsx/<change-name>`"
 
+2b. **Retrieve implementation context from Dewey** (optional)
+
+   Before implementing, query Dewey for relevant patterns:
+
+   - `dewey_semantic_search` with the task description to find
+     similar implementations in other repos
+   - `dewey_semantic_search_filtered` with `source_type: "web"`
+     to find relevant toolstack documentation
+   - `dewey_search` for convention pack references related to the
+     task's domain
+
+   Use the retrieved context to follow established patterns and
+   avoid reinventing solutions that already exist in the ecosystem.
+
+   If Dewey is unavailable, proceed with direct file reads of
+   convention packs and local code examples.
+
+   **Dewey Availability Tiers**
+
+   Adjust context retrieval based on Dewey availability:
+
+   **Tier 3 (Full Dewey)**: Use `dewey_semantic_search`,
+   `dewey_search`, `dewey_traverse`, and
+   `dewey_semantic_search_filtered` for comprehensive cross-repo
+   and toolstack context.
+
+   **Tier 2 (Graph-only, no embedding model)**: Use
+   `dewey_search` and `dewey_traverse` for keyword-based and
+   structural queries. Semantic search is unavailable.
+
+   **Tier 1 (No Dewey)**: Fall back to direct file operations:
+   - Use the Read tool to read local specs, backlog items, and
+     convention packs
+   - Use the Grep tool for keyword search across the codebase
+   - Reference `.opencode/uf/packs/` for coding standards
+
+   All tiers produce valid results. Higher tiers provide richer
+   cross-repo context but are never required.
+
 3. **Check status to understand the schema**
    ```bash
    openspec status --change "<name>" --json

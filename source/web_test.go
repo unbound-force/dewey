@@ -540,3 +540,102 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestExtractLinks_MixedTags verifies that extractLinks only returns
+// hrefs from <a> tags, ignoring <link> and other non-anchor tags.
+func TestExtractLinks_MixedTags(t *testing.T) {
+	html := `<html>
+<head>
+  <link href="/static/style.css" rel="stylesheet">
+  <link href="/favicon.ico" rel="icon">
+</head>
+<body>
+  <a href="/docs">Docs</a>
+  <a href="/about">About</a>
+</body>
+</html>`
+
+	links := extractLinks(html, "https://example.com")
+	if len(links) != 2 {
+		t.Fatalf("extractLinks returned %d links, want 2", len(links))
+	}
+	for _, link := range links {
+		if strings.Contains(link, "style.css") || strings.Contains(link, "favicon.ico") {
+			t.Errorf("extractLinks should not return <link> href: %s", link)
+		}
+	}
+	if links[0] != "https://example.com/docs" {
+		t.Errorf("links[0] = %q, want %q", links[0], "https://example.com/docs")
+	}
+	if links[1] != "https://example.com/about" {
+		t.Errorf("links[1] = %q, want %q", links[1], "https://example.com/about")
+	}
+}
+
+// TestExtractLinks_IgnoresLinkTags verifies that HTML with only <link>
+// tags returns an empty slice.
+func TestExtractLinks_IgnoresLinkTags(t *testing.T) {
+	html := `<html>
+<head>
+  <link href="/static/frontend/frontend.min.css" rel="stylesheet">
+  <link href="/static/shared/icon/favicon.ico" rel="icon">
+  <link href="/opensearch.xml" rel="search">
+</head>
+<body>No links here</body>
+</html>`
+
+	links := extractLinks(html, "https://pkg.go.dev")
+	if len(links) != 0 {
+		t.Errorf("extractLinks returned %d links for <link>-only HTML, want 0", len(links))
+		for _, l := range links {
+			t.Logf("  unexpected: %s", l)
+		}
+	}
+}
+
+// TestExtractLinks_AnchorWithAttributes verifies that <a> tags with
+// attributes before href are matched correctly.
+func TestExtractLinks_AnchorWithAttributes(t *testing.T) {
+	html := `<a class="nav-link" id="about-link" href="/about">About</a>
+<a data-track="true" href="/contact">Contact</a>`
+
+	links := extractLinks(html, "https://example.com")
+	if len(links) != 2 {
+		t.Fatalf("extractLinks returned %d links, want 2", len(links))
+	}
+	if links[0] != "https://example.com/about" {
+		t.Errorf("links[0] = %q, want %q", links[0], "https://example.com/about")
+	}
+	if links[1] != "https://example.com/contact" {
+		t.Errorf("links[1] = %q, want %q", links[1], "https://example.com/contact")
+	}
+}
+
+// TestIsStaticAsset verifies static asset extension detection.
+func TestIsStaticAsset(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{"https://example.com/style.css", true},
+		{"https://example.com/app.js", true},
+		{"https://example.com/favicon.ico", true},
+		{"https://example.com/logo.png", true},
+		{"https://example.com/logo.svg", true},
+		{"https://example.com/data.json", true},
+		{"https://example.com/font.woff2", true},
+		{"https://example.com/docs", false},
+		{"https://example.com/about", false},
+		{"https://example.com/page.html", false},
+		{"https://example.com/", false},
+		{"https://example.com/api/v1/users", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			got := isStaticAsset(tt.url)
+			if got != tt.want {
+				t.Errorf("isStaticAsset(%q) = %v, want %v", tt.url, got, tt.want)
+			}
+		})
+	}
+}

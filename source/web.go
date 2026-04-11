@@ -8,11 +8,39 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/k3a/html2text"
 )
+
+// anchorHrefRe matches href attributes inside <a> tags only.
+// Handles attributes before href (e.g., <a class="nav" href="/about">).
+// Captures the URL in group 1.
+var anchorHrefRe = regexp.MustCompile(`(?i)<a\s[^>]*?href="([^"]*)"`)
+
+// staticAssetExts lists file extensions that indicate non-HTML static assets.
+// URLs ending with these extensions are skipped during crawling to avoid
+// wasting rate-limited requests on resources that will be rejected by
+// the content-type check.
+var staticAssetExts = map[string]bool{
+	".css": true, ".js": true, ".ico": true, ".png": true,
+	".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".xml": true, ".json": true, ".woff": true, ".woff2": true,
+	".ttf": true, ".eot": true, ".map": true, ".gz": true,
+}
+
+// isStaticAsset reports whether the URL path ends with a known
+// non-HTML file extension.
+func isStaticAsset(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(u.Path))
+	return staticAssetExts[ext]
+}
 
 const (
 	// maxResponseBody is the maximum response body size per page (FR-017b).
@@ -263,6 +291,10 @@ func (ws *WebSource) crawl(seedURL string, maxDepth int, visited map[string]bool
 					continue
 				}
 				if linkParsed.Hostname() == seedHost && !visited[link] {
+					if isStaticAsset(link) {
+						logger.Debug("skipping static asset", "url", link)
+						continue
+					}
 					queue = append(queue, crawlItem{url: link, depth: item.depth + 1})
 				}
 			}
@@ -458,8 +490,9 @@ func extractHTMLTitle(html string) string {
 	return strings.TrimSpace(html[start : start+end])
 }
 
-// extractLinks extracts href values from anchor tags in HTML content.
-// Only returns absolute URLs on the same domain.
+// extractLinks extracts href values from <a> tags in HTML content.
+// Only returns absolute URLs on the same domain. Hrefs from <link>,
+// <area>, and other non-anchor tags are ignored.
 func extractLinks(htmlContent, baseURL string) []string {
 	base, err := url.Parse(baseURL)
 	if err != nil {
@@ -467,22 +500,12 @@ func extractLinks(htmlContent, baseURL string) []string {
 	}
 
 	var links []string
-	lower := strings.ToLower(htmlContent)
-	searchFrom := 0
-
-	for {
-		idx := strings.Index(lower[searchFrom:], "href=\"")
-		if idx == -1 {
-			break
+	matches := anchorHrefRe.FindAllStringSubmatch(htmlContent, -1)
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
 		}
-		start := searchFrom + idx + len("href=\"")
-		end := strings.Index(htmlContent[start:], "\"")
-		if end == -1 {
-			break
-		}
-
-		href := htmlContent[start : start+end]
-		searchFrom = start + end
+		href := match[1]
 
 		// Resolve relative URLs.
 		parsed, err := url.Parse(href)

@@ -26,6 +26,23 @@ Implement tasks from an OpenSpec change.
      > "Must be on branch `opsx/<change-name>` to implement this change.
      > Run: `git checkout opsx/<change-name>`"
 
+2b. **Retrieve implementation context from Dewey** (optional)
+
+   Before implementing, query Dewey for relevant patterns:
+
+   - `dewey_semantic_search` with the task description to find
+     similar implementations in other repos
+   - `dewey_semantic_search_filtered` with `source_type: "web"`
+     to find relevant toolstack documentation
+   - `dewey_search` for convention pack references related to the
+     task's domain
+
+   Use the retrieved context to follow established patterns and
+   avoid reinventing solutions that already exist in the ecosystem.
+
+   If Dewey is unavailable, proceed with direct file reads of
+   convention packs and local code examples.
+
 3. **Check status to understand the schema**
    ```bash
    openspec status --change "<name>" --json

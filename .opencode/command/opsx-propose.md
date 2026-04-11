@@ -43,6 +43,24 @@ When ready to implement, run /opsx-apply
    - If on a different `opsx/*` branch: **STOP** with error: "Already on branch `opsx/<other>` -- finish or archive that change first."
    - If on `main` or any non-opsx branch: create and checkout `opsx/<name>`.
 
+3b. **Retrieve context from Dewey** (optional)
+
+   Before drafting the proposal, query Dewey for relevant context:
+
+   - `dewey_semantic_search` with the change description to find
+     related specs, past proposals, and similar changes
+   - `dewey_semantic_search_filtered` with `source_type: "github"`
+     to find related issues across the organization
+   - `dewey_traverse` on any discovered related specs to understand
+     dependencies
+
+   Use the retrieved context to inform the proposal's scope,
+   identify potential conflicts with existing work, and reference
+   relevant prior decisions.
+
+   If Dewey is unavailable, proceed without cross-repo context --
+   use direct file reads of local specs and backlog items instead.
+
 4. **Get the artifact build order**
    ```bash
    openspec status --change "<name>" --json

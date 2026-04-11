@@ -2,6 +2,7 @@ package source
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -755,4 +756,95 @@ func searchStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestCreateDiskSource_RelativePath verifies that relative paths like
+// "../sibling" are resolved against basePath.
+func TestCreateDiskSource_RelativePath(t *testing.T) {
+	cfg := SourceConfig{
+		ID:   "disk-sibling",
+		Name: "sibling",
+		Type: "disk",
+		Config: map[string]any{
+			"path": "../sibling",
+		},
+	}
+	basePath := "/users/dev/projects/myrepo"
+	src := createDiskSource(cfg, basePath)
+	ds, ok := src.(*DiskSource)
+	if !ok {
+		t.Fatal("expected *DiskSource")
+	}
+	want := filepath.Join(basePath, "../sibling")
+	if ds.basePath != want {
+		t.Errorf("basePath = %q, want %q", ds.basePath, want)
+	}
+}
+
+// TestCreateDiskSource_AbsolutePath verifies that absolute paths are
+// passed through unchanged.
+func TestCreateDiskSource_AbsolutePath(t *testing.T) {
+	cfg := SourceConfig{
+		ID:   "disk-abs",
+		Name: "absolute",
+		Type: "disk",
+		Config: map[string]any{
+			"path": "/opt/data/docs",
+		},
+	}
+	basePath := "/users/dev/projects/myrepo"
+	src := createDiskSource(cfg, basePath)
+	ds, ok := src.(*DiskSource)
+	if !ok {
+		t.Fatal("expected *DiskSource")
+	}
+	if ds.basePath != "/opt/data/docs" {
+		t.Errorf("basePath = %q, want %q", ds.basePath, "/opt/data/docs")
+	}
+}
+
+// TestCreateDiskSource_DotPath verifies that "." is resolved to basePath
+// (existing behavior preserved).
+func TestCreateDiskSource_DotPath(t *testing.T) {
+	cfg := SourceConfig{
+		ID:   "disk-local",
+		Name: "local",
+		Type: "disk",
+		Config: map[string]any{
+			"path": ".",
+		},
+	}
+	basePath := "/users/dev/projects/myrepo"
+	src := createDiskSource(cfg, basePath)
+	ds, ok := src.(*DiskSource)
+	if !ok {
+		t.Fatal("expected *DiskSource")
+	}
+	if ds.basePath != basePath {
+		t.Errorf("basePath = %q, want %q", ds.basePath, basePath)
+	}
+}
+
+// TestCreateCodeSource_RelativePath verifies that code sources also
+// resolve relative paths against basePath.
+func TestCreateCodeSource_RelativePath(t *testing.T) {
+	cfg := SourceConfig{
+		ID:   "code-sibling",
+		Name: "sibling-code",
+		Type: "code",
+		Config: map[string]any{
+			"path":      "../replicator",
+			"languages": []any{"go"},
+		},
+	}
+	basePath := "/users/dev/projects/myrepo"
+	src := createCodeSource(cfg, basePath)
+	cs, ok := src.(*CodeSource)
+	if !ok {
+		t.Fatal("expected *CodeSource")
+	}
+	want := filepath.Join(basePath, "../replicator")
+	if cs.basePath != want {
+		t.Errorf("basePath = %q, want %q", cs.basePath, want)
+	}
 }

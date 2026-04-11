@@ -253,7 +253,7 @@ MCP server + CLI tool with flat package layout:
 ```text
 main.go              # Entry point, Cobra root command, serve logic
 cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote)
-server.go            # MCP server setup, 43 tool registrations
+server.go            # MCP server setup, 48 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
 vault/               # Obsidian vault backend (file parsing, indexing, watcher, persistence)
@@ -277,6 +277,30 @@ chunker/             # Language-aware source code parsing (Chunker interface, Go
 - **Cobra CLI**: Root command doubles as `serve` for backward compatibility.
 - **charmbracelet/log**: Structured logging throughout. No `fmt.Fprintf` to stderr.
 - **Trust tiers**: Pages have a `tier` field (`authored`, `draft`, `validated`) and optional `category` field for knowledge provenance tracking (013-knowledge-compile).
+- **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
+- **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart).
+
+### Store Learning API
+
+The `store_learning` MCP tool stores knowledge with temporal awareness:
+
+- **`tag`** (required): Topic namespace (e.g., `authentication`, `vault-walker`). Used for clustering and identity.
+- **`category`** (optional): One of `decision`, `pattern`, `gotcha`, `context`, `reference`. Guides compilation strategy.
+- **`information`** (required): Natural language paragraph describing the learning.
+- **Returns**: `{tag}-{sequence}` identity (e.g., `authentication-3`), auto-incremented per tag.
+- **Automatic fields**: `created_at` (ISO 8601), `tier` (defaults to `draft`).
+
+Backward compatibility: the old `tags` (plural, comma-separated) field is still accepted — the first tag is used.
+
+### Trust Tiers
+
+| Tier | Source | Description |
+|------|--------|-------------|
+| `authored` | disk, GitHub, web, code sources | Human-written content. Highest trust. Default for all indexed sources. |
+| `draft` | `store_learning`, `dewey compile` | Agent-generated content. Unreviewed. Default for learnings and compiled articles. |
+| `validated` | `dewey promote` | Agent content promoted by human review. Middle trust. |
+
+Filter by tier: `semantic_search_filtered(query: "auth", tier: "authored")` returns only human-written content.
 
 ## Coding Conventions
 

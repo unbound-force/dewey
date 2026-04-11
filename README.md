@@ -1,8 +1,8 @@
 # Dewey
 
-Knowledge graph MCP server that gives AI full access to your knowledge graph. Supports **Logseq** and **Obsidian** — both with full read-write support. Navigate pages, search blocks, analyze link structure, track decisions, manage flashcards, and write content — all through the [Model Context Protocol](https://modelcontextprotocol.io).
+Knowledge graph MCP server that gives AI full access to your knowledge graph. Supports **Logseq** and **Obsidian** — both with full read-write support. Navigate pages, search blocks, analyze link structure, track decisions, manage flashcards, compile knowledge, and write content — all through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistence, semantic search, and pluggable content sources for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
+Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
 
 Built in Go with the [official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk).
 
@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-40 tools across 10 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+48 tools across 14 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 ### Navigate
 
@@ -57,6 +57,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 | `knowledge_gaps` | Both | Orphan pages, dead ends, weakly-linked areas |
 | `list_orphans` | Both | List orphan page names with block counts and property status |
 | `topic_clusters` | Both | Connected components with hub identification |
+| `health` | Both | Check server status: version, backend, read-only mode, page count, embedding status, sources |
 
 ### Write
 
@@ -109,15 +110,41 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `dewey_semantic_search` | Both | Find documents semantically similar to a natural language query |
-| `dewey_similar` | Both | Find the most similar documents to a given page or block |
-| `dewey_semantic_search_filtered` | Both | Semantic search with metadata filters (source, properties) |
+| `semantic_search` | Both | Find documents semantically similar to a natural language query |
+| `similar` | Both | Find the most similar documents to a given page or block |
+| `semantic_search_filtered` | Both | Semantic search with metadata filters (source, properties, tier) |
 
-### Health
+### Compile
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `health` | Both | Check server status: version, backend, read-only mode, page count, embedding status, sources |
+| `compile` | Both | Synthesize stored learnings into compiled knowledge articles |
+
+### Lint
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `lint` | Both | Scan knowledge base for quality issues (stale decisions, embedding gaps) |
+
+### Promote
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `promote` | Both | Promote draft content to validated after human review |
+
+### Indexing
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `index` | Both | Fetch and index configured content sources |
+| `reindex` | Both | Delete and rebuild all external source content |
+| `reload` | Obsidian | Force a full vault re-index from disk |
+
+### Learning
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `store_learning` | Both | Store a learning with tag, category, and temporal identity |
 
 ## Install
 
@@ -280,6 +307,8 @@ Add `.uf/dewey/` to your `.gitignore`. The index is machine-local and rebuilt fr
 |------|-------|-------------|
 | `--verbose` | `-v` | Enable debug logging (shows UUID seeds, block insertions, lock detection) |
 | `--log-file PATH` | | Write logs to file in addition to stderr |
+| `--no-embeddings` | | Skip embedding generation (on serve, index, reindex) |
+| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor, manifest) |
 
 When running as an MCP server (`dewey serve`), Dewey automatically logs to `.uf/dewey/dewey.log` for diagnostics. The log file is truncated when it exceeds 10 MB.
 
@@ -347,9 +376,57 @@ dewey source add github --org ORG --repos REPO1,REPO2 [--refresh INTERVAL]
 dewey source add web --url URL [--name NAME] [--depth N] [--refresh INTERVAL]
 ```
 
+### dewey manifest
+
+Generate `.uf/dewey/manifest.md` — a structured summary of CLI commands, MCP tools, and exported packages discovered via AST parsing of Go source files.
+
+```bash
+dewey manifest [--vault PATH]
+```
+
+### dewey journal
+
+Append a block to a Logseq journal page.
+
+```bash
+dewey journal [--vault PATH] CONTENT
+```
+
+### dewey add
+
+Append a block to a named Logseq page.
+
+```bash
+dewey add [--vault PATH] PAGE CONTENT
+```
+
+### dewey compile
+
+Synthesize stored learnings into compiled knowledge articles. Reads all learnings, clusters them by topic tag, and produces current-state articles that resolve temporal contradictions — newer facts replace older ones.
+
+```bash
+dewey compile [--vault PATH]
+```
+
+### dewey lint
+
+Scan the knowledge base for quality issues: stale decisions, embedding gaps, contradictions, and orphaned content.
+
+```bash
+dewey lint [--vault PATH] [--fix]
+```
+
+### dewey promote
+
+Promote a page from `draft` tier to `validated` after human review. Only draft-tier pages (agent-generated content) can be promoted.
+
+```bash
+dewey promote [--vault PATH] PAGE_NAME
+```
+
 ## Content Sources
 
-Dewey indexes content from three pluggable source types. Configure them in `.uf/dewey/sources.yaml`:
+Dewey indexes content from four pluggable source types. Configure them in `.uf/dewey/sources.yaml`:
 
 ```yaml
 sources:
@@ -394,15 +471,46 @@ dewey index             # incremental — only fetches sources past their refres
 dewey index --force     # full rebuild — re-fetches everything
 ```
 
+### Code Source
+
+The `code` source type indexes source code files using language-aware AST chunking. Currently supports Go, with a pluggable architecture for additional languages.
+
+```yaml
+  - name: project-code
+    type: code
+    config:
+      path: "../replicator"
+      languages:
+        - go
+```
+
+The Go chunker extracts: package doc comments, exported function/method signatures, type declarations, Cobra CLI commands, and MCP tool registrations. Test files are excluded by default.
+
+### Ignore Support
+
+Dewey respects `.gitignore` files at the root of each source directory. Additionally, disk and code sources support `ignore` and `recursive` fields in `sources.yaml`:
+
+```yaml
+  - name: disk-website
+    type: disk
+    config:
+      path: "../website"
+      ignore: [drafts, temp]     # additional patterns beyond .gitignore
+      recursive: true            # set false for top-level files only
+```
+
 ## Semantic Search Setup
 
-Semantic search requires [Ollama](https://ollama.ai) running locally. All 37 keyword-based tools work without it — only the 3 semantic search tools (`dewey_semantic_search`, `dewey_similar`, `dewey_semantic_search_filtered`) require Ollama.
+Semantic search requires [Ollama](https://ollama.ai) running locally. All keyword-based tools work without it — only the 3 semantic search tools (`semantic_search`, `similar`, `semantic_search_filtered`) require Ollama.
+
+### Ollama Auto-Start
+
+Dewey auto-starts Ollama if it's installed but not running. No manual `ollama serve` needed — Dewey detects Ollama's state (External/Managed/Unavailable) and starts a subprocess if necessary. The subprocess is detached so it outlives Dewey.
 
 ### Install Ollama and pull the embedding model
 
 ```bash
 brew install --cask ollama-app  # macOS — or download from https://ollama.ai
-ollama serve              # start the Ollama server (runs in background)
 ollama pull granite-embedding:30m   # IBM Granite, 63 MB, Apache 2.0
 ```
 
@@ -423,12 +531,33 @@ The embedding model and endpoint are configurable via environment variables or `
 | `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama model name |
 | `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
 
+## Knowledge Compilation
+
+Dewey can synthesize stored learnings into compiled knowledge articles using an LLM. The `compile` tool reads all learnings, clusters them by topic tag, and produces current-state articles that resolve temporal contradictions — newer facts replace older ones, while non-contradicted information carries forward.
+
+### Trust Tiers
+
+All content in Dewey's index has a trust tier:
+
+| Tier | Source | Description |
+|------|--------|-------------|
+| `authored` | Disk, GitHub, web, code sources | Human-written content. Highest trust. |
+| `draft` | `store_learning`, `compile` | Agent-generated. Unreviewed. |
+| `validated` | `promote` | Agent content promoted by human review. |
+
+Filter search by tier: `semantic_search_filtered(query: "auth", tier: "authored")`
+
+### Instant Startup
+
+When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexing runs in the background — tools serve from the persistent store (previous session's data) while indexing completes. The `health` tool reports indexing status.
+
 ## Architecture
 
 ```
 main.go              Entry point — backend routing, MCP server startup
-cli.go               CLI subcommands: journal, add, search, init, index, status, source
-server.go            MCP server setup — conditional tool registration
+cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
+                     source, doctor, manifest, compile, lint, promote
+server.go            MCP server setup — 48 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
 vault/
@@ -436,6 +565,7 @@ vault/
   markdown.go        Markdown → block tree parser (heading-based sectioning)
   frontmatter.go     YAML frontmatter parser
   index.go           Backlink index builder from [[wikilinks]]
+  parse_export.go    Exported parsing and persistence functions
 tools/
   navigate.go        Page, block, links, references, BFS traversal
   search.go          Full-text, property, DataScript/frontmatter, tag search
@@ -445,6 +575,8 @@ tools/
   journal.go         Date range and search within journals
   flashcard.go       SRS overview, due cards, card creation
   whiteboard.go      List and inspect whiteboards
+  semantic.go        Semantic search, similar, filtered search, store_learning
+  compile.go         Knowledge compilation, linting, promotion
   helpers.go         Result formatting utilities
 graph/
   builder.go         In-memory graph construction from any backend
@@ -452,7 +584,9 @@ graph/
 parser/content.go    Regex extraction of [[links]], ((refs)), #tags, properties
 types/
   logseq.go          Shared types with custom JSON unmarshaling
-  tools.go           Input types for all 40 tools
+  tools.go           Input types for all 48 tools
+  semantic.go        Semantic search types
+llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, NoopSynthesizer)
 store/
   store.go           SQLite persistence (pages, blocks, links, sources)
   embeddings.go      Vector embedding storage and cosine similarity search
@@ -467,6 +601,7 @@ source/
   github.go          GitHub API source (issues, PRs, READMEs)
   web.go             Web crawl source (HTML-to-text, robots.txt)
   manager.go         Source orchestration (refresh, failures)
+chunker/             Language-aware source code parsing (Go chunker, registry)
 ```
 
 ## Attribution

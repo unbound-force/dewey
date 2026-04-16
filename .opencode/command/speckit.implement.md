@@ -3,6 +3,7 @@ description: Execute the implementation plan by processing and executing all tas
 ---
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 <!-- scaffolded by uf vdev -->
 
@@ -153,3 +154,18 @@ You **MUST** consider the user input before proceeding (if not empty).
      4. Then merge and switch branches
 
 Note: This command assumes a complete task breakdown exists in tasks.md. If tasks are incomplete or missing, suggest running `/speckit.tasks` first to regenerate the task list.
+
+
+## Guardrails
+
+- **NEVER modify source code** — this command updates
+  spec artifacts ONLY. Implementation changes belong in
+  `/speckit.implement`, `/unleash`, or `/cobalt-crush`.
+- **NEVER modify test files, Go source, Markdown agents,
+  convention packs, or config files** outside the
+  `specs/NNN-*/` feature directory.
+- The ONLY files this command may write are:
+  - `FEATURE_SPEC` (the spec.md file)
+  - Files within `FEATURE_DIR` (spec artifacts:
+    plan.md, tasks.md, research.md, data-model.md,
+    quickstart.md, contracts/, checklists/)

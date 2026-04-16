@@ -7,6 +7,7 @@ description: >
 ---
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 
 # Command: /cobalt-crush

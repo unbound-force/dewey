@@ -21,6 +21,59 @@ Dewey is a knowledge graph MCP server that gives AI agents full access to Markdo
 - **Intent Drift Detection**: Evaluation must detect when the implementation drifts away from the original human-written "Statement of Intent."
 - **Automated Governance**: Primary feedback is provided via automated constraints (CI, Gaze quality gates, constitution checks), reserving human energy for high-level security and logic.
 
+### Gatekeeping Value Protection
+
+Agents MUST NOT modify values that serve as quality or
+governance gates to make an implementation pass. The
+following categories are protected:
+
+1. **Coverage thresholds and CRAP scores** — minimum
+   coverage percentages, CRAP score limits, coverage
+   ratchets
+2. **Severity definitions and auto-fix policies** —
+   CRITICAL/HIGH/MEDIUM/LOW boundaries, auto-fix
+   eligibility rules
+3. **Convention pack rule classifications** —
+   MUST/SHOULD/MAY designations on convention pack rules
+   (downgrading MUST to SHOULD is prohibited)
+4. **CI flags and linter configuration** — `-race`,
+   `-count=1`, `govulncheck`, `golangci-lint` rules,
+   pinned action SHAs
+5. **Agent temperature and tool-access settings** —
+   frontmatter `temperature`, `tools.write`, `tools.edit`,
+   `tools.bash` restrictions
+6. **Constitution MUST rules** — any MUST rule in
+   `.specify/memory/constitution.md` or hero constitutions
+7. **Review iteration limits and worker concurrency** —
+   max review iterations, max concurrent Swarm workers,
+   retry limits
+8. **Workflow gate markers** — `<!-- spec-review: passed
+   -->`, task completion checkboxes used as gates, phase
+   checkpoint requirements
+
+**What to do instead**: When an implementation cannot
+meet a gate, the agent MUST stop, report which gate is
+blocking and why, and let the human decide whether to
+adjust the gate or rework the implementation. Modifying
+a gate without explicit human authorization is a
+constitution violation (CRITICAL severity).
+
+### Workflow Phase Boundaries
+
+Agents MUST NOT cross workflow phase boundaries:
+
+- **Specify/Clarify/Plan/Tasks/Analyze/Checklist** phases:
+  spec artifacts ONLY (`specs/NNN-*/` directory). No
+  source code, test, agent, command, or config changes.
+- **Implement** phase: source code changes allowed,
+  guided by spec artifacts.
+- **Review** phase: findings and minor fixes only. No new
+  features.
+
+A phase boundary violation is treated as a process error.
+The agent MUST stop and report the violation rather than
+proceeding with out-of-phase changes.
+
 ## Technical Guardrails
 
 - **CI Parity Gate**: Before marking any implementation task complete or declaring a PR ready, agents MUST replicate the CI checks locally. Read `.github/workflows/` to identify the exact commands CI runs, then execute those same commands. Any failure is a blocking error — a task is not complete until all CI-equivalent checks pass locally. Do not rely on a memorized list of commands; always derive them from the workflow files, which are the source of truth.
@@ -313,6 +366,61 @@ Filter by tier: `semantic_search_filtered(query: "auth", tier: "authored")` retu
 - **SQL safety**: All store operations MUST use parameterized queries. Never interpolate user content into SQL strings.
 - **Logging**: Use `github.com/charmbracelet/log`. No `fmt.Fprintf(os.Stderr, ...)`.
 - **CLI Framework**: Use `github.com/spf13/cobra`. No `flag.FlagSet`.
+
+## Knowledge Retrieval
+
+Agents SHOULD prefer Dewey MCP tools over grep/glob/read
+for cross-repo context, design decisions, and
+architectural patterns. Dewey provides semantic search
+across all indexed Markdown files, specs, and web
+documentation — returning ranked results with provenance
+metadata that grep cannot match.
+
+### Tool Selection Matrix
+
+| Query Intent | Dewey Tool | When to Use |
+|-------------|-----------|-------------|
+| Conceptual understanding | `semantic_search` | "How does X work?" |
+| Keyword lookup | `search` | Known terms, FR numbers |
+| Read specific page | `get_page` | Known document path |
+| Relationship discovery | `find_connections` | "How are X and Y related?" |
+| Similar documents | `similar` | "Find specs like this one" |
+| Tag-based discovery | `find_by_tag` | "All pages tagged #decision" |
+| Property queries | `query_properties` | "All specs with status: draft" |
+| Filtered semantic | `semantic_search_filtered` | Semantic search within source type |
+| Graph navigation | `traverse` | Dependency chain walking |
+
+### When to Fall Back to grep/glob/read
+
+Use direct file operations instead of Dewey when:
+- **Dewey is unavailable** — MCP tools return errors or
+  are not configured
+- **Exact string matching is needed** — searching for a
+  specific error message, variable name, or code pattern
+- **Specific file path is known** — reading a file you
+  already know the path to (use Read directly)
+- **Binary/non-Markdown content** — Dewey indexes
+  Markdown; use grep for Go source, JSON, YAML, etc.
+
+### Graceful Degradation (3-Tier Pattern)
+
+**Tier 3 (Full Dewey)** — semantic + structured search:
+- `semantic_search` — natural language queries
+- `search` — keyword queries
+- `get_page`, `find_connections`, `traverse` — structured navigation
+- `find_by_tag`, `query_properties` — metadata queries
+
+**Tier 2 (Graph-only, no embedding model)** — structured
+search only:
+- `search` — keyword queries (no embeddings needed)
+- `get_page`, `traverse`, `find_connections` — graph navigation
+- `find_by_tag`, `query_properties` — metadata queries
+- Semantic search unavailable — use exact keyword matches
+
+**Tier 1 (No Dewey)** — direct file access:
+- Use Read tool for direct file access
+- Use Grep for keyword search across the codebase
+- Use Glob for file pattern matching
 
 ## Testing Conventions
 

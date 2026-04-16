@@ -7,6 +7,7 @@ handoffs:
 ---
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 <!-- scaffolded by uf vdev -->
 
@@ -86,3 +87,18 @@ If the user supplies partial updates (e.g., only one principle revision), still 
 If critical info missing (e.g., ratification date truly unknown), insert `TODO(<FIELD_NAME>): explanation` and include in the Sync Impact Report under deferred items.
 
 Do not create a new template; always operate on the existing `.specify/memory/constitution.md` file.
+
+
+## Guardrails
+
+- **NEVER modify source code** — this command updates
+  spec artifacts ONLY. Implementation changes belong in
+  `/speckit.implement`, `/unleash`, or `/cobalt-crush`.
+- **NEVER modify test files, Go source, Markdown agents,
+  convention packs, or config files** outside the
+  `specs/NNN-*/` feature directory.
+- The ONLY files this command may write are:
+  - `FEATURE_SPEC` (the spec.md file)
+  - Files within `FEATURE_DIR` (spec artifacts:
+    plan.md, tasks.md, research.md, data-model.md,
+    quickstart.md, contracts/, checklists/)

@@ -3,6 +3,7 @@ description: Run the reviewer governance council to audit codebase or spec compl
 ---
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 # Command: /review-council
 
@@ -112,6 +113,7 @@ This table documents known Divisor persona roles and their focus areas. It is us
 | `divisor-guard` | The Guard | Intent drift/plan alignment, zero-waste mandate, constitution alignment, cross-component value [PACK] | Intent fidelity, scope discipline, inter-spec consistency, status accuracy, user value, constitution alignment |
 | `divisor-testing` | The Tester | Test architecture [PACK], coverage strategy, assertion depth, test isolation, regression protection, convention compliance [PACK] | Testability of requirements, test strategy coverage, fixture feasibility, coverage expectations, contract surface |
 | `divisor-sre` | The Operator | File permissions/config, efficiency/performance, release pipeline [PACK], dependency health [PACK], runtime observability, upgrade paths, operational docs, backup/recovery | Deployment feasibility, operational requirements, config management, dependency risk, maintenance burden |
+| `divisor-curator` | The Curator | Documentation gaps, blog/tutorial opportunities, website issue filing | Documentation completeness in specs, content coverage |
 
 For any discovered agent not in this table, delegate with a generic review prompt appropriate to the current review mode.
 

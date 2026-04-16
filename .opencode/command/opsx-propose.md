@@ -130,3 +130,15 @@ After completing all artifacts, summarize:
 - If context is critically unclear, ask the user - but prefer making reasonable decisions to keep momentum
 - If a change with that name already exists, ask if user wants to continue it or create a new one
 - Verify each artifact file exists after writing before proceeding to next
+
+## Guardrails
+
+- **NEVER implement code changes** — this command
+  creates artifacts ONLY (proposal, design, specs,
+  tasks)
+- **NEVER commit, push, or create PRs** — those are
+  /finale's responsibility
+- **NEVER run /opsx-apply or /cobalt-crush** — the
+  user decides when to implement
+- After artifacts are complete, STOP and prompt the
+  user to run /opsx-apply or /cobalt-crush

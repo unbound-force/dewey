@@ -1,11 +1,13 @@
 ---
 description: >
-  Run the full Speckit pipeline autonomously: clarify
-  ambiguities with Dewey, generate plan and tasks, review
-  specs, implement with parallel Swarm workers, review code,
-  store learnings, and present demo instructions. Exits to
-  the human only when it genuinely needs human judgment.
+  Run the full Speckit or OpenSpec pipeline autonomously:
+  clarify ambiguities with Dewey, generate plan and tasks,
+  review specs, implement with parallel Swarm workers,
+  review code, store learnings, and present demo
+  instructions. Exits to the human only when it genuinely
+  needs human judgment.
 ---
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
 
@@ -13,12 +15,13 @@ description: >
 
 ## Description
 
-Autonomous Speckit pipeline execution. Takes a spec from
-draft to demo-ready code in a single command. Orchestrates
-8 steps: clarify, plan, tasks, spec review, implement,
-code review, retrospective, and demo. Exits gracefully
-when human judgment is needed and resumes from where it
-left off on re-run.
+Autonomous pipeline execution for both Speckit (strategic)
+and OpenSpec (tactical) changes. Takes a spec from draft
+to demo-ready code in a single command. Orchestrates 8
+steps: clarify, plan, tasks, spec review, implement, code
+review, retrospective, and demo. Exits gracefully when
+human judgment is needed and resumes from where it left
+off on re-run.
 
 ## Usage
 
@@ -53,65 +56,91 @@ git rev-parse --abbrev-ref HEAD
 
 - If on `main`: **STOP** with error:
   > "Cannot run /unleash on main. Must be on a Speckit
-  > feature branch (`NNN-*`). Run `/speckit.specify`
-  > first."
+  > (`NNN-*`) or OpenSpec (`opsx/*`) feature branch."
 
-- If on `opsx/*`: **STOP** with error:
-  > "/unleash is for Speckit strategic specs only. Use
-  > `/opsx:apply` for OpenSpec tactical changes."
+- If on `opsx/*`: **OpenSpec mode detected.**
+  Extract the change name from the branch:
+  `opsx/<name>` → `<name>`.
+  Set `FEATURE_DIR = openspec/changes/<name>/`.
+  Set `WORKFLOW_TIER = openspec`.
 
-- If the branch does not match `NNN-*` (digits followed
-  by a dash): **STOP** with error:
+  Check if `FEATURE_DIR/tasks.md` exists. If not:
+  **STOP** with error:
+  > "No tasks.md found for change `<name>`. Run
+  > `/opsx-propose` first."
+
+  Announce: "Detected OpenSpec change: `<name>`"
+
+- If the branch matches `NNN-*` (digits followed by a
+  dash): **Speckit mode detected.**
+
+  Validate that spec.md exists by running from the repo
+  root:
+
+  ```bash
+  .specify/scripts/bash/check-prerequisites.sh --json --require-spec
+  ```
+
+  If the script fails or no spec.md is found: **STOP**
+  with error:
+  > "No spec.md found in the feature directory. Run
+  > `/speckit.specify` first."
+
+  Extract the `FEATURE_DIR` from the JSON output. This
+  is the working directory for all subsequent steps.
+  Set `WORKFLOW_TIER = speckit`.
+
+- If the branch does not match `NNN-*` or `opsx/*`:
+  **STOP** with error:
   > "Unrecognized branch pattern. /unleash requires a
-  > Speckit feature branch (`NNN-*`). Run
-  > `/speckit.specify` to create one."
-
-Validate that spec.md exists by running from the repo
-root:
-
-```bash
-.specify/scripts/bash/check-prerequisites.sh --json --require-spec
-```
-
-If the script fails or no spec.md is found: **STOP**
-with error:
-> "No spec.md found in the feature directory. Run
-> `/speckit.specify` first."
-
-Extract the `FEATURE_DIR` from the JSON output. This is
-the working directory for all subsequent steps.
+  > Speckit feature branch (`NNN-*`) or OpenSpec branch
+  > (`opsx/*`). Run `/speckit.specify` or
+  > `/opsx-propose` to create one."
 
 ### 2. Resumability Detection
 
 Probe filesystem state to determine which steps are
 already complete. Check in order:
 
-1. **Clarify done?** Read spec.md in the feature
-   directory. Check for `[NEEDS CLARIFICATION]` markers.
+**If `WORKFLOW_TIER = openspec`**: checks 1-3 are always
+"done" — these artifacts were created by `/opsx-propose`.
+Skip directly to check 4.
+
+1. **Clarify done?** *(Speckit only)* Read spec.md in
+   the feature directory. Check for
+   `[NEEDS CLARIFICATION]` markers.
    - If NO markers exist AND (a `## Clarifications`
      section exists in spec.md OR plan.md exists in the
      feature directory): clarify is done.
    - Otherwise: clarify is needed.
 
-2. **Plan done?** Check if `plan.md` exists in the
-   feature directory.
+2. **Plan done?** *(Speckit only)* Check if `plan.md`
+   exists in the feature directory.
 
-3. **Tasks done?** Check if `tasks.md` exists in the
-   feature directory.
+3. **Tasks done?** *(Speckit only)* Check if `tasks.md`
+   exists in the feature directory.
 
-4. **Spec review done?** Read `tasks.md` and check for
-   the `<!-- spec-review: passed -->` HTML comment marker.
+4. **Spec review done?** Read `FEATURE_DIR/tasks.md`
+   and check for the `<!-- spec-review: passed -->` HTML
+   comment marker.
 
-5. **Implementation done?** Read `tasks.md` and check
-   if all task checkboxes are `[x]` (no `- [ ]` lines
-   remain in the task phases).
+5. **Implementation done?** Read `FEATURE_DIR/tasks.md`
+   and check if all task checkboxes are `[x]` (no
+   `- [ ]` lines remain in the task phases).
 
-6. **Code review done?** Derive the build and test
-   commands from `.github/workflows/` (read the CI
-   workflow files to identify the exact commands). Run
-   them. If all pass, code review is a candidate.
+6. **Code review done?** Read `FEATURE_DIR/tasks.md`
+   and check for the `<!-- code-review: passed -->` HTML
+   comment marker.
 
-Display the detection results:
+Display the detection results. For OpenSpec mode:
+
+```
+Detected: OpenSpec mode — artifacts from /opsx-propose
+  clarify ✓ (skipped)  plan ✓ (skipped)  tasks ✓ (skipped)
+  spec-review [status]  implement [status]  code-review [status]
+```
+
+For Speckit mode:
 
 ```
 Detected: clarify ✓ plan ✓ tasks ✓ spec-review ✗
@@ -126,6 +155,10 @@ skip directly to step 7 (retrospective) since it is
 idempotent.
 
 ### 3. Step 1 -- Clarify
+
+**If `WORKFLOW_TIER = openspec`**: skip this step.
+Announce: "OpenSpec mode — clarify handled by
+/opsx-propose."
 
 Scan spec.md in the feature directory for
 `[NEEDS CLARIFICATION]` markers.
@@ -198,6 +231,10 @@ needed" and proceed to step 2.
 
 ### 4. Step 2 -- Plan
 
+**If `WORKFLOW_TIER = openspec`**: skip this step.
+Announce: "OpenSpec mode — plan handled by
+/opsx-propose."
+
 Generate the implementation plan by delegating to the
 `cobalt-crush-dev` agent.
 
@@ -214,6 +251,10 @@ Generate the implementation plan by delegating to the
    > Check the agent output for errors."
 
 ### 5. Step 3 -- Tasks
+
+**If `WORKFLOW_TIER = openspec`**: skip this step.
+Announce: "OpenSpec mode — tasks handled by
+/opsx-propose."
 
 Generate the task list by delegating to the
 `cobalt-crush-dev` agent.
@@ -242,18 +283,21 @@ analysis + quality validation) in a single pass.
 2. Delegate to the `cobalt-crush-dev` agent via the Task
    tool with the review council's instructions, adding
    the explicit mode override: "Run in **Spec Review
-   Mode** -- review the spec artifacts, not code."
+   Mode** -- review the spec artifacts in `FEATURE_DIR`,
+   not code." The review council auto-detects the
+   workflow tier from the branch name (`opsx/*` vs
+   `NNN-*`).
 3. Collect the review results.
 
 **Processing results**:
 
 - If all reviewers APPROVE: write the spec review marker
-  to `tasks.md`:
+  to `FEATURE_DIR/tasks.md`:
   ```
   <!-- spec-review: passed -->
   ```
-  Append this marker at the very end of `tasks.md`.
-  Proceed to step 5.
+  Append this marker at the very end of
+  `FEATURE_DIR/tasks.md`. Proceed to step 5.
 
 - If only LOW and MEDIUM findings exist: auto-fix them
   (the review council handles this per its hybrid fix
@@ -282,7 +326,8 @@ analysis + quality validation) in a single pass.
 
 ### 7. Step 5 -- Implement
 
-Parse `tasks.md` for phases and execute tasks.
+Parse `FEATURE_DIR/tasks.md` for phases and execute
+tasks.
 
 **Derive build/test commands**: Read all files in
 `.github/workflows/` to identify the exact CI commands
@@ -437,7 +482,8 @@ Divisor agent reviews.
 2. Delegate to the `cobalt-crush-dev` agent via the Task
    tool with the review council's instructions, adding
    the explicit mode override: "Run in **Code Review
-   Mode** -- review the implementation code."
+   Mode** -- review the implementation code in
+   `FEATURE_DIR`."
 3. Collect the review results.
 
 **If Gaze is not installed**: the review council will
@@ -447,8 +493,15 @@ quality data.
 
 **Processing results**:
 
-- If all reviewers APPROVE (and CI passes): proceed to
-  step 7.
+- If all reviewers APPROVE (and CI passes):
+  Write the code review marker to
+  `FEATURE_DIR/tasks.md`:
+  ```
+  <!-- code-review: passed -->
+  ```
+  Append this marker at the very end of
+  `FEATURE_DIR/tasks.md` (after the spec-review marker
+  if present). Proceed to step 7.
 
 - If findings exist: attempt to fix them. For each
   iteration (up to 3 total):
@@ -518,29 +571,28 @@ memory.
    Display the learnings in the output so they are not
    lost.
 
-5. **Incremental compilation**: after storing learnings,
-   trigger incremental compilation to merge new learnings
-   into compiled articles:
-
-   Call the Dewey MCP tool `compile` with the identities
-   of the learnings just stored (from the
-   `dewey_store_learning` responses).
-
-   If compile fails, log the error but do NOT block the
-   retrospective — compilation failure is non-blocking.
-
 ### 10. Step 8 -- Demo
 
 Present structured demo instructions to the developer.
 
-1. **What Was Built**: read the spec's user story titles
-   and descriptions from spec.md. Summarize what was
-   implemented.
+1. **What Was Built**:
+   - **If `WORKFLOW_TIER = speckit`**: read the spec's
+     user story titles and descriptions from
+     `FEATURE_DIR/spec.md`. Summarize what was
+     implemented.
+   - **If `WORKFLOW_TIER = openspec`**: read the change
+     proposal from `FEATURE_DIR/proposal.md`. Summarize
+     what was implemented.
 
-2. **How to Verify**: read `quickstart.md` from the
-   feature directory if it exists. If not, generate
-   verification steps from the acceptance scenarios in
-   spec.md.
+2. **How to Verify**:
+   - **If `WORKFLOW_TIER = speckit`**: read
+     `FEATURE_DIR/quickstart.md` if it exists. If not,
+     generate verification steps from the acceptance
+     scenarios in `FEATURE_DIR/spec.md`.
+   - **If `WORKFLOW_TIER = openspec`**: generate
+     verification steps from the acceptance scenarios
+     in `FEATURE_DIR/tasks.md`. OpenSpec changes do not
+     have a `quickstart.md`.
 
 3. **Key Files Changed**: run:
    ```bash
@@ -586,7 +638,7 @@ Format the output as:
 ## Guardrails
 
 - **NEVER run on `main`** -- the command is for Speckit
-  feature branches only
+  (`NNN-*`) and OpenSpec (`opsx/*`) feature branches
 - **NEVER skip spec review exit on HIGH/CRITICAL** --
   these findings block implementation to prevent wasted
   effort on a flawed spec

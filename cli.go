@@ -305,6 +305,25 @@ sources:
 				}
 			}
 
+			// Scaffold Dewey-specific slash commands into .opencode/command/
+			// if the .opencode/ directory exists (composability — only scaffold
+			// when OpenCode is present). Idempotent — skip files that already
+			// exist to avoid overwriting user customizations.
+			opencodeCmdDir := filepath.Join(vaultPath, ".opencode", "command")
+			if _, err := os.Stat(filepath.Join(vaultPath, ".opencode")); err == nil {
+				if err := os.MkdirAll(opencodeCmdDir, 0o755); err == nil {
+					for name, content := range deweySlashCommands {
+						cmdPath := filepath.Join(opencodeCmdDir, name)
+						if _, err := os.Stat(cmdPath); err != nil {
+							// File doesn't exist — scaffold it.
+							if writeErr := os.WriteFile(cmdPath, []byte(content), 0o644); writeErr == nil {
+								logger.Info("scaffolded slash command", "path", cmdPath)
+							}
+						}
+					}
+				}
+			}
+
 			logger.Info("initialized", "path", deweyDir)
 			logger.Info("default config", "file", configPath)
 			logger.Info("run 'dewey index' to build the initial index")

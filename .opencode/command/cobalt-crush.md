@@ -3,8 +3,9 @@ description: >
   Invoke the Cobalt-Crush developer persona for implementation tasks.
   With arguments: delegates to the cobalt-crush-dev agent. Without
   arguments: detects active workflow and runs /speckit.implement or
-  /opsx:apply.
+  /opsx-apply.
 ---
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
@@ -90,9 +91,11 @@ implementation command to the `cobalt-crush-dev` agent:
    > No active implementation context detected. Which workflow
    > should I execute?
    >
+   > - `/unleash` — Autonomous pipeline (parallel swarm,
+   >   recommended for multi-task changes)
    > - `/speckit.implement` — Strategic spec implementation
    >   (requires a feature branch with `specs/NNN-*/tasks.md`)
-   > - `/opsx:apply` — Tactical change implementation
+   > - `/opsx-apply` — Tactical change implementation
    >   (requires an active change in `openspec/changes/`)
 
 ## Branch Safety Guardrails

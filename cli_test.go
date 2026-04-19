@@ -491,6 +491,50 @@ func TestInitCmd_NoOpenCodeDir(t *testing.T) {
 	}
 }
 
+// TestInitCmd_ReInitScaffoldsNewCommands verifies that running dewey init
+// on an already-initialized repo still scaffolds missing slash commands.
+func TestInitCmd_ReInitScaffoldsNewCommands(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .opencode/ and .gitignore.
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode"), 0o755); err != nil {
+		t.Fatalf("create .opencode: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// First init — creates everything.
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("first init failed: %v", err)
+	}
+
+	// Verify slash commands were created.
+	storePath := filepath.Join(tmpDir, ".opencode", "command", "dewey-store.md")
+	if _, err := os.Stat(storePath); err != nil {
+		t.Fatalf("dewey-store.md not created on first init")
+	}
+
+	// Delete one slash command to simulate upgrading dewey with a new command.
+	if err := os.Remove(storePath); err != nil {
+		t.Fatalf("remove dewey-store.md: %v", err)
+	}
+
+	// Second init — should re-scaffold the deleted command.
+	cmd2 := newInitCmd()
+	cmd2.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("second init failed: %v", err)
+	}
+
+	// Verify the deleted command was re-scaffolded.
+	if _, err := os.Stat(storePath); err != nil {
+		t.Error("dewey-store.md should have been re-scaffolded on second init")
+	}
+}
+
 // --- Status command tests ---
 
 // TestStatusCmd_Uninitialized verifies status fails when .uf/dewey/ doesn't exist.

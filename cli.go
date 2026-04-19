@@ -228,12 +228,15 @@ func newInitCmd() *cobra.Command {
 
 			deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
 
-			// Check if already initialized (idempotent).
+			// Check if already initialized. If so, skip config/sources
+			// creation but still run slash command scaffolding below.
+			alreadyInitialized := false
 			if _, err := os.Stat(deweyDir); err == nil {
+				alreadyInitialized = true
 				logger.Info("already initialized", "path", deweyDir)
-				return nil
 			}
 
+			if !alreadyInitialized {
 			// Create .uf/dewey/ directory (MkdirAll creates .uf/ parent too — D3).
 			if err := os.MkdirAll(deweyDir, 0o755); err != nil {
 				return fmt.Errorf("create .uf/dewey/ directory: %w", err)
@@ -304,6 +307,7 @@ sources:
 					}
 				}
 			}
+			} // end if !alreadyInitialized
 
 			// Scaffold Dewey-specific slash commands into .opencode/command/
 			// if the .opencode/ directory exists (composability — only scaffold
@@ -324,9 +328,10 @@ sources:
 				}
 			}
 
-			logger.Info("initialized", "path", deweyDir)
-			logger.Info("default config", "file", configPath)
-			logger.Info("run 'dewey index' to build the initial index")
+			if !alreadyInitialized {
+				logger.Info("initialized", "path", deweyDir)
+				logger.Info("run 'dewey index' to build the initial index")
+			}
 
 			return nil
 		},

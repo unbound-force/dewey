@@ -8,6 +8,7 @@ description: >
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 
 # Command: /uf-init
@@ -511,10 +512,10 @@ The guardrails block to append:
   tasks)
 - **NEVER commit, push, or create PRs** — those are
   /finale's responsibility
-- **NEVER run /opsx-apply or /cobalt-crush** — the
-  user decides when to implement
+- **NEVER run /unleash, /opsx-apply, or /cobalt-crush**
+  — the user decides when to implement
 - After artifacts are complete, STOP and prompt the
-  user to run /opsx-apply or /cobalt-crush
+  user to run /unleash, /opsx-apply, or /cobalt-crush
 ```
 
 ### Step 9: AGENTS.md Behavioral Guidance
@@ -979,6 +980,8 @@ Finally, remind the user:
 
 After customizations are applied:
 
+- Run `/unleash` for autonomous pipeline execution
+  (parallel swarm, recommended for multi-task changes)
 - Run `/cobalt-crush` to start implementing — it
   auto-detects your active workflow (Speckit or OpenSpec)
   and delegates to the correct implementation command.

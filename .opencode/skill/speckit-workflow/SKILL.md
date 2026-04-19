@@ -9,6 +9,7 @@ tags:
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf vdev -->
 <!-- scaffolded by uf vv0.6.1 -->
 
 # Speckit Workflow — Swarm Skill
@@ -139,3 +140,13 @@ hero routing and workflow stage context:
 skills_use({ name: "unbound-force-heroes" })
 skills_use({ name: "speckit-workflow" })
 ```
+
+## Entry Point
+
+The `/unleash` command is the primary way to trigger
+autonomous pipeline execution using this skill. It
+orchestrates the full Speckit pipeline (clarify, plan,
+tasks, spec review, implement, code review,
+retrospective, demo) and uses the task format described
+above for the implementation phase. `/unleash` also
+supports OpenSpec (`opsx/*`) branches.

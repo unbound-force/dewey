@@ -402,6 +402,95 @@ func TestInitCmd_GitignoreLegacyPattern(t *testing.T) {
 	}
 }
 
+// TestInitCmd_ScaffoldsSlashCommands verifies that dewey init creates
+// slash command files in .opencode/command/ when .opencode/ exists.
+func TestInitCmd_ScaffoldsSlashCommands(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .opencode/ directory (simulating an OpenCode-initialized repo).
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode"), 0o755); err != nil {
+		t.Fatalf("create .opencode: %v", err)
+	}
+	// Create .gitignore so init doesn't error.
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Verify all 5 Dewey slash commands were scaffolded.
+	for _, name := range []string{"dewey-store.md", "dewey-index.md", "dewey-reindex.md", "dewey-compile.md", "dewey-lint.md"} {
+		path := filepath.Join(tmpDir, ".opencode", "command", name)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("slash command %s was not scaffolded", name)
+		}
+	}
+}
+
+// TestInitCmd_SkipsExistingSlashCommands verifies that dewey init does
+// not overwrite existing slash command files (preserves user customizations).
+func TestInitCmd_SkipsExistingSlashCommands(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create .opencode/command/ with a custom dewey-store.md.
+	cmdDir := filepath.Join(tmpDir, ".opencode", "command")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create command dir: %v", err)
+	}
+	customContent := "# My custom dewey-store command\n"
+	if err := os.WriteFile(filepath.Join(cmdDir, "dewey-store.md"), []byte(customContent), 0o644); err != nil {
+		t.Fatalf("write custom command: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Verify custom content was preserved (not overwritten).
+	content, err := os.ReadFile(filepath.Join(cmdDir, "dewey-store.md"))
+	if err != nil {
+		t.Fatalf("read command: %v", err)
+	}
+	if string(content) != customContent {
+		t.Errorf("dewey-store.md was overwritten, got:\n%s", string(content))
+	}
+
+	// Other commands should still be scaffolded.
+	if _, err := os.Stat(filepath.Join(cmdDir, "dewey-index.md")); err != nil {
+		t.Error("dewey-index.md should have been scaffolded (it didn't exist)")
+	}
+}
+
+// TestInitCmd_NoOpenCodeDir verifies that dewey init gracefully skips
+// slash command scaffolding when .opencode/ doesn't exist.
+func TestInitCmd_NoOpenCodeDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// Verify no .opencode/command/ directory was created.
+	if _, err := os.Stat(filepath.Join(tmpDir, ".opencode", "command")); err == nil {
+		t.Error(".opencode/command/ should NOT exist when .opencode/ was not present")
+	}
+}
+
 // --- Status command tests ---
 
 // TestStatusCmd_Uninitialized verifies status fails when .uf/dewey/ doesn't exist.

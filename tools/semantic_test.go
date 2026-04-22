@@ -1349,3 +1349,341 @@ func TestSemanticSearchFiltered_TierWithOtherFilters(t *testing.T) {
 		}
 	}
 }
+
+// --- Phase 4 tests: Curated trust tier (015-curated-knowledge-stores) ---
+
+// newTestStoreWithCuratedData creates an in-memory store with pages at all four
+// tiers (authored, curated, validated, draft) for testing curated tier filtering.
+func newTestStoreWithCuratedData(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Insert pages with all four tiers.
+	pages := []*store.Page{
+		{
+			Name: "human-docs", OriginalName: "human-docs",
+			SourceID: "disk-local", SourceDocID: "docs.md",
+			ContentHash: "h1", CreatedAt: 1000, UpdatedAt: 2000,
+			Tier: "authored",
+		},
+		{
+			Name: "curated/auth-patterns", OriginalName: "curated/auth-patterns",
+			SourceID: "knowledge-team", SourceDocID: "auth-patterns-1.md",
+			ContentHash: "c1", CreatedAt: 3000, UpdatedAt: 4000,
+			Tier: "curated", Category: "pattern",
+		},
+		{
+			Name: "curated/deploy-decisions", OriginalName: "curated/deploy-decisions",
+			SourceID: "knowledge-team", SourceDocID: "deploy-decisions-1.md",
+			ContentHash: "c2", CreatedAt: 5000, UpdatedAt: 6000,
+			Tier: "curated", Category: "decision",
+		},
+		{
+			Name: "validated-insight", OriginalName: "validated-insight",
+			SourceID: "learning", SourceDocID: "validated-insight",
+			ContentHash: "v1", CreatedAt: 7000, UpdatedAt: 8000,
+			Tier: "validated", Category: "gotcha",
+		},
+		{
+			Name: "learning/draft-note", OriginalName: "learning/draft-note",
+			SourceID: "learning", SourceDocID: "learning/draft-note",
+			ContentHash: "d1", CreatedAt: 9000, UpdatedAt: 10000,
+			Tier: "draft", Category: "context",
+		},
+	}
+	for _, p := range pages {
+		if err := s.InsertPage(p); err != nil {
+			t.Fatalf("InsertPage(%s): %v", p.Name, err)
+		}
+	}
+
+	// Insert blocks — one per page.
+	blocks := []*store.Block{
+		{UUID: "block-human", PageName: "human-docs", Content: "## Setup\nHuman-written documentation.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-curated-auth", PageName: "curated/auth-patterns", Content: "## Auth\nUse OAuth2 for all services.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-curated-deploy", PageName: "curated/deploy-decisions", Content: "## Deploy\nBlue-green deployment strategy.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-validated", PageName: "validated-insight", Content: "## Gotcha\nWatch for connection pool exhaustion.", HeadingLevel: 2, Position: 0},
+		{UUID: "block-draft", PageName: "learning/draft-note", Content: "## Note\nInitial investigation notes.", HeadingLevel: 2, Position: 0},
+	}
+	for _, b := range blocks {
+		if err := s.InsertBlock(b); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", b.UUID, err)
+		}
+	}
+
+	// Insert embeddings with distinct vectors for controlled search results.
+	embeddings := []struct {
+		uuid  string
+		vec   []float32
+		chunk string
+	}{
+		{"block-human", []float32{1, 0, 0, 0, 0}, "human-docs > Setup"},
+		{"block-curated-auth", []float32{0, 1, 0, 0, 0}, "curated/auth-patterns > Auth"},
+		{"block-curated-deploy", []float32{0, 0, 1, 0, 0}, "curated/deploy-decisions > Deploy"},
+		{"block-validated", []float32{0, 0, 0, 1, 0}, "validated-insight > Gotcha"},
+		{"block-draft", []float32{0, 0, 0, 0, 1}, "learning/draft-note > Note"},
+	}
+	for _, e := range embeddings {
+		if err := s.InsertEmbedding(e.uuid, "test-model", e.vec, e.chunk); err != nil {
+			t.Fatalf("InsertEmbedding(%s): %v", e.uuid, err)
+		}
+	}
+
+	return s
+}
+
+// TestSemanticSearchFiltered_CuratedTierFilter verifies that filtering by
+// tier="curated" returns only curated knowledge store pages (FR-022, FR-024).
+func TestSemanticSearchFiltered_CuratedTierFilter(t *testing.T) {
+	s := newTestStoreWithCuratedData(t)
+	e := newMockEmbedder(true)
+	// Broad query to match all pages.
+	e.vectors["all content"] = []float32{0.4, 0.4, 0.4, 0.4, 0.4}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "all content",
+		Tier:      "curated",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Should return exactly the 2 curated pages.
+	if len(results) != 2 {
+		t.Fatalf("expected 2 curated results, got %d", len(results))
+	}
+
+	// All results must have tier=curated.
+	for i, r := range results {
+		if r.Tier != "curated" {
+			t.Errorf("results[%d] tier = %q, want %q", i, r.Tier, "curated")
+		}
+	}
+
+	// Verify the curated pages are the ones we expect.
+	pageNames := make(map[string]bool)
+	for _, r := range results {
+		pageNames[r.Page] = true
+	}
+	if !pageNames["curated/auth-patterns"] {
+		t.Error("expected curated/auth-patterns in results")
+	}
+	if !pageNames["curated/deploy-decisions"] {
+		t.Error("expected curated/deploy-decisions in results")
+	}
+}
+
+// TestSemanticSearchFiltered_AuthoredExcludesCurated verifies that filtering
+// by tier="authored" does NOT return curated content (FR-024).
+func TestSemanticSearchFiltered_AuthoredExcludesCurated(t *testing.T) {
+	s := newTestStoreWithCuratedData(t)
+	e := newMockEmbedder(true)
+	e.vectors["authored only"] = []float32{0.4, 0.4, 0.4, 0.4, 0.4}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "authored only",
+		Tier:      "authored",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Should return only the 1 authored page.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 authored result, got %d", len(results))
+	}
+
+	if results[0].Tier != "authored" {
+		t.Errorf("result tier = %q, want %q", results[0].Tier, "authored")
+	}
+	if results[0].Page != "human-docs" {
+		t.Errorf("result page = %q, want %q", results[0].Page, "human-docs")
+	}
+
+	// Verify no curated pages leaked through.
+	for _, r := range results {
+		if r.Tier == "curated" {
+			t.Errorf("curated page %q should not appear with tier=authored filter", r.Page)
+		}
+	}
+}
+
+// TestSemanticSearchFiltered_DraftExcludesCurated verifies that filtering
+// by tier="draft" does NOT return curated content.
+func TestSemanticSearchFiltered_DraftExcludesCurated(t *testing.T) {
+	s := newTestStoreWithCuratedData(t)
+	e := newMockEmbedder(true)
+	e.vectors["draft only"] = []float32{0.4, 0.4, 0.4, 0.4, 0.4}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "draft only",
+		Tier:      "draft",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Should return only the 1 draft page.
+	if len(results) != 1 {
+		t.Fatalf("expected 1 draft result, got %d", len(results))
+	}
+
+	if results[0].Tier != "draft" {
+		t.Errorf("result tier = %q, want %q", results[0].Tier, "draft")
+	}
+
+	// Verify no curated pages leaked through.
+	for _, r := range results {
+		if r.Tier == "curated" {
+			t.Errorf("curated page %q should not appear with tier=draft filter", r.Page)
+		}
+	}
+}
+
+// TestSemanticSearchFiltered_CuratedTierMetadata verifies that curated results
+// include correct tier and category metadata in the response.
+func TestSemanticSearchFiltered_CuratedTierMetadata(t *testing.T) {
+	s := newTestStoreWithCuratedData(t)
+	e := newMockEmbedder(true)
+	e.vectors["curated metadata"] = []float32{0.4, 0.4, 0.4, 0.4, 0.4}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "curated metadata",
+		Tier:      "curated",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Verify each curated result has the expected metadata.
+	for _, r := range results {
+		if r.Tier != "curated" {
+			t.Errorf("page %q tier = %q, want %q", r.Page, r.Tier, "curated")
+		}
+		if r.Category == "" {
+			t.Errorf("page %q category should not be empty for curated content", r.Page)
+		}
+		if r.CreatedAt == "" {
+			t.Errorf("page %q created_at should not be empty", r.Page)
+		}
+	}
+
+	// Verify specific categories match what was inserted.
+	catByPage := make(map[string]string)
+	for _, r := range results {
+		catByPage[r.Page] = r.Category
+	}
+	if cat, ok := catByPage["curated/auth-patterns"]; ok && cat != "pattern" {
+		t.Errorf("curated/auth-patterns category = %q, want %q", cat, "pattern")
+	}
+	if cat, ok := catByPage["curated/deploy-decisions"]; ok && cat != "decision" {
+		t.Errorf("curated/deploy-decisions category = %q, want %q", cat, "decision")
+	}
+}
+
+// TestSemanticSearchFiltered_NoTierReturnsAllIncludingCurated verifies that
+// omitting the tier filter returns all results including curated pages.
+func TestSemanticSearchFiltered_NoTierReturnsAllIncludingCurated(t *testing.T) {
+	s := newTestStoreWithCuratedData(t)
+	e := newMockEmbedder(true)
+	e.vectors["everything"] = []float32{0.4, 0.4, 0.4, 0.4, 0.4}
+
+	sem := NewSemantic(e, s)
+
+	result, _, err := sem.SemanticSearchFiltered(context.Background(), nil, types.SemanticSearchFilteredInput{
+		Query:     "everything",
+		Limit:     10,
+		Threshold: 0.0,
+	})
+	if err != nil {
+		t.Fatalf("SemanticSearchFiltered error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("SemanticSearchFiltered returned error: %s", resultText(result))
+	}
+
+	var results []types.SemanticSearchResult
+	text := resultText(result)
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("unmarshal results: %v", err)
+	}
+
+	// Without tier filter, all 5 pages should appear.
+	if len(results) != 5 {
+		t.Fatalf("expected 5 results without tier filter, got %d", len(results))
+	}
+
+	// Verify curated pages are present in unfiltered results.
+	tiers := make(map[string]int)
+	for _, r := range results {
+		tiers[r.Tier]++
+	}
+	if tiers["curated"] != 2 {
+		t.Errorf("expected 2 curated results in unfiltered query, got %d", tiers["curated"])
+	}
+	if tiers["authored"] != 1 {
+		t.Errorf("expected 1 authored result, got %d", tiers["authored"])
+	}
+	if tiers["validated"] != 1 {
+		t.Errorf("expected 1 validated result, got %d", tiers["validated"])
+	}
+	if tiers["draft"] != 1 {
+		t.Errorf("expected 1 draft result, got %d", tiers["draft"])
+	}
+}

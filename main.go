@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -20,11 +24,14 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/backend"
 	"github.com/unbound-force/dewey/client"
+	"github.com/unbound-force/dewey/curate"
 	"github.com/unbound-force/dewey/embed"
 	"github.com/unbound-force/dewey/ignore"
+	"github.com/unbound-force/dewey/llm"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/vault"
+	"gopkg.in/yaml.v3"
 )
 
 var version = "dev"
@@ -131,6 +138,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newDoctorCmd())
 	rootCmd.AddCommand(newManifestCmd())
 	rootCmd.AddCommand(newCompileCmd())
+	rootCmd.AddCommand(newCurateCmd())
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPromoteCmd())
 
@@ -304,6 +312,54 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 			}
 			logger.Info("background indexing complete", "elapsed", time.Since(indexStart))
 		}()
+	}
+
+	// Launch background curation goroutine if knowledge stores are configured
+	// and embeddings are enabled (spec 015, T031/T032). The goroutine waits
+	// for indexReady before its first run, then periodically curates each
+	// store at its configured interval. Uses TryLock on the shared indexMu
+	// to avoid blocking MCP tools — skips cycles when indexing is in progress.
+	if !noEmbeddings {
+		// Resolve vault path for config loading. If the vault path was already
+		// resolved during backend init, reuse it from srvOpts. Otherwise, resolve
+		// it here (defensive — should always be available for obsidian backend).
+		var curationVaultPath string
+		for _, opt := range srvOpts {
+			// Apply options to a temporary config to extract vaultPath.
+			var tmpCfg serverConfig
+			opt(&tmpCfg)
+			if tmpCfg.vaultPath != "" {
+				curationVaultPath = tmpCfg.vaultPath
+				break
+			}
+		}
+		if curationVaultPath != "" {
+			configPath := filepath.Join(curationVaultPath, deweyWorkspaceDir, "knowledge-stores.yaml")
+			stores, err := curate.LoadKnowledgeStoresConfig(configPath)
+			if err != nil {
+				logger.Warn("failed to load knowledge stores config, skipping background curation",
+					"path", configPath, "err", err)
+			} else if len(stores) > 0 {
+				// Extract persistent store from server options for the curation pipeline.
+				var curationStore *store.Store
+				var curationEmbedder embed.Embedder
+				for _, opt := range srvOpts {
+					var tmpCfg serverConfig
+					opt(&tmpCfg)
+					if tmpCfg.store != nil {
+						curationStore = tmpCfg.store
+					}
+					if tmpCfg.embedder != nil {
+						curationEmbedder = tmpCfg.embedder
+					}
+				}
+				if curationStore != nil {
+					go backgroundCuration(ctx, indexMu, indexReady, stores, curationStore, curationEmbedder, curationVaultPath)
+				} else {
+					logger.Debug("background curation skipped — no persistent store")
+				}
+			}
+		}
 	}
 
 	if err := runServer(ctx, srv, httpAddr); err != nil {
@@ -611,9 +667,23 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	}
 
 	// Build deferred indexing function. This performs the slow operations
-	// (indexVault, LoadExternalPages, Watch) that were previously inline.
-	// The caller runs this in a background goroutine (spec 012, T004).
+	// (reIngestLearnings, indexVault, LoadExternalPages, Watch) that were
+	// previously inline. The caller runs this in a background goroutine
+	// (spec 012, T004).
 	deferredIndex := func() error {
+		// Re-ingest orphaned learning files before vault indexing (FR-003).
+		// This recovers learnings from markdown files when graph.db has been
+		// deleted or is missing entries. Must run before indexVault so
+		// re-ingested learnings participate in backlink and search construction.
+		if persistentStore != nil {
+			count, err := reIngestLearnings(persistentStore, embedder, vp)
+			if err != nil {
+				logger.Warn("learning re-ingestion failed", "err", err)
+			} else if count > 0 {
+				logger.Info("learnings re-ingested from files", "count", count)
+			}
+		}
+
 		// Index the vault — persistent (incremental) or in-memory.
 		if err := indexVault(vc); err != nil {
 			return fmt.Errorf("index vault: %w", err)
@@ -687,6 +757,444 @@ func indexVault(vc *vault.Client) error {
 		vc.BuildBacklinks()
 	}
 	return nil
+}
+
+// backgroundCuration runs continuous curation for configured knowledge stores.
+// It waits for background indexing to complete (indexReady), then runs
+// incremental curation for each store at its configured interval.
+//
+// Design decisions:
+//   - Uses TryLock on the shared indexMu to avoid blocking MCP tools.
+//     If the mutex is held (indexing or another curation in progress),
+//     the cycle is skipped and retried at the next interval (FR-020).
+//   - Creates an OllamaSynthesizer for LLM extraction. If Ollama is
+//     unavailable, logs a warning and returns — no curation without LLM.
+//   - Errors during curation are logged but never crash the goroutine.
+//     The goroutine continues polling until context cancellation (FR-021).
+//   - Respects context cancellation for clean shutdown (FR-017).
+func backgroundCuration(
+	ctx context.Context,
+	indexMu *sync.Mutex,
+	indexReady *atomic.Bool,
+	stores []curate.StoreConfig,
+	s *store.Store,
+	embedder embed.Embedder,
+	vaultPath string,
+) {
+	logger.Info("background curation starting", "stores", len(stores))
+
+	// Wait for background indexing to complete before first curation run.
+	// Poll every 500ms to check indexReady, respecting context cancellation.
+	for !indexReady.Load() {
+		select {
+		case <-ctx.Done():
+			logger.Info("background curation cancelled while waiting for index")
+			return
+		case <-time.After(500 * time.Millisecond):
+			// Continue polling.
+		}
+	}
+
+	// Create an OllamaSynthesizer for background curation.
+	// If Ollama is unavailable, skip background curation entirely —
+	// curation requires LLM synthesis to extract knowledge.
+	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
+	if embedEndpoint == "" {
+		embedEndpoint = "http://localhost:11434"
+	}
+	genModel := os.Getenv("DEWEY_GENERATION_MODEL")
+	if genModel == "" {
+		genModel = "llama3.2:3b"
+	}
+
+	synth := llm.NewOllamaSynthesizer(embedEndpoint, genModel)
+	if !synth.Available() {
+		logger.Info("background curation skipped — generation model not available",
+			"model", genModel, "endpoint", embedEndpoint)
+		return
+	}
+
+	logger.Info("background curation ready", "model", genModel)
+
+	// Create per-store tickers with configurable intervals (FR-018).
+	// Each store runs on its own schedule.
+	for _, storeCfg := range stores {
+		if len(storeCfg.Sources) == 0 {
+			logger.Debug("background curation skipping store with no sources",
+				"store", storeCfg.Name)
+			continue
+		}
+
+		interval, err := curate.ParseCurationInterval(storeCfg.CurationInterval)
+		if err != nil {
+			logger.Warn("invalid curation interval, using default",
+				"store", storeCfg.Name, "interval", storeCfg.CurationInterval, "err", err)
+			interval = 10 * time.Minute
+		}
+
+		// Launch a goroutine per store for independent scheduling.
+		go backgroundCurateStore(ctx, indexMu, storeCfg, interval, s, synth, embedder, vaultPath)
+	}
+}
+
+// backgroundCurateStore runs periodic incremental curation for a single
+// knowledge store. It uses a ticker-based loop with TryLock to avoid
+// blocking MCP tools during curation.
+//
+// Design decision: Separated from backgroundCuration for Single
+// Responsibility — each store runs independently with its own interval.
+// Errors are logged but never crash the goroutine (FR-021).
+func backgroundCurateStore(
+	ctx context.Context,
+	indexMu *sync.Mutex,
+	storeCfg curate.StoreConfig,
+	interval time.Duration,
+	s *store.Store,
+	synth llm.Synthesizer,
+	embedder embed.Embedder,
+	vaultPath string,
+) {
+	logger.Info("background curation started for store",
+		"store", storeCfg.Name, "interval", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("background curation stopped for store",
+				"store", storeCfg.Name)
+			return
+		case <-ticker.C:
+			// TryLock: skip this cycle if the mutex is held (indexing or
+			// another curation in progress). This prevents blocking MCP
+			// tools — the curation will retry at the next interval (FR-020).
+			if !indexMu.TryLock() {
+				logger.Debug("background curation skipped — mutex held",
+					"store", storeCfg.Name)
+				continue
+			}
+
+			pipeline := curate.NewPipeline(s, synth, embedder, vaultPath)
+			filesCreated, err := pipeline.CurateStoreIncremental(ctx, storeCfg)
+			indexMu.Unlock()
+
+			if err != nil {
+				logger.Warn("background curation error",
+					"store", storeCfg.Name, "err", err)
+				continue
+			}
+
+			if filesCreated > 0 {
+				// Auto-index curated files so they're immediately searchable
+				// (FR-027, FR-028). Re-acquire mutex for indexing since we
+				// released it after curation.
+				if indexMu.TryLock() {
+					indexed := autoIndexKnowledgeStore(s, embedder, storeCfg, vaultPath)
+					indexMu.Unlock()
+					logger.Info("background curation complete",
+						"store", storeCfg.Name, "files_created", filesCreated, "indexed", indexed)
+				} else {
+					logger.Info("background curation complete (auto-index skipped — mutex held)",
+						"store", storeCfg.Name, "files_created", filesCreated)
+				}
+			} else {
+				logger.Debug("background curation — no new content",
+					"store", storeCfg.Name)
+			}
+		}
+	}
+}
+
+// autoIndexKnowledgeStore reads curated markdown files from a knowledge
+// store directory and persists them into the SQLite store with the source
+// ID "knowledge-{store-name}". This makes curated content immediately
+// searchable via semantic_search and other MCP tools (FR-027, FR-028).
+//
+// Design decision: Extracted as a standalone function for use by both the
+// MCP tool (tools/curate.go) and background curation (main.go). Follows
+// the same PersistBlocks/GenerateEmbeddings pipeline as store_learning.
+func autoIndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string) int {
+	storePath := curate.ResolveStorePath(cfg, vaultPath)
+	sourceID := "knowledge-" + cfg.Name
+
+	entries, err := os.ReadDir(storePath)
+	if err != nil {
+		logger.Warn("failed to read knowledge store for auto-indexing",
+			"store", cfg.Name, "path", storePath, "err", err)
+		return 0
+	}
+
+	indexed := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+		// Skip index and state files.
+		if entry.Name() == "_index.md" || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		filePath := filepath.Join(storePath, entry.Name())
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			logger.Warn("failed to read knowledge file for indexing",
+				"path", filePath, "err", err)
+			continue
+		}
+
+		// Compute content hash for deduplication.
+		hash := sha256.Sum256(content)
+		contentHash := fmt.Sprintf("%x", hash[:8])
+
+		// Page name follows the pattern: knowledge/{store-name}/{filename-without-ext}
+		baseName := strings.TrimSuffix(entry.Name(), ".md")
+		pageName := fmt.Sprintf("knowledge/%s/%s", cfg.Name, baseName)
+
+		// Check if page already exists and content hasn't changed.
+		existing, err := s.GetPage(pageName)
+		if err != nil {
+			logger.Warn("failed to check existing page",
+				"page", pageName, "err", err)
+			continue
+		}
+
+		if existing != nil {
+			if existing.ContentHash == contentHash {
+				// Content unchanged — skip re-indexing.
+				continue
+			}
+			// Content changed — delete old blocks and re-index.
+			if err := s.DeleteBlocksByPage(pageName); err != nil {
+				logger.Warn("failed to delete old blocks",
+					"page", pageName, "err", err)
+			}
+			// Update existing page.
+			existing.ContentHash = contentHash
+			existing.Tier = "curated"
+			existing.SourceID = sourceID
+			if err := s.UpdatePage(existing); err != nil {
+				logger.Warn("failed to update page",
+					"page", pageName, "err", err)
+				continue
+			}
+		} else {
+			// Insert new page.
+			page := &store.Page{
+				Name:         pageName,
+				OriginalName: baseName,
+				SourceID:     sourceID,
+				SourceDocID:  entry.Name(),
+				ContentHash:  contentHash,
+				Tier:         "curated",
+			}
+			if err := s.InsertPage(page); err != nil {
+				logger.Warn("failed to insert knowledge page",
+					"page", pageName, "err", err)
+				continue
+			}
+		}
+
+		// Parse the document into blocks.
+		docID := fmt.Sprintf("%s-%s", sourceID, baseName)
+		_, blocks := vault.ParseDocument(docID, string(content))
+
+		// Persist blocks.
+		if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
+			logger.Warn("failed to persist knowledge blocks",
+				"page", pageName, "err", err)
+			continue
+		}
+
+		// Generate embeddings if available.
+		if embedder != nil && embedder.Available() {
+			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil)
+		}
+
+		indexed++
+	}
+
+	return indexed
+}
+
+// learningFrontmatter holds the parsed YAML frontmatter fields from a
+// learning markdown file. Used by reIngestLearnings to recover metadata
+// from file-backed learnings when the SQLite store is missing entries.
+type learningFrontmatter struct {
+	Tag       string `yaml:"tag"`
+	Category  string `yaml:"category"`
+	CreatedAt string `yaml:"created_at"`
+	Identity  string `yaml:"identity"`
+	Tier      string `yaml:"tier"`
+}
+
+// reIngestLearnings scans the learnings directory for markdown files and
+// re-ingests any that are missing from the store. This recovers learnings
+// after graph.db deletion — the markdown files serve as a durable backup.
+//
+// Returns the number of learnings re-ingested and any error encountered
+// during scanning (individual file errors are logged but don't stop
+// processing).
+//
+// Design decision: Extracted as a standalone function for testability
+// (Dependency Inversion — accepts store and embedder as parameters rather
+// than accessing globals). Called during startup after the store is opened
+// but before background indexing starts.
+func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string) (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	entries, err := os.ReadDir(learningsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No learnings directory — nothing to re-ingest.
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read learnings directory: %w", err)
+	}
+
+	reIngested := 0
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		filePath := filepath.Join(learningsDir, entry.Name())
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			logger.Warn("failed to read learning file", "path", filePath, "err", err)
+			continue
+		}
+
+		// Parse YAML frontmatter: split on "---" delimiters.
+		fm, body, err := parseLearningFrontmatter(string(content))
+		if err != nil {
+			logger.Warn("failed to parse learning frontmatter", "path", filePath, "err", err)
+			continue
+		}
+
+		if fm.Identity == "" {
+			logger.Warn("learning file missing identity", "path", filePath)
+			continue
+		}
+
+		// Check if this learning already exists in the store.
+		pageName := fmt.Sprintf("learning/%s", fm.Identity)
+		existing, err := s.GetPage(pageName)
+		if err != nil {
+			logger.Warn("failed to check existing page", "page", pageName, "err", err)
+			continue
+		}
+		if existing != nil {
+			// Already in the store — skip re-ingestion.
+			continue
+		}
+
+		// Re-ingest: insert page, persist blocks, generate embeddings.
+		docID := fmt.Sprintf("learning-%s", fm.Identity)
+
+		// Build properties JSON preserving original metadata.
+		propsMap := map[string]string{
+			"tag": fm.Tag,
+		}
+		if fm.CreatedAt != "" {
+			propsMap["created_at"] = fm.CreatedAt
+		}
+		if fm.Category != "" {
+			propsMap["category"] = fm.Category
+		}
+		propsJSON, err := json.Marshal(propsMap)
+		if err != nil {
+			logger.Warn("failed to marshal properties", "identity", fm.Identity, "err", err)
+			continue
+		}
+
+		// Parse created_at to set the page timestamp.
+		var createdAtMs int64
+		if fm.CreatedAt != "" {
+			if t, err := time.Parse(time.RFC3339, fm.CreatedAt); err == nil {
+				createdAtMs = t.UnixMilli()
+			}
+		}
+
+		// Compute content hash for deduplication.
+		hash := sha256.Sum256([]byte(body))
+		contentHash := fmt.Sprintf("%x", hash[:8])
+
+		tier := fm.Tier
+		if tier == "" {
+			tier = "draft"
+		}
+
+		page := &store.Page{
+			Name:         pageName,
+			OriginalName: pageName,
+			SourceID:     "learning",
+			SourceDocID:  docID,
+			Properties:   string(propsJSON),
+			ContentHash:  contentHash,
+			Tier:         tier,
+			Category:     fm.Category,
+			CreatedAt:    createdAtMs,
+		}
+		if err := s.InsertPage(page); err != nil {
+			logger.Warn("failed to re-ingest learning page", "identity", fm.Identity, "err", err)
+			continue
+		}
+
+		// Parse the learning body into blocks.
+		_, blocks := vault.ParseDocument(docID, body)
+
+		// Persist blocks.
+		if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
+			logger.Warn("failed to persist re-ingested blocks", "identity", fm.Identity, "err", err)
+			continue
+		}
+
+		// Generate embeddings if available.
+		if embedder != nil && embedder.Available() {
+			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil)
+		}
+
+		logger.Info("re-ingested learning from file", "identity", fm.Identity)
+		reIngested++
+	}
+
+	return reIngested, nil
+}
+
+// parseLearningFrontmatter extracts YAML frontmatter and body from a
+// learning markdown file. The file format is:
+//
+//	---
+//	tag: value
+//	...
+//	---
+//
+//	body text
+//
+// Returns the parsed frontmatter, the body text (without frontmatter),
+// and any parsing error.
+func parseLearningFrontmatter(content string) (learningFrontmatter, string, error) {
+	var fm learningFrontmatter
+
+	// Split on "---" delimiters. Expected format: ["", frontmatter, body].
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		return fm, content, fmt.Errorf("no YAML frontmatter found")
+	}
+
+	// Parse the YAML frontmatter section.
+	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
+		return fm, content, fmt.Errorf("parse YAML frontmatter: %w", err)
+	}
+
+	// The body is everything after the closing "---", trimmed of leading whitespace.
+	body := strings.TrimSpace(parts[2])
+	return fm, body, nil
 }
 
 // initLogseqBackend initializes the Logseq backend by creating a client

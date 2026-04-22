@@ -15,6 +15,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	_ "github.com/unbound-force/dewey/chunker" // Register Go chunker for code source tests.
+	"github.com/unbound-force/dewey/curate"
 	"github.com/unbound-force/dewey/llm"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
@@ -763,7 +764,7 @@ func TestEndToEnd_StoreCompileSearch(t *testing.T) {
 
 	// Step 3: Store 3 learnings via the tools/learning handler.
 	// Two "auth" decisions (temporal contradiction) and one "performance" pattern.
-	learning := tools.NewLearning(nil, s) // nil embedder — no Ollama in tests.
+	learning := tools.NewLearning(nil, s, "") // nil embedder — no Ollama in tests.
 
 	// Learning 1: auth decision — "Use Option A"
 	result1, _, err := learning.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -916,6 +917,242 @@ func TestEndToEnd_StoreCompileSearch(t *testing.T) {
 	}
 	if len(learningPages) != 3 {
 		t.Errorf("expected 3 learning pages after compilation, got %d", len(learningPages))
+	}
+}
+
+// TestEndToEnd_CurateKnowledgeStore verifies the full curated knowledge store
+// pipeline: create source pages → configure a knowledge store → run curation
+// → verify knowledge files created with correct frontmatter → verify pages
+// in store with source_id=knowledge-{name} and tier=curated → verify
+// curation checkpoint exists.
+//
+// This validates the end-to-end flow for spec 015-curated-knowledge-stores (T039).
+//
+// PARALLEL SAFETY: This test does NOT use os.Chdir or mutate process-global
+// state. All paths are relative to t.TempDir(). It can run in parallel.
+func TestEndToEnd_CurateKnowledgeStore(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Step 1: Create .uf/dewey/ directory structure.
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+
+	// Step 2: Open store and create source pages simulating indexed meeting notes.
+	dbPath := filepath.Join(deweyDir, "graph.db")
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Insert source pages with blocks (simulating what dewey index creates).
+	sourcePages := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "disk-meetings/sprint-planning-2026-04-01",
+			content: "# Sprint Planning\n\nTeam decided to use OAuth2 for authentication.\nRationale: supports SSO and is industry standard.",
+		},
+		{
+			name:    "disk-meetings/architecture-review-2026-04-05",
+			content: "# Architecture Review\n\nAgreed to use connection pooling for database access.\nThis reduces latency under load by 40%.",
+		},
+	}
+
+	for _, sp := range sourcePages {
+		if err := s.InsertPage(&store.Page{
+			Name:        sp.name,
+			SourceID:    "disk-meetings",
+			SourceDocID: sp.name,
+			ContentHash: fmt.Sprintf("hash-%s", sp.name),
+			Tier:        "authored",
+		}); err != nil {
+			t.Fatalf("insert page %q: %v", sp.name, err)
+		}
+
+		// Parse and persist blocks.
+		_, blocks := vault.ParseDocument(sp.name, sp.content)
+		if err := vault.PersistBlocks(s, sp.name, blocks, sql.NullString{}, 0); err != nil {
+			t.Fatalf("persist blocks for %q: %v", sp.name, err)
+		}
+	}
+
+	// Step 3: Create knowledge-stores.yaml with a store mapping to the source.
+	ksContent := `stores:
+  - name: team-knowledge
+    sources:
+      - disk-meetings
+    curation_interval: "10m"
+`
+	if err := os.WriteFile(filepath.Join(deweyDir, "knowledge-stores.yaml"), []byte(ksContent), 0o644); err != nil {
+		t.Fatalf("write knowledge-stores.yaml: %v", err)
+	}
+
+	// Step 4: Create a NoopSynthesizer that returns mock extracted knowledge items.
+	mockResponse := `[
+  {
+    "tag": "authentication",
+    "category": "decision",
+    "confidence": "high",
+    "quality_flags": [],
+    "sources": [{"source_id": "disk-meetings", "document": "sprint-planning-2026-04-01", "excerpt": "Team decided to use OAuth2"}],
+    "content": "Use OAuth2 for authentication. Supports SSO and is industry standard."
+  },
+  {
+    "tag": "database-performance",
+    "category": "pattern",
+    "confidence": "medium",
+    "quality_flags": [{"type": "implied_assumption", "detail": "Assumes current connection model is not pooled"}],
+    "sources": [{"source_id": "disk-meetings", "document": "architecture-review-2026-04-05", "excerpt": "connection pooling reduces latency by 40%"}],
+    "content": "Use connection pooling for database access to reduce latency under load by 40%."
+  }
+]`
+	synth := &llm.NoopSynthesizer{
+		Response: mockResponse,
+		Avail:    true,
+		Model:    "test-noop",
+	}
+
+	// Step 5: Create a Pipeline and run CurateStore.
+	pipeline := curate.NewPipeline(s, synth, nil, tmpDir)
+
+	storeCfg := curate.StoreConfig{
+		Name:             "team-knowledge",
+		Sources:          []string{"disk-meetings"},
+		CurationInterval: "10m",
+	}
+
+	filesCreated, err := pipeline.CurateStore(context.Background(), storeCfg)
+	if err != nil {
+		t.Fatalf("CurateStore error: %v", err)
+	}
+	if filesCreated != 2 {
+		t.Errorf("CurateStore created %d files, want 2", filesCreated)
+	}
+
+	// Step 6: Verify knowledge files exist in the store's output directory.
+	storePath := curate.ResolveStorePath(storeCfg, tmpDir)
+
+	// 6a: Check authentication knowledge file.
+	authPath := filepath.Join(storePath, "authentication-1.md")
+	authData, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatalf("read authentication-1.md: %v", err)
+	}
+	authContent := string(authData)
+	if !strings.Contains(authContent, "tag: authentication") {
+		t.Error("authentication-1.md missing 'tag: authentication' in frontmatter")
+	}
+	if !strings.Contains(authContent, "category: decision") {
+		t.Error("authentication-1.md missing 'category: decision' in frontmatter")
+	}
+	if !strings.Contains(authContent, "confidence: high") {
+		t.Error("authentication-1.md missing 'confidence: high' in frontmatter")
+	}
+	if !strings.Contains(authContent, "tier: curated") {
+		t.Error("authentication-1.md missing 'tier: curated' in frontmatter")
+	}
+	if !strings.Contains(authContent, "OAuth2") {
+		t.Error("authentication-1.md missing OAuth2 content")
+	}
+
+	// 6b: Check database-performance knowledge file.
+	dbPerfPath := filepath.Join(storePath, "database-performance-2.md")
+	dbPerfData, err := os.ReadFile(dbPerfPath)
+	if err != nil {
+		t.Fatalf("read database-performance-2.md: %v", err)
+	}
+	dbPerfContent := string(dbPerfData)
+	if !strings.Contains(dbPerfContent, "tag: database-performance") {
+		t.Error("database-performance-2.md missing 'tag: database-performance' in frontmatter")
+	}
+	if !strings.Contains(dbPerfContent, "category: pattern") {
+		t.Error("database-performance-2.md missing 'category: pattern' in frontmatter")
+	}
+	if !strings.Contains(dbPerfContent, "implied_assumption") {
+		t.Error("database-performance-2.md missing quality flag 'implied_assumption'")
+	}
+
+	// 6c: Check _index.md exists.
+	indexPath := filepath.Join(storePath, "_index.md")
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		t.Error("_index.md not created in knowledge store directory")
+	}
+
+	// Step 7: Verify curation checkpoint file exists.
+	statePath := filepath.Join(storePath, ".curation-state.json")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read .curation-state.json: %v", err)
+	}
+	stateContent := string(stateData)
+	if !strings.Contains(stateContent, "last_curated_at") {
+		t.Error(".curation-state.json missing 'last_curated_at' field")
+	}
+	if !strings.Contains(stateContent, "disk-meetings") {
+		t.Error(".curation-state.json missing 'disk-meetings' source checkpoint")
+	}
+
+	// Step 8: Verify curation state round-trips correctly.
+	state, err := curate.LoadCurationState(storePath)
+	if err != nil {
+		t.Fatalf("LoadCurationState: %v", err)
+	}
+	if state.LastCuratedAt.IsZero() {
+		t.Error("curation state has zero LastCuratedAt")
+	}
+	if _, ok := state.SourceCheckpoints["disk-meetings"]; !ok {
+		t.Error("curation state missing 'disk-meetings' source checkpoint")
+	}
+
+	// Step 9: Now auto-index the curated files into the store (simulating
+	// what the curate MCP tool does after curation). We use the Curate tool
+	// handler to verify the full flow including auto-indexing.
+	// Use Incremental=false to force re-processing (the first curation
+	// already set a checkpoint, so incremental mode would skip all docs).
+	forceIncremental := false
+	curateTool := tools.NewCurate(s, nil, synth, tmpDir, nil)
+	curateResult, _, err := curateTool.Curate(context.Background(), nil, types.CurateInput{
+		Store:       "team-knowledge",
+		Incremental: &forceIncremental,
+	})
+	if err != nil {
+		t.Fatalf("Curate tool error: %v", err)
+	}
+	if curateResult.IsError {
+		t.Fatalf("Curate tool returned error: %s", extractText(curateResult))
+	}
+
+	// Step 10: Verify knowledge pages are in the store with correct source_id and tier.
+	knowledgePages, err := s.ListPagesBySource("knowledge-team-knowledge")
+	if err != nil {
+		t.Fatalf("ListPagesBySource(knowledge-team-knowledge): %v", err)
+	}
+	if len(knowledgePages) == 0 {
+		t.Error("expected knowledge pages with source_id 'knowledge-team-knowledge', got 0")
+	}
+
+	for _, kp := range knowledgePages {
+		if kp.Tier != "curated" {
+			t.Errorf("knowledge page %q tier = %q, want %q", kp.Name, kp.Tier, "curated")
+		}
+		if kp.SourceID != "knowledge-team-knowledge" {
+			t.Errorf("knowledge page %q source_id = %q, want %q", kp.Name, kp.SourceID, "knowledge-team-knowledge")
+		}
+	}
+
+	// Step 11: Verify knowledge pages have blocks (searchable content).
+	for _, kp := range knowledgePages {
+		blocks, err := s.GetBlocksByPage(kp.Name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q): %v", kp.Name, err)
+		}
+		if len(blocks) == 0 {
+			t.Errorf("knowledge page %q has 0 blocks — content was not indexed", kp.Name)
+		}
 	}
 }
 

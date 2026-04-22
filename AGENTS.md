@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 48 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, and learning categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, and trust tiers.
+Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 49 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, learning, and curate categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, and trust tiers.
 
 - **Language**: Go 1.25+
 - **Module**: `github.com/unbound-force/dewey`
@@ -285,8 +285,9 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey journal` | Append a block to a Logseq journal page |
 | `dewey add` | Append a block to a named Logseq page |
 | `dewey compile` | Synthesize stored learnings into compiled knowledge articles |
-| `dewey lint` | Scan the knowledge base for quality issues (stale decisions, embedding gaps, contradictions) |
+| `dewey lint` | Scan the knowledge base for quality issues (stale decisions, embedding gaps, contradictions, knowledge store quality) |
 | `dewey promote` | Promote a page from `draft` tier to `validated` |
+| `dewey curate` | Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores |
 
 ### Content Source Types
 
@@ -305,13 +306,13 @@ MCP server + CLI tool with flat package layout:
 
 ```text
 main.go              # Entry point, Cobra root command, serve logic
-cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote)
-server.go            # MCP server setup, 48 tool registrations
+cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote, curate)
+server.go            # MCP server setup, 49 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
 vault/               # Obsidian vault backend (file parsing, indexing, watcher, persistence)
 vault/parse_export.go # Exported parsing and persistence functions (ParseDocument, PersistBlocks, PersistLinks, GenerateEmbeddings)
-tools/               # MCP tool implementations (navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic, compile, lint, promote)
+tools/               # MCP tool implementations (navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic, compile, lint, promote, curate)
 types/               # Shared types (PageEntity, BlockEntity, tool inputs, semantic search types)
 llm/                 # LLM synthesis interface (Synthesizer, OllamaSynthesizer, NoopSynthesizer for tests)
 parser/              # Content parser (wikilinks, tags, properties)
@@ -320,6 +321,7 @@ store/               # SQLite persistence layer (pages, blocks, links, embedding
 embed/               # Embedding generation (Ollama client, chunker)
 source/              # Pluggable content sources (disk, GitHub, web crawl, code, manager)
 chunker/             # Language-aware source code parsing (Chunker interface, Go implementation, registry)
+curate/              # Knowledge store configuration parsing + curation pipeline (config, extraction, quality analysis)
 ```
 
 ### Key Patterns
@@ -329,7 +331,7 @@ chunker/             # Language-aware source code parsing (Chunker interface, Go
 - **Graceful degradation**: Semantic search tools return clear error messages when Ollama is unavailable. All keyword-based tools continue to work.
 - **Cobra CLI**: Root command doubles as `serve` for backward compatibility.
 - **charmbracelet/log**: Structured logging throughout. No `fmt.Fprintf` to stderr.
-- **Trust tiers**: Pages have a `tier` field (`authored`, `draft`, `validated`) and optional `category` field for knowledge provenance tracking (013-knowledge-compile).
+- **Trust tiers**: Pages have a `tier` field (`authored`, `curated`, `validated`, `draft`) and optional `category` field for knowledge provenance tracking (013-knowledge-compile, 015-curated-knowledge-stores).
 - **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
 - **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart).
 
@@ -350,10 +352,45 @@ Backward compatibility: the old `tags` (plural, comma-separated) field is still 
 | Tier | Source | Description |
 |------|--------|-------------|
 | `authored` | disk, GitHub, web, code sources | Human-written content. Highest trust. Default for all indexed sources. |
-| `draft` | `store_learning`, `dewey compile` | Agent-generated content. Unreviewed. Default for learnings and compiled articles. |
+| `curated` | `dewey curate`, knowledge stores | Machine-extracted knowledge from indexed sources. LLM-curated with quality flags and confidence scores. |
 | `validated` | `dewey promote` | Agent content promoted by human review. Middle trust. |
+| `draft` | `store_learning`, `dewey compile` | Agent-generated content. Unreviewed. Default for learnings and compiled articles. |
 
 Filter by tier: `semantic_search_filtered(query: "auth", tier: "authored")` returns only human-written content.
+Filter by tier: `semantic_search_filtered(query: "auth", tier: "curated")` returns only knowledge store content.
+
+### Knowledge Stores
+
+Knowledge stores are named collections of curated knowledge extracted from indexed sources. Configured in `.uf/dewey/knowledge-stores.yaml`:
+
+```yaml
+stores:
+  - name: team-knowledge
+    sources:
+      - disk-meetings
+      - github-org
+    path: .uf/dewey/knowledge/team-knowledge  # default
+    curation_interval: "10m"                   # default
+    curate_on_index: false                     # default
+```
+
+- **`name`**: Unique identifier for the store
+- **`sources`**: List of source IDs from `sources.yaml` to curate from
+- **`path`**: Output directory for curated markdown files (defaults to `.uf/dewey/knowledge/{name}`)
+- **`curation_interval`**: How often background curation runs (default: `10m`)
+- **`curate_on_index`**: Whether to curate automatically after indexing
+
+The curation pipeline uses an LLM (via Ollama) to extract structured knowledge items (decisions, patterns, gotchas, context, references) from indexed content. Each item includes confidence scoring (`high`/`medium`/`low`/`flagged`) and quality flags (`missing_rationale`, `implied_assumption`, `incongruent`, `unsupported_claim`).
+
+Curated files are automatically indexed as a `knowledge-{store-name}` source with `tier: "curated"`, making them immediately searchable via `semantic_search` and other MCP tools.
+
+### File-Backed Learnings
+
+Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{seq}.md`. This ensures learnings survive `graph.db` deletion — on startup, orphaned markdown files are re-ingested automatically.
+
+### Background Curation
+
+During `dewey serve`, a background goroutine periodically checks for new indexed content and curates incrementally. The curation interval is configurable per store. Background curation shares a mutex with indexing to prevent concurrent operations.
 
 ## Coding Conventions
 
@@ -467,6 +504,7 @@ specs/
   002-quality-ratchets/        # Gaze CI, CRAPload reduction, contract coverage (In Progress)
   010-code-source-index/       # Code source indexing, Go chunker, manifest generation (In Progress)
   013-knowledge-compile/       # Knowledge compilation, temporal intelligence, linting, trust tiers (Complete)
+  015-curated-knowledge-stores/ # File-backed learnings, curation pipeline, knowledge stores, curated tier (In Progress)
 ```
 
 ## Active Technologies
@@ -490,8 +528,11 @@ specs/
 - SQLite schema v1→v2: `pages` table gains `tier TEXT DEFAULT 'authored'` and `category TEXT` columns + `idx_pages_tier` index. New `llm/` package for LLM synthesis interface. (013-knowledge-compile)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
+- Go 1.25 (per `go.mod`) + `gopkg.in/yaml.v3` (knowledge store config parsing), `github.com/unbound-force/dewey/llm` (LLM synthesis for curation), `github.com/unbound-force/dewey/curate` (new package — config parsing + curation pipeline), `github.com/spf13/cobra` (CLI — `dewey curate` command), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — `curate` tool) (015-curated-knowledge-stores)
+- N/A (no schema changes — `curated` is a new value in the existing `tier TEXT` column. File-backed learnings use filesystem, not new tables) (015-curated-knowledge-stores)
 
 ## Recent Changes
+- 015-curated-knowledge-stores: Added `curate/` package (config parsing + curation pipeline), `dewey curate` CLI command, `curate` MCP tool, file-backed learnings (`.uf/dewey/learnings/`), `curated` trust tier, knowledge stores (`.uf/dewey/knowledge-stores.yaml`), background curation goroutine, lint knowledge store quality metrics
 - 012-background-index: Added Go 1.25 (per `go.mod`) + `sync/atomic` (readiness flag), `sync` (shared mutex)
 - 002-quality-ratchets: Added Go 1.25 (per `go.mod`)
 - 001-core-implementation: Added Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging)

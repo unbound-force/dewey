@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/unbound-force/dewey/curate"
 	"github.com/unbound-force/dewey/embed"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
@@ -45,18 +47,21 @@ type Finding struct {
 //
 // Design decision: The embedder is optional — when nil, the contradiction
 // check is skipped (invariant 6). This enables lint to run without Ollama
-// while still providing value from the other 3 checks.
+// while still providing value from the other 3 checks. The vaultPath is
+// optional — when empty, knowledge store quality checks are skipped.
 type Lint struct {
-	store    *store.Store
-	embedder embed.Embedder
+	store     *store.Store
+	embedder  embed.Embedder
+	vaultPath string
 }
 
-// NewLint creates a new Lint tool handler with the given store and embedder.
-// The store must be non-nil for the tool to function; a clear error is
-// returned at call time if it is nil (invariant 7). The embedder may be
-// nil — contradiction checking is skipped when unavailable.
-func NewLint(s *store.Store, e embed.Embedder) *Lint {
-	return &Lint{store: s, embedder: e}
+// NewLint creates a new Lint tool handler with the given store, embedder,
+// and vault path. The store must be non-nil for the tool to function; a
+// clear error is returned at call time if it is nil (invariant 7). The
+// embedder may be nil — contradiction checking is skipped when unavailable.
+// The vaultPath may be empty — knowledge store quality checks are skipped.
+func NewLint(s *store.Store, e embed.Embedder, vaultPath string) *Lint {
+	return &Lint{store: s, embedder: e, vaultPath: vaultPath}
 }
 
 // Lint handles the dewey_lint MCP tool. Scans the index for knowledge
@@ -113,11 +118,29 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		allFindings = append(allFindings, contradictionFindings...)
 	}
 
+	// Check 5: Knowledge store quality metrics (requires vaultPath — FR-025).
+	knowledgeQualityFindings, knowledgeStoreSummaries, err := l.checkKnowledgeQuality()
+	if err != nil {
+		lintLogger.Warn("knowledge quality check failed", "err", err)
+	} else {
+		allFindings = append(allFindings, knowledgeQualityFindings...)
+	}
+
+	// Check 6: Stale knowledge stores (requires vaultPath — FR-026).
+	staleKnowledgeFindings, err := l.checkStaleKnowledgeStores()
+	if err != nil {
+		lintLogger.Warn("stale knowledge store check failed", "err", err)
+	} else {
+		allFindings = append(allFindings, staleKnowledgeFindings...)
+	}
+
 	// Count findings by type for the summary.
 	staleCount := 0
 	uncompiledCount := 0
 	gapCount := 0
 	contradictionCount := 0
+	knowledgeQualityCount := 0
+	staleKnowledgeCount := 0
 	for _, f := range allFindings {
 		switch f.Type {
 		case "stale_decision":
@@ -128,6 +151,10 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 			gapCount++
 		case "contradiction":
 			contradictionCount++
+		case "knowledge_quality":
+			knowledgeQualityCount++
+		case "stale_knowledge":
+			staleKnowledgeCount++
 		}
 	}
 	totalIssues := len(allFindings)
@@ -157,15 +184,28 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		}
 	}
 
+	summary := map[string]any{
+		"stale_decisions":      staleCount,
+		"uncompiled_learnings": uncompiledCount,
+		"embedding_gaps":       gapCount,
+		"contradictions":       contradictionCount,
+		"total_issues":         totalIssues,
+	}
+
+	// Add knowledge store metrics to summary when stores are configured (FR-025).
+	if knowledgeQualityCount > 0 || len(knowledgeStoreSummaries) > 0 {
+		summary["knowledge_quality_issues"] = knowledgeQualityCount
+	}
+	if staleKnowledgeCount > 0 {
+		summary["stale_knowledge_stores"] = staleKnowledgeCount
+	}
+	if len(knowledgeStoreSummaries) > 0 {
+		summary["knowledge_stores"] = knowledgeStoreSummaries
+	}
+
 	result := map[string]any{
-		"status": status,
-		"summary": map[string]any{
-			"stale_decisions":      staleCount,
-			"uncompiled_learnings": uncompiledCount,
-			"embedding_gaps":       gapCount,
-			"contradictions":       contradictionCount,
-			"total_issues":         totalIssues,
-		},
+		"status":   status,
+		"summary":  summary,
 		"findings": allFindings,
 		"message":  message,
 	}
@@ -182,6 +222,8 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		"uncompiled", uncompiledCount,
 		"gaps", gapCount,
 		"contradictions", contradictionCount,
+		"knowledge_quality", knowledgeQualityCount,
+		"stale_knowledge", staleKnowledgeCount,
 		"fixed", fixedEmbeddings,
 	)
 
@@ -431,6 +473,333 @@ func extractTagFromProperties(p *store.Page) string {
 
 	tag, _ := props["tag"].(string)
 	return tag
+}
+
+// knowledgeStoreSummary holds per-store metrics for the lint report.
+type knowledgeStoreSummary struct {
+	Name             string         `json:"name"`
+	FileCount        int            `json:"file_count"`
+	ConfidenceCounts map[string]int `json:"confidence_counts"`
+	QualityFlagTypes map[string]int `json:"quality_flag_types"`
+}
+
+// knowledgeFrontmatter holds the parsed YAML frontmatter from a curated
+// knowledge file. Used by lint to extract confidence and quality flags.
+type knowledgeFrontmatter struct {
+	Tag          string `yaml:"tag"`
+	Category     string `yaml:"category"`
+	Confidence   string `yaml:"confidence"`
+	Tier         string `yaml:"tier"`
+	QualityFlags []struct {
+		Type string `yaml:"type"`
+	} `yaml:"quality_flags"`
+}
+
+// checkKnowledgeQuality scans knowledge store directories for curated files,
+// parses frontmatter to count confidence levels and quality flag types, and
+// reports findings for low-confidence or flagged content (FR-025).
+//
+// Returns findings, per-store summaries, and any error. When no knowledge
+// stores are configured or vaultPath is empty, returns (nil, nil, nil).
+func (l *Lint) checkKnowledgeQuality() ([]Finding, []knowledgeStoreSummary, error) {
+	if l.vaultPath == "" {
+		return nil, nil, nil
+	}
+
+	deweyDir := filepath.Join(l.vaultPath, deweyWorkspaceDir)
+	ksPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+	stores, err := curate.LoadKnowledgeStoresConfig(ksPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load knowledge stores config: %w", err)
+	}
+	if len(stores) == 0 {
+		return nil, nil, nil
+	}
+
+	var findings []Finding
+	var summaries []knowledgeStoreSummary
+
+	for _, cfg := range stores {
+		storePath := curate.ResolveStorePath(cfg, l.vaultPath)
+
+		entries, err := os.ReadDir(storePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Store directory doesn't exist yet — no curated files.
+				continue
+			}
+			lintLogger.Warn("failed to read knowledge store directory",
+				"store", cfg.Name, "path", storePath, "err", err)
+			continue
+		}
+
+		summary := knowledgeStoreSummary{
+			Name:             cfg.Name,
+			ConfidenceCounts: make(map[string]int),
+			QualityFlagTypes: make(map[string]int),
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+				continue
+			}
+			// Skip index and state files.
+			if entry.Name() == "_index.md" {
+				continue
+			}
+
+			filePath := filepath.Join(storePath, entry.Name())
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				lintLogger.Warn("failed to read knowledge file",
+					"path", filePath, "err", err)
+				continue
+			}
+
+			fm, err := parseKnowledgeFrontmatter(string(content))
+			if err != nil {
+				continue
+			}
+
+			summary.FileCount++
+
+			// Count confidence levels.
+			if fm.Confidence != "" {
+				summary.ConfidenceCounts[fm.Confidence]++
+			}
+
+			// Count quality flag types.
+			for _, flag := range fm.QualityFlags {
+				if flag.Type != "" {
+					summary.QualityFlagTypes[flag.Type]++
+				}
+			}
+
+			// Report findings for low-confidence or flagged content.
+			if fm.Confidence == "low" || fm.Confidence == "flagged" {
+				findings = append(findings, Finding{
+					Type:     "knowledge_quality",
+					Severity: severityForConfidence(fm.Confidence),
+					Page:     entry.Name(),
+					Description: fmt.Sprintf("Knowledge file '%s' in store '%s' has %s confidence.",
+						entry.Name(), cfg.Name, fm.Confidence),
+					Remediation: "Review the source material and update or validate the knowledge file.",
+				})
+			}
+
+			// Report findings for quality flags.
+			for _, flag := range fm.QualityFlags {
+				if flag.Type != "" {
+					findings = append(findings, Finding{
+						Type:     "knowledge_quality",
+						Severity: "info",
+						Page:     entry.Name(),
+						Description: fmt.Sprintf("Knowledge file '%s' in store '%s' has quality flag: %s.",
+							entry.Name(), cfg.Name, flag.Type),
+						Remediation: "Review the flagged content and resolve the quality issue.",
+					})
+				}
+			}
+		}
+
+		if summary.FileCount > 0 {
+			summaries = append(summaries, summary)
+		}
+	}
+
+	return findings, summaries, nil
+}
+
+// checkStaleKnowledgeStores detects knowledge stores whose mapped sources
+// have been updated since the last curation checkpoint (FR-026).
+//
+// A store is "stale" when any of its configured sources has pages with
+// updated_at timestamps newer than the store's last curation checkpoint.
+func (l *Lint) checkStaleKnowledgeStores() ([]Finding, error) {
+	if l.vaultPath == "" {
+		return nil, nil
+	}
+
+	deweyDir := filepath.Join(l.vaultPath, deweyWorkspaceDir)
+	ksPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+	stores, err := curate.LoadKnowledgeStoresConfig(ksPath)
+	if err != nil {
+		return nil, fmt.Errorf("load knowledge stores config: %w", err)
+	}
+	if len(stores) == 0 {
+		return nil, nil
+	}
+
+	var findings []Finding
+
+	for _, cfg := range stores {
+		if len(cfg.Sources) == 0 {
+			continue
+		}
+
+		storePath := curate.ResolveStorePath(cfg, l.vaultPath)
+
+		// Load the curation checkpoint.
+		state, err := curate.LoadCurationState(storePath)
+		if err != nil {
+			lintLogger.Warn("failed to load curation state",
+				"store", cfg.Name, "err", err)
+			continue
+		}
+
+		// If no checkpoint exists (zero LastCuratedAt), the store has never
+		// been curated. Check if there are any source documents to curate.
+		if state.LastCuratedAt.IsZero() {
+			// Check if any sources have content.
+			hasContent := false
+			for _, srcID := range cfg.Sources {
+				count, err := l.store.CountPagesBySource(strings.TrimSpace(srcID))
+				if err != nil {
+					continue
+				}
+				if count > 0 {
+					hasContent = true
+					break
+				}
+			}
+			if hasContent {
+				findings = append(findings, Finding{
+					Type:     "stale_knowledge",
+					Severity: "warning",
+					Description: fmt.Sprintf("Knowledge store '%s' has never been curated but has source content available.",
+						cfg.Name),
+					Remediation: fmt.Sprintf("Run `dewey curate --store %s` to curate knowledge from sources.", cfg.Name),
+				})
+			}
+			continue
+		}
+
+		// Check each source for updates since the checkpoint.
+		checkpointMs := state.LastCuratedAt.UnixMilli()
+		for _, srcID := range cfg.Sources {
+			srcID = strings.TrimSpace(srcID)
+
+			latestUpdated, err := l.store.LatestUpdatedAtBySource(srcID)
+			if err != nil {
+				lintLogger.Warn("failed to check source freshness",
+					"store", cfg.Name, "source", srcID, "err", err)
+				continue
+			}
+
+			if latestUpdated > checkpointMs {
+				findings = append(findings, Finding{
+					Type:     "stale_knowledge",
+					Severity: "warning",
+					Description: fmt.Sprintf("Knowledge store '%s' is stale — source '%s' has been updated since last curation.",
+						cfg.Name, srcID),
+					Remediation: fmt.Sprintf("Run `dewey curate --store %s` to process new content.", cfg.Name),
+				})
+				// One stale finding per store is enough — break after first.
+				break
+			}
+		}
+	}
+
+	return findings, nil
+}
+
+// parseKnowledgeFrontmatter extracts YAML frontmatter from a curated
+// knowledge file. Returns the parsed frontmatter or an error if the
+// file doesn't have valid frontmatter.
+func parseKnowledgeFrontmatter(content string) (knowledgeFrontmatter, error) {
+	var fm knowledgeFrontmatter
+
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		return fm, fmt.Errorf("no YAML frontmatter found")
+	}
+
+	if err := json.Unmarshal([]byte(parts[1]), &fm); err != nil {
+		// JSON unmarshal won't work for YAML — use a simpler approach.
+		// Parse key-value pairs manually from the frontmatter.
+		fm = parseKnowledgeFrontmatterManual(parts[1])
+	}
+
+	return fm, nil
+}
+
+// parseKnowledgeFrontmatterManual parses YAML frontmatter by scanning
+// for known keys. This avoids importing gopkg.in/yaml.v3 in the tools
+// package (which would add a dependency the tools package doesn't currently
+// have — the curate package handles YAML parsing).
+//
+// Design decision: Manual parsing over YAML library import to maintain
+// the tools package's minimal dependency footprint. The frontmatter
+// format is well-defined and simple enough for line-by-line parsing.
+func parseKnowledgeFrontmatterManual(yamlContent string) knowledgeFrontmatter {
+	var fm knowledgeFrontmatter
+
+	lines := strings.Split(yamlContent, "\n")
+	inQualityFlags := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect quality_flags section.
+		if strings.HasPrefix(trimmed, "quality_flags:") {
+			rest := strings.TrimPrefix(trimmed, "quality_flags:")
+			rest = strings.TrimSpace(rest)
+			if rest == "[]" {
+				// Empty quality flags.
+				inQualityFlags = false
+				continue
+			}
+			inQualityFlags = true
+			continue
+		}
+
+		// Parse quality flag entries.
+		if inQualityFlags {
+			if strings.HasPrefix(trimmed, "- type:") {
+				flagType := strings.TrimSpace(strings.TrimPrefix(trimmed, "- type:"))
+				fm.QualityFlags = append(fm.QualityFlags, struct {
+					Type string `yaml:"type"`
+				}{Type: flagType})
+				continue
+			}
+			// Indented lines within a flag entry (detail, sources, etc.) — skip.
+			if strings.HasPrefix(trimmed, "detail:") || strings.HasPrefix(trimmed, "sources:") ||
+				strings.HasPrefix(trimmed, "resolution:") || strings.HasPrefix(trimmed, "- ") {
+				continue
+			}
+			// Non-indented line ends the quality_flags section.
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") && trimmed != "" {
+				inQualityFlags = false
+			}
+		}
+
+		// Parse top-level key-value pairs.
+		if !inQualityFlags {
+			if strings.HasPrefix(trimmed, "tag:") {
+				fm.Tag = strings.TrimSpace(strings.TrimPrefix(trimmed, "tag:"))
+			} else if strings.HasPrefix(trimmed, "category:") {
+				fm.Category = strings.TrimSpace(strings.TrimPrefix(trimmed, "category:"))
+			} else if strings.HasPrefix(trimmed, "confidence:") {
+				fm.Confidence = strings.TrimSpace(strings.TrimPrefix(trimmed, "confidence:"))
+			} else if strings.HasPrefix(trimmed, "tier:") {
+				fm.Tier = strings.TrimSpace(strings.TrimPrefix(trimmed, "tier:"))
+			}
+		}
+	}
+
+	return fm
+}
+
+// severityForConfidence returns the lint severity for a given confidence level.
+func severityForConfidence(confidence string) string {
+	switch confidence {
+	case "flagged":
+		return "warning"
+	case "low":
+		return "info"
+	default:
+		return "info"
+	}
 }
 
 // extractSourcesFromProperties extracts the sources list from compiled

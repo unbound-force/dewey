@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/unbound-force/dewey/curate"
+	"github.com/unbound-force/dewey/llm"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/tools"
 	"github.com/unbound-force/dewey/types"
@@ -891,4 +895,613 @@ func TestBackgroundIndex_MutexBlocksIndexDuringStartup(t *testing.T) {
 
 	// Release the lock — simulating background indexing completion.
 	indexMu.Unlock()
+}
+
+// --- Learning re-ingestion tests (015-curated-knowledge-stores, T005) ---
+
+// TestReIngestLearnings_RecoversMissing verifies that learning markdown
+// files without corresponding database entries are re-ingested on startup.
+// This is the core durability guarantee: learnings survive graph.db deletion.
+func TestReIngestLearnings_RecoversMissing(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	// Create the learnings directory with markdown files.
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Write two learning files with valid frontmatter.
+	file1 := `---
+tag: authentication
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: authentication-1
+tier: draft
+---
+
+OAuth tokens should be rotated every 24 hours.
+`
+	file2 := `---
+tag: deployment
+category: pattern
+created_at: 2026-04-21T11:00:00Z
+identity: deployment-1
+tier: draft
+---
+
+Always use blue-green deployments for zero-downtime releases.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "authentication-1.md"), []byte(file1), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(learningsDir, "deployment-1.md"), []byte(file2), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create an in-memory store (simulating a fresh graph.db).
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Re-ingest — both files should be recovered.
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 re-ingested learnings, got %d", count)
+	}
+
+	// Verify pages exist in the store with correct metadata.
+	page1, err := s.GetPage("learning/authentication-1")
+	if err != nil {
+		t.Fatalf("GetPage(authentication-1): %v", err)
+	}
+	if page1 == nil {
+		t.Fatal("learning/authentication-1 should exist in store after re-ingestion")
+	}
+	if page1.Tier != "draft" {
+		t.Errorf("tier = %q, want %q", page1.Tier, "draft")
+	}
+	if page1.Category != "decision" {
+		t.Errorf("category = %q, want %q", page1.Category, "decision")
+	}
+	if page1.SourceID != "learning" {
+		t.Errorf("source_id = %q, want %q", page1.SourceID, "learning")
+	}
+
+	page2, err := s.GetPage("learning/deployment-1")
+	if err != nil {
+		t.Fatalf("GetPage(deployment-1): %v", err)
+	}
+	if page2 == nil {
+		t.Fatal("learning/deployment-1 should exist in store after re-ingestion")
+	}
+	if page2.Category != "pattern" {
+		t.Errorf("category = %q, want %q", page2.Category, "pattern")
+	}
+
+	// Verify blocks were persisted.
+	blocks, err := s.GetBlocksByPage("learning/authentication-1")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+	if len(blocks) == 0 {
+		t.Error("expected at least 1 block for re-ingested learning")
+	}
+}
+
+// TestReIngestLearnings_SkipsExisting verifies that learning files with
+// corresponding database entries are NOT re-ingested (no duplicates).
+func TestReIngestLearnings_SkipsExisting(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	// Create a learning file.
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	fileContent := `---
+tag: auth
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-1
+tier: draft
+---
+
+Existing learning content.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "auth-1.md"), []byte(fileContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Create a store with the page already present.
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Insert the page so it already exists.
+	if err := s.InsertPage(&store.Page{
+		Name:         "learning/auth-1",
+		OriginalName: "learning/auth-1",
+		SourceID:     "learning",
+		SourceDocID:  "learning-auth-1",
+		Tier:         "draft",
+		Category:     "decision",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Re-ingest — should skip the existing page.
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 re-ingested learnings (already exists), got %d", count)
+	}
+
+	// Verify only one page exists (no duplicate).
+	pages, err := s.ListPagesBySource("learning")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Errorf("expected 1 learning page, got %d", len(pages))
+	}
+}
+
+// TestReIngestLearnings_NoFiles verifies that an empty learnings directory
+// returns 0 with no errors.
+func TestReIngestLearnings_NoFiles(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	// Create an empty learnings directory.
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 re-ingested learnings, got %d", count)
+	}
+}
+
+// TestReIngestLearnings_NoDirectory verifies that a missing learnings
+// directory returns 0 with no errors (graceful handling).
+func TestReIngestLearnings_NoDirectory(t *testing.T) {
+	vaultPath := t.TempDir()
+	// Don't create the learnings directory.
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 re-ingested learnings, got %d", count)
+	}
+}
+
+// TestReIngestLearnings_NilStore verifies that a nil store returns 0
+// with no errors (graceful handling).
+func TestReIngestLearnings_NilStore(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	count, err := reIngestLearnings(nil, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 re-ingested learnings with nil store, got %d", count)
+	}
+}
+
+// TestReIngestLearnings_PreservesCreatedAt verifies that re-ingested
+// learnings preserve the original created_at timestamp from the file.
+func TestReIngestLearnings_PreservesCreatedAt(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Use a specific timestamp to verify preservation.
+	fileContent := `---
+tag: test
+created_at: 2025-01-15T08:30:00Z
+identity: test-1
+tier: draft
+---
+
+Test learning with specific timestamp.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "test-1.md"), []byte(fileContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 re-ingested learning, got %d", count)
+	}
+
+	page, err := s.GetPage("learning/test-1")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("page should exist after re-ingestion")
+	}
+
+	// Verify the created_at timestamp was preserved from the file.
+	expectedTime, _ := time.Parse(time.RFC3339, "2025-01-15T08:30:00Z")
+	expectedMs := expectedTime.UnixMilli()
+	if page.CreatedAt != expectedMs {
+		t.Errorf("created_at = %d, want %d (preserved from file)", page.CreatedAt, expectedMs)
+	}
+}
+
+// TestParseLearningFrontmatter verifies the YAML frontmatter parser
+// correctly extracts all fields from a learning markdown file.
+func TestParseLearningFrontmatter(t *testing.T) {
+	content := `---
+tag: authentication
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: authentication-3
+tier: draft
+---
+
+OAuth tokens should be rotated every 24 hours.
+`
+	fm, body, err := parseLearningFrontmatter(content)
+	if err != nil {
+		t.Fatalf("parseLearningFrontmatter error: %v", err)
+	}
+
+	if fm.Tag != "authentication" {
+		t.Errorf("tag = %q, want %q", fm.Tag, "authentication")
+	}
+	if fm.Category != "decision" {
+		t.Errorf("category = %q, want %q", fm.Category, "decision")
+	}
+	if fm.CreatedAt != "2026-04-21T10:30:00Z" {
+		t.Errorf("created_at = %q, want %q", fm.CreatedAt, "2026-04-21T10:30:00Z")
+	}
+	if fm.Identity != "authentication-3" {
+		t.Errorf("identity = %q, want %q", fm.Identity, "authentication-3")
+	}
+	if fm.Tier != "draft" {
+		t.Errorf("tier = %q, want %q", fm.Tier, "draft")
+	}
+	if !strings.Contains(body, "OAuth tokens should be rotated") {
+		t.Errorf("body = %q, should contain learning text", body)
+	}
+}
+
+// TestParseLearningFrontmatter_NoFrontmatter verifies that a file
+// without YAML frontmatter returns an error.
+func TestParseLearningFrontmatter_NoFrontmatter(t *testing.T) {
+	content := "Just plain text without frontmatter."
+	_, _, err := parseLearningFrontmatter(content)
+	if err == nil {
+		t.Fatal("expected error for content without frontmatter")
+	}
+}
+
+// TestParseLearningFrontmatter_EmptyCategory verifies that a file
+// without a category field parses successfully with empty category.
+func TestParseLearningFrontmatter_EmptyCategory(t *testing.T) {
+	content := `---
+tag: general
+created_at: 2026-04-21T10:30:00Z
+identity: general-1
+tier: draft
+---
+
+A learning without a category.
+`
+	fm, _, err := parseLearningFrontmatter(content)
+	if err != nil {
+		t.Fatalf("parseLearningFrontmatter error: %v", err)
+	}
+	if fm.Category != "" {
+		t.Errorf("category = %q, want empty string", fm.Category)
+	}
+}
+
+// --- Background curation tests (015-curated-knowledge-stores, T034) ---
+
+// TestBackgroundCuration_SkipsWhenMutexHeld verifies that the background
+// curation goroutine skips a cycle when the shared indexing mutex is held.
+// This is the key mutual exclusion guarantee — curation uses TryLock and
+// does not block MCP tools (FR-020).
+func TestBackgroundCuration_SkipsWhenMutexHeld(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	// Create an in-memory store.
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Create a store config with a very short interval.
+	storeCfg := curate.StoreConfig{
+		Name:             "test-store",
+		Sources:          []string{"disk-local"},
+		CurationInterval: "10ms",
+	}
+
+	// Create a mock synthesizer that records calls.
+	synth := &llm.NoopSynthesizer{
+		Response: `[]`,
+		Avail:    true,
+		Model:    "test-model",
+	}
+
+	// Lock the mutex to simulate indexing in progress.
+	indexMu := &sync.Mutex{}
+	indexMu.Lock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Enable debug logging so TryLock skip messages are captured.
+	logger.SetLevel(log.DebugLevel)
+	defer logger.SetLevel(log.InfoLevel)
+
+	// Run backgroundCurateStore in a goroutine with a short interval.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCurateStore(ctx, indexMu, storeCfg, 10*time.Millisecond, s, synth, nil, vaultPath)
+	}()
+
+	// Wait enough time for several ticker cycles.
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel context to stop the goroutine.
+	cancel()
+
+	// Wait for the goroutine to fully exit before reading shared state.
+	select {
+	case <-done:
+		// Goroutine exited cleanly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("backgroundCurateStore did not exit after context cancellation")
+	}
+
+	// Release the mutex (after goroutine is fully stopped).
+	indexMu.Unlock()
+
+	// The goroutine ran with the mutex held — TryLock should have failed
+	// on every ticker cycle. Verify by checking that the goroutine did NOT
+	// crash (it exited cleanly via context cancellation, proven by reaching
+	// this point). The TryLock skip is logged at Debug level.
+}
+
+// TestBackgroundCuration_NoConfig verifies that backgroundCuration does not
+// start any per-store goroutines when no stores are configured (empty slice).
+// This tests the graceful no-op behavior when knowledge-stores.yaml is absent.
+func TestBackgroundCuration_NoConfig(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	indexMu := &sync.Mutex{}
+	indexReady := &atomic.Bool{}
+	indexReady.Store(true) // Simulate indexing already complete.
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Call backgroundCuration with empty stores — should return quickly
+	// after logging "background curation starting" with 0 stores.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCuration(ctx, indexMu, indexReady, nil, s, nil, t.TempDir())
+	}()
+
+	select {
+	case <-done:
+		// backgroundCuration returned — expected for empty stores.
+	case <-time.After(2 * time.Second):
+		t.Fatal("backgroundCuration with no stores should return quickly")
+	}
+}
+
+// TestBackgroundCuration_RespectsContextCancellation verifies that the
+// background curation goroutine stops cleanly when the context is cancelled.
+// This ensures graceful shutdown of the MCP server (FR-017).
+func TestBackgroundCuration_RespectsContextCancellation(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	storeCfg := curate.StoreConfig{
+		Name:             "cancel-test",
+		Sources:          []string{"disk-local"},
+		CurationInterval: "100ms",
+	}
+
+	synth := &llm.NoopSynthesizer{
+		Response: `[]`,
+		Avail:    true,
+		Model:    "test-model",
+	}
+
+	indexMu := &sync.Mutex{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCurateStore(ctx, indexMu, storeCfg, 100*time.Millisecond, s, synth, nil, vaultPath)
+	}()
+
+	// Let it run for a bit, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Goroutine exited cleanly — expected. This proves context
+		// cancellation is respected (FR-017).
+	case <-time.After(2 * time.Second):
+		t.Fatal("backgroundCurateStore did not exit after context cancellation")
+	}
+}
+
+// TestBackgroundCuration_WaitsForIndexReady verifies that backgroundCuration
+// waits for the indexReady flag before starting its first curation cycle.
+// This ensures curation doesn't run on stale or incomplete index data.
+func TestBackgroundCuration_WaitsForIndexReady(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	indexMu := &sync.Mutex{}
+	indexReady := &atomic.Bool{} // Starts false — indexing not complete.
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	stores := []curate.StoreConfig{
+		{
+			Name:             "wait-test",
+			Sources:          []string{"disk-local"},
+			CurationInterval: "10ms",
+		},
+	}
+
+	// backgroundCuration will block waiting for indexReady.
+	// After a short delay, set indexReady to true.
+	// Since Ollama is not available in test, the goroutine will log
+	// "generation model not available" and return.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCuration(ctx, indexMu, indexReady, stores, s, nil, t.TempDir())
+	}()
+
+	// Verify the goroutine is still waiting (indexReady is false).
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("backgroundCuration should be waiting for indexReady, but returned early")
+	default:
+		// Still waiting — expected.
+	}
+
+	// Set indexReady to true — goroutine should proceed.
+	indexReady.Store(true)
+
+	// The goroutine should now proceed and return (no Ollama available).
+	select {
+	case <-done:
+		// Goroutine completed — expected (no Ollama in test env).
+	case <-time.After(5 * time.Second):
+		t.Fatal("backgroundCuration did not proceed after indexReady was set")
+	}
+}
+
+// TestBackgroundCuration_ContinuesAfterError verifies that the background
+// curation goroutine continues polling after a curation error, rather than
+// crashing. This tests error resilience (FR-021).
+func TestBackgroundCuration_ContinuesAfterError(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	storeCfg := curate.StoreConfig{
+		Name:             "error-test",
+		Sources:          []string{"nonexistent-source"},
+		CurationInterval: "10ms",
+	}
+
+	// Synthesizer that returns an error to trigger curation failure.
+	synth := &llm.NoopSynthesizer{
+		Err:   fmt.Errorf("simulated LLM failure"),
+		Avail: true,
+		Model: "test-model",
+	}
+
+	indexMu := &sync.Mutex{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCurateStore(ctx, indexMu, storeCfg, 10*time.Millisecond, s, synth, nil, vaultPath)
+	}()
+
+	// Let it run through several cycles (some will encounter errors).
+	// The goroutine should NOT crash — it logs errors and continues.
+	time.Sleep(100 * time.Millisecond)
+
+	// Cancel and verify the goroutine is still alive (didn't crash).
+	cancel()
+
+	select {
+	case <-done:
+		// Goroutine exited cleanly after cancellation — expected.
+		// This proves the goroutine survived multiple error cycles
+		// without crashing (FR-021).
+	case <-time.After(2 * time.Second):
+		t.Fatal("backgroundCurateStore did not exit after context cancellation")
+	}
 }

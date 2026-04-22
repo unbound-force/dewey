@@ -1,8 +1,8 @@
 # Dewey
 
-Knowledge graph MCP server that gives AI full access to your knowledge graph. Supports **Logseq** and **Obsidian** — both with full read-write support. Navigate pages, search blocks, analyze link structure, track decisions, manage flashcards, compile knowledge, and write content — all through the [Model Context Protocol](https://modelcontextprotocol.io).
+Knowledge graph MCP server that gives AI full access to your knowledge graph. Supports **Logseq** and **Obsidian** — both with full read-write support. Navigate pages, search blocks, analyze link structure, track decisions, manage flashcards, compile knowledge, curate knowledge stores, and write content — all through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
+Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
 
 Built in Go with the [official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk).
 
@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-48 tools across 14 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+49 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 ### Navigate
 
@@ -124,7 +124,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `lint` | Both | Scan knowledge base for quality issues (stale decisions, embedding gaps) |
+| `lint` | Both | Scan knowledge base for quality issues (stale decisions, embedding gaps, knowledge store quality) |
 
 ### Promote
 
@@ -145,6 +145,12 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 | Tool | Backend | Description |
 |------|---------|-------------|
 | `store_learning` | Both | Store a learning with tag, category, and temporal identity |
+
+### Curate
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `curate` | Both | Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores |
 
 ## Install
 
@@ -424,6 +430,18 @@ Promote a page from `draft` tier to `validated` after human review. Only draft-t
 dewey promote [--vault PATH] PAGE_NAME
 ```
 
+### dewey curate
+
+Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores. Uses an LLM (via Ollama) to analyze indexed content and produce curated markdown files with confidence scoring and quality flags.
+
+```bash
+dewey curate [--vault PATH] [--store NAME] [--force] [--no-embeddings]
+```
+
+- `--store` — Curate a specific named store (default: all configured stores)
+- `--force` — Run full curation instead of incremental (re-process all documents)
+- `--no-embeddings` — Skip embedding generation for curated files
+
 ## Content Sources
 
 Dewey indexes content from four pluggable source types. Configure them in `.uf/dewey/sources.yaml`:
@@ -542,10 +560,34 @@ All content in Dewey's index has a trust tier:
 | Tier | Source | Description |
 |------|--------|-------------|
 | `authored` | Disk, GitHub, web, code sources | Human-written content. Highest trust. |
-| `draft` | `store_learning`, `compile` | Agent-generated. Unreviewed. |
+| `curated` | `curate`, knowledge stores | Machine-extracted knowledge. LLM-curated with quality flags. |
 | `validated` | `promote` | Agent content promoted by human review. |
+| `draft` | `store_learning`, `compile` | Agent-generated. Unreviewed. |
 
 Filter search by tier: `semantic_search_filtered(query: "auth", tier: "authored")`
+Filter curated content: `semantic_search_filtered(query: "auth", tier: "curated")`
+
+### Knowledge Stores
+
+Knowledge stores are named collections of curated knowledge extracted from indexed sources. Configure them in `.uf/dewey/knowledge-stores.yaml`:
+
+```yaml
+stores:
+  - name: team-knowledge
+    sources:
+      - disk-meetings
+      - github-org
+    curation_interval: "10m"
+```
+
+Run `dewey curate` to extract knowledge, or let background curation handle it automatically during `dewey serve`. Curated files are written to `.uf/dewey/knowledge/{store-name}/` and automatically indexed with `tier: "curated"` for immediate searchability.
+
+Each curated knowledge item includes:
+- **Confidence scoring**: `high`, `medium`, `low`, or `flagged`
+- **Quality flags**: `missing_rationale`, `implied_assumption`, `incongruent`, `unsupported_claim`
+- **Source traceability**: Every fact traces back to its source document
+
+Learnings stored via `store_learning` are also dual-written to `.uf/dewey/learnings/` as markdown files, ensuring they survive database deletion.
 
 ### Instant Startup
 
@@ -556,8 +598,8 @@ When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexi
 ```
 main.go              Entry point — backend routing, MCP server startup
 cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
-                     source, doctor, manifest, compile, lint, promote
-server.go            MCP server setup — 48 tool registrations
+                     source, doctor, manifest, compile, lint, promote, curate
+server.go            MCP server setup — 49 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
 vault/
@@ -577,6 +619,7 @@ tools/
   whiteboard.go      List and inspect whiteboards
   semantic.go        Semantic search, similar, filtered search, store_learning
   compile.go         Knowledge compilation, linting, promotion
+  curate.go          Knowledge store curation pipeline handler
   helpers.go         Result formatting utilities
 graph/
   builder.go         In-memory graph construction from any backend
@@ -584,7 +627,7 @@ graph/
 parser/content.go    Regex extraction of [[links]], ((refs)), #tags, properties
 types/
   logseq.go          Shared types with custom JSON unmarshaling
-  tools.go           Input types for all 48 tools
+  tools.go           Input types for all 49 tools
   semantic.go        Semantic search types
 llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, NoopSynthesizer)
 store/
@@ -602,6 +645,7 @@ source/
   web.go             Web crawl source (HTML-to-text, robots.txt)
   manager.go         Source orchestration (refresh, failures)
 chunker/             Language-aware source code parsing (Go chunker, registry)
+curate/              Knowledge store config parsing + curation pipeline
 ```
 
 ## Attribution

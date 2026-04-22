@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -39,7 +41,7 @@ func parseLearningResult(t *testing.T, text string) map[string]any {
 // no tag is provided.
 func TestStoreLearning_Basic(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "The vault walker must build its ignore matcher in New()",
@@ -98,7 +100,7 @@ func TestStoreLearning_Basic(t *testing.T) {
 // string returns an error result mentioning "information".
 func TestStoreLearning_EmptyInformation(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "",
@@ -119,7 +121,7 @@ func TestStoreLearning_EmptyInformation(t *testing.T) {
 // TestStoreLearning_NilStore verifies that a nil store returns an error
 // result mentioning persistent storage.
 func TestStoreLearning_NilStore(t *testing.T) {
-	l := NewLearning(nil, nil)
+	l := NewLearning(nil, nil, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning",
@@ -141,7 +143,7 @@ func TestStoreLearning_NilStore(t *testing.T) {
 // {tag}-{sequence} identity and stores the tag in page properties.
 func TestStoreLearning_WithTag(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "OAuth tokens should be rotated every 24 hours",
@@ -204,7 +206,7 @@ func TestStoreLearning_WithTag(t *testing.T) {
 // the default tag "general" is used (not an error).
 func TestStoreLearning_EmptyTag(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "a learning without any tag",
@@ -234,7 +236,7 @@ func TestStoreLearning_EmptyTag(t *testing.T) {
 // (comma-separated) falls back to the first tag when Tag is empty.
 func TestStoreLearning_BackwardCompat(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning with old tags field",
@@ -283,7 +285,7 @@ func TestStoreLearning_BackwardCompat(t *testing.T) {
 // are provided, Tag takes priority.
 func TestStoreLearning_TagPriorityOverTags(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning with both fields",
@@ -310,7 +312,7 @@ func TestStoreLearning_TagPriorityOverTags(t *testing.T) {
 // correctly on the page and returned in the response.
 func TestStoreLearning_WithCategory(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "Always rotate OAuth tokens after 24 hours",
@@ -359,7 +361,7 @@ func TestStoreLearning_WithCategory(t *testing.T) {
 // returns an MCP error result with a descriptive message.
 func TestStoreLearning_InvalidCategory(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning",
@@ -386,7 +388,7 @@ func TestStoreLearning_InvalidCategory(t *testing.T) {
 // allowed and stored as an empty string.
 func TestStoreLearning_EmptyCategory(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning without category",
@@ -417,7 +419,7 @@ func TestStoreLearning_AllValidCategories(t *testing.T) {
 	for _, cat := range categories {
 		t.Run(cat, func(t *testing.T) {
 			s := newTestStore(t)
-			l := NewLearning(nil, s)
+			l := NewLearning(nil, s, "")
 
 			result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 				Information: "test learning for " + cat,
@@ -444,7 +446,7 @@ func TestStoreLearning_AllValidCategories(t *testing.T) {
 // numbers: tag-1, tag-2, tag-3.
 func TestStoreLearning_SequenceIncrement(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	expectedIdentities := []string{"deployment-1", "deployment-2", "deployment-3"}
 
@@ -500,7 +502,7 @@ func TestStoreLearning_TagNormalization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newTestStore(t)
-			l := NewLearning(nil, s)
+			l := NewLearning(nil, s, "")
 
 			result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 				Information: "test learning",
@@ -526,7 +528,7 @@ func TestStoreLearning_TagNormalization(t *testing.T) {
 // tier "draft" regardless of input.
 func TestStoreLearning_TierDraft(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning for tier check",
@@ -558,7 +560,7 @@ func TestStoreLearning_TierDraft(t *testing.T) {
 // a non-empty created_at field in ISO 8601 format.
 func TestStoreLearning_CreatedAtInResponse(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning for created_at",
@@ -589,7 +591,7 @@ func TestStoreLearning_CreatedAtInResponse(t *testing.T) {
 func TestStoreLearning_EmbedderUnavailable(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(false) // Available() returns false
-	l := NewLearning(e, s)
+	l := NewLearning(e, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "learning with unavailable embedder",
@@ -616,7 +618,7 @@ func TestStoreLearning_EmbedderUnavailable(t *testing.T) {
 // embeddings not being generated.
 func TestStoreLearning_NilEmbedder(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s) // nil embedder
+	l := NewLearning(nil, s, "") // nil embedder
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "learning with nil embedder",
@@ -643,7 +645,7 @@ func TestStoreLearning_NilEmbedder(t *testing.T) {
 // set to "learning".
 func TestStoreLearning_Searchable(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "searchable learning content",
@@ -696,7 +698,7 @@ func TestStoreLearning_Searchable(t *testing.T) {
 // from other content sources.
 func TestStoreLearning_FilterBySourceType(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	// Store a learning.
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -751,7 +753,7 @@ func TestStoreLearning_FilterBySourceType(t *testing.T) {
 // are independent per tag namespace — two different tags each start at 1.
 func TestStoreLearning_DifferentTagSequences(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s)
+	l := NewLearning(nil, s, "")
 
 	// Store learning with tag "auth".
 	result1, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -801,5 +803,213 @@ func TestStoreLearning_DifferentTagSequences(t *testing.T) {
 	}
 	if parsed3["identity"] != "auth-2" {
 		t.Errorf("second auth identity = %v, want %q", parsed3["identity"], "auth-2")
+	}
+}
+
+// --- Phase 1 (015-curated-knowledge-stores): File-backed learning tests ---
+
+// TestStoreLearning_DualWritesMarkdown verifies that storing a learning
+// creates a markdown file alongside the SQLite record. The file should
+// exist at {vaultPath}/.uf/dewey/learnings/{tag}-{seq}.md.
+func TestStoreLearning_DualWritesMarkdown(t *testing.T) {
+	s := newTestStore(t)
+	vaultPath := t.TempDir()
+	l := NewLearning(nil, s, vaultPath)
+
+	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "OAuth tokens should be rotated every 24 hours",
+		Tag:         "authentication",
+		Category:    "decision",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
+	}
+
+	// Verify the markdown file was created.
+	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", "authentication-1.md")
+	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
+		t.Fatalf("expected markdown file at %s, but it does not exist", mdPath)
+	}
+
+	// Verify the response includes file_path.
+	parsed := parseLearningResult(t, resultText(result))
+	filePath, ok := parsed["file_path"].(string)
+	if !ok || filePath == "" {
+		t.Errorf("expected non-empty file_path in response, got %v", parsed["file_path"])
+	}
+	if !strings.Contains(filePath, "learnings/authentication-1.md") {
+		t.Errorf("file_path = %q, expected to contain 'learnings/authentication-1.md'", filePath)
+	}
+}
+
+// TestStoreLearning_MarkdownFormat verifies that the markdown file has
+// correct YAML frontmatter with all required fields.
+func TestStoreLearning_MarkdownFormat(t *testing.T) {
+	s := newTestStore(t)
+	vaultPath := t.TempDir()
+	l := NewLearning(nil, s, vaultPath)
+
+	info := "Always use parameterized queries for SQL"
+	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: info,
+		Tag:         "security",
+		Category:    "pattern",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
+	}
+
+	// Read the markdown file.
+	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", "security-1.md")
+	content, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	contentStr := string(content)
+
+	// Verify YAML frontmatter structure.
+	if !strings.HasPrefix(contentStr, "---\n") {
+		t.Error("markdown file should start with '---'")
+	}
+
+	// Verify required frontmatter fields.
+	requiredFields := []string{
+		"tag: security",
+		"category: pattern",
+		"identity: security-1",
+		"tier: draft",
+		"created_at:",
+	}
+	for _, field := range requiredFields {
+		if !strings.Contains(contentStr, field) {
+			t.Errorf("markdown file missing frontmatter field %q", field)
+		}
+	}
+
+	// Verify the body contains the learning information.
+	if !strings.Contains(contentStr, info) {
+		t.Errorf("markdown file body should contain the learning text")
+	}
+}
+
+// TestStoreLearning_MarkdownFormatNoCategory verifies that when no category
+// is provided, the category field is omitted from the YAML frontmatter.
+func TestStoreLearning_MarkdownFormatNoCategory(t *testing.T) {
+	s := newTestStore(t)
+	vaultPath := t.TempDir()
+	l := NewLearning(nil, s, vaultPath)
+
+	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "A learning without a category",
+		Tag:         "general",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
+	}
+
+	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", "general-1.md")
+	content, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Category should NOT appear in frontmatter when empty.
+	if strings.Contains(string(content), "category:") {
+		t.Error("frontmatter should not contain 'category:' when category is empty")
+	}
+}
+
+// TestStoreLearning_FileWriteFailure verifies that when the file write
+// fails (e.g., read-only directory), the store_learning call still
+// succeeds — the SQLite write is the primary store.
+func TestStoreLearning_FileWriteFailure(t *testing.T) {
+	s := newTestStore(t)
+	vaultPath := t.TempDir()
+
+	// Create the learnings directory and make it read-only to force
+	// file write failure.
+	learningsDir := filepath.Join(vaultPath, ".uf", "dewey", "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Chmod(learningsDir, 0o444); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore permissions so t.TempDir() cleanup can remove it.
+		_ = os.Chmod(learningsDir, 0o755)
+	})
+
+	l := NewLearning(nil, s, vaultPath)
+
+	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "This learning should still be stored in SQLite",
+		Tag:         "resilience",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning error: %v", err)
+	}
+	// The operation should succeed despite file write failure.
+	if result.IsError {
+		t.Fatalf("expected success even when file write fails, got error: %s", resultText(result))
+	}
+
+	// Verify the learning was stored in SQLite.
+	page, err := s.GetPage("learning/resilience-1")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("learning page should exist in store despite file write failure")
+	}
+
+	// Verify file_path is empty in the response (write failed).
+	parsed := parseLearningResult(t, resultText(result))
+	filePath, _ := parsed["file_path"].(string)
+	if filePath != "" {
+		t.Errorf("expected empty file_path when write fails, got %q", filePath)
+	}
+}
+
+// TestStoreLearning_NoVaultPath verifies that when vaultPath is empty,
+// no file is written but the learning is still stored in SQLite.
+func TestStoreLearning_NoVaultPath(t *testing.T) {
+	s := newTestStore(t)
+	l := NewLearning(nil, s, "")
+
+	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "Learning without vault path",
+		Tag:         "test",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreLearning returned error: %s", resultText(result))
+	}
+
+	// Verify learning was stored in SQLite.
+	page, err := s.GetPage("learning/test-1")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("learning page should exist in store")
+	}
+
+	// Verify file_path is empty (no vault path configured).
+	parsed := parseLearningResult(t, resultText(result))
+	filePath, _ := parsed["file_path"].(string)
+	if filePath != "" {
+		t.Errorf("expected empty file_path when vaultPath is empty, got %q", filePath)
 	}
 }

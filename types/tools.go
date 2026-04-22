@@ -226,7 +226,7 @@ type SemanticSearchFilteredInput struct {
 	SourceID    string  `json:"source_id,omitempty" jsonschema:"Filter by specific source identifier (e.g., github-gaze)"`
 	HasProperty string  `json:"has_property,omitempty" jsonschema:"Filter to pages with this frontmatter property key"`
 	HasTag      string  `json:"has_tag,omitempty" jsonschema:"Filter to pages with this tag"`
-	Tier        string  `json:"tier,omitempty" jsonschema:"Filter by trust tier: authored, validated, or draft"`
+	Tier        string  `json:"tier,omitempty" jsonschema:"Filter by trust tier: authored, curated, validated, or draft"`
 	Limit       int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
 	Threshold   float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
 }
@@ -235,6 +235,7 @@ type SemanticSearchFilteredInput struct {
 // Includes provenance metadata per Constitution III (Observable Quality).
 // CreatedAt, Tier, and Category provide temporal and trust metadata for
 // knowledge compilation and contamination separation (013-knowledge-compile FR-004, FR-024).
+// Tier values: authored > curated > validated > draft (015-curated-knowledge-stores).
 type SemanticSearchResult struct {
 	DocumentID string  `json:"document_id"`
 	Page       string  `json:"page"`
@@ -293,6 +294,18 @@ type CompileInput struct {
 	// Incremental limits compilation to specific learning identities.
 	// When empty, all learnings are compiled (full rebuild).
 	Incremental []string `json:"incremental,omitempty" jsonschema:"Optional list of learning identities to compile incrementally (e.g., ['authentication-3']). When empty, performs full rebuild."`
+}
+
+// --- Curate tool inputs ---
+
+// CurateInput is the input for the dewey_curate MCP tool.
+type CurateInput struct {
+	// Store is the name of the knowledge store to curate.
+	// If omitted, curates all configured stores.
+	Store string `json:"store,omitempty" jsonschema:"Name of the knowledge store to curate. If omitted curates all configured stores."`
+	// Incremental limits curation to new/changed documents since last run.
+	// Default: true.
+	Incremental *bool `json:"incremental,omitempty" jsonschema:"Only process new/changed documents since last curation. Default: true"`
 }
 
 // --- Lint tool inputs ---

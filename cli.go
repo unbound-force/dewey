@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/unbound-force/dewey/chunker"
 	"github.com/unbound-force/dewey/client"
+	"github.com/unbound-force/dewey/curate"
 	"github.com/unbound-force/dewey/embed"
 	"github.com/unbound-force/dewey/ignore"
 	"github.com/unbound-force/dewey/llm"
@@ -271,6 +272,25 @@ sources:
 `
 			if err := os.WriteFile(sourcesPath, []byte(sourcesContent), 0o644); err != nil {
 				return fmt.Errorf("write sources.yaml: %w", err)
+			}
+
+			// Write default knowledge-stores.yaml (T008, 015-curated-knowledge-stores).
+			// Scaffolds a commented-out example store. Follows the same idempotency
+			// pattern as sources.yaml — don't overwrite if file exists.
+			ksPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+			ksContent := `# Knowledge store configuration
+# Each store curates knowledge from indexed sources.
+# Uncomment and customize the example below.
+
+# stores:
+#   - name: team-decisions
+#     sources: [disk-local]
+#     # path: .uf/dewey/knowledge/team-decisions  # default
+#     # curate_on_index: false                     # default
+#     # curation_interval: 10m                     # default
+`
+			if err := os.WriteFile(ksPath, []byte(ksContent), 0o644); err != nil {
+				return fmt.Errorf("write knowledge-stores.yaml: %w", err)
 			}
 
 			// Append granular .uf/dewey/ runtime artifact patterns to .gitignore.
@@ -2055,6 +2075,139 @@ Examples:
 	return cmd
 }
 
+// --- Curate command (T023, 015-curated-knowledge-stores Phase 3) ---
+
+// newCurateCmd creates the `dewey curate` subcommand.
+// Runs the curation pipeline to extract structured knowledge from indexed
+// sources into knowledge store directories. Uses OllamaSynthesizer from
+// config when available; otherwise returns extraction prompts.
+func newCurateCmd() *cobra.Command {
+	var storeName string
+	var force bool
+	var noEmbeddings bool
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "curate",
+		Short: "Extract knowledge from indexed sources",
+		Long: `Run the curation pipeline to extract structured knowledge from indexed
+sources into knowledge store directories.
+
+Reads knowledge-stores.yaml for store definitions, queries the index for
+source content, uses an LLM to extract decisions/facts/patterns, and writes
+curated markdown files to the store's output directory.
+
+Examples:
+  dewey curate                           # curate all stores
+  dewey curate --store team-decisions    # curate one store
+  dewey curate --force                   # re-curate all content`,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			vp, err := resolveVaultPathOrCwd(vaultPath)
+			if err != nil {
+				return err
+			}
+
+			deweyDir := filepath.Join(vp, deweyWorkspaceDir)
+			if _, err := os.Stat(deweyDir); os.IsNotExist(err) {
+				return fmt.Errorf("not initialized. Run 'dewey init' first")
+			}
+
+			// Load knowledge stores config.
+			ksPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+			stores, err := curate.LoadKnowledgeStoresConfig(ksPath)
+			if err != nil {
+				return fmt.Errorf("load knowledge stores config: %w", err)
+			}
+			if len(stores) == 0 {
+				return fmt.Errorf("No knowledge stores configured. Create .uf/dewey/knowledge-stores.yaml or run 'dewey init'")
+			}
+
+			// Filter to named store if specified.
+			if storeName != "" {
+				var found *curate.StoreConfig
+				for i := range stores {
+					if stores[i].Name == storeName {
+						found = &stores[i]
+						break
+					}
+				}
+				if found == nil {
+					return fmt.Errorf("Knowledge store %q not found in configuration", storeName)
+				}
+				stores = []curate.StoreConfig{*found}
+			}
+
+			// Open store.
+			dbPath := filepath.Join(deweyDir, "graph.db")
+			s, err := store.New(dbPath)
+			if err != nil {
+				return fmt.Errorf("open store: %w", err)
+			}
+			defer func() { _ = s.Close() }()
+
+			// Create embedder (optional).
+			embedder, err := createIndexEmbedder(noEmbeddings)
+			if err != nil {
+				logger.Warn("embedder unavailable, curating without embeddings", "err", err)
+			}
+
+			// Create synthesizer from config (CLI path uses Ollama).
+			var synth llm.Synthesizer
+			compileModel := readCompileModel(deweyDir)
+			if compileModel != "" {
+				embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
+				if embedEndpoint == "" {
+					embedEndpoint = "http://localhost:11434"
+				}
+				ollamaSynth := llm.NewOllamaSynthesizer(embedEndpoint, compileModel)
+				if ollamaSynth.Available() {
+					synth = ollamaSynth
+					logger.Info("LLM model available for curation", "model", compileModel)
+				} else {
+					return fmt.Errorf("LLM unavailable. Ensure Ollama is running with a generation model.\nTo fix: ollama serve && ollama pull %s", compileModel)
+				}
+			} else {
+				return fmt.Errorf("LLM unavailable. Configure compile_model in .uf/dewey/config.yaml.\nTo fix: Add 'compile_model: llama3.2:3b' to config.yaml, then: ollama pull llama3.2:3b")
+			}
+
+			// Create pipeline and run curation.
+			pipeline := curate.NewPipeline(s, synth, embedder, vp)
+
+			totalFiles := 0
+			for _, cfg := range stores {
+				fmt.Printf("  Curating store %q (%d sources)...\n", cfg.Name, len(cfg.Sources))
+
+				var filesCreated int
+				var curateErr error
+				if force {
+					filesCreated, curateErr = pipeline.CurateStore(context.Background(), cfg)
+				} else {
+					filesCreated, curateErr = pipeline.CurateStoreIncremental(context.Background(), cfg)
+				}
+
+				if curateErr != nil {
+					fmt.Printf("  ❌ %s: %v\n", cfg.Name, curateErr)
+					continue
+				}
+
+				fmt.Printf("  ✅ %s: %d knowledge files created\n", cfg.Name, filesCreated)
+				totalFiles += filesCreated
+			}
+
+			fmt.Printf("\n  Curation complete: %d files created across %d stores\n", totalFiles, len(stores))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&storeName, "store", "s", "", "Curate only the named store (default: all stores)")
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Re-curate all content, ignoring checkpoints")
+	cmd.Flags().BoolVar(&noEmbeddings, "no-embeddings", false, "Skip embedding generation for curated files")
+	cmd.Flags().StringVar(&vaultPath, "vault", "", "Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
+}
+
 // --- Lint command (T035, 013-knowledge-compile Phase 7) ---
 
 // newLintCmd creates the `dewey lint` subcommand.
@@ -2106,7 +2259,7 @@ Exit code 0 if clean, 1 if issues found.`,
 			}
 
 			// Create lint tool and run.
-			lint := tools.NewLint(s, embedder)
+			lint := tools.NewLint(s, embedder, vp)
 			input := types.LintInput{Fix: fix}
 
 			result, _, mcpErr := lint.Lint(context.Background(), nil, input)

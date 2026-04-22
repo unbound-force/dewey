@@ -655,6 +655,22 @@ func (s *Store) CountPagesBySource(sourceID string) (int, error) {
 	return count, nil
 }
 
+// LatestUpdatedAtBySource returns the most recent updated_at timestamp
+// (Unix milliseconds) for pages belonging to the given source ID.
+// Returns 0 if no pages belong to the source. Used by lint to detect
+// stale knowledge stores (015-curated-knowledge-stores, FR-026).
+func (s *Store) LatestUpdatedAtBySource(sourceID string) (int64, error) {
+	var latest sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(updated_at) FROM pages WHERE source_id = ?`, sourceID).Scan(&latest)
+	if err != nil {
+		return 0, fmt.Errorf("latest updated_at for source %q: %w", sourceID, err)
+	}
+	if !latest.Valid {
+		return 0, nil
+	}
+	return latest.Int64, nil
+}
+
 // ListPagesExcludingSource returns all pages whose source_id does NOT match
 // the given sourceID, ordered alphabetically by name. Used by LoadExternalPages()
 // to load all non-local pages from the store into the vault's in-memory index.
@@ -709,6 +725,22 @@ func (s *Store) ListPagesBySource(sourceID string) ([]*Page, error) {
 		FROM pages WHERE source_id = ? ORDER BY name`, sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("list pages for source %q: %w", sourceID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanPages(rows)
+}
+
+// ListPagesBySourceUpdatedAfter returns pages belonging to the given source ID
+// that have been updated after the specified Unix millisecond timestamp.
+// Ordered by updated_at ascending. Used by incremental curation to process
+// only new/changed documents (FR-019, 015-curated-knowledge-stores).
+func (s *Store) ListPagesBySourceUpdatedAfter(sourceID string, after int64) ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
+		FROM pages WHERE source_id = ? AND updated_at > ? ORDER BY updated_at`, sourceID, after)
+	if err != nil {
+		return nil, fmt.Errorf("list pages for source %q updated after %d: %w", sourceID, after, err)
 	}
 	defer func() { _ = rows.Close() }()
 

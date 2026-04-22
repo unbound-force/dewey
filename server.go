@@ -109,7 +109,7 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 	toolCount += registerSemanticTools(srv, semantic)
 
 	if !readOnly {
-		learning := tools.NewLearning(cfg.embedder, cfg.store)
+		learning := tools.NewLearning(cfg.embedder, cfg.store, cfg.vaultPath)
 		toolCount += registerLearningTools(srv, learning)
 
 		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex)
@@ -122,7 +122,13 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 		compile := tools.NewCompile(cfg.store, cfg.embedder, nil, cfg.vaultPath)
 		toolCount += registerCompileTools(srv, compile)
 
-		lint := tools.NewLint(cfg.store, cfg.embedder)
+		// Knowledge curation tools (015-curated-knowledge-stores, T022).
+		// MCP path: pass nil synthesizer — the curate tool returns extraction
+		// prompts, and the calling agent performs synthesis externally.
+		curateTool := tools.NewCurate(cfg.store, cfg.embedder, nil, cfg.vaultPath, cfg.indexMutex)
+		toolCount += registerCurateTools(srv, curateTool)
+
+		lint := tools.NewLint(cfg.store, cfg.embedder, cfg.vaultPath)
 		toolCount += registerLintTools(srv, lint)
 
 		promote := tools.NewPromote(cfg.store)
@@ -464,6 +470,19 @@ func registerCompileTools(srv *mcp.Server, compile *tools.Compile) int {
 		Name:        "compile",
 		Description: "Synthesize stored learnings into compiled knowledge articles. Groups learnings by topic, resolves contradictions temporally, and produces current-state articles with history.",
 	}, compile.Compile)
+
+	return 1
+}
+
+// registerCurateTools registers the curate MCP tool for extracting
+// structured knowledge from indexed sources into knowledge stores.
+// Write operation — excluded in read-only mode.
+// Returns the number of tools registered.
+func registerCurateTools(srv *mcp.Server, curateTool *tools.Curate) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "curate",
+		Description: "Curate knowledge from indexed sources into structured knowledge stores.",
+	}, curateTool.Curate)
 
 	return 1
 }

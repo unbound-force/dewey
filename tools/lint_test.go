@@ -809,7 +809,10 @@ func TestLint_KnowledgeStoreMetrics(t *testing.T) {
 		t.Fatalf("expected 1 knowledge store summary, got %d", len(ksList))
 	}
 
-	ks := ksList[0].(map[string]any)
+	ks, ok := ksList[0].(map[string]any)
+	if !ok {
+		t.Fatal("knowledge store entry is not map[string]any")
+	}
 	if ks["name"] != "test-store" {
 		t.Errorf("store name = %v, want 'test-store'", ks["name"])
 	}

@@ -2120,7 +2120,7 @@ Examples:
 				return fmt.Errorf("load knowledge stores config: %w", err)
 			}
 			if len(stores) == 0 {
-				return fmt.Errorf("No knowledge stores configured. Create .uf/dewey/knowledge-stores.yaml or run 'dewey init'")
+				return fmt.Errorf("no knowledge stores configured — create .uf/dewey/knowledge-stores.yaml or run 'dewey init'")
 			}
 
 			// Filter to named store if specified.
@@ -2133,7 +2133,7 @@ Examples:
 					}
 				}
 				if found == nil {
-					return fmt.Errorf("Knowledge store %q not found in configuration", storeName)
+					return fmt.Errorf("knowledge store %q not found in configuration", storeName)
 				}
 				stores = []curate.StoreConfig{*found}
 			}

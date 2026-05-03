@@ -305,6 +305,7 @@ Add `.uf/dewey/` to your `.gitignore`. The index is machine-local and rebuilt fr
 | `OBSIDIAN_VAULT_PATH` | — | Path to Obsidian vault root |
 | `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama embedding model name |
 | `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
+| `DEWEY_AUTHOR` | — | Override author identity for `store_learning` (useful in CI or shared environments) |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub API token for content sources |
 
 ### Global flags

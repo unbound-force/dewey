@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -34,12 +36,152 @@ func parseLearningResult(t *testing.T, text string) map[string]any {
 	return parsed
 }
 
+// TestResolveAuthor verifies the three-tier author resolution fallback chain
+// with at least 10 cases covering env var, git resolver, normalization, and
+// edge cases. Uses t.Setenv for environment variable tests and injected mock
+// git resolvers — never depends on the test runner's actual git configuration.
+func TestResolveAuthor(t *testing.T) {
+	tests := []struct {
+		name        string
+		envAuthor   string // DEWEY_AUTHOR env var value ("" means unset)
+		setEnv      bool   // whether to set the env var at all
+		gitResolver func() (string, error)
+		want        string
+	}{
+		{
+			name:      "a_env_var_set",
+			envAuthor: "alice",
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "git-user", nil
+			},
+			want: "alice",
+		},
+		{
+			name:      "b_normalizes_spaces_and_special_chars",
+			envAuthor: "Alice Bob!@#",
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "git-user", nil
+			},
+			want: "alice-bob",
+		},
+		{
+			name:      "c_git_resolver_error_returns_anonymous",
+			envAuthor: "",
+			setEnv:    false,
+			gitResolver: func() (string, error) {
+				return "", fmt.Errorf("git not installed")
+			},
+			want: "anonymous",
+		},
+		{
+			name:      "d_git_resolver_empty_returns_anonymous",
+			envAuthor: "",
+			setEnv:    false,
+			gitResolver: func() (string, error) {
+				return "", nil
+			},
+			want: "anonymous",
+		},
+		{
+			name:      "e_empty_dewey_author_falls_through",
+			envAuthor: "",
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "git-fallback", nil
+			},
+			want: "git-fallback",
+		},
+		{
+			name:      "f_whitespace_only_dewey_author_falls_through",
+			envAuthor: "   \t  ",
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "git-fallback", nil
+			},
+			want: "git-fallback",
+		},
+		{
+			name:      "g_cjk_all_special_normalizes_to_empty_anonymous",
+			envAuthor: "日本語テスト",
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "", fmt.Errorf("no git")
+			},
+			want: "anonymous",
+		},
+		{
+			name:      "h_leading_trailing_hyphens_stripped",
+			envAuthor: "--alice--",
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "git-user", nil
+			},
+			want: "alice",
+		},
+		{
+			name:      "i_long_author_truncated_to_64",
+			envAuthor: strings.Repeat("a", 100),
+			setEnv:    true,
+			gitResolver: func() (string, error) {
+				return "git-user", nil
+			},
+			want: strings.Repeat("a", 64),
+		},
+		{
+			name:      "j_git_resolver_newline_trimmed",
+			envAuthor: "",
+			setEnv:    false,
+			gitResolver: func() (string, error) {
+				return "git-user\n", nil
+			},
+			want: "git-user",
+		},
+		{
+			name:        "k_nil_git_resolver_returns_anonymous",
+			envAuthor:   "",
+			setEnv:      false,
+			gitResolver: nil,
+			want:        "anonymous",
+		},
+		{
+			name:      "l_git_resolver_whitespace_only_returns_anonymous",
+			envAuthor: "",
+			setEnv:    false,
+			gitResolver: func() (string, error) {
+				return "   ", nil
+			},
+			want: "anonymous",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv("DEWEY_AUTHOR", tt.envAuthor)
+			} else {
+				// Ensure env var is unset for this test.
+				t.Setenv("DEWEY_AUTHOR", "")
+				// Unset it completely by setting to empty — resolveAuthor
+				// treats empty as unset after TrimSpace.
+			}
+
+			got := resolveAuthor(tt.gitResolver)
+			if got != tt.want {
+				t.Errorf("resolveAuthor() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestStoreLearning_Basic verifies the happy path: storing a learning with
 // a valid information string and nil embedder returns a successful result
 // containing a UUID, identity, and page name with the "learning/" prefix.
-// Updated for 013-knowledge-compile: now uses default tag "general" when
-// no tag is provided.
+// Updated for learning-identity-collision-fix: identity format is now
+// {tag}-{YYYYMMDDTHHMMSS}-{author}.
 func TestStoreLearning_Basic(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	l := NewLearning(nil, s, "")
 
@@ -65,22 +207,32 @@ func TestStoreLearning_Basic(t *testing.T) {
 		t.Errorf("expected non-empty uuid in result, got %v", parsed["uuid"])
 	}
 
-	// Assert identity follows {tag}-{sequence} format with default tag "general".
+	// Assert identity follows {tag}-{YYYYMMDDTHHMMSS}-{author} format with default tag "general".
 	identity, ok := parsed["identity"].(string)
-	if !ok || identity != "general-1" {
-		t.Errorf("expected identity %q, got %q", "general-1", identity)
+	if !ok {
+		t.Fatalf("expected string identity in result, got %v", parsed["identity"])
+	}
+	generalPattern := regexp.MustCompile(`^general-\d{8}T\d{6}-testuser$`)
+	if !generalPattern.MatchString(identity) {
+		t.Errorf("identity %q does not match pattern general-{timestamp}-testuser", identity)
 	}
 
 	// Assert page name has "learning/" prefix and matches identity.
 	page, ok := parsed["page"].(string)
-	if !ok || page != "learning/general-1" {
-		t.Errorf("expected page %q, got %q", "learning/general-1", page)
+	if !ok || page != "learning/"+identity {
+		t.Errorf("expected page %q, got %q", "learning/"+identity, page)
 	}
 
 	// Assert tag defaults to "general".
 	tag, ok := parsed["tag"].(string)
 	if !ok || tag != "general" {
 		t.Errorf("expected tag %q, got %q", "general", tag)
+	}
+
+	// Assert author is present in the response.
+	author, ok := parsed["author"].(string)
+	if !ok || author != "testuser" {
+		t.Errorf("expected author %q, got %v", "testuser", parsed["author"])
 	}
 
 	// Assert message indicates success.
@@ -140,8 +292,9 @@ func TestStoreLearning_NilStore(t *testing.T) {
 }
 
 // TestStoreLearning_WithTag verifies that the tag parameter produces a
-// {tag}-{sequence} identity and stores the tag in page properties.
+// {tag}-{YYYYMMDDTHHMMSS}-{author} identity and stores the tag in page properties.
 func TestStoreLearning_WithTag(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	l := NewLearning(nil, s, "")
 
@@ -158,16 +311,20 @@ func TestStoreLearning_WithTag(t *testing.T) {
 
 	parsed := parseLearningResult(t, resultText(result))
 
-	// Assert identity is {tag}-1 for the first learning with this tag.
+	// Assert identity starts with "authentication-" and matches timestamp-author pattern.
 	identity, ok := parsed["identity"].(string)
-	if !ok || identity != "authentication-1" {
-		t.Errorf("expected identity %q, got %q", "authentication-1", identity)
+	if !ok {
+		t.Fatalf("expected string identity in result, got %v", parsed["identity"])
+	}
+	authPattern := regexp.MustCompile(`^authentication-\d{8}T\d{6}-testuser$`)
+	if !authPattern.MatchString(identity) {
+		t.Errorf("identity %q does not match pattern authentication-{timestamp}-testuser", identity)
 	}
 
 	// Assert page name matches.
 	page, ok := parsed["page"].(string)
-	if !ok || page != "learning/authentication-1" {
-		t.Errorf("expected page %q, got %q", "learning/authentication-1", page)
+	if !ok || page != "learning/"+identity {
+		t.Errorf("expected page %q, got %q", "learning/"+identity, page)
 	}
 
 	// Assert tag is returned.
@@ -177,7 +334,7 @@ func TestStoreLearning_WithTag(t *testing.T) {
 	}
 
 	// Verify the page in the store has the correct properties.
-	storedPage, err := s.GetPage("learning/authentication-1")
+	storedPage, err := s.GetPage("learning/" + identity)
 	if err != nil {
 		t.Fatalf("GetPage: %v", err)
 	}
@@ -195,6 +352,9 @@ func TestStoreLearning_WithTag(t *testing.T) {
 	if props["created_at"] == "" {
 		t.Error("expected non-empty created_at in properties")
 	}
+	if props["author"] != "testuser" {
+		t.Errorf("stored author = %q, want %q", props["author"], "testuser")
+	}
 
 	// Verify tier is "draft".
 	if storedPage.Tier != "draft" {
@@ -205,6 +365,7 @@ func TestStoreLearning_WithTag(t *testing.T) {
 // TestStoreLearning_EmptyTag verifies that when both tag and tags are empty,
 // the default tag "general" is used (not an error).
 func TestStoreLearning_EmptyTag(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	l := NewLearning(nil, s, "")
 
@@ -226,15 +387,21 @@ func TestStoreLearning_EmptyTag(t *testing.T) {
 		t.Errorf("expected default tag %q, got %q", "general", tag)
 	}
 
+	// Assert identity starts with "general-" and matches timestamp-author pattern.
 	identity, ok := parsed["identity"].(string)
-	if !ok || identity != "general-1" {
-		t.Errorf("expected identity %q, got %q", "general-1", identity)
+	if !ok {
+		t.Fatalf("expected string identity in result, got %v", parsed["identity"])
+	}
+	generalPattern := regexp.MustCompile(`^general-\d{8}T\d{6}-testuser$`)
+	if !generalPattern.MatchString(identity) {
+		t.Errorf("identity %q does not match pattern general-{timestamp}-testuser", identity)
 	}
 }
 
 // TestStoreLearning_BackwardCompat verifies that the deprecated Tags field
 // (comma-separated) falls back to the first tag when Tag is empty.
 func TestStoreLearning_BackwardCompat(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	l := NewLearning(nil, s, "")
 
@@ -257,9 +424,14 @@ func TestStoreLearning_BackwardCompat(t *testing.T) {
 		t.Errorf("expected tag %q from backward-compat fallback, got %q", "gotcha", tag)
 	}
 
+	// Assert identity starts with "gotcha-" and matches timestamp-author pattern.
 	identity, ok := parsed["identity"].(string)
-	if !ok || identity != "gotcha-1" {
-		t.Errorf("expected identity %q, got %q", "gotcha-1", identity)
+	if !ok {
+		t.Fatalf("expected string identity in result, got %v", parsed["identity"])
+	}
+	gotchaPattern := regexp.MustCompile(`^gotcha-\d{8}T\d{6}-testuser$`)
+	if !gotchaPattern.MatchString(identity) {
+		t.Errorf("identity %q does not match pattern gotcha-{timestamp}-testuser", identity)
 	}
 
 	// Verify the page in the store preserves the original tags in properties.
@@ -442,15 +614,20 @@ func TestStoreLearning_AllValidCategories(t *testing.T) {
 }
 
 // TestStoreLearning_SequenceIncrement verifies that storing multiple
-// learnings with the same tag produces monotonically increasing sequence
-// numbers: tag-1, tag-2, tag-3.
+// learnings with the same tag produces distinct identities, all starting
+// with the same tag prefix. Since timestamps may collide within the same
+// second, collision suffixes (-2, -3) may be appended. A vault path is
+// required for the file-based collision avoidance mechanism to work.
 func TestStoreLearning_SequenceIncrement(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	vaultPath := t.TempDir()
+	l := NewLearning(nil, s, vaultPath)
 
-	expectedIdentities := []string{"deployment-1", "deployment-2", "deployment-3"}
+	deployPattern := regexp.MustCompile(`^deployment-\d{8}T\d{6}-testuser(-\d+)?$`)
+	identities := make(map[string]bool)
 
-	for i, expected := range expectedIdentities {
+	for i := 0; i < 3; i++ {
 		result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 			Information: strings.Repeat("learning content ", i+1), // unique content
 			Tag:         "deployment",
@@ -464,14 +641,25 @@ func TestStoreLearning_SequenceIncrement(t *testing.T) {
 
 		parsed := parseLearningResult(t, resultText(result))
 		identity, ok := parsed["identity"].(string)
-		if !ok || identity != expected {
-			t.Errorf("learning[%d] identity = %q, want %q", i, identity, expected)
+		if !ok {
+			t.Fatalf("learning[%d] expected string identity, got %v", i, parsed["identity"])
+		}
+		if !deployPattern.MatchString(identity) {
+			t.Errorf("learning[%d] identity %q does not match deployment-{timestamp}-testuser pattern", i, identity)
 		}
 
+		// Verify page name matches identity.
 		page, ok := parsed["page"].(string)
-		if !ok || page != "learning/"+expected {
-			t.Errorf("learning[%d] page = %q, want %q", i, page, "learning/"+expected)
+		if !ok || page != "learning/"+identity {
+			t.Errorf("learning[%d] page = %q, want %q", i, page, "learning/"+identity)
 		}
+
+		identities[identity] = true
+	}
+
+	// All three identities must be distinct.
+	if len(identities) != 3 {
+		t.Errorf("expected 3 distinct identities, got %d: %v", len(identities), identities)
 	}
 
 	// Verify all 3 pages exist in the store.
@@ -749,11 +937,19 @@ func TestStoreLearning_FilterBySourceType(t *testing.T) {
 	}
 }
 
-// TestStoreLearning_DifferentTagSequences verifies that sequence numbers
-// are independent per tag namespace — two different tags each start at 1.
+// TestStoreLearning_DifferentTagSequences verifies that learnings with
+// different tags produce identities with the correct tag prefix. All
+// identities should contain the same author. A vault path is required
+// for the file-based collision avoidance mechanism to work when multiple
+// learnings are stored within the same second.
 func TestStoreLearning_DifferentTagSequences(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	vaultPath := t.TempDir()
+	l := NewLearning(nil, s, vaultPath)
+
+	authPattern := regexp.MustCompile(`^auth-\d{8}T\d{6}-testuser(-\d+)?$`)
+	deployPattern := regexp.MustCompile(`^deploy-\d{8}T\d{6}-testuser(-\d+)?$`)
 
 	// Store learning with tag "auth".
 	result1, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -795,14 +991,30 @@ func TestStoreLearning_DifferentTagSequences(t *testing.T) {
 	parsed2 := parseLearningResult(t, resultText(result2))
 	parsed3 := parseLearningResult(t, resultText(result3))
 
-	if parsed1["identity"] != "auth-1" {
-		t.Errorf("first auth identity = %v, want %q", parsed1["identity"], "auth-1")
+	id1, _ := parsed1["identity"].(string)
+	id2, _ := parsed2["identity"].(string)
+	id3, _ := parsed3["identity"].(string)
+
+	if !authPattern.MatchString(id1) {
+		t.Errorf("first auth identity %q does not match auth-{timestamp}-testuser pattern", id1)
 	}
-	if parsed2["identity"] != "deploy-1" {
-		t.Errorf("deploy identity = %v, want %q", parsed2["identity"], "deploy-1")
+	if !deployPattern.MatchString(id2) {
+		t.Errorf("deploy identity %q does not match deploy-{timestamp}-testuser pattern", id2)
 	}
-	if parsed3["identity"] != "auth-2" {
-		t.Errorf("second auth identity = %v, want %q", parsed3["identity"], "auth-2")
+	if !authPattern.MatchString(id3) {
+		t.Errorf("second auth identity %q does not match auth-{timestamp}-testuser pattern", id3)
+	}
+
+	// All identities should contain the same author.
+	for i, id := range []string{id1, id2, id3} {
+		if !strings.Contains(id, "-testuser") {
+			t.Errorf("identity[%d] %q should contain '-testuser'", i, id)
+		}
+	}
+
+	// Auth identities should be distinct (different timestamps or collision suffixes).
+	if id1 == id3 {
+		t.Errorf("two auth identities should be distinct, both are %q", id1)
 	}
 }
 
@@ -810,8 +1022,9 @@ func TestStoreLearning_DifferentTagSequences(t *testing.T) {
 
 // TestStoreLearning_DualWritesMarkdown verifies that storing a learning
 // creates a markdown file alongside the SQLite record. The file should
-// exist at {vaultPath}/.uf/dewey/learnings/{tag}-{seq}.md.
+// exist at {vaultPath}/.uf/dewey/learnings/{identity}.md.
 func TestStoreLearning_DualWritesMarkdown(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
 	l := NewLearning(nil, s, vaultPath)
@@ -828,26 +1041,39 @@ func TestStoreLearning_DualWritesMarkdown(t *testing.T) {
 		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
 	}
 
-	// Verify the markdown file was created.
-	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", "authentication-1.md")
+	// Extract the identity from the response to find the file.
+	parsed := parseLearningResult(t, resultText(result))
+	identity, ok := parsed["identity"].(string)
+	if !ok || identity == "" {
+		t.Fatalf("expected non-empty identity in response, got %v", parsed["identity"])
+	}
+
+	// Verify the identity matches the new format.
+	authPattern := regexp.MustCompile(`^authentication-\d{8}T\d{6}-testuser$`)
+	if !authPattern.MatchString(identity) {
+		t.Errorf("identity %q does not match authentication-{timestamp}-testuser pattern", identity)
+	}
+
+	// Verify the markdown file was created with the new-format filename.
+	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", identity+".md")
 	if _, err := os.Stat(mdPath); os.IsNotExist(err) {
 		t.Fatalf("expected markdown file at %s, but it does not exist", mdPath)
 	}
 
 	// Verify the response includes file_path.
-	parsed := parseLearningResult(t, resultText(result))
 	filePath, ok := parsed["file_path"].(string)
 	if !ok || filePath == "" {
 		t.Errorf("expected non-empty file_path in response, got %v", parsed["file_path"])
 	}
-	if !strings.Contains(filePath, "learnings/authentication-1.md") {
-		t.Errorf("file_path = %q, expected to contain 'learnings/authentication-1.md'", filePath)
+	if !strings.Contains(filePath, "learnings/"+identity+".md") {
+		t.Errorf("file_path = %q, expected to contain 'learnings/%s.md'", filePath, identity)
 	}
 }
 
 // TestStoreLearning_MarkdownFormat verifies that the markdown file has
-// correct YAML frontmatter with all required fields.
+// correct YAML frontmatter with all required fields including author.
 func TestStoreLearning_MarkdownFormat(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
 	l := NewLearning(nil, s, vaultPath)
@@ -865,8 +1091,12 @@ func TestStoreLearning_MarkdownFormat(t *testing.T) {
 		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
 	}
 
+	// Extract identity from response to find the file.
+	parsed := parseLearningResult(t, resultText(result))
+	identity, _ := parsed["identity"].(string)
+
 	// Read the markdown file.
-	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", "security-1.md")
+	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", identity+".md")
 	content, err := os.ReadFile(mdPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -881,8 +1111,9 @@ func TestStoreLearning_MarkdownFormat(t *testing.T) {
 	// Verify required frontmatter fields.
 	requiredFields := []string{
 		"tag: security",
+		"author: testuser",
 		"category: pattern",
-		"identity: security-1",
+		"identity: " + identity,
 		"tier: draft",
 		"created_at:",
 	}
@@ -901,6 +1132,7 @@ func TestStoreLearning_MarkdownFormat(t *testing.T) {
 // TestStoreLearning_MarkdownFormatNoCategory verifies that when no category
 // is provided, the category field is omitted from the YAML frontmatter.
 func TestStoreLearning_MarkdownFormatNoCategory(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
 	l := NewLearning(nil, s, vaultPath)
@@ -916,7 +1148,11 @@ func TestStoreLearning_MarkdownFormatNoCategory(t *testing.T) {
 		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
 	}
 
-	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", "general-1.md")
+	// Extract identity from response to find the file.
+	parsed := parseLearningResult(t, resultText(result))
+	identity, _ := parsed["identity"].(string)
+
+	mdPath := filepath.Join(vaultPath, ".uf", "dewey", "learnings", identity+".md")
 	content, err := os.ReadFile(mdPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -932,6 +1168,7 @@ func TestStoreLearning_MarkdownFormatNoCategory(t *testing.T) {
 // fails (e.g., read-only directory), the store_learning call still
 // succeeds — the SQLite write is the primary store.
 func TestStoreLearning_FileWriteFailure(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
 
@@ -963,17 +1200,23 @@ func TestStoreLearning_FileWriteFailure(t *testing.T) {
 		t.Fatalf("expected success even when file write fails, got error: %s", resultText(result))
 	}
 
-	// Verify the learning was stored in SQLite.
-	page, err := s.GetPage("learning/resilience-1")
+	// Extract the page name from the response to look up in the store.
+	parsed := parseLearningResult(t, resultText(result))
+	pageName, ok := parsed["page"].(string)
+	if !ok || pageName == "" {
+		t.Fatalf("expected non-empty page in response, got %v", parsed["page"])
+	}
+
+	// Verify the learning was stored in SQLite using the page name from the response.
+	page, err := s.GetPage(pageName)
 	if err != nil {
-		t.Fatalf("GetPage: %v", err)
+		t.Fatalf("GetPage(%q): %v", pageName, err)
 	}
 	if page == nil {
 		t.Fatal("learning page should exist in store despite file write failure")
 	}
 
 	// Verify file_path is empty in the response (write failed).
-	parsed := parseLearningResult(t, resultText(result))
 	filePath, _ := parsed["file_path"].(string)
 	if filePath != "" {
 		t.Errorf("expected empty file_path when write fails, got %q", filePath)
@@ -983,6 +1226,7 @@ func TestStoreLearning_FileWriteFailure(t *testing.T) {
 // TestStoreLearning_NoVaultPath verifies that when vaultPath is empty,
 // no file is written but the learning is still stored in SQLite.
 func TestStoreLearning_NoVaultPath(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	l := NewLearning(nil, s, "")
 
@@ -997,17 +1241,23 @@ func TestStoreLearning_NoVaultPath(t *testing.T) {
 		t.Fatalf("StoreLearning returned error: %s", resultText(result))
 	}
 
-	// Verify learning was stored in SQLite.
-	page, err := s.GetPage("learning/test-1")
+	// Extract the page name from the response to look up in the store.
+	parsed := parseLearningResult(t, resultText(result))
+	pageName, ok := parsed["page"].(string)
+	if !ok || pageName == "" {
+		t.Fatalf("expected non-empty page in response, got %v", parsed["page"])
+	}
+
+	// Verify learning was stored in SQLite using the page name from the response.
+	page, err := s.GetPage(pageName)
 	if err != nil {
-		t.Fatalf("GetPage: %v", err)
+		t.Fatalf("GetPage(%q): %v", pageName, err)
 	}
 	if page == nil {
 		t.Fatal("learning page should exist in store")
 	}
 
 	// Verify file_path is empty (no vault path configured).
-	parsed := parseLearningResult(t, resultText(result))
 	filePath, _ := parsed["file_path"].(string)
 	if filePath != "" {
 		t.Errorf("expected empty file_path when vaultPath is empty, got %q", filePath)

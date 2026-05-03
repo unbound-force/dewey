@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -42,6 +44,10 @@ var tagNormalizer = regexp.MustCompile(`[^a-z0-9-]`)
 
 // Learning implements the dewey_store_learning MCP tool for persisting
 // agent learnings (insights, patterns, gotchas) into the knowledge graph.
+// Each learning receives a {tag}-{YYYYMMDDTHHMMSS}-{author} identity
+// (e.g., "authentication-20260502T143022-alice") where the author is
+// resolved via a three-tier fallback: DEWEY_AUTHOR env var, git config
+// user.name, or "anonymous".
 //
 // Design decision: The embedder and store are injected as dependencies
 // (Dependency Inversion Principle) following the same pattern as Semantic.
@@ -96,13 +102,80 @@ func resolveTag(input types.StoreLearningInput) string {
 	return "general"
 }
 
+// maxAuthorLen is the maximum length for a normalized author string.
+const maxAuthorLen = 64
+
+// resolveAuthor determines the author identity using a three-tier fallback:
+// 1. DEWEY_AUTHOR environment variable (if set and non-empty after trimming)
+// 2. gitResolver function (e.g., `git config user.name`)
+// 3. "anonymous" as the final fallback
+//
+// The result is normalized using normalizeTag (lowercase, strip special chars,
+// replace spaces with hyphens), then leading/trailing hyphens are trimmed.
+// If normalization produces an empty string (e.g., CJK-only names that are
+// stripped entirely), the function falls back to "anonymous". The result is
+// truncated to 64 characters.
+//
+// Design decision: The gitResolver is injected as a function parameter
+// (Dependency Inversion Principle) so tests can provide mock resolvers
+// without depending on the test runner's actual git configuration.
+func resolveAuthor(gitResolver func() (string, error)) string {
+	// Tier 1: DEWEY_AUTHOR environment variable.
+	if envAuthor := strings.TrimSpace(os.Getenv("DEWEY_AUTHOR")); envAuthor != "" {
+		normalized := strings.Trim(normalizeTag(envAuthor), "-")
+		if normalized != "" {
+			if len(normalized) > maxAuthorLen {
+				normalized = normalized[:maxAuthorLen]
+			}
+			return normalized
+		}
+	}
+
+	// Tier 2: Git resolver (e.g., git config user.name).
+	if gitResolver != nil {
+		if gitName, err := gitResolver(); err == nil {
+			trimmed := strings.TrimSpace(gitName)
+			if trimmed != "" {
+				normalized := strings.Trim(normalizeTag(trimmed), "-")
+				if normalized != "" {
+					if len(normalized) > maxAuthorLen {
+						normalized = normalized[:maxAuthorLen]
+					}
+					return normalized
+				}
+			}
+		}
+	}
+
+	// Tier 3: Anonymous fallback.
+	return "anonymous"
+}
+
+// productionGitResolver returns a git resolver function that uses
+// exec.CommandContext with a 2-second timeout to run `git config user.name`.
+// The output is trimmed of whitespace and newlines.
+func productionGitResolver() func() (string, error) {
+	return func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "git", "config", "user.name").Output()
+		if err != nil {
+			return "", fmt.Errorf("git config user.name: %w", err)
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+}
+
 // StoreLearning handles the dewey_store_learning MCP tool. Persists a
 // learning into the knowledge graph with a required topic tag and optional
-// category. The learning receives a {tag}-{sequence} identity (e.g.,
-// "authentication-3") and is stored with tier "draft".
+// category. The learning receives a {tag}-{YYYYMMDDTHHMMSS}-{author}
+// identity (e.g., "authentication-20260502T143022-alice") and is stored
+// with tier "draft". The author is resolved via [resolveAuthor] using a
+// three-tier fallback: DEWEY_AUTHOR env var, git config user.name, or
+// "anonymous".
 //
-// Returns a JSON result with the learning's identity, page name, and
-// status message. Returns an MCP error result (not a Go error) if the
+// Returns a JSON result with the learning's identity, page name, author,
+// and status message. Returns an MCP error result (not a Go error) if the
 // input is invalid or the store is unavailable.
 //
 // BREAKING CHANGE from spec 008: The `tags` parameter (plural, optional,
@@ -130,21 +203,45 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	// Resolve the effective tag using priority: tag > tags > "general".
 	tag := resolveTag(input)
 
-	// Determine the next sequence number for this tag namespace.
-	seq, err := l.store.NextLearningSequence(tag)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to determine learning sequence: %v", err)), nil, nil
-	}
+	// Resolve the author identity using three-tier fallback:
+	// DEWEY_AUTHOR env var -> git config user.name -> "anonymous".
+	author := resolveAuthor(productionGitResolver())
 
-	// Build the {tag}-{sequence} identity and page name.
-	identity := fmt.Sprintf("%s-%d", tag, seq)
+	// Build the {tag}-{timestamp}-{author} identity and page name.
+	// Uses UTC time to ensure consistent ordering across time zones.
+	now := time.Now()
+	timestamp := now.UTC().Format("20060102T150405")
+	identity := fmt.Sprintf("%s-%s-%s", tag, timestamp, author)
 	pageName := fmt.Sprintf("learning/%s", identity)
 	docID := fmt.Sprintf("learning-%s", identity)
 
-	// Build properties JSON with tag, category, and created_at (FR-004, FR-005).
-	now := time.Now()
+	// Dual-write: attempt file creation first to resolve any sub-second
+	// collisions before committing to the SQLite identity. The file write
+	// uses O_CREATE|O_EXCL for atomic creation. If a file with the same
+	// identity already exists, a suffix (-2, -3, ..., -99) is appended.
+	// The identity, pageName, and docID are updated to match the final filename.
+	var filePath string
+	if l.vaultPath != "" {
+		var finalIdentity string
+		var fileErr error
+		filePath, finalIdentity, fileErr = l.writeLearningFile(tag, author, input.Category, now, identity, input.Information)
+		if fileErr != nil {
+			// Collision avoidance exhausted (99 attempts) — return MCP error.
+			return errorResult(fileErr.Error()), nil, nil
+		}
+		if finalIdentity != identity {
+			// A collision suffix was added — update identity, pageName, and docID
+			// to match the actual filename for consistency.
+			identity = finalIdentity
+			pageName = fmt.Sprintf("learning/%s", identity)
+			docID = fmt.Sprintf("learning-%s", identity)
+		}
+	}
+
+	// Build properties JSON with tag, category, author, and created_at (FR-004, FR-005).
 	propsMap := map[string]string{
 		"tag":        tag,
+		"author":     author,
 		"created_at": now.UTC().Format(time.RFC3339),
 	}
 	if input.Category != "" {
@@ -200,14 +297,6 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		embeddingMsg = " Note: Embeddings were not generated (Ollama unavailable). The learning is stored and searchable via keyword search. Semantic search will be available after embeddings are generated."
 	}
 
-	// Dual-write: persist learning as a markdown file for durability (FR-001, FR-002).
-	// The file write is best-effort — if it fails, log a warning but don't fail
-	// the overall store_learning call. The SQLite record is the primary store.
-	var filePath string
-	if l.vaultPath != "" {
-		filePath = l.writeLearningFile(tag, seq, input.Category, now, identity, input.Information)
-	}
-
 	// Return the first block's UUID as the learning identifier (FR-006).
 	learningUUID := ""
 	if len(blocks) > 0 {
@@ -219,6 +308,7 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		"identity":   identity,
 		"page":       pageName,
 		"tag":        tag,
+		"author":     author,
 		"category":   input.Category,
 		"created_at": now.UTC().Format(time.RFC3339),
 		"file_path":  filePath,
@@ -229,45 +319,85 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	return res, nil, err
 }
 
+// maxCollisionAttempts is the maximum number of collision suffixes to try
+// before giving up. Suffixes go from -2 to -99 (98 attempts + the original).
+const maxCollisionAttempts = 99
+
 // writeLearningFile writes a learning as a markdown file with YAML frontmatter
-// to {vaultPath}/.uf/dewey/learnings/{tag}-{seq}.md. Returns the relative file
-// path on success, or an empty string if the write fails (best-effort).
+// to {vaultPath}/.uf/dewey/learnings/{identity}.md where identity is
+// {tag}-{YYYYMMDDTHHMMSS}-{author}. Uses O_CREATE|O_EXCL for atomic file
+// creation with sub-second collision avoidance: if the file already exists,
+// appends -2, -3, ..., -99 to the identity until a unique filename is found.
+// Returns the relative file path, the final identity (which may differ from
+// the input if a collision suffix was added), and an error if collision
+// avoidance is exhausted.
+//
+// The YAML frontmatter includes tag, author, category (if non-empty),
+// created_at, identity, and tier fields.
 //
 // Design decision: Uses fmt.Sprintf for YAML frontmatter construction rather
 // than yaml.Marshal to avoid importing gopkg.in/yaml.v3 for trivial key-value
 // pairs. The frontmatter format is simple enough that string formatting is
 // clearer and more predictable than marshaling.
-func (l *Learning) writeLearningFile(tag string, seq int, category string, createdAt time.Time, identity, information string) string {
+func (l *Learning) writeLearningFile(tag, author, category string, createdAt time.Time, identity, information string) (string, string, error) {
 	learningsDir := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings")
 	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
 		learningLogger.Warn("failed to create learnings directory", "path", learningsDir, "err", err)
-		return ""
+		return "", identity, nil
 	}
 
-	filename := fmt.Sprintf("%s-%d.md", tag, seq)
-	filePath := filepath.Join(learningsDir, filename)
-
-	// Build YAML frontmatter with all metadata fields.
-	var buf strings.Builder
-	buf.WriteString("---\n")
-	buf.WriteString(fmt.Sprintf("tag: %s\n", tag))
-	if category != "" {
-		buf.WriteString(fmt.Sprintf("category: %s\n", category))
-	}
-	buf.WriteString(fmt.Sprintf("created_at: %s\n", createdAt.UTC().Format(time.RFC3339)))
-	buf.WriteString(fmt.Sprintf("identity: %s\n", identity))
-	buf.WriteString("tier: draft\n")
-	buf.WriteString("---\n\n")
-	buf.WriteString(information)
-	buf.WriteString("\n")
-
-	if err := os.WriteFile(filePath, []byte(buf.String()), 0o644); err != nil {
-		learningLogger.Warn("failed to write learning file", "path", filePath, "err", err)
-		return ""
+	// buildContent constructs the markdown file content with YAML frontmatter.
+	buildContent := func(finalIdentity string) []byte {
+		var buf strings.Builder
+		buf.WriteString("---\n")
+		buf.WriteString(fmt.Sprintf("tag: %s\n", tag))
+		buf.WriteString(fmt.Sprintf("author: %s\n", author))
+		if category != "" {
+			buf.WriteString(fmt.Sprintf("category: %s\n", category))
+		}
+		buf.WriteString(fmt.Sprintf("created_at: %s\n", createdAt.UTC().Format(time.RFC3339)))
+		buf.WriteString(fmt.Sprintf("identity: %s\n", finalIdentity))
+		buf.WriteString("tier: draft\n")
+		buf.WriteString("---\n\n")
+		buf.WriteString(information)
+		buf.WriteString("\n")
+		return []byte(buf.String())
 	}
 
-	// Compute the relative path for the response (relative to vault root).
-	relPath := filepath.Join(deweyWorkspaceDir, "learnings", filename)
-	learningLogger.Debug("learning persisted to file", "path", relPath)
-	return relPath
+	// Try the original identity first, then append collision suffixes.
+	finalIdentity := identity
+	for attempt := 1; attempt <= maxCollisionAttempts; attempt++ {
+		filename := fmt.Sprintf("%s.md", finalIdentity)
+		filePath := filepath.Join(learningsDir, filename)
+
+		f, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				// File exists — try next collision suffix.
+				finalIdentity = fmt.Sprintf("%s-%d", identity, attempt+1)
+				continue
+			}
+			// Non-collision error (e.g., permission denied) — best-effort, log and return.
+			learningLogger.Warn("failed to create learning file", "path", filePath, "err", err)
+			return "", identity, nil
+		}
+
+		// File created successfully — write content and close.
+		content := buildContent(finalIdentity)
+		if _, writeErr := f.Write(content); writeErr != nil {
+			_ = f.Close()
+			learningLogger.Warn("failed to write learning file content", "path", filePath, "err", writeErr)
+			return "", finalIdentity, nil
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			learningLogger.Warn("failed to close learning file", "path", filePath, "err", closeErr)
+		}
+
+		relPath := filepath.Join(deweyWorkspaceDir, "learnings", filename)
+		learningLogger.Debug("learning persisted to file", "path", relPath)
+		return relPath, finalIdentity, nil
+	}
+
+	// All collision attempts exhausted.
+	return "", identity, fmt.Errorf("failed to create learning file: %d collision attempts exhausted for identity %q", maxCollisionAttempts, identity)
 }

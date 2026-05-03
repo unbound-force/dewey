@@ -778,22 +778,6 @@ func scanPages(rows *sql.Rows) ([]*Page, error) {
 
 // --- Learning and knowledge compilation helpers (013-knowledge-compile) ---
 
-// NextLearningSequence returns the next sequence number for a learning
-// with the given tag. Counts existing learning pages with the same tag
-// prefix and returns count + 1. Used by the store_learning MCP tool to
-// generate {tag}-{sequence} identities (FR-001).
-func (s *Store) NextLearningSequence(tag string) (int, error) {
-	var count int
-	err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM pages
-		WHERE source_id = 'learning'
-		AND name LIKE 'learning/' || ? || '-%'`, tag).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count learning pages for tag %q: %w", tag, err)
-	}
-	return count + 1, nil
-}
-
 // ListLearningPages returns all pages with source_id = 'learning',
 // ordered by name. Used by lint to enumerate all learnings.
 func (s *Store) ListLearningPages() ([]*Page, error) {

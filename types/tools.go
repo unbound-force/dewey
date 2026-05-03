@@ -293,7 +293,7 @@ type JournalSearchInput struct {
 type CompileInput struct {
 	// Incremental limits compilation to specific learning identities.
 	// When empty, all learnings are compiled (full rebuild).
-	Incremental []string `json:"incremental,omitempty" jsonschema:"Optional list of learning identities to compile incrementally (e.g., ['authentication-3']). When empty, performs full rebuild."`
+	Incremental []string `json:"incremental,omitempty" jsonschema:"Optional list of learning identities to compile incrementally (e.g., ['authentication-20260502T143022-alice']). When empty, performs full rebuild."`
 }
 
 // --- Curate tool inputs ---
@@ -322,5 +322,5 @@ type LintInput struct {
 // PromoteInput is the input for the dewey_promote MCP tool.
 type PromoteInput struct {
 	// Page is the page name to promote from draft to validated.
-	Page string `json:"page" jsonschema:"Page name to promote from draft to validated tier (e.g., 'learning/authentication-3')."`
+	Page string `json:"page" jsonschema:"Page name to promote from draft to validated tier (e.g., 'learning/authentication-20260502T143022-alice')."`
 }

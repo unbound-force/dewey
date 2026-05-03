@@ -170,9 +170,15 @@ func (c *Compile) compileIncremental(ctx context.Context, identities []string, s
 	compileLogger.Info("incremental compile starting", "identities", len(identities))
 
 	// Extract unique tags from the specified identities.
+	// Look up each page from the store to get properties for reliable
+	// tag extraction. Falls back to string-parsing if the page is not found.
 	affectedTags := make(map[string]bool)
 	for _, id := range identities {
-		tag := extractTagFromIdentity(id)
+		var properties string
+		if page, err := c.store.GetPage("learning/" + id); err == nil && page != nil {
+			properties = page.Properties
+		}
+		tag := extractTagFromIdentity(id, properties)
 		if tag != "" {
 			affectedTags[tag] = true
 		}
@@ -349,7 +355,7 @@ func (c *Compile) buildLearningEntries(pages []*store.Page) ([]LearningEntry, er
 	for _, p := range pages {
 		// Extract identity from page name: "learning/{identity}" → "{identity}".
 		identity := strings.TrimPrefix(p.Name, "learning/")
-		tag := extractTagFromIdentity(identity)
+		tag := extractTagFromIdentity(identity, p.Properties)
 
 		// Load block content for this learning.
 		blocks, err := c.store.GetBlocksByPage(p.Name)
@@ -421,9 +427,26 @@ func clusterLearnings(entries []LearningEntry) []Cluster {
 }
 
 // extractTagFromIdentity extracts the tag from a learning identity.
-// Identity format: "{tag}-{sequence}" (e.g., "authentication-3" → "authentication").
+//
+// If properties JSON contains a "tag" key, that value is returned directly.
+// This is the preferred path for new-format identities where the tag is
+// stored explicitly in page properties.
+//
+// Falls back to string-parsing for backward compatibility with old-format
+// identities: "{tag}-{sequence}" (e.g., "authentication-3" → "authentication").
 // Handles multi-segment tags like "vault-walker-2" → "vault-walker".
-func extractTagFromIdentity(identity string) string {
+func extractTagFromIdentity(identity, properties string) string {
+	// Preferred path: extract tag from properties JSON.
+	if properties != "" {
+		var props map[string]string
+		if err := json.Unmarshal([]byte(properties), &props); err == nil {
+			if tag, ok := props["tag"]; ok && tag != "" {
+				return tag
+			}
+		}
+	}
+
+	// Fallback: parse tag from old-format identity string.
 	// Find the last hyphen followed by a number — that's the sequence separator.
 	lastHyphen := strings.LastIndex(identity, "-")
 	if lastHyphen < 0 {

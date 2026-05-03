@@ -764,7 +764,10 @@ func TestEndToEnd_StoreCompileSearch(t *testing.T) {
 
 	// Step 3: Store 3 learnings via the tools/learning handler.
 	// Two "auth" decisions (temporal contradiction) and one "performance" pattern.
-	learning := tools.NewLearning(nil, s, "") // nil embedder — no Ollama in tests.
+	// Pass tmpDir as vaultPath so file-based collision avoidance works when
+	// multiple learnings with the same tag are stored within the same second.
+	t.Setenv("DEWEY_AUTHOR", "testuser")
+	learning := tools.NewLearning(nil, s, tmpDir) // nil embedder — no Ollama in tests.
 
 	// Learning 1: auth decision — "Use Option A"
 	result1, _, err := learning.StoreLearning(context.Background(), nil, types.StoreLearningInput{

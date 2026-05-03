@@ -902,6 +902,8 @@ func TestBackgroundIndex_MutexBlocksIndexDuringStartup(t *testing.T) {
 // TestReIngestLearnings_RecoversMissing verifies that learning markdown
 // files without corresponding database entries are re-ingested on startup.
 // This is the core durability guarantee: learnings survive graph.db deletion.
+// Updated for learning-identity-collision-fix: uses new-format filenames
+// and frontmatter including author.
 func TestReIngestLearnings_RecoversMissing(t *testing.T) {
 	vaultPath := t.TempDir()
 
@@ -911,12 +913,13 @@ func TestReIngestLearnings_RecoversMissing(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	// Write two learning files with valid frontmatter.
+	// Write two learning files with new-format frontmatter including author.
 	file1 := `---
 tag: authentication
+author: alice
 category: decision
 created_at: 2026-04-21T10:30:00Z
-identity: authentication-1
+identity: authentication-20260421T103000-alice
 tier: draft
 ---
 
@@ -924,18 +927,19 @@ OAuth tokens should be rotated every 24 hours.
 `
 	file2 := `---
 tag: deployment
+author: bob
 category: pattern
 created_at: 2026-04-21T11:00:00Z
-identity: deployment-1
+identity: deployment-20260421T110000-bob
 tier: draft
 ---
 
 Always use blue-green deployments for zero-downtime releases.
 `
-	if err := os.WriteFile(filepath.Join(learningsDir, "authentication-1.md"), []byte(file1), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(learningsDir, "authentication-20260421T103000-alice.md"), []byte(file1), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(learningsDir, "deployment-1.md"), []byte(file2), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(learningsDir, "deployment-20260421T110000-bob.md"), []byte(file2), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -956,12 +960,12 @@ Always use blue-green deployments for zero-downtime releases.
 	}
 
 	// Verify pages exist in the store with correct metadata.
-	page1, err := s.GetPage("learning/authentication-1")
+	page1, err := s.GetPage("learning/authentication-20260421T103000-alice")
 	if err != nil {
-		t.Fatalf("GetPage(authentication-1): %v", err)
+		t.Fatalf("GetPage(authentication-20260421T103000-alice): %v", err)
 	}
 	if page1 == nil {
-		t.Fatal("learning/authentication-1 should exist in store after re-ingestion")
+		t.Fatal("learning/authentication-20260421T103000-alice should exist in store after re-ingestion")
 	}
 	if page1.Tier != "draft" {
 		t.Errorf("tier = %q, want %q", page1.Tier, "draft")
@@ -972,20 +976,28 @@ Always use blue-green deployments for zero-downtime releases.
 	if page1.SourceID != "learning" {
 		t.Errorf("source_id = %q, want %q", page1.SourceID, "learning")
 	}
+	// Verify author is preserved in properties.
+	if !strings.Contains(page1.Properties, `"author":"alice"`) {
+		t.Errorf("properties should contain author=alice, got %s", page1.Properties)
+	}
 
-	page2, err := s.GetPage("learning/deployment-1")
+	page2, err := s.GetPage("learning/deployment-20260421T110000-bob")
 	if err != nil {
-		t.Fatalf("GetPage(deployment-1): %v", err)
+		t.Fatalf("GetPage(deployment-20260421T110000-bob): %v", err)
 	}
 	if page2 == nil {
-		t.Fatal("learning/deployment-1 should exist in store after re-ingestion")
+		t.Fatal("learning/deployment-20260421T110000-bob should exist in store after re-ingestion")
 	}
 	if page2.Category != "pattern" {
 		t.Errorf("category = %q, want %q", page2.Category, "pattern")
 	}
+	// Verify author is preserved in properties.
+	if !strings.Contains(page2.Properties, `"author":"bob"`) {
+		t.Errorf("properties should contain author=bob, got %s", page2.Properties)
+	}
 
 	// Verify blocks were persisted.
-	blocks, err := s.GetBlocksByPage("learning/authentication-1")
+	blocks, err := s.GetBlocksByPage("learning/authentication-20260421T103000-alice")
 	if err != nil {
 		t.Fatalf("GetBlocksByPage: %v", err)
 	}
@@ -1120,6 +1132,8 @@ func TestReIngestLearnings_NilStore(t *testing.T) {
 
 // TestReIngestLearnings_PreservesCreatedAt verifies that re-ingested
 // learnings preserve the original created_at timestamp from the file.
+// Updated for learning-identity-collision-fix: uses new-format filename
+// and frontmatter including author.
 func TestReIngestLearnings_PreservesCreatedAt(t *testing.T) {
 	vaultPath := t.TempDir()
 
@@ -1131,14 +1145,15 @@ func TestReIngestLearnings_PreservesCreatedAt(t *testing.T) {
 	// Use a specific timestamp to verify preservation.
 	fileContent := `---
 tag: test
+author: testuser
 created_at: 2025-01-15T08:30:00Z
-identity: test-1
+identity: test-20250115T083000-testuser
 tier: draft
 ---
 
 Test learning with specific timestamp.
 `
-	if err := os.WriteFile(filepath.Join(learningsDir, "test-1.md"), []byte(fileContent), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(learningsDir, "test-20250115T083000-testuser.md"), []byte(fileContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1156,7 +1171,7 @@ Test learning with specific timestamp.
 		t.Fatalf("expected 1 re-ingested learning, got %d", count)
 	}
 
-	page, err := s.GetPage("learning/test-1")
+	page, err := s.GetPage("learning/test-20250115T083000-testuser")
 	if err != nil {
 		t.Fatalf("GetPage: %v", err)
 	}
@@ -1170,6 +1185,197 @@ Test learning with specific timestamp.
 	if page.CreatedAt != expectedMs {
 		t.Errorf("created_at = %d, want %d (preserved from file)", page.CreatedAt, expectedMs)
 	}
+
+	// Verify author is preserved in properties.
+	if !strings.Contains(page.Properties, `"author":"testuser"`) {
+		t.Errorf("properties should contain author=testuser, got %s", page.Properties)
+	}
+}
+
+// TestReIngestLearnings_OldFormatCompatibility verifies that old-format
+// learning files (tag-N.md with no author field) are re-ingested
+// successfully with empty author in properties.
+func TestReIngestLearnings_OldFormatCompatibility(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Old-format file: no author field, sequential identity.
+	oldFile := `---
+tag: auth
+category: decision
+created_at: 2026-04-20T09:00:00Z
+identity: auth-1
+tier: draft
+---
+
+Use basic auth for internal services.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "auth-1.md"), []byte(oldFile), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 re-ingested learning, got %d", count)
+	}
+
+	page, err := s.GetPage("learning/auth-1")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("learning/auth-1 should exist after re-ingestion")
+	}
+
+	// Verify properties do NOT contain "author" key (old format has no author).
+	if strings.Contains(page.Properties, `"author"`) {
+		t.Errorf("old-format learning should not have author in properties, got %s", page.Properties)
+	}
+	// Verify tag is preserved.
+	if !strings.Contains(page.Properties, `"tag":"auth"`) {
+		t.Errorf("properties should contain tag, got %s", page.Properties)
+	}
+}
+
+// TestReIngestLearnings_MixedFormats verifies that a learnings directory
+// containing both old-format (tag-N.md) and new-format
+// (tag-YYYYMMDDTHHMMSS-author.md) files are all re-ingested correctly.
+func TestReIngestLearnings_MixedFormats(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Old-format files (no author).
+	old1 := `---
+tag: auth
+category: decision
+created_at: 2026-04-20T09:00:00Z
+identity: auth-1
+tier: draft
+---
+
+Old auth learning 1.
+`
+	old2 := `---
+tag: deploy
+category: pattern
+created_at: 2026-04-20T10:00:00Z
+identity: deploy-2
+tier: draft
+---
+
+Old deploy learning 2.
+`
+	// New-format files (with author).
+	new1 := `---
+tag: auth
+category: gotcha
+created_at: 2026-04-21T14:30:22Z
+identity: auth-20260421T143022-alice
+tier: draft
+author: alice
+---
+
+New auth learning by alice.
+`
+	new2 := `---
+tag: deploy
+category: context
+created_at: 2026-04-21T15:00:00Z
+identity: deploy-20260421T150000-bob
+tier: draft
+author: bob
+---
+
+New deploy learning by bob.
+`
+	files := map[string]string{
+		"auth-1.md":                        old1,
+		"deploy-2.md":                      old2,
+		"auth-20260421T143022-alice.md":    new1,
+		"deploy-20260421T150000-bob.md":    new2,
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(learningsDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath)
+	if err != nil {
+		t.Fatalf("reIngestLearnings error: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("expected 4 re-ingested learnings, got %d", count)
+	}
+
+	// Verify old-format pages: no author in properties.
+	oldPage1, err := s.GetPage("learning/auth-1")
+	if err != nil {
+		t.Fatalf("GetPage(auth-1): %v", err)
+	}
+	if oldPage1 == nil {
+		t.Fatal("learning/auth-1 should exist")
+	}
+	if strings.Contains(oldPage1.Properties, `"author"`) {
+		t.Errorf("old-format auth-1 should not have author, got %s", oldPage1.Properties)
+	}
+
+	oldPage2, err := s.GetPage("learning/deploy-2")
+	if err != nil {
+		t.Fatalf("GetPage(deploy-2): %v", err)
+	}
+	if oldPage2 == nil {
+		t.Fatal("learning/deploy-2 should exist")
+	}
+	if strings.Contains(oldPage2.Properties, `"author"`) {
+		t.Errorf("old-format deploy-2 should not have author, got %s", oldPage2.Properties)
+	}
+
+	// Verify new-format pages: author in properties.
+	newPage1, err := s.GetPage("learning/auth-20260421T143022-alice")
+	if err != nil {
+		t.Fatalf("GetPage(auth-20260421T143022-alice): %v", err)
+	}
+	if newPage1 == nil {
+		t.Fatal("learning/auth-20260421T143022-alice should exist")
+	}
+	if !strings.Contains(newPage1.Properties, `"author":"alice"`) {
+		t.Errorf("new-format page should have author=alice, got %s", newPage1.Properties)
+	}
+
+	newPage2, err := s.GetPage("learning/deploy-20260421T150000-bob")
+	if err != nil {
+		t.Fatalf("GetPage(deploy-20260421T150000-bob): %v", err)
+	}
+	if newPage2 == nil {
+		t.Fatal("learning/deploy-20260421T150000-bob should exist")
+	}
+	if !strings.Contains(newPage2.Properties, `"author":"bob"`) {
+		t.Errorf("new-format page should have author=bob, got %s", newPage2.Properties)
+	}
 }
 
 // TestParseLearningFrontmatter verifies the YAML frontmatter parser
@@ -1179,8 +1385,9 @@ func TestParseLearningFrontmatter(t *testing.T) {
 tag: authentication
 category: decision
 created_at: 2026-04-21T10:30:00Z
-identity: authentication-3
+identity: authentication-20260421T103000-alice
 tier: draft
+author: alice
 ---
 
 OAuth tokens should be rotated every 24 hours.
@@ -1199,11 +1406,14 @@ OAuth tokens should be rotated every 24 hours.
 	if fm.CreatedAt != "2026-04-21T10:30:00Z" {
 		t.Errorf("created_at = %q, want %q", fm.CreatedAt, "2026-04-21T10:30:00Z")
 	}
-	if fm.Identity != "authentication-3" {
-		t.Errorf("identity = %q, want %q", fm.Identity, "authentication-3")
+	if fm.Identity != "authentication-20260421T103000-alice" {
+		t.Errorf("identity = %q, want %q", fm.Identity, "authentication-20260421T103000-alice")
 	}
 	if fm.Tier != "draft" {
 		t.Errorf("tier = %q, want %q", fm.Tier, "draft")
+	}
+	if fm.Author != "alice" {
+		t.Errorf("author = %q, want %q", fm.Author, "alice")
 	}
 	if !strings.Contains(body, "OAuth tokens should be rotated") {
 		t.Errorf("body = %q, should contain learning text", body)

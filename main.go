@@ -1027,6 +1027,7 @@ type learningFrontmatter struct {
 	CreatedAt string `yaml:"created_at"`
 	Identity  string `yaml:"identity"`
 	Tier      string `yaml:"tier"`
+	Author    string `yaml:"author"`
 }
 
 // reIngestLearnings scans the learnings directory for markdown files and
@@ -1105,6 +1106,9 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 		}
 		if fm.Category != "" {
 			propsMap["category"] = fm.Category
+		}
+		if fm.Author != "" {
+			propsMap["author"] = fm.Author
 		}
 		propsJSON, err := json.Marshal(propsMap)
 		if err != nil {

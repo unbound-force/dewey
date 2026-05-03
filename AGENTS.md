@@ -342,8 +342,10 @@ The `store_learning` MCP tool stores knowledge with temporal awareness:
 - **`tag`** (required): Topic namespace (e.g., `authentication`, `vault-walker`). Used for clustering and identity.
 - **`category`** (optional): One of `decision`, `pattern`, `gotcha`, `context`, `reference`. Guides compilation strategy.
 - **`information`** (required): Natural language paragraph describing the learning.
-- **Returns**: `{tag}-{sequence}` identity (e.g., `authentication-3`), auto-incremented per tag.
-- **Automatic fields**: `created_at` (ISO 8601), `tier` (defaults to `draft`).
+- **Returns**: `{tag}-{YYYYMMDDTHHMMSS}-{author}` identity (e.g., `authentication-20260502T143022-alice`), using UTC timestamps and resolved author identity.
+- **Automatic fields**: `created_at` (ISO 8601), `tier` (defaults to `draft`), `author` (resolved via three-tier fallback: `DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`).
+
+Set `DEWEY_AUTHOR` to override the default author identity (useful in CI or shared environments where git config may not be available).
 
 Backward compatibility: the old `tags` (plural, comma-separated) field is still accepted — the first tag is used.
 
@@ -386,7 +388,7 @@ Curated files are automatically indexed as a `knowledge-{store-name}` source wit
 
 ### File-Backed Learnings
 
-Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{seq}.md`. This ensures learnings survive `graph.db` deletion — on startup, orphaned markdown files are re-ingested automatically.
+Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{YYYYMMDDTHHMMSS}-{author}.md`. This ensures learnings survive `graph.db` deletion — on startup, orphaned markdown files are re-ingested automatically.
 
 ### Background Curation
 
@@ -532,6 +534,7 @@ specs/
 - N/A (no schema changes — `curated` is a new value in the existing `tier TEXT` column. File-backed learnings use filesystem, not new tables) (015-curated-knowledge-stores)
 
 ## Recent Changes
+- learning-identity-collision-fix (OpenSpec): Changed learning identity format from `{tag}-{sequence}` to `{tag}-{YYYYMMDDTHHMMSS}-{author}` with three-tier author resolution (`DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`), sub-second collision avoidance via `O_CREATE|O_EXCL` with suffix fallback, removed `NextLearningSequence` from store, backward-compatible re-ingestion of old-format files
 - 015-curated-knowledge-stores: Added `curate/` package (config parsing + curation pipeline), `dewey curate` CLI command, `curate` MCP tool, file-backed learnings (`.uf/dewey/learnings/`), `curated` trust tier, knowledge stores (`.uf/dewey/knowledge-stores.yaml`), background curation goroutine, lint knowledge store quality metrics
 - 012-background-index: Added Go 1.25 (per `go.mod`) + `sync/atomic` (readiness flag), `sync` (shared mutex)
 - 002-quality-ratchets: Added Go 1.25 (per `go.mod`)

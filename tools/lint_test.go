@@ -37,10 +37,14 @@ func lintSummary(t *testing.T, parsed map[string]any) map[string]any {
 
 // storeLearningForLint is a test helper that inserts a learning page with
 // a single block directly into the store, with explicit control over
-// created_at for stale decision testing.
+// created_at for stale decision testing. Uses new-format identities
+// ({tag}-{timestamp}-{author}) and includes "tag" in properties JSON.
 func storeLearningForLint(t *testing.T, s *store.Store, tag string, seq int, category string, content string, createdAt time.Time) {
 	t.Helper()
-	identity := fmt.Sprintf("%s-%d", tag, seq)
+	// Use new-format identity: {tag}-{YYYYMMDDTHHMMSS}-test.
+	// The seq parameter is used to offset the timestamp for uniqueness.
+	ts := createdAt.Add(time.Duration(seq) * time.Second).UTC().Format("20060102T150405")
+	identity := fmt.Sprintf("%s-%s-test", tag, ts)
 	pageName := "learning/" + identity
 
 	page := &store.Page{
@@ -175,8 +179,9 @@ func TestLint_StaleDecision(t *testing.T) {
 		}
 		if finding["type"] == "stale_decision" {
 			foundStale = true
-			if finding["identity"] != "auth-config-1" {
-				t.Errorf("stale identity = %v, want 'auth-config-1'", finding["identity"])
+			id, _ := finding["identity"].(string)
+			if !strings.HasPrefix(id, "auth-config-") {
+				t.Errorf("stale identity = %v, want prefix 'auth-config-'", finding["identity"])
 			}
 			desc, _ := finding["description"].(string)
 			if !strings.Contains(desc, "45 days old") {
@@ -207,8 +212,12 @@ func TestLint_StaleDecision_ValidatedSkipped(t *testing.T) {
 	staleDate := time.Now().Add(-45 * 24 * time.Hour)
 	storeLearningForLint(t, s, "auth-config", 1, "decision", "Use basic auth", staleDate)
 
+	// Construct the page name using the same identity format as storeLearningForLint.
+	ts := staleDate.Add(1 * time.Second).UTC().Format("20060102T150405")
+	pageName := fmt.Sprintf("learning/auth-config-%s-test", ts)
+
 	// Promote it to validated — should no longer be flagged.
-	if err := s.UpdatePageTier("learning/auth-config-1", "validated"); err != nil {
+	if err := s.UpdatePageTier(pageName, "validated"); err != nil {
 		t.Fatalf("UpdatePageTier: %v", err)
 	}
 
@@ -236,13 +245,16 @@ func TestLint_UncompiledLearnings(t *testing.T) {
 	storeLearningForLint(t, s, "auth", 2, "decision", "Auth content 2", now)
 	storeLearningForLint(t, s, "deploy", 1, "pattern", "Deploy content", now)
 
-	// Create a compiled article that references auth-1 only.
+	// Construct the identity for auth seq=1 to reference in compiled sources.
+	authID1 := fmt.Sprintf("auth-%s-test", now.Add(1*time.Second).UTC().Format("20060102T150405"))
+
+	// Create a compiled article that references auth seq=1 only.
 	compiledPage := &store.Page{
 		Name:         "compiled/auth",
 		OriginalName: "Auth",
 		SourceID:     "compiled",
 		SourceDocID:  "auth",
-		Properties:   `{"sources":["auth-1"],"topic":"auth"}`,
+		Properties:   fmt.Sprintf(`{"sources":["%s"],"topic":"auth"}`, authID1),
 		Tier:         "draft",
 	}
 	if err := s.InsertPage(compiledPage); err != nil {
@@ -257,32 +269,41 @@ func TestLint_UncompiledLearnings(t *testing.T) {
 	parsed := parseLintResult(t, resultText(result))
 	summary := lintSummary(t, parsed)
 
-	// auth-2 and deploy-1 are uncompiled (auth-1 is referenced).
+	// auth seq=2 and deploy seq=1 are uncompiled (auth seq=1 is referenced).
 	if summary["uncompiled_learnings"] != float64(2) {
 		t.Errorf("uncompiled_learnings = %v, want 2", summary["uncompiled_learnings"])
 	}
 
-	// Verify specific identities in findings.
+	// Verify findings contain the expected uncompiled identities.
 	findings, _ := parsed["findings"].([]any)
-	uncompiledIdentities := make(map[string]bool)
+	uncompiledCount := 0
+	foundAuthUncompiled := false
+	foundDeployUncompiled := false
 	for _, f := range findings {
 		finding, ok := f.(map[string]any)
 		if !ok {
 			continue
 		}
 		if finding["type"] == "uncompiled" {
+			uncompiledCount++
 			id, _ := finding["identity"].(string)
-			uncompiledIdentities[id] = true
+			if strings.HasPrefix(id, "auth-") {
+				foundAuthUncompiled = true
+			}
+			if strings.HasPrefix(id, "deploy-") {
+				foundDeployUncompiled = true
+			}
+			// The referenced auth learning should NOT appear.
+			if id == authID1 {
+				t.Errorf("%s should NOT be reported as uncompiled (it's in compiled sources)", authID1)
+			}
 		}
 	}
-	if !uncompiledIdentities["auth-2"] {
-		t.Error("expected auth-2 to be reported as uncompiled")
+	if !foundAuthUncompiled {
+		t.Error("expected an auth learning to be reported as uncompiled")
 	}
-	if !uncompiledIdentities["deploy-1"] {
-		t.Error("expected deploy-1 to be reported as uncompiled")
-	}
-	if uncompiledIdentities["auth-1"] {
-		t.Error("auth-1 should NOT be reported as uncompiled (it's in compiled sources)")
+	if !foundDeployUncompiled {
+		t.Error("expected a deploy learning to be reported as uncompiled")
 	}
 }
 
@@ -640,13 +661,16 @@ func TestLint_AllChecksClean(t *testing.T) {
 	now := time.Now()
 	storeLearningForLint(t, s, "test", 1, "pattern", "A pattern", now)
 
+	// Construct the identity for test seq=1 to reference in compiled sources.
+	testID := fmt.Sprintf("test-%s-test", now.Add(1*time.Second).UTC().Format("20060102T150405"))
+
 	// Create a compiled article referencing it.
 	compiledPage := &store.Page{
 		Name:         "compiled/test",
 		OriginalName: "Test",
 		SourceID:     "compiled",
 		SourceDocID:  "test",
-		Properties:   `{"sources":["test-1"],"topic":"test"}`,
+		Properties:   fmt.Sprintf(`{"sources":["%s"],"topic":"test"}`, testID),
 		Tier:         "draft",
 	}
 	if err := s.InsertPage(compiledPage); err != nil {

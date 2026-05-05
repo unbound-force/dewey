@@ -1,6 +1,7 @@
 // Package embed provides interfaces and implementations for generating
-// vector embeddings from text content. The primary implementation uses
-// Ollama's HTTP API for local model inference.
+// vector embeddings from text content. Implementations include OllamaEmbedder
+// (local inference via Ollama HTTP API) and VertexEmbedder (Google Vertex AI
+// prediction API with application-default credentials).
 package embed
 
 import (

@@ -2,7 +2,7 @@
 
 Knowledge graph MCP server that gives AI full access to your knowledge graph. Supports **Logseq** and **Obsidian** — both with full read-write support. Navigate pages, search blocks, analyze link structure, track decisions, manage flashcards, compile knowledge, curate knowledge stores, and write content — all through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
+Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable LLM providers (Ollama, Vertex AI), pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
 
 Built in Go with the [official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk).
 
@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-49 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+50 tools across 16 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 ### Navigate
 
@@ -119,6 +119,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 | Tool | Backend | Description |
 |------|---------|-------------|
 | `compile` | Both | Synthesize stored learnings into compiled knowledge articles |
+| `store_compiled` | Both | Persist a compiled article synthesized by the calling agent |
 
 ### Lint
 
@@ -520,13 +521,11 @@ Dewey respects `.gitignore` files at the root of each source directory. Addition
 
 ## Semantic Search Setup
 
-Semantic search requires [Ollama](https://ollama.ai) running locally. All keyword-based tools work without it — only the 3 semantic search tools (`semantic_search`, `similar`, `semantic_search_filtered`) require Ollama.
+Semantic search requires an embedding provider. Dewey defaults to [Ollama](https://ollama.ai) running locally, but also supports [Google Vertex AI](#vertex-ai-provider). All keyword-based tools work without an embedding provider — only the 3 semantic search tools (`semantic_search`, `similar`, `semantic_search_filtered`) require one.
 
-### Ollama Auto-Start
+### Ollama (Default)
 
 Dewey auto-starts Ollama if it's installed but not running. No manual `ollama serve` needed — Dewey detects Ollama's state (External/Managed/Unavailable) and starts a subprocess if necessary. The subprocess is detached so it outlives Dewey.
-
-### Install Ollama and pull the embedding model
 
 ```bash
 brew install --cask ollama-app  # macOS — or download from https://ollama.ai
@@ -539,20 +538,78 @@ ollama pull granite-embedding:30m   # IBM Granite, 63 MB, Apache 2.0
 dewey status
 ```
 
-The output shows embedding coverage. If Ollama is running and the model is pulled, you'll see embedding stats. If Ollama is unavailable, Dewey logs a warning at startup and disables semantic search — all other tools continue to work normally.
+The output shows embedding coverage. If Ollama is running and the model is pulled, you'll see embedding stats. If the provider is unavailable, Dewey logs a warning at startup and disables semantic search — all other tools continue to work normally.
 
-### Configuration
+### Provider Configuration
 
-The embedding model and endpoint are configurable via environment variables or `.uf/dewey/config.yaml`:
+Embedding and synthesis providers are configurable via `.uf/dewey/config.yaml`:
+
+```yaml
+# Ollama (default — no config needed if defaults are fine)
+embedding:
+  provider: ollama
+  model: granite-embedding:30m
+  endpoint: http://localhost:11434
+
+# Vertex AI — for cloud-powered embeddings or synthesis
+embedding:
+  provider: vertex
+  model: text-embedding-005
+  project: my-gcp-project
+  region: us-central1
+
+synthesis:
+  provider: vertex
+  model: claude-sonnet-4-6
+  project: my-gcp-project
+  region: us-east5
+```
+
+You can mix providers — e.g., Ollama for embeddings (fast, local) and Vertex AI for synthesis (high quality):
+
+```yaml
+embedding:
+  provider: ollama
+  model: granite-embedding:30m
+
+synthesis:
+  provider: vertex
+  model: claude-sonnet-4-6
+  project: my-gcp-project
+  region: us-east5
+```
+
+#### Vertex AI Provider
+
+Vertex AI requires Google Cloud application-default credentials:
+
+```bash
+gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform
+```
+
+Set `project` and `region` in your config to match your GCP setup. Vertex AI embedding models (e.g., `text-embedding-005`) and Claude synthesis models (e.g., `claude-sonnet-4-6`) must be enabled in your GCP project.
+
+**Note**: Switching embedding providers changes vector dimensions. Run `dewey reindex` after changing the embedding model.
+
+#### Global Config
+
+Create `~/.config/dewey/config.yaml` (or `$XDG_CONFIG_HOME/dewey/config.yaml`) to set defaults for all vaults. Per-vault config overrides global.
+
+#### Environment Variables
+
+Environment variables override config file values for embedding. For synthesis, they serve as fallbacks when no config exists.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama model name |
-| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
+| `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Embedding model (overrides config) |
+| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Embedding API endpoint (overrides config) |
+| `DEWEY_GENERATION_MODEL` | *(none)* | Synthesis model (fallback when no config) |
 
 ## Knowledge Compilation
 
 Dewey can synthesize stored learnings into compiled knowledge articles using an LLM. The `compile` tool reads all learnings, clusters them by topic tag, and produces current-state articles that resolve temporal contradictions — newer facts replace older ones, while non-contradicted information carries forward.
+
+Agents can also compile knowledge directly: call `compile` to receive synthesis prompts, perform synthesis with any model, then call `store_compiled` to persist the result with provenance tracking. This enables agent-driven compilation without requiring a local LLM.
 
 ### Trust Tiers
 
@@ -600,7 +657,7 @@ When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexi
 main.go              Entry point — backend routing, MCP server startup
 cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
                      source, doctor, manifest, compile, lint, promote, curate
-server.go            MCP server setup — 49 tool registrations
+server.go            MCP server setup — 50 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
 vault/
@@ -628,15 +685,17 @@ graph/
 parser/content.go    Regex extraction of [[links]], ((refs)), #tags, properties
 types/
   logseq.go          Shared types with custom JSON unmarshaling
-  tools.go           Input types for all 49 tools
+  tools.go           Input types for all 50 tools
   semantic.go        Semantic search types
-llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, NoopSynthesizer)
+llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, NoopSynthesizer)
 store/
   store.go           SQLite persistence (pages, blocks, links, sources)
   embeddings.go      Vector embedding storage and cosine similarity search
   migrate.go         Schema migration management
 embed/
   embed.go           Embedder interface + Ollama implementation
+  vertex.go          Vertex AI embedding implementation
+  provider.go        Provider factory + config
   chunker.go         Block-to-chunk preparation with heading context
 source/
   source.go          Source interface definition

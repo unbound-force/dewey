@@ -795,26 +795,26 @@ func backgroundCuration(
 		}
 	}
 
-	// Create an OllamaSynthesizer for background curation.
-	// If Ollama is unavailable, skip background curation entirely —
-	// curation requires LLM synthesis to extract knowledge.
-	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
-	if embedEndpoint == "" {
-		embedEndpoint = "http://localhost:11434"
-	}
-	genModel := os.Getenv("DEWEY_GENERATION_MODEL")
-	if genModel == "" {
-		genModel = "llama3.2:3b"
-	}
-
-	synth := llm.NewOllamaSynthesizer(embedEndpoint, genModel)
-	if !synth.Available() {
-		logger.Info("background curation skipped — generation model not available",
-			"model", genModel, "endpoint", embedEndpoint)
+	// Create synthesizer for background curation from config.
+	// If no provider is configured or unavailable, skip background curation.
+	synthCfg := llm.ReadSynthesisConfig(filepath.Join(vaultPath, deweyWorkspaceDir))
+	if synthCfg.Model == "" {
+		logger.Info("background curation skipped — no synthesis model configured")
 		return
 	}
 
-	logger.Info("background curation ready", "model", genModel)
+	synth, synthErr := llm.NewSynthesizerFromConfig(synthCfg)
+	if synthErr != nil {
+		logger.Warn("background curation skipped — synthesis provider error", "err", synthErr)
+		return
+	}
+	if !synth.Available() {
+		logger.Info("background curation skipped — synthesis model not available",
+			"provider", synthCfg.Provider, "model", synthCfg.Model)
+		return
+	}
+
+	logger.Info("background curation ready", "provider", synthCfg.Provider, "model", synthCfg.Model)
 
 	// Create per-store tickers with configurable intervals (FR-018).
 	// Each store runs on its own schedule.

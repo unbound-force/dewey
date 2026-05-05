@@ -823,3 +823,249 @@ func TestCompile_CompiledArticleFormat(t *testing.T) {
 		t.Error("article missing category in history table")
 	}
 }
+
+// --- StoreCompiled tests ---
+
+func TestStoreCompiled_Basic(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	vaultPath := t.TempDir()
+	c := NewCompile(s, nil, nil, vaultPath)
+
+	input := types.StoreCompiledInput{
+		Tag:     "authentication",
+		Content: "# Authentication\n\nCompiled article about auth patterns.",
+		Sources: []string{"auth-1", "auth-3"},
+		Model:   "claude-opus-4-6",
+	}
+
+	result, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreCompiled returned error: %s", resultText(result))
+	}
+
+	// Verify page was inserted.
+	page, err := s.GetPage("compiled/authentication")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("compiled page not found in store")
+	}
+	if page.SourceID != "compiled" {
+		t.Errorf("SourceID = %q, want compiled", page.SourceID)
+	}
+	if page.Tier != "draft" {
+		t.Errorf("Tier = %q, want draft", page.Tier)
+	}
+
+	// Verify file was written.
+	articlePath := filepath.Join(vaultPath, ".uf", "dewey", "compiled", "authentication.md")
+	data, err := os.ReadFile(articlePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	article := string(data)
+	if !strings.Contains(article, "compiled_by: claude-opus-4-6") {
+		t.Error("article missing compiled_by in frontmatter")
+	}
+	if !strings.Contains(article, "auth-1") {
+		t.Error("article missing source auth-1 in frontmatter")
+	}
+	if !strings.Contains(article, "Compiled article about auth patterns") {
+		t.Error("article missing content body")
+	}
+}
+
+func TestStoreCompiled_ResponseBody(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	c := NewCompile(s, nil, nil, t.TempDir())
+	input := types.StoreCompiledInput{
+		Tag:     "auth",
+		Content: "Test article.",
+		Sources: []string{"auth-1", "auth-3"},
+		Model:   "claude-opus-4-6",
+	}
+
+	result, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+
+	text := resultText(result)
+	parsed := parseCompileResult(t, text)
+
+	if parsed["status"] != "stored" {
+		t.Errorf("status = %v, want stored", parsed["status"])
+	}
+	if parsed["tag"] != "auth" {
+		t.Errorf("tag = %v, want auth", parsed["tag"])
+	}
+	if parsed["page"] != "compiled/auth" {
+		t.Errorf("page = %v, want compiled/auth", parsed["page"])
+	}
+	if parsed["compiled_by"] != "claude-opus-4-6" {
+		t.Errorf("compiled_by = %v, want claude-opus-4-6", parsed["compiled_by"])
+	}
+}
+
+func TestIsValidTag(t *testing.T) {
+	tests := []struct {
+		tag   string
+		valid bool
+	}{
+		{"auth", true},
+		{"vault-walker", true},
+		{"my_tag_123", true},
+		{"ABC", true},
+		{"", false},
+		{"../evil", false},
+		{"auth/sub", false},
+		{"tag.dot", false},
+		{"has space", false},
+		{"null\x00byte", false},
+		{"back\\slash", false},
+	}
+	for _, tt := range tests {
+		got := isValidTag(tt.tag)
+		if got != tt.valid {
+			t.Errorf("isValidTag(%q) = %v, want %v", tt.tag, got, tt.valid)
+		}
+	}
+}
+
+func TestStoreCompiled_MissingTag(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	c := NewCompile(s, nil, nil, t.TempDir())
+	input := types.StoreCompiledInput{
+		Content: "some content",
+	}
+
+	result, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing tag")
+	}
+}
+
+func TestStoreCompiled_MissingContent(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	c := NewCompile(s, nil, nil, t.TempDir())
+	input := types.StoreCompiledInput{
+		Tag: "auth",
+	}
+
+	result, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for missing content")
+	}
+}
+
+func TestStoreCompiled_NoModelProvenance(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	vaultPath := t.TempDir()
+	c := NewCompile(s, nil, nil, vaultPath)
+
+	input := types.StoreCompiledInput{
+		Tag:     "auth",
+		Content: "Article without model provenance.",
+	}
+
+	result, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if result.IsError {
+		t.Fatal("unexpected error result")
+	}
+
+	// Verify no compiled_by in frontmatter.
+	articlePath := filepath.Join(vaultPath, ".uf", "dewey", "compiled", "auth.md")
+	data, err := os.ReadFile(articlePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "compiled_by") {
+		t.Error("frontmatter should not contain compiled_by when model is empty")
+	}
+}
+
+func TestStoreCompiled_PathTraversalRejected(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	c := NewCompile(s, nil, nil, t.TempDir())
+
+	badTags := []string{"../etc/passwd", "auth/evil", "tag\x00bad", "a.b", "tag with spaces"}
+	for _, tag := range badTags {
+		input := types.StoreCompiledInput{
+			Tag:     tag,
+			Content: "test",
+		}
+		result, _, err := c.StoreCompiled(context.Background(), nil, input)
+		if err != nil {
+			t.Fatalf("StoreCompiled(%q): %v", tag, err)
+		}
+		if !result.IsError {
+			t.Errorf("expected error for tag %q (path traversal)", tag)
+		}
+	}
+}
+
+func TestStoreCompiled_OverwriteExisting(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	vaultPath := t.TempDir()
+	c := NewCompile(s, nil, nil, vaultPath)
+
+	// Store first version.
+	input1 := types.StoreCompiledInput{
+		Tag:     "auth",
+		Content: "Version 1",
+	}
+	result1, _, _ := c.StoreCompiled(context.Background(), nil, input1)
+	if result1.IsError {
+		t.Fatal("first store failed")
+	}
+
+	// Store second version — should overwrite.
+	input2 := types.StoreCompiledInput{
+		Tag:     "auth",
+		Content: "Version 2",
+	}
+	result2, _, _ := c.StoreCompiled(context.Background(), nil, input2)
+	if result2.IsError {
+		t.Fatal("second store failed")
+	}
+
+	// Verify file has second version.
+	articlePath := filepath.Join(vaultPath, ".uf", "dewey", "compiled", "auth.md")
+	data, err := os.ReadFile(articlePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "Version 2") {
+		t.Error("article should contain Version 2")
+	}
+	if strings.Contains(string(data), "Version 1") {
+		t.Error("article should not contain Version 1 (overwritten)")
+	}
+}

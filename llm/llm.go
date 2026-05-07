@@ -1,14 +1,16 @@
 // Package llm provides interfaces and implementations for generating
-// natural language text from structured prompts. The primary implementation
-// uses Ollama's HTTP API for local model inference via POST /api/generate.
+// natural language text from structured prompts. Implementations include
+// OllamaSynthesizer (local inference via Ollama HTTP API) and
+// VertexSynthesizer (Google Vertex AI rawPredict API with Anthropic
+// Messages format).
 //
 // Design decision: Separate from embed.Embedder because embedding and
-// synthesis use different Ollama API endpoints (/api/embed vs /api/generate),
-// different models (embedding model vs generation model), and have different
-// error modes. Single Responsibility Principle.
+// synthesis use different API endpoints, different models, and have
+// different error modes. Single Responsibility Principle.
 //
 // This package is a leaf dependency — it MUST NOT import any other Dewey
-// packages. Only stdlib + charmbracelet/log are allowed.
+// packages. Only stdlib, charmbracelet/log, golang.org/x/oauth2, and
+// gopkg.in/yaml.v3 are allowed.
 package llm
 
 import (

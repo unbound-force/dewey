@@ -695,7 +695,7 @@ Fetches content from all configured sources and indexes it.`,
 			// Create embedder for embedding generation during indexing (R4).
 			// Hard error: if Ollama is unavailable and --no-embeddings is not set,
 			// indexing fails with an actionable error message.
-			embedder, err := createIndexEmbedder(noEmbeddings)
+			embedder, err := createIndexEmbedder(noEmbeddings, deweyDir)
 			if err != nil {
 				return err
 			}
@@ -836,7 +836,7 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
 			}
 
 			// Create embedder (hard error if unavailable, unless --no-embeddings).
-			embedder, err := createIndexEmbedder(noEmbeddings)
+			embedder, err := createIndexEmbedder(noEmbeddings, deweyDir)
 			if err != nil {
 				return err
 			}
@@ -909,49 +909,50 @@ func detectLockHolder(lockPath string) string {
 	return ""
 }
 
-// createIndexEmbedder creates an OllamaEmbedder for use during indexing,
-// using the same environment variables as `dewey serve` (per research R4).
-// When noEmbeddings is true, returns nil (no embedder). When false, attempts
-// to ensure Ollama is running (auto-start if needed) and checks model
-// availability. Returns nil when Ollama is unavailable (graceful degradation)
-// and a hard error only when Ollama is running but the model is not pulled.
-func createIndexEmbedder(noEmbeddings bool) (embed.Embedder, error) {
+// createIndexEmbedder creates an Embedder for use during indexing.
+// Reads provider configuration from the dewey workspace config.yaml,
+// falling back to environment variables and Ollama defaults.
+// When noEmbeddings is true, returns nil (no embedder). When the provider
+// is Ollama, attempts auto-start. Returns nil on graceful degradation
+// and a hard error only when the provider is available but the model is not.
+func createIndexEmbedder(noEmbeddings bool, deweyDirs ...string) (embed.Embedder, error) {
 	if noEmbeddings {
 		logger.Info("embeddings disabled via --no-embeddings")
 		return nil, nil
 	}
 
-	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
-	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
-	if embedModel == "" {
-		embedModel = "granite-embedding:30m"
+	// Read config from the dewey workspace directory.
+	// The config reader handles env var overrides and defaults.
+	var deweyDir string
+	if len(deweyDirs) > 0 {
+		deweyDir = deweyDirs[0]
 	}
-	if embedEndpoint == "" {
-		embedEndpoint = "http://localhost:11434"
+	cfg := embed.ReadEmbeddingConfig(deweyDir)
+
+	// For Ollama provider, ensure Ollama is running (auto-start if needed).
+	if cfg.Provider == "ollama" || cfg.Provider == "" {
+		ollamaState, err := ensureOllama(cfg.Endpoint, true, &execOllamaStarter{})
+		if err != nil {
+			logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
+		}
+		logger.Info("ollama state", "state", ollamaState, "endpoint", cfg.Endpoint)
+
+		if ollamaState == OllamaUnavailable {
+			logger.Info("semantic search unavailable — ollama not installed",
+				"install", "brew install ollama")
+			return nil, nil
+		}
 	}
 
-	// Ensure Ollama is running (auto-start if needed).
-	ollamaState, err := ensureOllama(embedEndpoint, true, &execOllamaStarter{})
+	embedder, err := embed.NewEmbedderFromConfig(cfg)
 	if err != nil {
-		logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
+		return nil, fmt.Errorf("embedding provider error: %w", err)
 	}
-	logger.Info("ollama state", "state", ollamaState, "endpoint", embedEndpoint)
-
-	if ollamaState == OllamaUnavailable {
-		// Graceful degradation: proceed without embeddings when Ollama is not installed.
-		logger.Info("semantic search unavailable — ollama not installed",
-			"install", "brew install ollama")
-		return nil, nil
-	}
-
-	// Ollama is running (External or Managed) — check model availability.
-	// This remains a hard error: the user has Ollama but hasn't pulled the model.
-	embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
 	if !embedder.Available() {
-		return nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey index --no-embeddings",
-			embedModel, embedEndpoint, embedModel)
+		return nil, fmt.Errorf("embedding model %q not available (provider: %s)\n\nTo skip embeddings:\n  dewey index --no-embeddings",
+			cfg.Model, cfg.Provider)
 	}
-	logger.Info("embedding model available for indexing", "model", embedModel)
+	logger.Info("embedding model available for indexing", "provider", cfg.Provider, "model", cfg.Model)
 	return embedder, nil
 }
 
@@ -1946,25 +1947,6 @@ func saveSourceConfig(sourcesPath string, existing []source.SourceConfig, newSou
 
 // --- Compile command (T034, 013-knowledge-compile Phase 7) ---
 
-// readCompileModel extracts the compile_model value from config.yaml
-// using simple line parsing (same approach as readEmbeddingModel).
-// Returns empty string if not configured — compile will run without
-// LLM synthesis, returning prompts only.
-func readCompileModel(deweyDir string) string {
-	configPath := filepath.Join(deweyDir, "config.yaml")
-	configData, err := os.ReadFile(configPath)
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(configData), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "compile_model:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "compile_model:"))
-		}
-	}
-	return ""
-}
-
 // newCompileCmd creates the `dewey compile` subcommand.
 // Synthesizes stored learnings into compiled knowledge articles.
 // Uses OllamaSynthesizer from config when available; otherwise returns
@@ -2009,28 +1991,25 @@ Examples:
 			defer func() { _ = s.Close() }()
 
 			// Create embedder (optional — used for semantic refinement).
-			embedder, err := createIndexEmbedder(false)
+			embedder, err := createIndexEmbedder(false, deweyDir)
 			if err != nil {
 				// Non-fatal for compile: proceed without embedder.
 				logger.Warn("embedder unavailable, compiling without semantic refinement", "err", err)
 			}
 
-			// Create synthesizer from config (CLI path uses Ollama).
+			// Create synthesizer from config.
 			var synth llm.Synthesizer
-			compileModel := readCompileModel(deweyDir)
-			if compileModel != "" {
-				embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
-				if embedEndpoint == "" {
-					embedEndpoint = "http://localhost:11434"
-				}
-				ollamaSynth := llm.NewOllamaSynthesizer(embedEndpoint, compileModel)
-				if ollamaSynth.Available() {
-					synth = ollamaSynth
-					logger.Info("compile model available", "model", compileModel)
+			synthCfg := llm.ReadSynthesisConfig(deweyDir)
+			if synthCfg.Model != "" {
+				s2, synthErr := llm.NewSynthesizerFromConfig(synthCfg)
+				if synthErr != nil {
+					logger.Warn("synthesis provider error, returning prompts only", "err", synthErr)
+				} else if s2.Available() {
+					synth = s2
+					logger.Info("synthesis model available", "provider", synthCfg.Provider, "model", synthCfg.Model)
 				} else {
-					logger.Warn("compile model not available, returning prompts only",
-						"model", compileModel,
-						"fix", fmt.Sprintf("ollama pull %s", compileModel))
+					logger.Warn("synthesis model not available, returning prompts only",
+						"provider", synthCfg.Provider, "model", synthCfg.Model)
 				}
 			}
 
@@ -2147,29 +2126,26 @@ Examples:
 			defer func() { _ = s.Close() }()
 
 			// Create embedder (optional).
-			embedder, err := createIndexEmbedder(noEmbeddings)
+			embedder, err := createIndexEmbedder(noEmbeddings, deweyDir)
 			if err != nil {
 				logger.Warn("embedder unavailable, curating without embeddings", "err", err)
 			}
 
-			// Create synthesizer from config (CLI path uses Ollama).
+			// Create synthesizer from config.
 			var synth llm.Synthesizer
-			compileModel := readCompileModel(deweyDir)
-			if compileModel != "" {
-				embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
-				if embedEndpoint == "" {
-					embedEndpoint = "http://localhost:11434"
-				}
-				ollamaSynth := llm.NewOllamaSynthesizer(embedEndpoint, compileModel)
-				if ollamaSynth.Available() {
-					synth = ollamaSynth
-					logger.Info("LLM model available for curation", "model", compileModel)
-				} else {
-					return fmt.Errorf("LLM unavailable. Ensure Ollama is running with a generation model.\nTo fix: ollama serve && ollama pull %s", compileModel)
-				}
-			} else {
-				return fmt.Errorf("LLM unavailable. Configure compile_model in .uf/dewey/config.yaml.\nTo fix: Add 'compile_model: llama3.2:3b' to config.yaml, then: ollama pull llama3.2:3b")
+			synthCfg := llm.ReadSynthesisConfig(deweyDir)
+			if synthCfg.Model == "" {
+				return fmt.Errorf("LLM unavailable. Configure synthesis provider in .uf/dewey/config.yaml.\nTo fix: Add 'synthesis:\\n  provider: ollama\\n  model: llama3.2:3b' or 'compile_model: llama3.2:3b'")
 			}
+			s2, synthErr := llm.NewSynthesizerFromConfig(synthCfg)
+			if synthErr != nil {
+				return fmt.Errorf("synthesis provider error: %w", synthErr)
+			}
+			if !s2.Available() {
+				return fmt.Errorf("synthesis model %q not available (provider: %s)", synthCfg.Model, synthCfg.Provider)
+			}
+			synth = s2
+			logger.Info("LLM model available for curation", "provider", synthCfg.Provider, "model", synthCfg.Model)
 
 			// Create pipeline and run curation.
 			pipeline := curate.NewPipeline(s, synth, embedder, vp)
@@ -2252,7 +2228,7 @@ Exit code 0 if clean, 1 if issues found.`,
 			// Create embedder (optional — used for fix mode and contradiction check).
 			var embedder embed.Embedder
 			if fix {
-				embedder, err = createIndexEmbedder(false)
+				embedder, err = createIndexEmbedder(false, deweyDir)
 				if err != nil {
 					logger.Warn("embedder unavailable, fix mode limited", "err", err)
 				}

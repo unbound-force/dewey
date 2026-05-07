@@ -296,6 +296,24 @@ type CompileInput struct {
 	Incremental []string `json:"incremental,omitempty" jsonschema:"Optional list of learning identities to compile incrementally (e.g., ['authentication-20260502T143022-alice']). When empty, performs full rebuild."`
 }
 
+// StoreCompiledInput is the input for the store_compiled MCP tool.
+// Allows an agent to persist a compiled article it synthesized from
+// compilation prompts returned by the compile tool.
+type StoreCompiledInput struct {
+	// Tag is the topic tag for the compiled article (e.g., "authentication").
+	Tag string `json:"tag" jsonschema:"Topic tag for the compiled article (e.g., authentication)"`
+
+	// Content is the compiled article content in markdown format.
+	Content string `json:"content" jsonschema:"The compiled article content (markdown)"`
+
+	// Sources lists the learning identities used to produce this article
+	// (e.g., ["auth-1", "auth-3", "auth-4"]).
+	Sources []string `json:"sources" jsonschema:"Learning identities that were compiled (e.g., auth-1, auth-3)"`
+
+	// Model identifies the model that performed the synthesis, for provenance.
+	Model string `json:"model,omitempty" jsonschema:"Model that performed synthesis (for provenance tracking)"`
+}
+
 // --- Curate tool inputs ---
 
 // CurateInput is the input for the dewey_curate MCP tool.

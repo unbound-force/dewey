@@ -673,3 +673,154 @@ func (c *Compile) writeEmptyIndex() error {
 	indexPath := filepath.Join(compiledDir, "_index.md")
 	return os.WriteFile(indexPath, []byte(content), 0o644)
 }
+
+// StoreCompiled persists a compiled article that was synthesized by the calling
+// agent. This closes the loop on the nil-synthesizer MCP path: the agent calls
+// compile → gets prompts → synthesizes → calls store_compiled to persist.
+func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input types.StoreCompiledInput) (*mcp.CallToolResult, any, error) {
+	if input.Tag == "" {
+		return errorResult("tag is required"), nil, nil
+	}
+	if input.Content == "" {
+		return errorResult("content is required"), nil, nil
+	}
+
+	// Validate tag to prevent path traversal (FR-010).
+	if !isValidTag(input.Tag) {
+		return errorResult("invalid tag: must contain only alphanumeric characters, hyphens, and underscores"), nil, nil
+	}
+
+	// Validate model to prevent YAML frontmatter injection.
+	if input.Model != "" && containsNewline(input.Model) {
+		return errorResult("invalid model: must not contain newlines or null bytes"), nil, nil
+	}
+
+	// Validate sources to prevent YAML frontmatter injection.
+	for _, s := range input.Sources {
+		if containsNewline(s) {
+			return errorResult("invalid source: must not contain newlines or null bytes"), nil, nil
+		}
+	}
+
+	// Filter empty source entries.
+	var sources []string
+	for _, s := range input.Sources {
+		if s != "" {
+			sources = append(sources, s)
+		}
+	}
+
+	// Build frontmatter.
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("tier: draft\n")
+	fmt.Fprintf(&sb, "compiled_at: %s\n", time.Now().UTC().Format(time.RFC3339))
+	if input.Model != "" {
+		fmt.Fprintf(&sb, "compiled_by: %s\n", input.Model)
+	}
+	if len(sources) > 0 {
+		sb.WriteString("sources:\n")
+		for _, s := range sources {
+			fmt.Fprintf(&sb, "  - %s\n", s)
+		}
+	}
+	fmt.Fprintf(&sb, "topic: %s\n", input.Tag)
+	sb.WriteString("---\n\n")
+	sb.WriteString(strings.TrimSpace(input.Content))
+	sb.WriteString("\n")
+
+	articleContent := sb.String()
+
+	// Write to filesystem.
+	compiledDir := c.compiledDir()
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		return errorResult(fmt.Sprintf("failed to create compiled directory: %v", err)), nil, nil
+	}
+	articlePath := filepath.Join(compiledDir, input.Tag+".md")
+	if err := os.WriteFile(articlePath, []byte(articleContent), 0o644); err != nil {
+		return errorResult(fmt.Sprintf("failed to write compiled article: %v", err)), nil, nil
+	}
+
+	// Persist in store.
+	pageName := "compiled/" + input.Tag
+	propsMap := map[string]any{
+		"topic":       input.Tag,
+		"compiled_at": time.Now().UTC().Format(time.RFC3339),
+		"tier":        "draft",
+	}
+	if input.Model != "" {
+		propsMap["compiled_by"] = input.Model
+	}
+	if len(sources) > 0 {
+		propsMap["sources"] = sources
+	}
+	propsJSON, err := json.Marshal(propsMap)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to marshal properties: %v", err)), nil, nil
+	}
+
+	// Delete existing compiled page for this tag if present.
+	_ = c.store.DeletePage(pageName)
+
+	page := &store.Page{
+		Name:         pageName,
+		OriginalName: input.Tag,
+		SourceID:     "compiled",
+		SourceDocID:  input.Tag,
+		Properties:   string(propsJSON),
+		Tier:         "draft",
+	}
+	if err := c.store.InsertPage(page); err != nil {
+		return errorResult(fmt.Sprintf("failed to insert compiled page: %v", err)), nil, nil
+	}
+
+	// Parse and persist blocks.
+	_, blocks := vault.ParseDocument(input.Tag, articleContent)
+	if err := vault.PersistBlocks(c.store, pageName, blocks, sql.NullString{}, 0); err != nil {
+		compileLogger.Warn("failed to persist compiled blocks", "tag", input.Tag, "err", err)
+	}
+
+	// Generate embeddings if available.
+	if c.embedder != nil && c.embedder.Available() {
+		vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil)
+	}
+
+	compileLogger.Info("stored compiled article", "tag", input.Tag, "path", articlePath)
+
+	result := map[string]any{
+		"status":  "stored",
+		"tag":     input.Tag,
+		"page":    pageName,
+		"path":    articlePath,
+		"sources": sources,
+	}
+	if input.Model != "" {
+		result["compiled_by"] = input.Model
+	}
+
+	res, err := jsonTextResult(result)
+	return res, nil, err
+}
+
+// containsNewline returns true if s contains any newline (\n, \r) or null byte
+// characters. Used to prevent YAML frontmatter injection via interpolated values.
+func containsNewline(s string) bool {
+	return strings.ContainsAny(s, "\n\r\x00")
+}
+
+// isValidTag checks that a tag contains only alphanumeric characters,
+// hyphens, and underscores. Prevents path traversal in filesystem paths
+// constructed from the tag (e.g., .uf/dewey/compiled/{tag}.md).
+func isValidTag(tag string) bool {
+	if len(tag) == 0 {
+		return false
+	}
+	for _, r := range tag {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if !isAlpha && !isDigit && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
+}

@@ -471,7 +471,12 @@ func registerCompileTools(srv *mcp.Server, compile *tools.Compile) int {
 		Description: "Synthesize stored learnings into compiled knowledge articles. Groups learnings by topic, resolves contradictions temporally, and produces current-state articles with history.",
 	}, compile.Compile)
 
-	return 1
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "store_compiled",
+		Description: "Persist a compiled article that was synthesized by the calling agent. Use after calling compile (which returns synthesis prompts) and performing the synthesis yourself.",
+	}, compile.StoreCompiled)
+
+	return 2
 }
 
 // registerCurateTools registers the curate MCP tool for extracting

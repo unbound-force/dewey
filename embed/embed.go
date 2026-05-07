@@ -1,6 +1,7 @@
 // Package embed provides interfaces and implementations for generating
-// vector embeddings from text content. The primary implementation uses
-// Ollama's HTTP API for local model inference.
+// vector embeddings from text content. Implementations include OllamaEmbedder
+// (local inference via Ollama HTTP API) and VertexEmbedder (Google Vertex AI
+// prediction API with application-default credentials).
 package embed
 
 import (
@@ -10,9 +11,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/log"
 )
+
+// embedLogger is the package-level structured logger for embed operations.
+var embedLogger = log.NewWithOptions(os.Stderr, log.Options{
+	Prefix:          "dewey/embed",
+	ReportTimestamp: true,
+	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+})
+
+// SetLogLevel sets the logging level for the embed package.
+// Use log.DebugLevel for verbose output during diagnostics.
+func SetLogLevel(level log.Level) {
+	embedLogger.SetLevel(level)
+}
+
+// SetLogOutput replaces the embed package logger with one that writes to
+// the given writer at the given level. Used to enable file logging.
+func SetLogOutput(w io.Writer, level log.Level) {
+	newLogger := log.NewWithOptions(w, log.Options{
+		Prefix:          "dewey/embed",
+		Level:           level,
+		ReportTimestamp: true,
+		TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
+	})
+	*embedLogger = *newLogger
+}
 
 // Embedder generates vector embeddings from text. Implementations must be
 // safe for concurrent use. The interface abstracts the embedding provider,

@@ -3,6 +3,7 @@ package embed
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +61,9 @@ func TestNewEmbedderFromConfig_VertexMissingProject(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing project")
 	}
+	if !strings.Contains(err.Error(), "project") {
+		t.Errorf("error = %q, want to contain 'project'", err.Error())
+	}
 }
 
 func TestNewEmbedderFromConfig_VertexMissingRegion(t *testing.T) {
@@ -72,6 +76,9 @@ func TestNewEmbedderFromConfig_VertexMissingRegion(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing region")
 	}
+	if !strings.Contains(err.Error(), "region") {
+		t.Errorf("error = %q, want to contain 'region'", err.Error())
+	}
 }
 
 func TestNewEmbedderFromConfig_UnknownProvider(t *testing.T) {
@@ -81,6 +88,9 @@ func TestNewEmbedderFromConfig_UnknownProvider(t *testing.T) {
 	_, err := NewEmbedderFromConfig(cfg)
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error = %q, want to contain 'unsupported'", err.Error())
 	}
 }
 

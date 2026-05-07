@@ -226,6 +226,29 @@ func TestNewVertexSynthesizer_MissingModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing model")
 	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Errorf("error = %q, want to contain 'model'", err.Error())
+	}
+}
+
+func TestVertexSynthesizer_Retry429ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	v := newTestVertexSynth(srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	_, err := v.Synthesize(ctx, "test")
+	if err == nil {
+		t.Fatal("expected error when context is cancelled")
+	}
 }
 
 // newTestVertexSynth creates a VertexSynthesizer that routes requests to

@@ -3,6 +3,7 @@ package llm
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,6 +61,9 @@ func TestNewSynthesizerFromConfig_VertexMissingProject(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing project")
 	}
+	if !strings.Contains(err.Error(), "project") {
+		t.Errorf("error = %q, want to contain 'project'", err.Error())
+	}
 }
 
 func TestNewSynthesizerFromConfig_VertexMissingRegion(t *testing.T) {
@@ -72,6 +76,9 @@ func TestNewSynthesizerFromConfig_VertexMissingRegion(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing region")
 	}
+	if !strings.Contains(err.Error(), "region") {
+		t.Errorf("error = %q, want to contain 'region'", err.Error())
+	}
 }
 
 func TestNewSynthesizerFromConfig_UnknownProvider(t *testing.T) {
@@ -81,6 +88,9 @@ func TestNewSynthesizerFromConfig_UnknownProvider(t *testing.T) {
 	_, err := NewSynthesizerFromConfig(cfg)
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("error = %q, want to contain 'unsupported'", err.Error())
 	}
 }
 

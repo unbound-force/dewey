@@ -320,6 +320,9 @@ func TestNewVertexEmbedder_MissingModel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing model")
 	}
+	if !strings.Contains(err.Error(), "model") {
+		t.Errorf("error = %q, want to contain 'model'", err.Error())
+	}
 }
 
 // newTestVertexEmbedder creates a VertexEmbedder that routes requests to

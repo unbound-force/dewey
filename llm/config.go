@@ -47,6 +47,7 @@ func readConfigFile(dir string) *configFile {
 	}
 	var cfg configFile
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		logger.Warn("failed to parse config.yaml, using defaults", "path", filepath.Join(dir, "config.yaml"), "err", err)
 		return nil
 	}
 	return &cfg

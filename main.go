@@ -95,6 +95,8 @@ func newRootCmd() *cobra.Command {
 				source.SetLogLevel(log.DebugLevel)
 				ignore.SetLogLevel(log.DebugLevel)
 				store.SetLogLevel(log.DebugLevel)
+				embed.SetLogLevel(log.DebugLevel)
+				llm.SetLogLevel(log.DebugLevel)
 			}
 			if logFile != "" {
 				if err := setupFileLogging(logFile, verbose); err != nil {
@@ -186,6 +188,8 @@ func setupFileLogging(path string, verbose bool) error {
 	source.SetLogOutput(multi, level)
 	ignore.SetLogOutput(multi, level)
 	store.SetLogOutput(multi, level)
+	embed.SetLogOutput(multi, level)
+	llm.SetLogOutput(multi, level)
 
 	fileLoggingEnabled = true
 	logger.Info("file logging enabled", "path", path)
@@ -610,40 +614,41 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 	// Initialize embedder based on --no-embeddings flag.
 	// When noEmbeddings is true, skip embedder creation entirely.
 	// When false, require the embedding model to be available (hard error).
-	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
-	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
-	if embedModel == "" {
-		embedModel = "granite-embedding:30m"
-	}
-	if embedEndpoint == "" {
-		embedEndpoint = "http://localhost:11434"
-	}
+	embCfg := embed.ReadEmbeddingConfig(deweyDir)
 
-	var embedder *embed.OllamaEmbedder
+	var embedder embed.Embedder
 	if noEmbeddings {
 		logger.Info("embeddings disabled via --no-embeddings")
 	} else {
-		// Ensure Ollama is running (auto-start if needed).
-		ollamaStart := time.Now()
-		ollamaState, err := ensureOllama(embedEndpoint, true, &execOllamaStarter{})
-		if err != nil {
-			logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
-		}
-		logger.Info("ollama state", "state", ollamaState, "endpoint", embedEndpoint, "elapsed", time.Since(ollamaStart))
-
-		if ollamaState == OllamaUnavailable {
-			// Graceful degradation: keyword-only mode when Ollama is not installed.
-			logger.Info("semantic search unavailable — ollama not installed",
-				"install", "brew install ollama")
-		} else {
-			// Ollama is running (External or Managed) — check model availability.
-			// This remains a hard error: the user has Ollama but hasn't pulled the model.
-			embedder = embed.NewOllamaEmbedder(embedEndpoint, embedModel)
-			if !embedder.Available() {
-				return nil, nil, nil, nil, fmt.Errorf("embedding model %q not available at %s\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
-					embedModel, embedEndpoint, embedModel)
+		// For Ollama provider, ensure Ollama is running (auto-start if needed).
+		ollamaUnavailable := false
+		if embCfg.Provider == "ollama" || embCfg.Provider == "" {
+			ollamaStart := time.Now()
+			ollamaState, err := ensureOllama(embCfg.Endpoint, true, &execOllamaStarter{})
+			if err != nil {
+				logger.Warn("ollama auto-start failed, continuing without embeddings", "err", err)
 			}
-			logger.Info("embedding model available", "model", embedModel)
+			logger.Info("ollama state", "state", ollamaState, "endpoint", embCfg.Endpoint, "elapsed", time.Since(ollamaStart))
+
+			if ollamaState == OllamaUnavailable {
+				// Graceful degradation: keyword-only mode when Ollama is not installed.
+				logger.Info("semantic search unavailable — ollama not installed",
+					"install", "brew install ollama")
+				ollamaUnavailable = true
+			}
+		}
+
+		if !ollamaUnavailable {
+			e, err := embed.NewEmbedderFromConfig(embCfg)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("embedding provider error: %w", err)
+			}
+			if !e.Available() {
+				return nil, nil, nil, nil, fmt.Errorf("embedding model %q not available (provider: %s)\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
+					embCfg.Model, embCfg.Provider, embCfg.Model)
+			}
+			embedder = e
+			logger.Info("embedding model available", "provider", embCfg.Provider, "model", embCfg.Model)
 			srvOpts = append(srvOpts, WithEmbedder(embedder))
 		}
 	}

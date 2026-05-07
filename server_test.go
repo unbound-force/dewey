@@ -315,7 +315,7 @@ func TestNewServer_RegistersTools(t *testing.T) {
 		// Indexing
 		"index", "reindex",
 		// Knowledge compilation (013-knowledge-compile)
-		"compile", "lint", "promote",
+		"compile", "store_compiled", "lint", "promote", "curate",
 		// Health
 		"health",
 	}
@@ -362,7 +362,7 @@ func TestNewServer_ReadOnlyMode(t *testing.T) {
 		"bulk_update_properties", "link_pages",
 		// Learning, indexing, and knowledge compilation tools are also write-only.
 		"store_learning", "index", "reindex",
-		"compile", "lint", "promote",
+		"compile", "store_compiled", "lint", "promote", "curate",
 	}
 	for _, name := range writeTools {
 		if containsTool(tools, name) {

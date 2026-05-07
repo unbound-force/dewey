@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/log"
 	"golang.org/x/oauth2/google"
 )
 
@@ -134,7 +133,11 @@ func (v *VertexSynthesizer) Synthesize(ctx context.Context, prompt string) (stri
 	}
 
 	if statusCode != http.StatusOK {
-		return "", fmt.Errorf("vertex AI error (HTTP %d): %s", statusCode, string(respBody))
+		body := string(respBody)
+		if len(body) > 512 {
+			body = body[:512] + "... (truncated)"
+		}
+		return "", fmt.Errorf("vertex AI error (HTTP %d): %s", statusCode, body)
 	}
 
 	var result vertexSynthResponse
@@ -185,11 +188,15 @@ func (v *VertexSynthesizer) doRequestWithRetry(ctx context.Context, url string, 
 		}
 
 		if attempt == vertexSynthMaxRetries {
-			return 0, nil, fmt.Errorf("vertex AI rate limited (HTTP 429) after %d retries: %s", vertexSynthMaxRetries, string(respBody))
+			body := string(respBody)
+			if len(body) > 512 {
+				body = body[:512] + "... (truncated)"
+			}
+			return 0, nil, fmt.Errorf("vertex AI rate limited (HTTP 429) after %d retries: %s", vertexSynthMaxRetries, body)
 		}
 
 		delay := vertexSynthRetryDelay(attempt, resp.Header.Get("Retry-After"))
-		log.Warn("vertex AI rate limited, retrying", "attempt", attempt+1, "delay", delay)
+		logger.Warn("vertex AI rate limited, retrying", "attempt", attempt+1, "delay", delay)
 
 		select {
 		case <-ctx.Done():

@@ -859,8 +859,35 @@ func TestStoreCompiled_Basic(t *testing.T) {
 	if page.SourceID != "compiled" {
 		t.Errorf("SourceID = %q, want compiled", page.SourceID)
 	}
+	if page.SourceDocID != "authentication" {
+		t.Errorf("SourceDocID = %q, want authentication", page.SourceDocID)
+	}
 	if page.Tier != "draft" {
 		t.Errorf("Tier = %q, want draft", page.Tier)
+	}
+
+	// Verify Properties JSON contains expected fields.
+	var props map[string]any
+	if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+		t.Fatalf("unmarshal properties: %v", err)
+	}
+	if props["compiled_by"] != "claude-opus-4-6" {
+		t.Errorf("properties.compiled_by = %v, want claude-opus-4-6", props["compiled_by"])
+	}
+	if props["topic"] != "authentication" {
+		t.Errorf("properties.topic = %v, want authentication", props["topic"])
+	}
+	if props["tier"] != "draft" {
+		t.Errorf("properties.tier = %v, want draft", props["tier"])
+	}
+
+	// Verify blocks were persisted.
+	blocks, err := s.GetBlocksByPage("compiled/authentication")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+	if len(blocks) == 0 {
+		t.Error("expected blocks to be persisted for compiled page")
 	}
 
 	// Verify file was written.
@@ -913,6 +940,17 @@ func TestStoreCompiled_ResponseBody(t *testing.T) {
 	if parsed["compiled_by"] != "claude-opus-4-6" {
 		t.Errorf("compiled_by = %v, want claude-opus-4-6", parsed["compiled_by"])
 	}
+	if _, ok := parsed["path"]; !ok {
+		t.Error("response missing 'path' field")
+	}
+	sources, ok := parsed["sources"]
+	if !ok {
+		t.Error("response missing 'sources' field")
+	} else if srcList, ok := sources.([]any); ok {
+		if len(srcList) != 2 {
+			t.Errorf("sources length = %d, want 2", len(srcList))
+		}
+	}
 }
 
 func TestIsValidTag(t *testing.T) {
@@ -956,6 +994,10 @@ func TestStoreCompiled_MissingTag(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected error result for missing tag")
 	}
+	text := resultText(result)
+	if !strings.Contains(text, "tag is required") {
+		t.Errorf("error text = %q, want to contain 'tag is required'", text)
+	}
 }
 
 func TestStoreCompiled_MissingContent(t *testing.T) {
@@ -973,6 +1015,10 @@ func TestStoreCompiled_MissingContent(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Error("expected error result for missing content")
+	}
+	text := resultText(result)
+	if !strings.Contains(text, "content is required") {
+		t.Errorf("error text = %q, want to contain 'content is required'", text)
 	}
 }
 
@@ -1026,6 +1072,10 @@ func TestStoreCompiled_PathTraversalRejected(t *testing.T) {
 		if !result.IsError {
 			t.Errorf("expected error for tag %q (path traversal)", tag)
 		}
+		text := resultText(result)
+		if !strings.Contains(text, "invalid tag") {
+			t.Errorf("error text for tag %q = %q, want to contain 'invalid tag'", tag, text)
+		}
 	}
 }
 
@@ -1041,7 +1091,10 @@ func TestStoreCompiled_OverwriteExisting(t *testing.T) {
 		Tag:     "auth",
 		Content: "Version 1",
 	}
-	result1, _, _ := c.StoreCompiled(context.Background(), nil, input1)
+	result1, _, err := c.StoreCompiled(context.Background(), nil, input1)
+	if err != nil {
+		t.Fatalf("StoreCompiled (first): %v", err)
+	}
 	if result1.IsError {
 		t.Fatal("first store failed")
 	}
@@ -1051,7 +1104,10 @@ func TestStoreCompiled_OverwriteExisting(t *testing.T) {
 		Tag:     "auth",
 		Content: "Version 2",
 	}
-	result2, _, _ := c.StoreCompiled(context.Background(), nil, input2)
+	result2, _, err := c.StoreCompiled(context.Background(), nil, input2)
+	if err != nil {
+		t.Fatalf("StoreCompiled (second): %v", err)
+	}
 	if result2.IsError {
 		t.Fatal("second store failed")
 	}

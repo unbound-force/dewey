@@ -690,6 +690,26 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		return errorResult("invalid tag: must contain only alphanumeric characters, hyphens, and underscores"), nil, nil
 	}
 
+	// Validate model to prevent YAML frontmatter injection.
+	if input.Model != "" && containsNewline(input.Model) {
+		return errorResult("invalid model: must not contain newlines or null bytes"), nil, nil
+	}
+
+	// Validate sources to prevent YAML frontmatter injection.
+	for _, s := range input.Sources {
+		if containsNewline(s) {
+			return errorResult("invalid source: must not contain newlines or null bytes"), nil, nil
+		}
+	}
+
+	// Filter empty source entries.
+	var sources []string
+	for _, s := range input.Sources {
+		if s != "" {
+			sources = append(sources, s)
+		}
+	}
+
 	// Build frontmatter.
 	var sb strings.Builder
 	sb.WriteString("---\n")
@@ -698,9 +718,9 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 	if input.Model != "" {
 		fmt.Fprintf(&sb, "compiled_by: %s\n", input.Model)
 	}
-	if len(input.Sources) > 0 {
+	if len(sources) > 0 {
 		sb.WriteString("sources:\n")
-		for _, s := range input.Sources {
+		for _, s := range sources {
 			fmt.Fprintf(&sb, "  - %s\n", s)
 		}
 	}
@@ -731,8 +751,8 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 	if input.Model != "" {
 		propsMap["compiled_by"] = input.Model
 	}
-	if len(input.Sources) > 0 {
-		propsMap["sources"] = input.Sources
+	if len(sources) > 0 {
+		propsMap["sources"] = sources
 	}
 	propsJSON, err := json.Marshal(propsMap)
 	if err != nil {
@@ -772,7 +792,7 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		"tag":     input.Tag,
 		"page":    pageName,
 		"path":    articlePath,
-		"sources": input.Sources,
+		"sources": sources,
 	}
 	if input.Model != "" {
 		result["compiled_by"] = input.Model
@@ -780,6 +800,12 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 
 	res, err := jsonTextResult(result)
 	return res, nil, err
+}
+
+// containsNewline returns true if s contains any newline (\n, \r) or null byte
+// characters. Used to prevent YAML frontmatter injection via interpolated values.
+func containsNewline(s string) bool {
+	return strings.ContainsAny(s, "\n\r\x00")
 }
 
 // isValidTag checks that a tag contains only alphanumeric characters,

@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/log"
 	"golang.org/x/oauth2/google"
 )
 
@@ -153,7 +152,11 @@ func (v *VertexEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	}
 
 	if statusCode != http.StatusOK {
-		return nil, fmt.Errorf("vertex AI error (HTTP %d): %s", statusCode, string(respBody))
+		body := string(respBody)
+		if len(body) > 512 {
+			body = body[:512] + "... (truncated)"
+		}
+		return nil, fmt.Errorf("vertex AI error (HTTP %d): %s", statusCode, body)
 	}
 
 	var result vertexEmbedResponse
@@ -211,11 +214,15 @@ func (v *VertexEmbedder) doRequestWithRetry(ctx context.Context, url string, bod
 		}
 
 		if attempt == vertexEmbedMaxRetries {
-			return 0, nil, fmt.Errorf("vertex AI rate limited (HTTP 429) after %d retries: %s", vertexEmbedMaxRetries, string(respBody))
+			body := string(respBody)
+			if len(body) > 512 {
+				body = body[:512] + "... (truncated)"
+			}
+			return 0, nil, fmt.Errorf("vertex AI rate limited (HTTP 429) after %d retries: %s", vertexEmbedMaxRetries, body)
 		}
 
 		delay := vertexRetryDelay(attempt, resp.Header.Get("Retry-After"))
-		log.Warn("vertex AI rate limited, retrying", "attempt", attempt+1, "delay", delay)
+		embedLogger.Warn("vertex AI rate limited, retrying", "attempt", attempt+1, "delay", delay)
 
 		select {
 		case <-ctx.Done():

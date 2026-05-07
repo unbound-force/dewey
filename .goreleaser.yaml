@@ -24,6 +24,20 @@ archives:
 checksum:
   name_template: checksums.txt
 
+nfpms:
+  - id: dewey
+    package_name: dewey
+    vendor: Unbound Force
+    homepage: "https://github.com/unbound-force/dewey"
+    maintainer: "Unbound Force <team@unboundforce.dev>"
+    description: >-
+      Knowledge graph MCP server with persistence, semantic
+      search, and pluggable content sources
+    license: Apache-2.0
+    formats:
+      - rpm
+    bindir: /usr/bin
+
 homebrew_casks:
   - name: dewey
     description: "Knowledge graph MCP server with persistence, semantic search, and pluggable content sources"

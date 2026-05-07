@@ -140,6 +140,87 @@ func TestVertexSynthesizer_ModelID(t *testing.T) {
 	}
 }
 
+func TestVertexSynthesizer_Retry429ThenSuccess(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+			return
+		}
+		resp := vertexSynthResponse{
+			Content: []vertexContentBlock{
+				{Type: "text", Text: "success after retry"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	v := newTestVertexSynth(srv)
+	text, err := v.Synthesize(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Synthesize after retries: %v", err)
+	}
+	if text != "success after retry" {
+		t.Errorf("text = %q, want 'success after retry'", text)
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestVertexSynthesizer_Retry429Exhausted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	v := newTestVertexSynth(srv)
+	_, err := v.Synthesize(context.Background(), "test")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "retries") {
+		t.Errorf("error = %q, want to mention 429 and retries", err.Error())
+	}
+}
+
+func TestVertexSynthRetryDelay(t *testing.T) {
+	// Without Retry-After: exponential backoff with jitter (±25%).
+	d0 := vertexSynthRetryDelay(0, "")
+	if d0 < 750*time.Millisecond || d0 > 1250*time.Millisecond {
+		t.Errorf("delay(0) = %v, want ~1s (±25%%)", d0)
+	}
+	d1 := vertexSynthRetryDelay(1, "")
+	if d1 < 1500*time.Millisecond || d1 > 2500*time.Millisecond {
+		t.Errorf("delay(1) = %v, want ~2s (±25%%)", d1)
+	}
+
+	// With Retry-After header (no jitter applied).
+	d := vertexSynthRetryDelay(0, "3")
+	if d != 3*time.Second {
+		t.Errorf("delay with Retry-After=3 = %v, want 3s", d)
+	}
+
+	// Retry-After capped at max.
+	d = vertexSynthRetryDelay(0, "120")
+	if d != vertexSynthMaxDelay {
+		t.Errorf("delay with Retry-After=120 = %v, want %v", d, vertexSynthMaxDelay)
+	}
+
+	// Invalid Retry-After falls back to exponential with jitter.
+	d = vertexSynthRetryDelay(2, "invalid")
+	if d < 3*time.Second || d > 5*time.Second {
+		t.Errorf("delay(2, invalid) = %v, want ~4s (±25%%)", d)
+	}
+}
+
 func TestNewVertexSynthesizer_MissingModel(t *testing.T) {
 	_, err := NewVertexSynthesizer("project", "region", "")
 	if err == nil {

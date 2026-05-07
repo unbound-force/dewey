@@ -335,6 +335,7 @@ curate/              # Knowledge store configuration parsing + curation pipeline
 - **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
 - **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart). Only triggered when the embedding provider is `ollama`.
 - **Pluggable providers**: Both `Embedder` and `Synthesizer` interfaces support multiple backends (ollama, vertex). Configured via `config.yaml` `embedding` and `synthesis` sections. Factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()` centralize construction. Backward compatible — existing configs and env vars continue to work.
+- **Vertex AI rate limiting**: Both `VertexEmbedder` and `VertexSynthesizer` retry on HTTP 429 with exponential backoff (base 1s, max 60s, up to 5 attempts). Respects the `Retry-After` header when present. Context cancellation is honored between retries. Retries are logged at warn level via `charmbracelet/log`.
 
 ### Provider Configuration
 

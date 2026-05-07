@@ -121,3 +121,6 @@ The `store_compiled` tool's `tag` field MUST be validated to prevent path traver
 - **FR-008**: All existing configs, env vars, and the nil-synthesizer path MUST continue to work
 - **FR-009**: Factory functions `NewEmbedderFromConfig` and `NewSynthesizerFromConfig` MUST centralize provider construction
 - **FR-010**: The `store_compiled` tag field MUST be validated against path traversal
+- **FR-011**: Vertex providers MUST retry on HTTP 429 (Too Many Requests) with exponential backoff
+- **FR-012**: Vertex providers MUST respect the `Retry-After` header when present in 429 responses
+- **FR-013**: Vertex providers MUST retry up to 5 times before returning an error to the caller

@@ -213,6 +213,108 @@ func TestVertexEmbedder_EmbedBatch_PredictionCountMismatch(t *testing.T) {
 	}
 }
 
+func TestVertexEmbedder_Retry429ThenSuccess(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts <= 2 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+			return
+		}
+		resp := vertexEmbedResponse{
+			Predictions: []vertexPrediction{
+				{Embeddings: vertexEmbeddingValues{Values: []float64{0.5, 0.6}}},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	v := newTestVertexEmbedder(srv)
+	vec, err := v.Embed(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Embed after retries: %v", err)
+	}
+	if len(vec) != 2 {
+		t.Fatalf("vector length = %d, want 2", len(vec))
+	}
+	if attempts != 3 {
+		t.Errorf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestVertexEmbedder_Retry429Exhausted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	v := newTestVertexEmbedder(srv)
+	_, err := v.Embed(context.Background(), "hello")
+	if err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	if !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "retries") {
+		t.Errorf("error = %q, want to mention 429 and retries", err.Error())
+	}
+}
+
+func TestVertexRetryDelay(t *testing.T) {
+	// Without Retry-After: exponential backoff with jitter (±25%).
+	d0 := vertexRetryDelay(0, "")
+	if d0 < 750*time.Millisecond || d0 > 1250*time.Millisecond {
+		t.Errorf("delay(0) = %v, want ~1s (±25%%)", d0)
+	}
+	d1 := vertexRetryDelay(1, "")
+	if d1 < 1500*time.Millisecond || d1 > 2500*time.Millisecond {
+		t.Errorf("delay(1) = %v, want ~2s (±25%%)", d1)
+	}
+
+	// With Retry-After header (no jitter applied).
+	d := vertexRetryDelay(0, "5")
+	if d != 5*time.Second {
+		t.Errorf("delay with Retry-After=5 = %v, want 5s", d)
+	}
+
+	// Retry-After capped at max.
+	d = vertexRetryDelay(0, "120")
+	if d != vertexEmbedMaxDelay {
+		t.Errorf("delay with Retry-After=120 = %v, want %v", d, vertexEmbedMaxDelay)
+	}
+
+	// Invalid Retry-After falls back to exponential with jitter.
+	d = vertexRetryDelay(2, "invalid")
+	if d < 3*time.Second || d > 5*time.Second {
+		t.Errorf("delay(2, invalid) = %v, want ~4s (±25%%)", d)
+	}
+}
+
+func TestVertexEmbedder_Retry429ContextCancelled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	v := newTestVertexEmbedder(srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so the retry wait is interrupted.
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	_, err := v.Embed(ctx, "hello")
+	if err == nil {
+		t.Fatal("expected error when context is cancelled")
+	}
+}
+
 func TestNewVertexEmbedder_MissingModel(t *testing.T) {
 	_, err := NewVertexEmbedder("project", "region", "")
 	if err == nil {

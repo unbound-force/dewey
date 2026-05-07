@@ -27,6 +27,9 @@ Both Vertex providers use `golang.org/x/oauth2/google.FindDefaultCredentials` in
 ### D7: Config Precedence Asymmetry
 Embedding: env vars override config (backward compat with existing DEWEY_EMBEDDING_* vars). Synthesis: env vars are fallback only (new config, no legacy override behavior needed).
 
+### D8: Rate Limiting — Retry on 429
+Vertex AI returns HTTP 429 when request quotas are exceeded. Both VertexEmbedder and VertexSynthesizer retry with exponential backoff (base 1s, max 60s, up to 5 attempts). When the response includes a `Retry-After` header (seconds), that value is used instead of the computed backoff. Retries are logged at warn level. Context cancellation is respected between retries.
+
 ## Constitution Alignment
 
 - **Composability First**: PASS — each provider is standalone, no mandatory dependencies

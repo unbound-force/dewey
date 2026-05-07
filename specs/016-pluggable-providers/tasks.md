@@ -36,6 +36,13 @@ All tasks are implementation-complete. This document records the work done.
 - [x] Removed readCompileModel()
 - [x] Preserved DEWEY_GENERATION_MODEL and DEWEY_EMBEDDING_* env var fallbacks
 
+## 7. Rate Limiting (429 Retry)
+- [x] Add exponential backoff retry on HTTP 429 to `embed/vertex.go` EmbedBatch
+- [x] Add exponential backoff retry on HTTP 429 to `llm/vertex.go` Synthesize
+- [x] Add Retry-After header parsing to both providers
+- [x] Add tests: 429 then success, 429 exhaustion, Retry-After header respected, context cancellation
+- [x] Update AGENTS.md with rate limiting documentation
+
 ## 6. Documentation
 - [x] AGENTS.md updated with provider configuration section
 - [x] GoDoc on all new exported types and functions

@@ -591,6 +591,8 @@ Set `project` and `region` in your config to match your GCP setup. Vertex AI emb
 
 **Note**: Switching embedding providers changes vector dimensions. Run `dewey reindex` after changing the embedding model.
 
+**Rate limiting**: Vertex AI providers automatically retry on HTTP 429 (Too Many Requests) with exponential backoff and jitter — base delay 1 second, maximum 60 seconds, up to 5 attempts. The `Retry-After` header is respected when present. If retries are exhausted, the error is returned to the caller.
+
 #### Global Config
 
 Create `~/.config/dewey/config.yaml` (or `$XDG_CONFIG_HOME/dewey/config.yaml`) to set defaults for all vaults. Per-vault config overrides global.

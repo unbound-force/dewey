@@ -6,11 +6,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"golang.org/x/oauth2/google"
+)
+
+const (
+	// vertexSynthMaxRetries is the maximum number of retry attempts on 429 responses.
+	vertexSynthMaxRetries = 5
+	// vertexSynthBaseDelay is the initial backoff delay before the first retry.
+	vertexSynthBaseDelay = 1 * time.Second
+	// vertexSynthMaxDelay caps the exponential backoff to prevent excessive waits.
+	vertexSynthMaxDelay = 60 * time.Second
 )
 
 // VertexSynthesizer implements Synthesizer using Google Vertex AI's rawPredict API.
@@ -100,6 +113,7 @@ func (v *VertexSynthesizer) defaultGetToken(ctx context.Context) (string, error)
 }
 
 // Synthesize generates text from a prompt via Vertex AI Claude.
+// Retries up to 5 times on HTTP 429 (Too Many Requests) with exponential backoff.
 func (v *VertexSynthesizer) Synthesize(ctx context.Context, prompt string) (string, error) {
 	reqBody := vertexSynthRequest{
 		AnthropicVersion: "vertex-2023-10-16",
@@ -114,31 +128,13 @@ func (v *VertexSynthesizer) Synthesize(ctx context.Context, prompt string) (stri
 		return "", fmt.Errorf("marshal vertex request: %w", err)
 	}
 
-	token, err := v.tokenFn(ctx)
+	statusCode, respBody, err := v.doRequestWithRetry(ctx, v.rawPredictURL(), bodyBytes)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.rawPredictURL(), bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("create vertex request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("vertex AI request: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
-	if err != nil {
-		return "", fmt.Errorf("read vertex response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("vertex AI error (HTTP %d): %s", resp.StatusCode, string(respBody))
+	if statusCode != http.StatusOK {
+		return "", fmt.Errorf("vertex AI error (HTTP %d): %s", statusCode, string(respBody))
 	}
 
 	var result vertexSynthResponse
@@ -154,6 +150,85 @@ func (v *VertexSynthesizer) Synthesize(ctx context.Context, prompt string) (stri
 	}
 
 	return "", fmt.Errorf("vertex AI response contained no text content")
+}
+
+// doRequestWithRetry sends an HTTP POST to url with bodyBytes, retrying on
+// HTTP 429 with exponential backoff. Returns the final status code, response
+// body, and any transport-level error.
+func (v *VertexSynthesizer) doRequestWithRetry(ctx context.Context, url string, bodyBytes []byte) (int, []byte, error) {
+	for attempt := range vertexSynthMaxRetries + 1 {
+		token, err := v.tokenFn(ctx)
+		if err != nil {
+			return 0, nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return 0, nil, fmt.Errorf("create vertex request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := v.client.Do(req)
+		if err != nil {
+			return 0, nil, fmt.Errorf("vertex AI request: %w", err)
+		}
+
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+		_ = resp.Body.Close()
+		if err != nil {
+			return 0, nil, fmt.Errorf("read vertex response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp.StatusCode, respBody, nil
+		}
+
+		if attempt == vertexSynthMaxRetries {
+			return 0, nil, fmt.Errorf("vertex AI rate limited (HTTP 429) after %d retries: %s", vertexSynthMaxRetries, string(respBody))
+		}
+
+		delay := vertexSynthRetryDelay(attempt, resp.Header.Get("Retry-After"))
+		log.Warn("vertex AI rate limited, retrying", "attempt", attempt+1, "delay", delay)
+
+		select {
+		case <-ctx.Done():
+			return 0, nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	// Unreachable — the loop always returns or breaks.
+	return 0, nil, fmt.Errorf("vertex AI retry loop exited unexpectedly")
+}
+
+// vertexSynthRetryDelay computes the backoff delay for a retry attempt.
+// If the Retry-After header contains a valid number of seconds, that
+// value is used (capped at vertexSynthMaxDelay). Otherwise, exponential
+// backoff with jitter is applied: baseDelay * 2^attempt ± 25%, capped at
+// vertexSynthMaxDelay. Jitter prevents thundering herd when multiple
+// goroutines retry simultaneously. Only integer-seconds Retry-After format
+// is supported; HTTP-date format falls back to exponential backoff.
+func vertexSynthRetryDelay(attempt int, retryAfter string) time.Duration {
+	if retryAfter != "" {
+		if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
+			d := time.Duration(secs) * time.Second
+			if d > vertexSynthMaxDelay {
+				d = vertexSynthMaxDelay
+			}
+			return d
+		}
+	}
+	d := time.Duration(float64(vertexSynthBaseDelay) * math.Pow(2, float64(attempt)))
+	if d > vertexSynthMaxDelay {
+		d = vertexSynthMaxDelay
+	}
+	// Add ±25% jitter to desynchronize concurrent retries.
+	jitter := time.Duration(rand.Int64N(int64(d)/2)) - d/4
+	d += jitter
+	if d < 0 {
+		d = 0
+	}
+	return d
 }
 
 // Available reports whether Vertex AI credentials are configured.

@@ -334,6 +334,6 @@ func BenchmarkScan(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Scan(input, config)
+		_, _ = Scan(input, config)
 	}
 }

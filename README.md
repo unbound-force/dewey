@@ -660,7 +660,7 @@ Dewey scans indexed content for security threats and structural anomalies throug
 4. **Content size anomaly detection** — Statistical outlier detection using 3-sigma threshold across source documents (requires 5+ documents per source)
 5. **Trust tier assignment** — Sources can be marked with explicit trust levels, with `untrusted` tier for lower-trust external content
 
-#### Configuration
+#### Sanitization Configuration
 
 Configure sanitization per-source in `.uf/dewey/sources.yaml`:
 
@@ -701,7 +701,7 @@ When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexi
 
 ## Architecture
 
-```
+```text
 main.go              Entry point — backend routing, MCP server startup
 cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
                      source, doctor, manifest, compile, lint, promote, curate

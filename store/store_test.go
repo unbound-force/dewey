@@ -1557,3 +1557,79 @@ func TestListPagesBySource_NoMatches(t *testing.T) {
 		t.Errorf("expected 0 pages, got %d", len(pages))
 	}
 }
+
+// --- GetPagesWithProperty tests (FR-SAN-009, FR-SAN-010) ---
+
+func TestGetPagesWithProperty_Exists(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert a page with sanitize_findings in its properties JSON.
+	p := testPage("web-docs/api-auth")
+	p.Properties = `{"sanitize_findings": [{"pattern": "ignore previous", "severity": "critical"}]}`
+	if err := s.InsertPage(p); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Insert another page with the same property to verify multiple results.
+	p2 := testPage("web-docs/api-users")
+	p2.SourceDocID = "api-users.md"
+	p2.Properties = `{"sanitize_findings": [{"pattern": "you are now", "severity": "high"}], "title": "Users API"}`
+	if err := s.InsertPage(p2); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	pages, err := s.GetPagesWithProperty("sanitize_findings")
+	if err != nil {
+		t.Fatalf("GetPagesWithProperty: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("expected 2 pages, got %d", len(pages))
+	}
+
+	// Verify the returned pages are the ones we inserted.
+	names := make(map[string]bool)
+	for _, pg := range pages {
+		names[pg.Name] = true
+	}
+	if !names["web-docs/api-auth"] {
+		t.Error("expected page web-docs/api-auth in results")
+	}
+	if !names["web-docs/api-users"] {
+		t.Error("expected page web-docs/api-users in results")
+	}
+}
+
+func TestGetPagesWithProperty_NotExists(t *testing.T) {
+	s := newTestStore(t)
+
+	// Insert a page with a different property — no sanitize_findings.
+	p := testPage("clean-page")
+	p.Properties = `{"title": "foo", "tags": ["docs"]}`
+	if err := s.InsertPage(p); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	pages, err := s.GetPagesWithProperty("sanitize_findings")
+	if err != nil {
+		t.Fatalf("GetPagesWithProperty: %v", err)
+	}
+	if len(pages) != 0 {
+		t.Errorf("expected 0 pages, got %d", len(pages))
+	}
+}
+
+func TestGetPagesWithProperty_EmptyIndex(t *testing.T) {
+	s := newTestStore(t)
+
+	// Query on an empty store — should return empty slice, no error.
+	pages, err := s.GetPagesWithProperty("sanitize_findings")
+	if err != nil {
+		t.Fatalf("GetPagesWithProperty: %v", err)
+	}
+	if pages == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(pages) != 0 {
+		t.Errorf("expected 0 pages, got %d", len(pages))
+	}
+}

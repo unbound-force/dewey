@@ -472,3 +472,101 @@ func TestValidateSourceConfig_WebMissingURLs(t *testing.T) {
 		t.Errorf("error = %q, want to contain \"requires 'urls'\"", err.Error())
 	}
 }
+
+// --- trust_tier and sanitize_mode validation tests (FR-SAN-006, FR-SAN-008) ---
+
+func TestValidateConfig_InvalidTrustTier(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"urls":       []any{"https://example.com"},
+			"trust_tier": "high",
+		},
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for invalid trust_tier")
+	}
+	if !strings.Contains(err.Error(), "invalid trust_tier 'high'") {
+		t.Errorf("error = %q, want to contain \"invalid trust_tier 'high'\"", err.Error())
+	}
+	if !strings.Contains(err.Error(), "must be one of authored, curated, validated, draft, untrusted") {
+		t.Errorf("error = %q, want to contain valid values list", err.Error())
+	}
+}
+
+func TestValidateConfig_InvalidSanitizeMode(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"urls":          []any{"https://example.com"},
+			"sanitize_mode": "block",
+		},
+	}
+
+	err := validateSourceConfig(src)
+	if err == nil {
+		t.Fatal("expected error for invalid sanitize_mode")
+	}
+	if !strings.Contains(err.Error(), "invalid sanitize_mode 'block'") {
+		t.Errorf("error = %q, want to contain \"invalid sanitize_mode 'block'\"", err.Error())
+	}
+	if !strings.Contains(err.Error(), "must be one of warn, strict, off") {
+		t.Errorf("error = %q, want to contain valid values list", err.Error())
+	}
+}
+
+func TestValidateConfig_DefaultsApplied(t *testing.T) {
+	// A valid config with neither trust_tier nor sanitize_mode should pass
+	// validation without error — defaults are applied at the pipeline level,
+	// not during config validation.
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"urls": []any{"https://example.com"},
+		},
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("expected no error when trust_tier and sanitize_mode are absent, got: %v", err)
+	}
+}
+
+func TestValidateConfig_ValidTrustTier(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"urls":       []any{"https://example.com"},
+			"trust_tier": "untrusted",
+		},
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("expected no error for valid trust_tier 'untrusted', got: %v", err)
+	}
+}
+
+func TestValidateConfig_ValidSanitizeMode(t *testing.T) {
+	src := &SourceConfig{
+		ID:   "web-docs",
+		Type: "web",
+		Name: "docs",
+		Config: map[string]any{
+			"urls":          []any{"https://example.com"},
+			"sanitize_mode": "strict",
+		},
+	}
+
+	if err := validateSourceConfig(src); err != nil {
+		t.Fatalf("expected no error for valid sanitize_mode 'strict', got: %v", err)
+	}
+}

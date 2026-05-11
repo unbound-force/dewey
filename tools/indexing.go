@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/sanitize"
 	"github.com/unbound-force/dewey/source"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
@@ -320,6 +321,8 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 // orchestration from cli.go's indexDocuments() because that function lives in
 // package main and cannot be imported (per plan D6, research R1).
 //
+// SYNC: identical sanitization logic in cli.go:indexDocuments()
+//
 // Returns the total number of documents indexed and embeddings generated.
 func (ix *Indexing) indexDocuments(allDocs map[string][]source.Document, configs []source.SourceConfig) (int, int) {
 	totalIndexed := 0
@@ -328,12 +331,94 @@ func (ix *Indexing) indexDocuments(allDocs map[string][]source.Document, configs
 	for sourceID, docs := range allDocs {
 		indexingLogger.Info("indexing source", "source", sourceID, "documents", len(docs))
 
+		// Look up source config for sanitize_mode, trust_tier, and source type.
+		var srcCfg *source.SourceConfig
+		for i := range configs {
+			if configs[i].ID == sourceID {
+				srcCfg = &configs[i]
+				break
+			}
+		}
+
+		// Determine sanitize_mode from source config (D9: unified sanitization mode).
+		// Default depends on source type: disk/code → off, web/github → warn.
+		sanitizeMode := determineSanitizeMode(srcCfg)
+
+		// Determine trust_tier from source config (task 7.3).
+		// Default to "authored" when not specified.
+		trustTier := determineTrustTier(srcCfg)
+
+		// Compute per-source SourceStats from document content lengths before
+		// per-document scanning (task 6.3, D5). Stats enable size anomaly detection.
+		var sourceStats *sanitize.SourceStats
+		if sanitizeMode != sanitize.ModeOff {
+			lengths := make([]int, len(docs))
+			for i, doc := range docs {
+				lengths[i] = len(doc.Content)
+			}
+			stats := sanitize.ComputeStats(lengths)
+			sourceStats = &stats
+		}
+
 		for _, doc := range docs {
 			// Namespace external page names: sourceID/docID (per research R6).
 			pageName := strings.ToLower(sourceID + "/" + doc.ID)
 
+			// Content sanitization: scan raw content BEFORE parsing (D1).
+			// Scan happens on raw doc.Content to detect injection patterns,
+			// structural anomalies, and content drift before any processing.
+			var scanResult *sanitize.ScanResult
+			if sanitizeMode != sanitize.ModeOff {
+				// Content hash drift (task 6.4): look up existing page to get
+				// previous content hash. Empty PreviousHash for first-time pages.
+				var previousHash string
+				existingForDrift, _ := ix.store.GetPage(pageName)
+				if existingForDrift != nil {
+					previousHash = existingForDrift.ContentHash
+				}
+
+				scanInput := sanitize.ScanInput{
+					Content:      doc.Content,
+					SourceID:     sourceID,
+					DocumentID:   doc.ID,
+					SourceType:   srcCfg.Type,
+					PreviousHash: previousHash,
+					CurrentHash:  doc.ContentHash,
+					SourceStats:  sourceStats,
+				}
+				scanCfg := sanitize.ScanConfig{
+					Mode: sanitizeMode,
+				}
+				var scanErr error
+				scanResult, scanErr = sanitize.Scan(scanInput, scanCfg)
+				if scanErr != nil {
+					indexingLogger.Warn("sanitize scan failed", "page", pageName, "err", scanErr)
+				}
+
+				// Strict mode: skip documents with critical or high severity findings.
+				if sanitizeMode == sanitize.ModeStrict && scanResult != nil {
+					if sanitize.HasBlockingFindings(scanResult.Findings) {
+						indexingLogger.Error("document rejected by strict sanitization",
+							"page", pageName,
+							"source", sourceID,
+							"findings", len(scanResult.Findings),
+						)
+						continue
+					}
+				}
+			}
+
 			// Parse document content into frontmatter and blocks.
 			props, blocks := vault.ParseDocument(pageName, doc.Content)
+
+			// Merge sanitize findings into properties (D7).
+			// Done after ParseDocument so findings survive alongside frontmatter properties.
+			if scanResult != nil && len(scanResult.Findings) > 0 {
+				if props == nil {
+					props = make(map[string]any)
+				}
+				props["sanitize_findings"] = scanResult.Findings
+			}
 
 			// Build properties JSON.
 			propsJSON := ""
@@ -363,6 +448,7 @@ func (ix *Indexing) indexDocuments(allDocs map[string][]source.Document, configs
 				existing.SourceDocID = doc.ID
 				existing.OriginalName = doc.Title
 				existing.Properties = propsJSON
+				existing.Tier = trustTier
 				if err := ix.store.UpdatePage(existing); err != nil {
 					indexingLogger.Warn("failed to update page",
 						"page", pageName, "err", err)
@@ -378,6 +464,7 @@ func (ix *Indexing) indexDocuments(allDocs map[string][]source.Document, configs
 					ContentHash:  doc.ContentHash,
 					CreatedAt:    doc.FetchedAt.UnixMilli(),
 					UpdatedAt:    doc.FetchedAt.UnixMilli(),
+					Tier:         trustTier,
 				}
 				if err := ix.store.InsertPage(page); err != nil {
 					indexingLogger.Warn("failed to insert page",
@@ -414,6 +501,40 @@ func (ix *Indexing) indexDocuments(allDocs map[string][]source.Document, configs
 	}
 
 	return totalIndexed, totalEmbeddings
+}
+
+// determineSanitizeMode extracts sanitize_mode from the source config map
+// and delegates to sanitize.DetermineSanitizeMode for the core logic.
+func determineSanitizeMode(cfg *source.SourceConfig) string {
+	if cfg == nil {
+		return sanitize.ModeOff
+	}
+	explicitMode := extractConfigString(cfg.Config, "sanitize_mode")
+	return sanitize.DetermineSanitizeMode(cfg.Type, explicitMode)
+}
+
+// determineTrustTier extracts trust_tier from the source config map
+// and delegates to sanitize.DetermineTrustTier for the core logic.
+func determineTrustTier(cfg *source.SourceConfig) string {
+	if cfg == nil {
+		return "authored"
+	}
+	explicitTier := extractConfigString(cfg.Config, "trust_tier")
+	return sanitize.DetermineTrustTier(explicitTier)
+}
+
+// extractConfigString safely extracts a string value from a config map.
+// Returns empty string if the key is missing, nil, or not a string.
+func extractConfigString(config map[string]any, key string) string {
+	if config == nil {
+		return ""
+	}
+	v, ok := config[key]
+	if !ok {
+		return ""
+	}
+	s, _ := v.(string)
+	return s
 }
 
 // updateSourceRecord creates or updates the source record in the store

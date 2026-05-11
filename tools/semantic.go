@@ -320,7 +320,7 @@ func toSemanticResults(results []store.SimilarityResult, st *store.Store) []type
 // unknown pages (no page metadata) are excluded when a tier filter is active.
 // This is a post-query filter applied after similarity ranking (FR-024).
 //
-// Supported tiers (ordered by trust): authored > curated > validated > draft.
+// Supported tiers (ordered by trust): authored > curated > validated > draft > untrusted.
 // The filter is a simple string equality check — any tier value works without
 // code changes when new tiers are added (015-curated-knowledge-stores FR-024).
 func filterResultsByTier(results []store.SimilarityResult, tier string, st *store.Store) []store.SimilarityResult {

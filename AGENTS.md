@@ -322,6 +322,7 @@ embed/               # Embedding generation (Ollama + Vertex AI clients, provide
 source/              # Pluggable content sources (disk, GitHub, web crawl, code, manager)
 chunker/             # Language-aware source code parsing (Chunker interface, Go implementation, registry)
 curate/              # Knowledge store configuration parsing + curation pipeline (config, extraction, quality analysis)
+sanitize/            # Content sanitization pipeline (injection pattern scanning, structure validation, drift detection, size anomaly detection)
 ```
 
 ### Key Patterns
@@ -331,7 +332,8 @@ curate/              # Knowledge store configuration parsing + curation pipeline
 - **Graceful degradation**: Semantic search tools return clear error messages when Ollama is unavailable. All keyword-based tools continue to work.
 - **Cobra CLI**: Root command doubles as `serve` for backward compatibility.
 - **charmbracelet/log**: Structured logging throughout. No `fmt.Fprintf` to stderr.
-- **Trust tiers**: Pages have a `tier` field (`authored`, `curated`, `validated`, `draft`) and optional `category` field for knowledge provenance tracking (013-knowledge-compile, 015-curated-knowledge-stores).
+- **Trust tiers**: Pages have a `tier` field (`authored`, `curated`, `validated`, `draft`, `untrusted`) and optional `category` field for knowledge provenance tracking (013-knowledge-compile, 015-curated-knowledge-stores). The `untrusted` tier is for content from sources explicitly marked as lower trust by the user.
+- **Content sanitization**: The `sanitize` package scans indexed content for adversarial injection patterns, structural anomalies (invisible Unicode, data URIs, suspicious HTML), content hash drift, and size anomalies. Configured per-source via `sanitize_mode` (`warn`/`strict`/`off`) and `trust_tier` in `sources.yaml`. Findings are merged into page properties and surfaced by `dewey doctor` and `dewey lint`.
 - **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
 - **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart). Only triggered when the embedding provider is `ollama`.
 - **Pluggable providers**: Both `Embedder` and `Synthesizer` interfaces support multiple backends (ollama, vertex). Configured via `config.yaml` `embedding` and `synthesis` sections. Factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()` centralize construction. Backward compatible — existing configs and env vars continue to work.
@@ -380,9 +382,22 @@ Backward compatibility: the old `tags` (plural, comma-separated) field is still 
 | `curated` | `dewey curate`, knowledge stores | Machine-extracted knowledge from indexed sources. LLM-curated with quality flags and confidence scores. |
 | `validated` | `dewey promote` | Agent content promoted by human review. Middle trust. |
 | `draft` | `store_learning`, `dewey compile` | Agent-generated content. Unreviewed. Default for learnings and compiled articles. |
+| `untrusted` | source config | Content from sources explicitly marked as lower trust by the user. Lowest trust. |
 
 Filter by tier: `semantic_search_filtered(query: "auth", tier: "authored")` returns only human-written content.
 Filter by tier: `semantic_search_filtered(query: "auth", tier: "curated")` returns only knowledge store content.
+
+### Content Sanitization
+
+Sources can be configured with `trust_tier` and `sanitize_mode` fields in `sources.yaml`:
+
+- **`trust_tier`**: One of `authored` (default), `curated`, `validated`, `draft`, or `untrusted`. Sets the trust tier for all pages from this source.
+- **`sanitize_mode`**: One of `warn` (default for web/github), `strict`, or `off` (default for disk/code). Controls sanitization behavior:
+  - `warn`: Scan content and merge findings into page properties. Content is still indexed.
+  - `strict`: Scan content and reject documents with `critical` or `high` severity findings.
+  - `off`: Skip sanitization entirely.
+
+The `dewey doctor` command reports sanitization findings aggregated by source and severity. The `dewey lint` command surfaces individual pages with findings and flags stale pattern versions.
 
 ### Knowledge Stores
 

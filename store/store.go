@@ -834,6 +834,33 @@ func (s *Store) UpdatePageTier(name, tier string) error {
 	return nil
 }
 
+// GetPagesWithProperty returns all pages whose properties JSON column contains
+// the specified key. Uses SQLite json_extract() to query the JSON structure.
+// Returns an empty slice (not nil) if no pages match or the store is empty.
+// Pages with NULL or empty-string properties are excluded.
+// Used by doctor and lint to find pages with sanitization findings (FR-SAN-009, FR-SAN-010).
+func (s *Store) GetPagesWithProperty(key string) ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
+		FROM pages
+		WHERE properties IS NOT NULL AND properties != '' AND json_extract(properties, '$.' || ?) IS NOT NULL`,
+		key,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get pages with property %q: %w", key, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	pages, err := scanPages(rows)
+	if err != nil {
+		return nil, err
+	}
+	if pages == nil {
+		return []*Page{}, nil
+	}
+	return pages, nil
+}
+
 // IsDiskSpaceError returns true if the given error indicates disk space
 // exhaustion (e.g., SQLite "database or disk is full", OS "no space left").
 // Returns false if err is nil. When disk space is insufficient, Dewey

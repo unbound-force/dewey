@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/curate"
 	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/sanitize"
 	"github.com/unbound-force/dewey/store"
 	"github.com/unbound-force/dewey/types"
 	"github.com/unbound-force/dewey/vault"
@@ -134,6 +135,14 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		allFindings = append(allFindings, staleKnowledgeFindings...)
 	}
 
+	// Check 7: Content sanitization findings (FR-SAN-010).
+	sanitizationFindings, err := l.checkSanitizationFindings()
+	if err != nil {
+		lintLogger.Warn("sanitization findings check failed", "err", err)
+	} else {
+		allFindings = append(allFindings, sanitizationFindings...)
+	}
+
 	// Count findings by type for the summary.
 	staleCount := 0
 	uncompiledCount := 0
@@ -141,6 +150,7 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	contradictionCount := 0
 	knowledgeQualityCount := 0
 	staleKnowledgeCount := 0
+	sanitizationCount := 0
 	for _, f := range allFindings {
 		switch f.Type {
 		case "stale_decision":
@@ -155,6 +165,8 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 			knowledgeQualityCount++
 		case "stale_knowledge":
 			staleKnowledgeCount++
+		case "sanitization":
+			sanitizationCount++
 		}
 	}
 	totalIssues := len(allFindings)
@@ -202,6 +214,10 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	if len(knowledgeStoreSummaries) > 0 {
 		summary["knowledge_stores"] = knowledgeStoreSummaries
 	}
+	// Add sanitization finding count when any exist (FR-SAN-010).
+	if sanitizationCount > 0 {
+		summary["sanitization_findings"] = sanitizationCount
+	}
 
 	result := map[string]any{
 		"status":   status,
@@ -224,6 +240,7 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		"contradictions", contradictionCount,
 		"knowledge_quality", knowledgeQualityCount,
 		"stale_knowledge", staleKnowledgeCount,
+		"sanitization", sanitizationCount,
 		"fixed", fixedEmbeddings,
 	)
 
@@ -701,6 +718,107 @@ func (l *Lint) checkStaleKnowledgeStores() ([]Finding, error) {
 	}
 
 	return findings, nil
+}
+
+// checkSanitizationFindings surfaces pages with active content sanitization
+// findings. For each page, reports the page name, finding count, highest
+// severity, and pattern version. Flags stale findings when the pattern
+// version is lower than the current DefaultPatternVersion (FR-SAN-010).
+func (l *Lint) checkSanitizationFindings() ([]Finding, error) {
+	pages, err := l.store.GetPagesWithProperty("sanitize_findings")
+	if err != nil {
+		return nil, fmt.Errorf("get pages with sanitize_findings: %w", err)
+	}
+
+	var findings []Finding
+
+	for _, p := range pages {
+		var props map[string]any
+		if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
+			continue
+		}
+		findingsRaw, ok := props["sanitize_findings"]
+		if !ok {
+			continue
+		}
+
+		// Re-marshal and unmarshal to get typed sanitize findings.
+		findingsJSON, err := json.Marshal(findingsRaw)
+		if err != nil {
+			continue
+		}
+		var sanFindings []sanitize.Finding
+		if err := json.Unmarshal(findingsJSON, &sanFindings); err != nil {
+			continue
+		}
+
+		if len(sanFindings) == 0 {
+			continue
+		}
+
+		// Determine highest severity and extract pattern version.
+		highestSeverity := "info"
+		patternVersion := 0
+		for _, sf := range sanFindings {
+			if severityRank(sf.Severity) > severityRank(highestSeverity) {
+				highestSeverity = sf.Severity
+			}
+		}
+
+		// Extract pattern version from scan result metadata if available.
+		if pvRaw, ok := props["sanitize_pattern_version"]; ok {
+			if pv, ok := pvRaw.(float64); ok {
+				patternVersion = int(pv)
+			}
+		}
+
+		// Determine lint severity based on sanitize finding severity.
+		lintSeverity := "info"
+		if highestSeverity == "critical" || highestSeverity == "high" {
+			lintSeverity = "warning"
+		}
+
+		desc := fmt.Sprintf("Page '%s' has %d sanitization findings (highest severity: %s).",
+			p.Name, len(sanFindings), highestSeverity)
+		remediation := "Review findings with `dewey doctor` and address content issues."
+
+		// Flag stale findings when pattern version is lower than current.
+		if patternVersion > 0 && patternVersion < sanitize.DefaultPatternVersion {
+			desc += fmt.Sprintf(" Pattern version %d is outdated (current: %d).",
+				patternVersion, sanitize.DefaultPatternVersion)
+			remediation = "Run `dewey reindex` to re-scan with updated patterns."
+			lintSeverity = "warning"
+		}
+
+		findings = append(findings, Finding{
+			Type:        "sanitization",
+			Severity:    lintSeverity,
+			Page:        p.Name,
+			Description: desc,
+			Remediation: remediation,
+		})
+	}
+
+	return findings, nil
+}
+
+// severityRank returns a numeric rank for severity comparison.
+// Higher rank means more severe.
+func severityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 5
+	case "high":
+		return 4
+	case "medium":
+		return 3
+	case "low":
+		return 2
+	case "info":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // parseKnowledgeFrontmatter extracts YAML frontmatter from a curated

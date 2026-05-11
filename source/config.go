@@ -75,7 +75,25 @@ func SaveSourcesConfig(path string, sources []SourceConfig) error {
 	return nil
 }
 
-// validateSourceConfig checks that a source config has all required fields.
+// validTrustTiers defines the accepted values for the trust_tier config field.
+// Ordering: authored > curated > validated > draft > untrusted.
+var validTrustTiers = map[string]bool{
+	"authored":  true,
+	"curated":   true,
+	"validated": true,
+	"draft":     true,
+	"untrusted": true,
+}
+
+// validSanitizeModes defines the accepted values for the sanitize_mode config field.
+var validSanitizeModes = map[string]bool{
+	"warn":   true,
+	"strict": true,
+	"off":    true,
+}
+
+// validateSourceConfig checks that a source config has all required fields
+// and validates optional cross-type fields (trust_tier, sanitize_mode).
 func validateSourceConfig(src *SourceConfig) error {
 	if src.ID == "" {
 		return fmt.Errorf("missing required field: id")
@@ -85,6 +103,22 @@ func validateSourceConfig(src *SourceConfig) error {
 	}
 	if src.Name == "" {
 		return fmt.Errorf("missing required field: name")
+	}
+
+	// Validate optional cross-type fields stored in the Config map.
+	if src.Config != nil {
+		if tier, ok := src.Config["trust_tier"]; ok {
+			tierStr, _ := tier.(string)
+			if !validTrustTiers[tierStr] {
+				return fmt.Errorf("invalid trust_tier '%s': must be one of authored, curated, validated, draft, untrusted", tierStr)
+			}
+		}
+		if mode, ok := src.Config["sanitize_mode"]; ok {
+			modeStr, _ := mode.(string)
+			if !validSanitizeModes[modeStr] {
+				return fmt.Errorf("invalid sanitize_mode '%s': must be one of warn, strict, off", modeStr)
+			}
+		}
 	}
 
 	switch src.Type {

@@ -226,7 +226,7 @@ type SemanticSearchFilteredInput struct {
 	SourceID    string  `json:"source_id,omitempty" jsonschema:"Filter by specific source identifier (e.g., github-gaze)"`
 	HasProperty string  `json:"has_property,omitempty" jsonschema:"Filter to pages with this frontmatter property key"`
 	HasTag      string  `json:"has_tag,omitempty" jsonschema:"Filter to pages with this tag"`
-	Tier        string  `json:"tier,omitempty" jsonschema:"Filter by trust tier: authored, curated, validated, or draft"`
+	Tier        string  `json:"tier,omitempty" jsonschema:"Filter by trust tier: authored, curated, validated, draft, or untrusted"`
 	Limit       int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
 	Threshold   float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
 }
@@ -235,7 +235,7 @@ type SemanticSearchFilteredInput struct {
 // Includes provenance metadata per Constitution III (Observable Quality).
 // CreatedAt, Tier, and Category provide temporal and trust metadata for
 // knowledge compilation and contamination separation (013-knowledge-compile FR-004, FR-024).
-// Tier values: authored > curated > validated > draft (015-curated-knowledge-stores).
+// Tier values: authored > curated > validated > draft > untrusted (015-curated-knowledge-stores).
 type SemanticSearchResult struct {
 	DocumentID string  `json:"document_id"`
 	Page       string  `json:"page"`

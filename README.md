@@ -623,6 +623,7 @@ All content in Dewey's index has a trust tier:
 | `curated` | `curate`, knowledge stores | Machine-extracted knowledge. LLM-curated with quality flags. |
 | `validated` | `promote` | Agent content promoted by human review. |
 | `draft` | `store_learning`, `compile` | Agent-generated. Unreviewed. |
+| `untrusted` | Source config | Content from sources marked as lower trust. |
 
 Filter search by tier: `semantic_search_filtered(query: "auth", tier: "authored")`
 Filter curated content: `semantic_search_filtered(query: "auth", tier: "curated")`
@@ -648,6 +649,51 @@ Each curated knowledge item includes:
 - **Source traceability**: Every fact traces back to its source document
 
 Learnings stored via `store_learning` are also dual-written to `.uf/dewey/learnings/` as markdown files, ensuring they survive database deletion.
+
+### Content Sanitization
+
+Dewey scans indexed content for security threats and structural anomalies through five defense layers:
+
+1. **Injection pattern scanning** — Detects prompt injection attempts (instruction overrides, role reassignment, delimiter injection) using compiled regex patterns with severity calibration (critical/high/medium)
+2. **Content hash drift detection** — Tracks content changes between index cycles via SHA-256 hash comparison
+3. **Markdown structure validation** — Identifies invisible Unicode characters, embedded data URIs, invalid heading depth, and suspicious HTML tags (`<script>`, `<iframe>`, event handlers)
+4. **Content size anomaly detection** — Statistical outlier detection using 3-sigma threshold across source documents (requires 5+ documents per source)
+5. **Trust tier assignment** — Sources can be marked with explicit trust levels, with `untrusted` tier for lower-trust external content
+
+#### Configuration
+
+Configure sanitization per-source in `.uf/dewey/sources.yaml`:
+
+```yaml
+sources:
+  - name: external-wiki
+    type: web
+    config:
+      urls:
+        - https://wiki.example.com
+    trust_tier: untrusted       # authored (default), curated, validated, draft, untrusted
+    sanitize_mode: strict       # warn (default for web/github), strict, off (default for disk/code)
+```
+
+- **`sanitize_mode: warn`** — Scan content and merge findings into page properties. Content is still indexed. Default for `web` and `github` sources.
+- **`sanitize_mode: strict`** — Reject documents with `critical` or `high` severity findings. Documents are skipped during indexing.
+- **`sanitize_mode: off`** — Skip sanitization entirely. Default for `disk` and `code` sources (user-authored content).
+
+#### Interpreting Findings
+
+Use `dewey doctor` to see an aggregated summary of sanitization findings by source and severity:
+
+```bash
+dewey doctor --vault /path/to/vault
+```
+
+Use `dewey lint` to see per-page findings with severity and pattern version:
+
+```bash
+dewey lint --vault /path/to/vault
+```
+
+When patterns are updated in a new Dewey release, `dewey lint` flags stale findings and recommends `dewey reindex` to re-scan with updated patterns.
 
 ### Instant Startup
 
@@ -708,6 +754,8 @@ source/
   manager.go         Source orchestration (refresh, failures)
 chunker/             Language-aware source code parsing (Go chunker, registry)
 curate/              Knowledge store config parsing + curation pipeline
+sanitize/            Content sanitization pipeline (injection scanning, structure validation,
+                     drift detection, size anomaly detection)
 ```
 
 ## Attribution

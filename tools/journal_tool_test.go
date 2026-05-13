@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func TestJournalRange_Success(t *testing.T) {

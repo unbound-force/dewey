@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // TestIndexing_Index_NilStore verifies that calling Index with a nil store

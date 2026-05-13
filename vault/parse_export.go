@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // ParseDocument parses a markdown document's content into frontmatter properties

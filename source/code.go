@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unbound-force/dewey/chunker"
-	"github.com/unbound-force/dewey/ignore"
+	"github.com/unbound-force/dewey/v3/chunker"
+	"github.com/unbound-force/dewey/v3/ignore"
 )
 
 // CodeSource implements the Source interface for source code files.

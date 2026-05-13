@@ -3,7 +3,7 @@ package vault
 import (
 	"testing"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func TestSearchIndex_BasicSearch(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/unbound-force/dewey
+module github.com/unbound-force/dewey/v3
 
 go 1.25.0
 

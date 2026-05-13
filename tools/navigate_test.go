@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // TestNavigateNewNavigate verifies Navigate constructor.

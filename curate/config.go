@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/unbound-force/dewey/source"
+	"github.com/unbound-force/dewey/v3/source"
 	"gopkg.in/yaml.v3"
 )
 

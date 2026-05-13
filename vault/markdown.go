@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // parseMarkdownBlocks parses markdown body (frontmatter already stripped) into a

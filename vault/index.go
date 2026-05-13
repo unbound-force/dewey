@@ -3,8 +3,8 @@ package vault
 import (
 	"strings"
 
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // backlink records a reference from one page to another.

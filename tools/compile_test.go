@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/llm"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // parseCompileResult unmarshals the JSON text from a compile CallToolResult.

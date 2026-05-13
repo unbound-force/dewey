@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/sanitize"
-	"github.com/unbound-force/dewey/source"
+	"github.com/unbound-force/dewey/v3/sanitize"
+	"github.com/unbound-force/dewey/v3/source"
 )
 
 // --- Pipeline sanitization integration tests (task 6.5) ---

@@ -8,11 +8,11 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
-	"github.com/unbound-force/dewey/vault"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // mockEmbedderForHealth implements embed.Embedder for health tool testing.

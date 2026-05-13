@@ -11,12 +11,12 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/unbound-force/dewey/curate"
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/sanitize"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
-	"github.com/unbound-force/dewey/vault"
+	"github.com/unbound-force/dewey/v3/curate"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/sanitize"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // staleDecisionThreshold is the age after which a decision learning is

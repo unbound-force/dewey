@@ -166,7 +166,7 @@ The cask includes a signed and notarized binary. Ollama is installed automatical
 ### go install (all platforms)
 
 ```bash
-go install github.com/unbound-force/dewey@latest
+go install github.com/unbound-force/dewey/v3@latest
 ```
 
 Requires Go 1.25+. Works on macOS, Linux, and any platform with a Go toolchain.

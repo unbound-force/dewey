@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unbound-force/dewey/ignore"
+	"github.com/unbound-force/dewey/v3/ignore"
 )
 
 // DiskSource implements the Source interface for local Markdown files.

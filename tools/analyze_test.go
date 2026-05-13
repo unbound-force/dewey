@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func TestGraphOverview_Success(t *testing.T) {

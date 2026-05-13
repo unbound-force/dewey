@@ -9,7 +9,7 @@ import (
 	// Blank import to ensure the Go chunker is registered via init().
 	// Without this, chunker.ForExtension(".go") returns (nil, false)
 	// and no files are processed.
-	_ "github.com/unbound-force/dewey/chunker"
+	_ "github.com/unbound-force/dewey/v3/chunker"
 )
 
 // validGoSource is a minimal Go source file with exported declarations

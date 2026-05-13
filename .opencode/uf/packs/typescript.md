@@ -4,10 +4,6 @@ language: TypeScript
 version: 1.0.0
 ---
 <!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vv0.6.1 -->
 
 # Convention Pack: TypeScript
 

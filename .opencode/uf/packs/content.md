@@ -4,8 +4,6 @@ language: Any
 version: 1.0.0
 ---
 <!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
 
 # Convention Pack: Content (Documentation, Blog, PR/Comms)
 

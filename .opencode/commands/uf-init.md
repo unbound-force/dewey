@@ -6,10 +6,6 @@ description: >
   updating the OpenSpec CLI.
 ---
 <!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vv0.6.1 -->
 
 # Command: /uf-init
 
@@ -27,6 +23,47 @@ or after updating the OpenSpec CLI (`npm update`). Safe to re-run
 
 ## Instructions
 
+### Step 0: Command Directory Migration
+
+Check whether the legacy `.opencode/command/` directory needs
+to be migrated to `.opencode/commands/`:
+
+1. Check if `.opencode/command/` exists (old directory):
+   ```bash
+   ls -d .opencode/command/ 2>/dev/null
+   ```
+
+2. Check if `.opencode/commands/` exists (new directory):
+   ```bash
+   ls -d .opencode/commands/ 2>/dev/null
+   ```
+
+3. **If old exists and new does NOT exist**: rename the
+   directory:
+   ```bash
+   mv .opencode/command .opencode/commands
+   ```
+   Report: `✅ command/ → commands/: migrated`
+
+4. **If both exist**: move unique files from old to new,
+   remove duplicates from old, and clean up:
+   ```bash
+   # For each file in old dir, move if not in new, else remove
+   for f in .opencode/command/*; do
+     name="$(basename "$f")"
+     if [ -f ".opencode/commands/$name" ]; then
+       rm "$f"
+     else
+       mv "$f" .opencode/commands/
+     fi
+   done
+   rmdir .opencode/command 2>/dev/null
+   ```
+   Report: `✅ command/ → commands/: merged (old dir cleaned up)`
+
+5. **If old does NOT exist**: no migration needed.
+   Report: `⊘ command/ migration: not needed`
+
 ### Step 1: Check Prerequisites
 
 Verify the project has been initialized:
@@ -41,9 +78,9 @@ Verify the project has been initialized:
    - `.opencode/skills/openspec-explore/SKILL.md`
 
 3. Check that these 3 OpenSpec command files exist:
-   - `.opencode/command/opsx-propose.md`
-   - `.opencode/command/opsx-apply.md`
-   - `.opencode/command/opsx-archive.md`
+   - `.opencode/commands/opsx-propose.md`
+   - `.opencode/commands/opsx-apply.md`
+   - `.opencode/commands/opsx-archive.md`
 
 For each missing file, report an error:
 > `❌ <path>: file not found`
@@ -82,7 +119,7 @@ customization. For each file:
 
 **Target files**:
 - `.opencode/skills/openspec-propose/SKILL.md`
-- `.opencode/command/opsx-propose.md`
+- `.opencode/commands/opsx-propose.md`
 
 **What to insert**: After the step that creates the change
 directory (`openspec new change "<name>"`), insert a new step:
@@ -106,7 +143,7 @@ renumber existing steps (to avoid accidental content loss).
 
 **Target files**:
 - `.opencode/skills/openspec-apply-change/SKILL.md`
-- `.opencode/command/opsx-apply.md`
+- `.opencode/commands/opsx-apply.md`
 
 **What to insert**: Before the implementation begins, insert a
 branch validation step:
@@ -128,7 +165,7 @@ existing steps.
 
 **Target files**:
 - `.opencode/skills/openspec-archive-change/SKILL.md`
-- `.opencode/command/opsx-archive.md`
+- `.opencode/commands/opsx-archive.md`
 
 **What to insert**: After the archive move completes, insert a
 branch cleanup step:
@@ -173,7 +210,7 @@ instructions. For each file:
 
 **Target files**:
 - `.opencode/skills/openspec-propose/SKILL.md`
-- `.opencode/command/opsx-propose.md`
+- `.opencode/commands/opsx-propose.md`
 
 **What to insert**: Before drafting the proposal artifacts, add
 a context retrieval step:
@@ -204,7 +241,7 @@ of whether branch enforcement was applied.
 
 **Target files**:
 - `.opencode/skills/openspec-apply-change/SKILL.md`
-- `.opencode/command/opsx-apply.md`
+- `.opencode/commands/opsx-apply.md`
 
 **What to insert**: Before implementing tasks, add a context
 retrieval step:
@@ -318,14 +355,14 @@ skills only (commands delegate to skills for behavior).
 Create the 4 UF-custom speckit commands that upstream
 `specify init` does not provide. For each file below:
 
-1. **Check** if the file exists in `.opencode/command/`
+1. **Check** if the file exists in `.opencode/commands/`
 2. **If it exists**: Report `⊘ <filename>: already exists (skipped)`
 3. **If it does not exist**: Create it with the content
    described below. Report `✅ <filename>: created`
 
 #### speckit.analyze.md
 
-Create `.opencode/command/speckit.analyze.md` — a
+Create `.opencode/commands/speckit.analyze.md` — a
 read-only cross-artifact consistency and quality analysis
 command. The command:
 - Runs after `/speckit.tasks` produces `tasks.md`
@@ -346,7 +383,7 @@ description: Perform a non-destructive cross-artifact consistency and quality an
 
 #### speckit.checklist.md
 
-Create `.opencode/command/speckit.checklist.md` — a
+Create `.opencode/commands/speckit.checklist.md` — a
 requirements quality validation command ("unit tests
 for English"). The command:
 - Generates checklists that test REQUIREMENTS quality,
@@ -367,7 +404,7 @@ description: Generate a custom checklist for the current feature based on user r
 
 #### speckit.clarify.md
 
-Create `.opencode/command/speckit.clarify.md` — a spec
+Create `.opencode/commands/speckit.clarify.md` — a spec
 ambiguity detection and resolution command. The command:
 - Scans spec.md for ambiguities across 10 taxonomy
   categories (functional scope, data model, UX flow,
@@ -387,7 +424,7 @@ description: Identify underspecified areas in the current feature spec by asking
 
 #### speckit.taskstoissues.md
 
-Create `.opencode/command/speckit.taskstoissues.md` — a
+Create `.opencode/commands/speckit.taskstoissues.md` — a
 GitHub issue creation command. The command:
 - Reads tasks.md and creates GitHub issues for each task
 - Requires a GitHub remote URL (validates before creating)
@@ -410,7 +447,7 @@ step: run `.specify/scripts/bash/check-prerequisites.sh
 ### Step 6: Speckit Command Guardrails
 
 Inject a `## Guardrails` section into ALL 9
-`.opencode/command/speckit.*.md` files. For each file:
+`.opencode/commands/speckit.*.md` files. For each file:
 
 1. **Read** the file content
 2. **Check** if a `## Guardrails` section already exists
@@ -489,7 +526,7 @@ This step is read-only — it verifies but does not modify.
 
 ### Step 8: OpenSpec Command Guardrails
 
-For `.opencode/command/opsx-propose.md`:
+For `.opencode/commands/opsx-propose.md`:
 
 1. **Read** the file content
 2. **Check** if a `## Guardrails` section exists at the
@@ -518,390 +555,7 @@ The guardrails block to append:
   user to run /unleash, /opsx-apply, or /cobalt-crush
 ```
 
-### Step 9: AGENTS.md Behavioral Guidance
-
-For the repo's `AGENTS.md` file, inject standardized
-behavioral guidance sections if not already present.
-
-1. **Check** if `AGENTS.md` exists at the repo root.
-   If not, report `⊘ AGENTS.md: not found (skipped)`
-   and skip this entire step.
-
-2. **Read** the full contents of `AGENTS.md`.
-
-3. For each of the 8 guidance blocks below, in the order
-   listed (Core Mission first, Knowledge Retrieval last):
-   a. Check if the detection phrase (or semantic
-      equivalent heading) exists in the file
-   b. If present: report `⊘ <block>: already present
-      (skipped)`
-   c. If not present: find the appropriate insertion
-      point per the placement guidance and append the
-      block text. Report `✅ <block>: injected`
-
-4. After processing all 8 blocks, save the file once.
-
-**Injection order** (optimized for document flow):
-1. Core Mission
-2. Gatekeeping Value Protection
-3. Workflow Phase Boundaries
-4. CI Parity Gate
-5. Review Council PR Prerequisite
-6. Spec-First Development
-7. Website Documentation Sync Gate
-8. Knowledge Retrieval
-
-#### Block 1: Core Mission
-
-**Detection phrases**: `## Core Mission`, or both
-`Strategic Architecture` AND `Outcome Orientation`
-present in the same section.
-
-**Placement**: After `## Project Overview`, before
-`## Behavioral Constraints`. If neither heading exists,
-append near the top of the file after any frontmatter
-and title.
-
-**Text to inject**:
-
-```markdown
-## Core Mission
-
-- **Strategic Architecture**: Engineers shift from manual
-  coding to directing an "infinite supply of junior
-  developers" (AI agents).
-- **Outcome Orientation**: Focus on conveying business
-  value and user intent rather than low-level technical
-  sub-tasks.
-- **Intent-to-Context**: Treat specs and rules as the
-  medium through which human intent is manifested into
-  code.
-```
-
-#### Block 2: Gatekeeping Value Protection
-
-**Detection phrases**: `Gatekeeping Value Protection`
-heading, or `MUST NOT modify values that serve as
-quality`.
-
-**Placement**: Inside `## Behavioral Constraints`
-section. If `## Behavioral Constraints` does not exist,
-create it and place it after `## Core Mission` (or after
-`## Project Overview` if Core Mission is absent).
-
-**Text to inject**:
-
-```markdown
-### Gatekeeping Value Protection
-
-Agents MUST NOT modify values that serve as quality or
-governance gates to make an implementation pass. The
-following categories are protected:
-
-1. **Coverage thresholds and CRAP scores** — minimum
-   coverage percentages, CRAP score limits, coverage
-   ratchets
-2. **Severity definitions and auto-fix policies** —
-   CRITICAL/HIGH/MEDIUM/LOW boundaries, auto-fix
-   eligibility rules
-3. **Convention pack rule classifications** —
-   MUST/SHOULD/MAY designations on convention pack rules
-   (downgrading MUST to SHOULD is prohibited)
-4. **CI flags and linter configuration** — `-race`,
-   `-count=1`, `govulncheck`, `golangci-lint` rules,
-   pinned action SHAs
-5. **Agent temperature and tool-access settings** —
-   frontmatter `temperature`, `tools.write`, `tools.edit`,
-   `tools.bash` restrictions
-6. **Constitution MUST rules** — any MUST rule in
-   `.specify/memory/constitution.md` or hero constitutions
-7. **Review iteration limits and worker concurrency** —
-   max review iterations, max concurrent Swarm workers,
-   retry limits
-8. **Workflow gate markers** — `<!-- spec-review: passed
-   -->`, task completion checkboxes used as gates, phase
-   checkpoint requirements
-
-**What to do instead**: When an implementation cannot
-meet a gate, the agent MUST stop, report which gate is
-blocking and why, and let the human decide whether to
-adjust the gate or rework the implementation. Modifying
-a gate without explicit human authorization is a
-constitution violation (CRITICAL severity).
-```
-
-#### Block 3: Workflow Phase Boundaries
-
-**Detection phrases**: `Workflow Phase Boundaries`
-heading, or `MUST NOT cross workflow phase boundaries`.
-
-**Placement**: Inside `## Behavioral Constraints`,
-after Gatekeeping Value Protection (if present). If
-`## Behavioral Constraints` does not exist, create it.
-
-**Text to inject**:
-
-```markdown
-### Workflow Phase Boundaries
-
-Agents MUST NOT cross workflow phase boundaries:
-
-- **Specify/Clarify/Plan/Tasks/Analyze/Checklist** phases:
-  spec artifacts ONLY (`specs/NNN-*/` directory). No
-  source code, test, agent, command, or config changes.
-- **Implement** phase: source code changes allowed,
-  guided by spec artifacts.
-- **Review** phase: findings and minor fixes only. No new
-  features.
-
-A phase boundary violation is treated as a process error.
-The agent MUST stop and report the violation rather than
-proceeding with out-of-phase changes.
-```
-
-#### Block 4: CI Parity Gate
-
-**Detection phrases**: `CI Parity Gate` heading or bold
-text, or `replicate the CI checks locally`.
-
-**Placement**: Inside `## Behavioral Constraints` or
-`## Technical Guardrails`, after Workflow Phase
-Boundaries (if present). If neither section exists,
-create `## Behavioral Constraints` and place it there.
-
-**Text to inject**:
-
-```markdown
-### CI Parity Gate
-
-Before marking any implementation task complete or
-declaring a PR ready, agents MUST replicate the CI checks
-locally. Read `.github/workflows/` to identify the exact
-commands CI runs, then execute those same commands. Any
-failure is a blocking error — a task is not complete
-until all CI-equivalent checks pass locally. Do not rely
-on a memorized list of commands; always derive them from
-the workflow files, which are the source of truth.
-```
-
-#### Block 5: Review Council PR Prerequisite
-
-**Detection phrases**: Both `Review Council` AND
-`PR Prerequisite` present, or `/review-council` as a
-command reference in a PR workflow context.
-
-**Placement**: After behavioral constraints, before
-build commands or testing conventions. If no clear
-anchor exists, append after the last behavioral
-constraint block.
-
-**Text to inject**:
-
-```markdown
-### Review Council as PR Prerequisite
-
-Before submitting a pull request, agents **must** run
-`/review-council` and resolve all REQUEST CHANGES
-findings until all reviewers return APPROVE. There must
-be **minimal to no code changes** between the council's
-APPROVE verdict and the PR submission — the council
-reviews the final code, not a draft that changes
-afterward.
-
-Workflow:
-
-1. Complete all implementation tasks
-2. Run CI checks locally (build, test, vet)
-3. Run `/review-council` — fix any findings, re-run
-   until APPROVE
-4. Commit, push, and submit PR immediately after council
-   APPROVE
-5. Do NOT make further code changes between APPROVE and
-   PR submission
-
-Exempt from council review:
-
-- Constitution amendments (governance documents, not code)
-- Documentation-only changes (README, AGENTS.md, spec
-  artifacts)
-- Emergency hotfixes (must be retroactively reviewed)
-```
-
-#### Block 6: Spec-First Development
-
-**Detection phrases**: `Spec-First Development` heading,
-or `preceded by a spec workflow`.
-
-**Placement**: After behavioral constraints, before
-build commands. If no clear anchor exists, append after
-the last behavioral constraint or workflow rule block.
-
-**Text to inject**:
-
-```markdown
-## Spec-First Development
-
-All changes that modify production code, test code, agent
-prompts, embedded assets, or CI configuration **must** be
-preceded by a spec workflow. The constitution
-(`.specify/memory/constitution.md`) is the highest-
-authority document in this project — all work must align
-with it.
-
-Two spec workflows are available:
-
-| Workflow | Location | Best For |
-|----------|----------|----------|
-| **Speckit** | `specs/NNN-name/` | Numbered feature specs with the full pipeline |
-| **OpenSpec** | `openspec/changes/name/` | Targeted changes with lightweight artifacts |
-
-**What requires a spec** (no exceptions without explicit
-user override):
-
-- New features or capabilities
-- Refactoring that changes function signatures, extracts
-  helpers, or moves code between packages
-- Test additions or assertion strengthening across
-  multiple functions
-- Agent prompt changes
-- CI workflow modifications
-- Data model changes (new struct fields, schema updates)
-
-**What is exempt** (may be done directly):
-
-- Constitution amendments (governed by the constitution's
-  own Governance section)
-- Typo corrections, comment-only changes, single-line
-  formatting fixes
-- Emergency hotfixes for critical production bugs (must
-  be retroactively documented)
-
-When an agent is unsure whether a change is trivial, it
-**must** ask the user rather than proceeding without a
-spec. The cost of an unnecessary spec is minutes; the
-cost of an unplanned change is rework, drift, and broken
-CI.
-```
-
-#### Block 7: Website Documentation Sync Gate
-
-**Detection phrases**: `Website Documentation` AND
-`Gate` in a heading, or `gh issue create --repo` with
-`unbound-force/website`.
-
-**Placement**: Near documentation validation gate or
-spec commit gate. If no clear anchor exists, append
-after Spec-First Development.
-
-**Text to inject**:
-
-````markdown
-### Website Documentation Gate
-
-When a change affects user-facing behavior, hero
-capabilities, CLI commands, or workflows, a GitHub issue
-**MUST** be created in the `unbound-force/website`
-repository to track required documentation or website
-updates. The issue must be created before the
-implementing PR is merged.
-
-```bash
-gh issue create --repo unbound-force/website \
-  --title "docs: <brief description of what changed>" \
-  --body "<what changed, why it matters, which pages
-          need updating>"
-```
-
-**Exempt changes** (no website issue needed):
-- Internal refactoring with no user-facing behavior
-  change
-- Test-only changes
-- CI/CD pipeline changes
-- Spec artifacts (specs are internal planning documents)
-
-**Examples requiring a website issue**:
-- New CLI command or flag added
-- Hero capabilities changed (new agent, removed feature)
-- Installation steps changed (`uf setup` flow)
-- New convention pack added
-- Breaking changes to any user-facing workflow
-````
-
-#### Block 8: Knowledge Retrieval
-
-**Detection phrases**: `## Knowledge Retrieval` heading,
-or `dewey_semantic_search` as a tool reference (in a
-table or code block, not just prose), or
-`Tool Selection Matrix`.
-
-**Placement**: After coding conventions, before testing
-conventions. If neither section exists, append near the
-end of the file before any appendix or changelog.
-
-**Text to inject**:
-
-```markdown
-## Knowledge Retrieval
-
-Agents SHOULD prefer Dewey MCP tools over grep/glob/read
-for cross-repo context, design decisions, and
-architectural patterns. Dewey provides semantic search
-across all indexed Markdown files, specs, and web
-documentation — returning ranked results with provenance
-metadata that grep cannot match.
-
-### Tool Selection Matrix
-
-| Query Intent | Dewey Tool | When to Use |
-|-------------|-----------|-------------|
-| Conceptual understanding | `dewey_semantic_search` | "How does X work?" |
-| Keyword lookup | `dewey_search` | Known terms, FR numbers |
-| Read specific page | `dewey_get_page` | Known document path |
-| Relationship discovery | `dewey_find_connections` | "How are X and Y related?" |
-| Similar documents | `dewey_similar` | "Find specs like this one" |
-| Tag-based discovery | `dewey_find_by_tag` | "All pages tagged #decision" |
-| Property queries | `dewey_query_properties` | "All specs with status: draft" |
-| Filtered semantic | `dewey_semantic_search_filtered` | Semantic search within source type |
-| Graph navigation | `dewey_traverse` | Dependency chain walking |
-
-### When to Fall Back to grep/glob/read
-
-Use direct file operations instead of Dewey when:
-- **Dewey is unavailable** — MCP tools return errors or
-  are not configured
-- **Exact string matching is needed** — searching for a
-  specific error message, variable name, or code pattern
-- **Specific file path is known** — reading a file you
-  already know the path to (use Read directly)
-- **Binary/non-Markdown content** — Dewey indexes
-  Markdown; use grep for Go source, JSON, YAML, etc.
-
-### Graceful Degradation (3-Tier Pattern)
-
-**Tier 3 (Full Dewey)** — semantic + structured search:
-- `dewey_semantic_search` — natural language queries
-- `dewey_search` — keyword queries
-- `dewey_get_page`, `dewey_find_connections`,
-  `dewey_traverse` — structured navigation
-- `dewey_find_by_tag`, `dewey_query_properties` —
-  metadata queries
-
-**Tier 2 (Graph-only, no embedding model)** — structured
-search only:
-- `dewey_search` — keyword queries (no embeddings needed)
-- `dewey_get_page`, `dewey_traverse`,
-  `dewey_find_connections` — graph navigation
-- `dewey_find_by_tag`, `dewey_query_properties` —
-  metadata queries
-- Semantic search unavailable — use exact keyword matches
-
-**Tier 1 (No Dewey)** — direct file access:
-- Use Read tool for direct file access
-- Use Grep for keyword search across the codebase
-- Use Glob for file pattern matching
-```
-
-### Step 10: Report Results
+### Step 9: Report Results
 
 After processing all customizations, display a summary:
 
@@ -940,16 +594,6 @@ After processing all customizations, display a summary:
 ### OpenSpec Command Guardrails
   [status] [filename]: [action]
   ...
-
-### AGENTS.md Guidance
-  [status] Core Mission: [action]
-  [status] Gatekeeping Value Protection: [action]
-  [status] Workflow Phase Boundaries: [action]
-  [status] CI Parity Gate: [action]
-   [status] Review Council PR Prerequisite: [action]
-   [status] Spec-First Development: [action]
-   [status] Website Documentation Sync Gate: [action]
-  [status] Knowledge Retrieval: [action]
 
 ### Summary
 Applied: N | Already present: N | Errors: N

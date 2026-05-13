@@ -55,6 +55,15 @@ artifacts:
       checkboxes. Group related tasks. Include a task
       for verifying constitution alignment if the
       proposal identified relevant principles.
+      Add [P] marker after the task number on tasks
+      that are eligible for parallel execution.
+      A task is parallel-eligible when it: (a) touches
+      different files from other [P] tasks in the same
+      group, (b) has no dependency on prior tasks in
+      the group, (c) can safely execute without ordering
+      constraints. Do NOT add [P] when tasks modify the
+      same file — parallel workers will cause merge
+      conflicts. Format: - [ ] N.M [P] description.
     requires: [specs, design]
 
 apply:
@@ -65,8 +74,4 @@ apply:
     task as you complete it. Verify that the
     implementation maintains constitution alignment
     as documented in the proposal.
-# scaffolded by uf vv0.6.1
-# scaffolded by uf vdev
-# scaffolded by uf vdev
-# scaffolded by uf vdev
 # scaffolded by uf vdev

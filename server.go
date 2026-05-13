@@ -8,11 +8,11 @@ import (
 	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/tools"
-	"github.com/unbound-force/dewey/vault"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/tools"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // serverConfig holds optional dependencies for the MCP server.

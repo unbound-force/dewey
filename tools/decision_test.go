@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func intPtr(i int) *int { return &i }

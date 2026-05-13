@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/unbound-force/dewey/ignore"
+	"github.com/unbound-force/dewey/v3/ignore"
 )
 
 func createTestVault(t *testing.T) string {

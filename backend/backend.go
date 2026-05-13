@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // Backend is the interface every knowledge graph backend must implement.

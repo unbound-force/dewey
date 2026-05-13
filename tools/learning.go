@@ -16,10 +16,10 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
-	"github.com/unbound-force/dewey/vault"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // learningLogger is the package-level structured logger for learning tool operations.

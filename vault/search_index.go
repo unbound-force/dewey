@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // SearchIndex is a simple inverted index for full-text search.

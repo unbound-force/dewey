@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func TestCurateTool_NilStore(t *testing.T) {

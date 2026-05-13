@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // Compile-time check: *Client satisfies backend.Backend.

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/ignore"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/ignore"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // VaultStore bridges the vault.Client (in-memory index) with the store.Store

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/llm"
-	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/store"
 )
 
 // DocumentContent holds a document's content for the extraction prompt.

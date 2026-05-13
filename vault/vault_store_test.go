@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // newTestVaultStore creates a VaultStore backed by an in-memory SQLite database.

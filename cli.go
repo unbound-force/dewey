@@ -18,19 +18,19 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
-	"github.com/unbound-force/dewey/chunker"
-	"github.com/unbound-force/dewey/client"
-	"github.com/unbound-force/dewey/curate"
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/ignore"
-	"github.com/unbound-force/dewey/llm"
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/sanitize"
-	"github.com/unbound-force/dewey/source"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/tools"
-	"github.com/unbound-force/dewey/types"
-	"github.com/unbound-force/dewey/vault"
+	"github.com/unbound-force/dewey/v3/chunker"
+	"github.com/unbound-force/dewey/v3/client"
+	"github.com/unbound-force/dewey/v3/curate"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/ignore"
+	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/sanitize"
+	"github.com/unbound-force/dewey/v3/source"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/tools"
+	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // newJournalCmd creates the `dewey journal` subcommand.
@@ -1969,7 +1969,7 @@ func collectManifestBlocks(vaultPath string) ([]chunker.Block, error) {
 	if !ok {
 		// Go chunker not registered — return empty blocks.
 		// This can happen if the chunker package wasn't imported.
-		logger.Warn("go chunker not registered — import _ \"github.com/unbound-force/dewey/chunker\"")
+		logger.Warn("go chunker not registered — import _ \"github.com/unbound-force/dewey/v3/chunker\"")
 		return nil, nil
 	}
 

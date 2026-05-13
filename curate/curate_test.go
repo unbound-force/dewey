@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/llm"
-	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/store"
 )
 
 // mockLLMResponse returns a valid JSON array of knowledge items for testing.

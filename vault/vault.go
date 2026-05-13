@@ -13,11 +13,11 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/uuid"
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/ignore"
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/ignore"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // logger is the package-level structured logger for vault operations.

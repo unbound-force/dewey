@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/curate"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/curate"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // parseLintResult unmarshals the JSON text from a lint CallToolResult.

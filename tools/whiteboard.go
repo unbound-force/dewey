@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // Whiteboard implements whiteboard MCP tools.

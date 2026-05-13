@@ -18,10 +18,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/unbound-force/dewey/client"
-	"github.com/unbound-force/dewey/source"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/client"
+	"github.com/unbound-force/dewey/v3/source"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // TestRootCmd_Version verifies the root command reports the correct version.

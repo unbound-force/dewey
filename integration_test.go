@@ -14,14 +14,14 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	_ "github.com/unbound-force/dewey/chunker" // Register Go chunker for code source tests.
-	"github.com/unbound-force/dewey/curate"
-	"github.com/unbound-force/dewey/llm"
-	"github.com/unbound-force/dewey/source"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/tools"
-	"github.com/unbound-force/dewey/types"
-	"github.com/unbound-force/dewey/vault"
+	_ "github.com/unbound-force/dewey/v3/chunker" // Register Go chunker for code source tests.
+	"github.com/unbound-force/dewey/v3/curate"
+	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/source"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/tools"
+	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // TestEndToEnd_InitIndexStatusFlow verifies the complete workflow:

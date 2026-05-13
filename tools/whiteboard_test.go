@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func TestGetWhiteboard_Success(t *testing.T) {

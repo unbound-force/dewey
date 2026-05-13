@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // mockBackend is a configurable test double that implements backend.Backend

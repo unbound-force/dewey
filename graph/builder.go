@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // Cache holds a recently built graph to avoid rebuilding on every analyze call.

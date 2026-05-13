@@ -5,7 +5,7 @@
 Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 50 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, learning, and curate categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, pluggable LLM providers (Ollama, Vertex AI), and trust tiers.
 
 - **Language**: Go 1.25+
-- **Module**: `github.com/unbound-force/dewey`
+- **Module**: `github.com/unbound-force/dewey/v3`
 - **License**: MIT (original graphthulhu) + Unbound Force copyright
 
 ## Core Mission
@@ -561,15 +561,15 @@ specs/
 - Go 1.25 (per `go.mod`) + `os/exec` (subprocess), `net/http` (health check), `github.com/charmbracelet/log` (logging), `github.com/spf13/cobra` (CLI) (007-ollama-autostart)
 - Go 1.25 (per `go.mod`) + `go/parser`, `go/ast`, `go/token`, `go/format` (all stdlib — AST parsing for code chunking), `github.com/spf13/cobra` (CLI), `github.com/charmbracelet/log` (logging) (010-code-source-index)
 - N/A (no storage changes — code source documents flow through existing SQLite pipeline) (010-code-source-index)
-- Go 1.25 (per `go.mod`) + `github.com/modelcontextprotocol/go-sdk` (MCP SDK), `github.com/unbound-force/dewey/source` (source manager), `github.com/unbound-force/dewey/store` (SQLite persistence), `github.com/unbound-force/dewey/embed` (Ollama embeddings), `github.com/unbound-force/dewey/vault` (document parsing/persistence), `sync` (mutex for mutual exclusion) (011-live-reindex)
+- Go 1.25 (per `go.mod`) + `github.com/modelcontextprotocol/go-sdk` (MCP SDK), `github.com/unbound-force/dewey/v3/source` (source manager), `github.com/unbound-force/dewey/v3/store` (SQLite persistence), `github.com/unbound-force/dewey/v3/embed` (Ollama embeddings), `github.com/unbound-force/dewey/v3/vault` (document parsing/persistence), `sync` (mutex for mutual exclusion) (011-live-reindex)
 - N/A (no storage changes — MCP tools wrap existing indexing pipeline, no new tables or schema changes) (011-live-reindex)
 - Go 1.25 (per `go.mod`) + `sync/atomic` (readiness flag), `sync` (shared mutex), `github.com/modelcontextprotocol/go-sdk` (MCP SDK), `github.com/charmbracelet/log` (logging) (012-background-index)
 - N/A (no storage changes — restructures startup sequence, no new tables or schema changes) (012-background-index)
-- Go 1.25 (per `go.mod`) + `modernc.org/sqlite` (pure-Go SQLite, schema migration v1→v2), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — 3 new tools: compile, lint, promote), `github.com/spf13/cobra` (CLI — 3 new commands), `github.com/charmbracelet/log` (logging), `github.com/unbound-force/dewey/embed` (Ollama embeddings for clustering), `net/http` (Ollama /api/generate for LLM synthesis) (013-knowledge-compile)
+- Go 1.25 (per `go.mod`) + `modernc.org/sqlite` (pure-Go SQLite, schema migration v1→v2), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — 3 new tools: compile, lint, promote), `github.com/spf13/cobra` (CLI — 3 new commands), `github.com/charmbracelet/log` (logging), `github.com/unbound-force/dewey/v3/embed` (Ollama embeddings for clustering), `net/http` (Ollama /api/generate for LLM synthesis) (013-knowledge-compile)
 - SQLite schema v1→v2: `pages` table gains `tier TEXT DEFAULT 'authored'` and `category TEXT` columns + `idx_pages_tier` index. New `llm/` package for LLM synthesis interface. (013-knowledge-compile)
 
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
-- Go 1.25 (per `go.mod`) + `gopkg.in/yaml.v3` (knowledge store config parsing), `github.com/unbound-force/dewey/llm` (LLM synthesis for curation), `github.com/unbound-force/dewey/curate` (new package — config parsing + curation pipeline), `github.com/spf13/cobra` (CLI — `dewey curate` command), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — `curate` tool) (015-curated-knowledge-stores)
+- Go 1.25 (per `go.mod`) + `gopkg.in/yaml.v3` (knowledge store config parsing), `github.com/unbound-force/dewey/v3/llm` (LLM synthesis for curation), `github.com/unbound-force/dewey/v3/curate` (new package — config parsing + curation pipeline), `github.com/spf13/cobra` (CLI — `dewey curate` command), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — `curate` tool) (015-curated-knowledge-stores)
 - N/A (no schema changes — `curated` is a new value in the existing `tier TEXT` column. File-backed learnings use filesystem, not new tables) (015-curated-knowledge-stores)
 
 ## Recent Changes

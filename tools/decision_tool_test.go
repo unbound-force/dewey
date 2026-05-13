@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/backend"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 func TestDecisionCheck_Success(t *testing.T) {

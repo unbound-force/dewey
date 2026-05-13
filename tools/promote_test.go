@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // parsePromoteResult unmarshals the JSON text from a promote CallToolResult.

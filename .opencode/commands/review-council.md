@@ -2,10 +2,6 @@
 description: Run the reviewer governance council to audit codebase or spec compliance.
 ---
 <!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vdev -->
-<!-- scaffolded by uf vv0.6.1 -->
 # Command: /review-council
 
 ## User Input
@@ -55,8 +51,8 @@ examining the current branch and workspace:
      `data-model.md`, `research.md`
    - **Code files**: everything else (`.go`, `.ts`, `.js`,
      `.py`, `go.mod`, `go.sum`, `Makefile`, `internal/`,
-     `cmd/`, `.opencode/agents/`, `.opencode/command/`,
-     `.opencode/skill/`, `.opencode/uf/packs/`,
+     `cmd/`, `.opencode/agents/`, `.opencode/commands/`,
+     `.opencode/skills/`, `.opencode/uf/packs/`,
      etc.)
 
 4. **Detect the workflow tier** from the branch name:

@@ -663,7 +663,8 @@ type mockEmbedder struct {
 	available bool
 	modelID   string
 	embedFn   func(ctx context.Context, text string) ([]float32, error)
-	calls     []string // records chunk texts passed to Embed
+	batchFn   func(ctx context.Context, texts []string) ([][]float32, error) // optional batch override
+	calls     []string                                                       // records chunk texts passed to Embed
 }
 
 func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
@@ -676,6 +677,10 @@ func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 }
 
 func (m *mockEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if m.batchFn != nil {
+		return m.batchFn(ctx, texts)
+	}
+	// Default: delegate to Embed for each text.
 	var results [][]float32
 	for _, text := range texts {
 		vec, err := m.Embed(ctx, text)
@@ -866,12 +871,16 @@ func TestGenerateEmbeddings_SkipsEmptyBlocks(t *testing.T) {
 func TestGenerateEmbeddings_EmbedError(t *testing.T) {
 	vs, s := newTestVaultStore(t, t.TempDir())
 
-	callCount := 0
+	embedCallCount := 0
 	me := &mockEmbedder{
 		available: true,
 		modelID:   "test-model",
+		// Batch always fails — triggers fallback to individual Embed.
+		batchFn: func(_ context.Context, _ []string) ([][]float32, error) {
+			return nil, fmt.Errorf("ollama connection refused")
+		},
 		embedFn: func(_ context.Context, _ string) ([]float32, error) {
-			callCount++
+			embedCallCount++
 			return nil, fmt.Errorf("ollama connection refused")
 		},
 	}
@@ -887,9 +896,9 @@ func TestGenerateEmbeddings_EmbedError(t *testing.T) {
 	// Should not panic — errors are logged and skipped.
 	vs.generateEmbeddings("test-page", blocks, nil)
 
-	// Verify Embed was called for both blocks (continues on error).
-	if callCount != 2 {
-		t.Errorf("expected 2 Embed calls (continues past errors), got %d", callCount)
+	// Verify Embed fallback was called for both blocks (continues on error).
+	if embedCallCount != 2 {
+		t.Errorf("expected 2 Embed calls (continues past errors), got %d", embedCallCount)
 	}
 
 	// Verify no embeddings were persisted (all failed).
@@ -1010,14 +1019,18 @@ func TestGenerateEmbeddings_HeadingPathPropagation(t *testing.T) {
 func TestGenerateEmbeddings_PartialEmbedError(t *testing.T) {
 	vs, s := newTestVaultStore(t, t.TempDir())
 
-	callIdx := 0
+	embedCallIdx := 0
 	me := &mockEmbedder{
 		available: true,
 		modelID:   "test-model",
+		// Batch fails to trigger fallback to individual Embed calls.
+		batchFn: func(_ context.Context, _ []string) ([][]float32, error) {
+			return nil, fmt.Errorf("transient error")
+		},
 		embedFn: func(_ context.Context, _ string) ([]float32, error) {
-			callIdx++
-			if callIdx == 1 {
-				// First call fails.
+			embedCallIdx++
+			if embedCallIdx == 1 {
+				// First fallback call fails.
 				return nil, fmt.Errorf("transient error")
 			}
 			// Subsequent calls succeed.

@@ -111,17 +111,88 @@ func ExtractHeadingFromContent(content string) string {
 	return strings.TrimSpace(trimmed)
 }
 
+// embeddingBatchSize is the number of chunks to batch per EmbedBatch() call.
+// Balances memory usage (32 * ~768 chars max per chunk) against HTTP round-trip
+// reduction. Ollama's /api/embed endpoint accepts arrays natively (D1).
+const embeddingBatchSize = 32
+
+// blockChunk associates a block UUID with its prepared chunk text and heading
+// path for batch embedding. Collected during the flatten pass and consumed
+// during the batch-embed pass (D2).
+type blockChunk struct {
+	blockUUID   string
+	chunk       string
+	headingPath []string
+}
+
 // GenerateEmbeddings creates vector embeddings for blocks and persists them
 // to the store. This is the shared implementation used by both VaultStore
 // (serve-time persistence) and the CLI indexing pipeline, eliminating
 // duplication (same pattern as PersistBlocks/PersistLinks).
 //
+// Uses a flatten-then-batch approach (D2): collects all non-empty blocks
+// into (blockUUID, chunk, headingPath) tuples, then batch-embeds using
+// EmbedBatch() with a batch size of 32 (D1). On batch failure, falls back
+// to individual Embed() calls with existing truncation retry logic.
+//
 // Returns the number of embeddings generated. Embedding failures are logged
 // but don't block indexing (graceful degradation).
 func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string, blocks []types.BlockEntity, headingPath []string) int {
+	// Pass 1: Flatten block tree into chunk tuples.
+	var chunks []blockChunk
+	flattenBlocks(blocks, headingPath, pageName, &chunks)
+
+	if len(chunks) == 0 {
+		return 0
+	}
+
+	// Pass 2: Batch-embed collected chunks.
 	count := 0
 	ctx := context.Background()
 
+	for i := 0; i < len(chunks); i += embeddingBatchSize {
+		end := i + embeddingBatchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		batch := chunks[i:end]
+
+		// Collect chunk texts for the batch call.
+		texts := make([]string, len(batch))
+		for j, bc := range batch {
+			texts[j] = bc.chunk
+		}
+
+		vectors, err := embedder.EmbedBatch(ctx, texts)
+		if err != nil {
+			// Batch failed — fall back to individual Embed() for each chunk
+			// in this batch, preserving existing truncation retry logic (D1).
+			logger.Warn("batch embedding failed, falling back to individual embedding",
+				"page", pageName, "batchSize", len(batch), "err", err)
+			for _, bc := range batch {
+				count += embedSingleChunk(ctx, s, embedder, pageName, bc.blockUUID, bc.chunk)
+			}
+			continue
+		}
+
+		// Batch succeeded — persist each embedding.
+		for j, vec := range vectors {
+			bc := batch[j]
+			if err := s.InsertEmbedding(bc.blockUUID, embedder.ModelID(), vec, bc.chunk); err != nil {
+				logger.Warn("failed to persist embedding",
+					"page", pageName, "block", bc.blockUUID, "err", err)
+				continue
+			}
+			count++
+		}
+	}
+
+	return count
+}
+
+// flattenBlocks recursively collects all non-empty blocks into a flat slice
+// of blockChunk tuples, preserving heading path context for each block.
+func flattenBlocks(blocks []types.BlockEntity, headingPath []string, pageName string, out *[]blockChunk) {
 	for _, b := range blocks {
 		if strings.TrimSpace(b.Content) == "" {
 			continue
@@ -134,46 +205,49 @@ func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string
 		}
 
 		chunk := embed.PrepareChunk(pageName, currentPath, b.Content)
-
-		vec, err := embedder.Embed(ctx, chunk)
-		if err != nil {
-			// Check for context-length overflow and retry with truncated chunk.
-			if strings.Contains(err.Error(), "context length") {
-				runes := []rune(chunk)
-				truncated := string(runes[:len(runes)/2])
-				logger.Debug("retrying embedding with truncated chunk",
-					"page", pageName, "block", b.UUID,
-					"originalLen", len(runes), "truncatedLen", len(runes)/2)
-				vec, err = embedder.Embed(ctx, truncated)
-				if err == nil {
-					// Retry succeeded — store the embedding with the truncated chunk.
-					if storeErr := s.InsertEmbedding(b.UUID, embedder.ModelID(), vec, truncated); storeErr != nil {
-						logger.Warn("failed to persist embedding after retry",
-							"page", pageName, "block", b.UUID, "err", storeErr)
-					} else {
-						count++
-					}
-					if len(b.Children) > 0 {
-						count += GenerateEmbeddings(s, embedder, pageName, b.Children, currentPath)
-					}
-					continue
-				}
-			}
-			logger.Warn("failed to generate embedding",
-				"page", pageName, "block", b.UUID, "chunkLen", len([]rune(chunk)), "err", err)
-			continue
-		}
-
-		if err := s.InsertEmbedding(b.UUID, embedder.ModelID(), vec, chunk); err != nil {
-			logger.Warn("failed to persist embedding",
-				"page", pageName, "block", b.UUID, "err", err)
-			continue
-		}
-		count++
+		*out = append(*out, blockChunk{
+			blockUUID:   b.UUID,
+			chunk:       chunk,
+			headingPath: currentPath,
+		})
 
 		if len(b.Children) > 0 {
-			count += GenerateEmbeddings(s, embedder, pageName, b.Children, currentPath)
+			flattenBlocks(b.Children, currentPath, pageName, out)
 		}
 	}
-	return count
+}
+
+// embedSingleChunk embeds a single chunk with the existing truncation retry
+// logic for context-length errors. Returns 1 on success, 0 on failure.
+func embedSingleChunk(ctx context.Context, s *store.Store, embedder embed.Embedder, pageName, blockUUID, chunk string) int {
+	vec, err := embedder.Embed(ctx, chunk)
+	if err != nil {
+		// Check for context-length overflow and retry with truncated chunk.
+		if strings.Contains(err.Error(), "context length") {
+			runes := []rune(chunk)
+			truncated := string(runes[:len(runes)/2])
+			logger.Debug("retrying embedding with truncated chunk",
+				"page", pageName, "block", blockUUID,
+				"originalLen", len(runes), "truncatedLen", len(runes)/2)
+			vec, err = embedder.Embed(ctx, truncated)
+			if err == nil {
+				if storeErr := s.InsertEmbedding(blockUUID, embedder.ModelID(), vec, truncated); storeErr != nil {
+					logger.Warn("failed to persist embedding after retry",
+						"page", pageName, "block", blockUUID, "err", storeErr)
+					return 0
+				}
+				return 1
+			}
+		}
+		logger.Warn("failed to generate embedding",
+			"page", pageName, "block", blockUUID, "chunkLen", len([]rune(chunk)), "err", err)
+		return 0
+	}
+
+	if err := s.InsertEmbedding(blockUUID, embedder.ModelID(), vec, chunk); err != nil {
+		logger.Warn("failed to persist embedding",
+			"page", pageName, "block", blockUUID, "err", err)
+		return 0
+	}
+	return 1
 }

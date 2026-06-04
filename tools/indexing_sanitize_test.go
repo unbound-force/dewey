@@ -7,6 +7,7 @@ import (
 
 	"github.com/unbound-force/dewey/v3/sanitize"
 	"github.com/unbound-force/dewey/v3/source"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // --- Pipeline sanitization integration tests (task 6.5) ---
@@ -83,9 +84,9 @@ func TestIndexDocuments_ScanCalledForWebSource(t *testing.T) {
 	}
 	docs := buildDocs("web-docs", "page-with-injection", "Injected Page", injectionContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 1 {
-		t.Fatalf("totalIndexed = %d, want 1", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	// Retrieve the page from the store and verify sanitize_findings exist.
@@ -154,9 +155,9 @@ func TestIndexDocuments_ScanSkippedForDiskSource(t *testing.T) {
 	}
 	docs := buildDocs("disk-local", "local-page", "Local Page", injectionContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 1 {
-		t.Fatalf("totalIndexed = %d, want 1", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	// Retrieve the page and verify NO sanitize_findings.
@@ -204,9 +205,9 @@ func TestIndexDocuments_StrictModeSkipsDocument(t *testing.T) {
 	}
 	docs := buildDocs("web-strict", "malicious-page", "Malicious Page", injectionContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 0 {
-		t.Fatalf("totalIndexed = %d, want 0 (document should be rejected by strict mode)", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 0 {
+		t.Fatalf("totalIndexed = %d, want 0 (document should be rejected by strict mode)", indexResult.TotalIndexed)
 	}
 
 	// Verify the page was NOT stored.
@@ -239,9 +240,9 @@ func TestIndexDocuments_FindingsSurvivePersistence(t *testing.T) {
 	}
 	docs := buildDocs("web-persist", "persist-doc", "Persist Doc", injectionContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 1 {
-		t.Fatalf("totalIndexed = %d, want 1", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	// Retrieve the page from the store.
@@ -326,9 +327,9 @@ func TestIndexDocuments_FindingsMergedWithFrontmatter(t *testing.T) {
 	}
 	docs := buildDocs("web-frontmatter", "fm-doc", "Frontmatter Doc", frontmatterContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 1 {
-		t.Fatalf("totalIndexed = %d, want 1", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	// Retrieve the page from the store.
@@ -409,9 +410,9 @@ func TestIndexDocuments_StrictModeAllowsCleanDocument(t *testing.T) {
 	}
 	docs := buildDocs("web-strict-clean", "clean-page", "Clean Page", cleanContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 1 {
-		t.Fatalf("totalIndexed = %d, want 1 (clean document should pass strict mode)", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("totalIndexed = %d, want 1 (clean document should pass strict mode)", indexResult.TotalIndexed)
 	}
 
 	// Verify the page was stored.
@@ -443,9 +444,9 @@ func TestIndexDocuments_TrustTierFromConfig(t *testing.T) {
 	}
 	docs := buildDocs("web-untrusted", "untrusted-doc", "Untrusted Doc", cleanContent)
 
-	totalIndexed, _ := ix.indexDocuments(docs, configs)
-	if totalIndexed != 1 {
-		t.Fatalf("totalIndexed = %d, want 1", totalIndexed)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	page, err := s.GetPage("web-untrusted/untrusted-doc")
@@ -527,9 +528,9 @@ func TestDetermineSanitizeMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := determineSanitizeMode(tt.cfg)
+			got := vault.DetermineSanitizeMode(tt.cfg)
 			if got != tt.want {
-				t.Errorf("determineSanitizeMode() = %q, want %q", got, tt.want)
+				t.Errorf("vault.DetermineSanitizeMode() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -572,9 +573,9 @@ func TestDetermineTrustTier(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := determineTrustTier(tt.cfg)
+			got := vault.DetermineTrustTier(tt.cfg)
 			if got != tt.want {
-				t.Errorf("determineTrustTier() = %q, want %q", got, tt.want)
+				t.Errorf("vault.DetermineTrustTier() = %q, want %q", got, tt.want)
 			}
 		})
 	}

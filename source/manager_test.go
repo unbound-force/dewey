@@ -3,22 +3,33 @@ package source
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // mockSource is a test double for the Source interface.
+// Thread-safe for concurrent use in tests with -race (FR-101).
 type mockSource struct {
 	id        string
 	srcType   string
 	name      string
 	docs      []Document
 	err       error
-	listCalls int
+	listCalls atomic.Int64
+
+	// listFn is an optional hook called during List(). When set, it is called
+	// before returning docs/err. Used for synchronization barriers in
+	// concurrency tests.
+	listFn func()
 }
 
 func (m *mockSource) List() ([]Document, error) {
-	m.listCalls++
+	m.listCalls.Add(1)
+	if m.listFn != nil {
+		m.listFn()
+	}
 	return m.docs, m.err
 }
 
@@ -253,8 +264,8 @@ func TestManager_FetchAll_RefreshInterval(t *testing.T) {
 	if result.TotalSkip != 1 {
 		t.Errorf("total skipped = %d, want 1", result.TotalSkip)
 	}
-	if src.listCalls != 0 {
-		t.Errorf("List should not be called when within refresh interval")
+	if got := src.listCalls.Load(); got != 0 {
+		t.Errorf("List should not be called when within refresh interval, got %d calls", got)
 	}
 }
 
@@ -282,8 +293,8 @@ func TestManager_FetchAll_ForceIgnoresInterval(t *testing.T) {
 	if result.TotalDocs != 1 {
 		t.Errorf("total docs = %d, want 1 (force should ignore interval)", result.TotalDocs)
 	}
-	if src.listCalls != 1 {
-		t.Errorf("List should be called once when forced")
+	if got := src.listCalls.Load(); got != 1 {
+		t.Errorf("List should be called once when forced, got %d calls", got)
 	}
 }
 
@@ -822,6 +833,184 @@ func TestCreateDiskSource_DotPath(t *testing.T) {
 	}
 	if ds.basePath != basePath {
 		t.Errorf("basePath = %q, want %q", ds.basePath, basePath)
+	}
+}
+
+// --- Concurrent fetching tests (FR-101) ---
+
+// TestManager_FetchAll_ConcurrentSources verifies that multiple sources
+// are fetched concurrently when more than one is eligible (FR-101 scenario 1).
+func TestManager_FetchAll_ConcurrentSources(t *testing.T) {
+	const numSources = 4
+
+	// Barrier: all goroutines must reach List() before any can proceed.
+	// This proves concurrent execution — sequential fetching would deadlock.
+	var activeCount atomic.Int64
+	barrier := make(chan struct{})
+
+	sources := make([]Source, numSources)
+	configs := make([]SourceConfig, numSources)
+	for i := range numSources {
+		id := fmt.Sprintf("src-%d", i)
+		sources[i] = &mockSource{
+			id:      id,
+			srcType: "disk",
+			name:    id,
+			docs:    []Document{{ID: fmt.Sprintf("doc-%d", i), SourceID: id}},
+			listFn: func() {
+				if activeCount.Add(1) == numSources {
+					close(barrier) // Last goroutine releases the barrier.
+				}
+				<-barrier // All goroutines wait here.
+			},
+		}
+		configs[i] = SourceConfig{ID: id, Type: "disk", Name: id}
+	}
+
+	mgr := &Manager{sources: sources, configs: configs}
+	result, allDocs := mgr.FetchAll("", true, nil)
+
+	if result.TotalDocs != numSources {
+		t.Errorf("total docs = %d, want %d", result.TotalDocs, numSources)
+	}
+	if len(allDocs) != numSources {
+		t.Errorf("source count = %d, want %d", len(allDocs), numSources)
+	}
+}
+
+// TestManager_FetchAll_SourceFailureDoesNotCancelOthers verifies that one
+// source failure does not cancel other source fetches (FR-101 scenario 2).
+func TestManager_FetchAll_SourceFailureDoesNotCancelOthers(t *testing.T) {
+	sources := []Source{
+		&mockSource{id: "src-a", srcType: "disk", name: "a", docs: []Document{{ID: "a1"}}},
+		&mockSource{id: "src-b", srcType: "disk", name: "b", err: fmt.Errorf("network error")},
+		&mockSource{id: "src-c", srcType: "disk", name: "c", docs: []Document{{ID: "c1"}}},
+	}
+	configs := []SourceConfig{
+		{ID: "src-a", Type: "disk", Name: "a"},
+		{ID: "src-b", Type: "disk", Name: "b"},
+		{ID: "src-c", Type: "disk", Name: "c"},
+	}
+
+	mgr := &Manager{sources: sources, configs: configs}
+	result, allDocs := mgr.FetchAll("", true, nil)
+
+	// A and C should succeed, B should fail.
+	if result.TotalDocs != 2 {
+		t.Errorf("total docs = %d, want 2", result.TotalDocs)
+	}
+	if result.TotalErrs != 1 {
+		t.Errorf("total errors = %d, want 1", result.TotalErrs)
+	}
+	if _, ok := allDocs["src-b"]; ok {
+		t.Error("failed source should not have documents")
+	}
+	if len(allDocs["src-a"]) != 1 {
+		t.Errorf("src-a docs = %d, want 1", len(allDocs["src-a"]))
+	}
+	if len(allDocs["src-c"]) != 1 {
+		t.Errorf("src-c docs = %d, want 1", len(allDocs["src-c"]))
+	}
+
+	// Verify error is recorded in summaries.
+	var foundError bool
+	for _, s := range result.Summaries {
+		if s.SourceID == "src-b" {
+			foundError = true
+			if s.Errors != 1 {
+				t.Errorf("src-b summary errors = %d, want 1", s.Errors)
+			}
+			if s.Error == "" {
+				t.Error("src-b summary should include error message")
+			}
+		}
+	}
+	if !foundError {
+		t.Error("summary should contain entry for failed source src-b")
+	}
+}
+
+// TestManager_FetchAll_SingleSourceBypassesConcurrency verifies that when
+// only one source matches (via filter), concurrency overhead is skipped (FR-101 scenario 3).
+func TestManager_FetchAll_SingleSourceBypassesConcurrency(t *testing.T) {
+	sources := []Source{
+		&mockSource{id: "src-a", srcType: "disk", name: "a", docs: []Document{{ID: "a1"}}},
+		&mockSource{id: "src-b", srcType: "disk", name: "b", docs: []Document{{ID: "b1"}}},
+		&mockSource{id: "src-c", srcType: "disk", name: "c", docs: []Document{{ID: "c1"}}},
+		&mockSource{id: "src-d", srcType: "disk", name: "d", docs: []Document{{ID: "d1"}}},
+		&mockSource{id: "src-e", srcType: "disk", name: "e", docs: []Document{{ID: "e1"}}},
+	}
+	configs := []SourceConfig{
+		{ID: "src-a", Type: "disk", Name: "a"},
+		{ID: "src-b", Type: "disk", Name: "b"},
+		{ID: "src-c", Type: "disk", Name: "c"},
+		{ID: "src-d", Type: "disk", Name: "d"},
+		{ID: "src-e", Type: "disk", Name: "e"},
+	}
+
+	mgr := &Manager{sources: sources, configs: configs}
+	result, allDocs := mgr.FetchAll("src-c", true, nil)
+
+	if result.TotalDocs != 1 {
+		t.Errorf("total docs = %d, want 1", result.TotalDocs)
+	}
+	if len(allDocs) != 1 {
+		t.Errorf("source count = %d, want 1", len(allDocs))
+	}
+	if _, ok := allDocs["src-c"]; !ok {
+		t.Error("filtered source should have documents")
+	}
+
+	// Verify other sources were not fetched.
+	for _, src := range sources {
+		ms := src.(*mockSource)
+		if ms.id != "src-c" && ms.listCalls.Load() != 0 {
+			t.Errorf("source %s should not have been fetched", ms.id)
+		}
+	}
+}
+
+// TestManager_FetchAll_ConcurrentResultAggregation verifies that document
+// counts are accurate when sources are fetched concurrently.
+func TestManager_FetchAll_ConcurrentResultAggregation(t *testing.T) {
+	// Use a wait group to add timing uncertainty.
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	sources := make([]Source, 10)
+	configs := make([]SourceConfig, 10)
+	expectedTotal := 0
+	for i := range 10 {
+		id := fmt.Sprintf("src-%d", i)
+		docCount := i + 1
+		expectedTotal += docCount
+		docs := make([]Document, docCount)
+		for j := range docCount {
+			docs[j] = Document{ID: fmt.Sprintf("doc-%d-%d", i, j)}
+		}
+		sources[i] = &mockSource{
+			id:      id,
+			srcType: "disk",
+			name:    id,
+			docs:    docs,
+			listFn: func() {
+				wg.Wait() // All wait until released.
+			},
+		}
+		configs[i] = SourceConfig{ID: id, Type: "disk", Name: id}
+	}
+
+	mgr := &Manager{sources: sources, configs: configs}
+
+	// Release all sources to proceed simultaneously.
+	wg.Done()
+	result, allDocs := mgr.FetchAll("", true, nil)
+
+	if result.TotalDocs != expectedTotal {
+		t.Errorf("total docs = %d, want %d", result.TotalDocs, expectedTotal)
+	}
+	if len(allDocs) != 10 {
+		t.Errorf("source count = %d, want 10", len(allDocs))
 	}
 }
 

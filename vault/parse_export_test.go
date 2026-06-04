@@ -1,8 +1,15 @@
 package vault
 
 import (
+	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/unbound-force/dewey/embed"
+	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/types"
 )
 
 func TestParseDocument_WithHeadingsAndFrontmatter(t *testing.T) {
@@ -129,5 +136,250 @@ Content here.
 	// H3 should contain "Sub Sub Section".
 	if !strings.Contains(blocks[0].Children[0].Children[0].Content, "Sub Sub Section") {
 		t.Errorf("H3 block content = %q, want to contain 'Sub Sub Section'", blocks[0].Children[0].Children[0].Content)
+	}
+}
+
+// --- Mock embedder for GenerateEmbeddings tests ---
+
+// testEmbedder implements embed.Embedder for testing batch embedding behavior.
+// Tracks call counts for Embed and EmbedBatch to verify batching strategy.
+type testEmbedder struct {
+	embedCalls      atomic.Int64
+	embedBatchCalls atomic.Int64
+	batchErr        error // If set, EmbedBatch returns this error (triggers fallback).
+	embedErr        error // If set, Embed returns this error.
+}
+
+func (e *testEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
+	e.embedCalls.Add(1)
+	if e.embedErr != nil {
+		return nil, e.embedErr
+	}
+	return []float32{0.1, 0.2, 0.3}, nil
+}
+
+func (e *testEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	e.embedBatchCalls.Add(1)
+	if e.batchErr != nil {
+		return nil, e.batchErr
+	}
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = []float32{0.1, 0.2, 0.3}
+	}
+	return result, nil
+}
+
+func (e *testEmbedder) Available() bool { return true }
+func (e *testEmbedder) ModelID() string { return "test-model" }
+
+var _ embed.Embedder = (*testEmbedder)(nil)
+
+// newTestStore creates an in-memory store for testing. Calls t.Fatal on error.
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New(:memory:): %v", err)
+	}
+	// Insert a page so InsertEmbedding foreign key (if any) is satisfied.
+	if err := s.InsertPage(&store.Page{Name: "test-page"}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	return s
+}
+
+// makeBlocks creates n blocks with unique UUIDs and non-empty content.
+// Blocks are flat (no children) unless withChildren is called separately.
+func makeBlocks(n int) []types.BlockEntity {
+	blocks := make([]types.BlockEntity, n)
+	for i := range blocks {
+		blocks[i] = types.BlockEntity{
+			UUID:    fmt.Sprintf("block-%03d", i),
+			Content: fmt.Sprintf("Content for block %d with some text.", i),
+		}
+	}
+	return blocks
+}
+
+// TestGenerateEmbeddings_BatchReducesRoundTrips verifies that EmbedBatch()
+// is called instead of per-block Embed() calls (FR-100 scenario 1).
+func TestGenerateEmbeddings_BatchReducesRoundTrips(t *testing.T) {
+	s := newTestStore(t)
+	e := &testEmbedder{}
+
+	// 64 blocks should produce 2 batches of 32 (not 64 individual Embed calls).
+	blocks := makeBlocks(64)
+	// Insert blocks into the store so embedding persistence works.
+	for _, b := range blocks {
+		if err := s.InsertBlock(&store.Block{
+			UUID:     b.UUID,
+			PageName: "test-page",
+			Content:  b.Content,
+		}); err != nil {
+			t.Fatalf("InsertBlock: %v", err)
+		}
+	}
+
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+
+	if count != 64 {
+		t.Errorf("GenerateEmbeddings returned %d, want 64", count)
+	}
+	if got := e.embedBatchCalls.Load(); got != 2 {
+		t.Errorf("EmbedBatch called %d times, want 2", got)
+	}
+	if got := e.embedCalls.Load(); got != 0 {
+		t.Errorf("Embed called %d times, want 0 (should use batch)", got)
+	}
+}
+
+// TestGenerateEmbeddings_BatchFallback verifies that when EmbedBatch() fails,
+// individual Embed() calls are used as fallback (FR-100 scenario 2).
+func TestGenerateEmbeddings_BatchFallback(t *testing.T) {
+	s := newTestStore(t)
+	e := &testEmbedder{
+		batchErr: fmt.Errorf("simulated context length overflow"),
+	}
+
+	blocks := makeBlocks(5)
+	for _, b := range blocks {
+		if err := s.InsertBlock(&store.Block{
+			UUID:     b.UUID,
+			PageName: "test-page",
+			Content:  b.Content,
+		}); err != nil {
+			t.Fatalf("InsertBlock: %v", err)
+		}
+	}
+
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+
+	if count != 5 {
+		t.Errorf("GenerateEmbeddings returned %d, want 5", count)
+	}
+	// Batch was attempted once and failed.
+	if got := e.embedBatchCalls.Load(); got != 1 {
+		t.Errorf("EmbedBatch called %d times, want 1", got)
+	}
+	// Fallback: each block embedded individually.
+	if got := e.embedCalls.Load(); got != 5 {
+		t.Errorf("Embed called %d times, want 5 (fallback)", got)
+	}
+}
+
+// TestGenerateEmbeddings_EmptyBlocksSkipped verifies that empty/whitespace
+// blocks are not sent for embedding (FR-100 scenario 3).
+func TestGenerateEmbeddings_EmptyBlocksSkipped(t *testing.T) {
+	s := newTestStore(t)
+	e := &testEmbedder{}
+
+	blocks := []types.BlockEntity{
+		{UUID: "b1", Content: "Real content here."},
+		{UUID: "b2", Content: ""},
+		{UUID: "b3", Content: "   "},
+		{UUID: "b4", Content: "\t\n"},
+		{UUID: "b5", Content: "Another real block."},
+		{UUID: "b6", Content: "Third real block."},
+		{UUID: "b7", Content: "   \n   "},
+		{UUID: "b8", Content: "Fourth real block."},
+		{UUID: "b9", Content: "Fifth real block."},
+		{UUID: "b10", Content: "Sixth real block."},
+	}
+
+	// Only insert non-empty blocks (the ones that will actually be embedded).
+	for _, b := range blocks {
+		if strings.TrimSpace(b.Content) == "" {
+			continue
+		}
+		if err := s.InsertBlock(&store.Block{
+			UUID:     b.UUID,
+			PageName: "test-page",
+			Content:  b.Content,
+		}); err != nil {
+			t.Fatalf("InsertBlock: %v", err)
+		}
+	}
+
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+
+	// 10 blocks, 4 empty → 6 should be embedded.
+	if count != 6 {
+		t.Errorf("GenerateEmbeddings returned %d, want 6 (4 empty skipped)", count)
+	}
+}
+
+// TestGenerateEmbeddings_CorrectCount verifies the total embedding count
+// matches the number of non-empty blocks including children.
+func TestGenerateEmbeddings_CorrectCount(t *testing.T) {
+	s := newTestStore(t)
+	e := &testEmbedder{}
+
+	// Tree: 2 root blocks, first has 3 children, second has 1 child.
+	// Total non-empty: 6.
+	blocks := []types.BlockEntity{
+		{
+			UUID:    "root1",
+			Content: "# Heading One",
+			Children: []types.BlockEntity{
+				{UUID: "child1a", Content: "Child 1a content."},
+				{UUID: "child1b", Content: "Child 1b content."},
+				{UUID: "child1c", Content: "Child 1c content."},
+			},
+		},
+		{
+			UUID:    "root2",
+			Content: "## Heading Two",
+			Children: []types.BlockEntity{
+				{UUID: "child2a", Content: "Child 2a content."},
+			},
+		},
+	}
+
+	// Insert all blocks into store.
+	allBlocks := []types.BlockEntity{
+		blocks[0], blocks[0].Children[0], blocks[0].Children[1], blocks[0].Children[2],
+		blocks[1], blocks[1].Children[0],
+	}
+	for _, b := range allBlocks {
+		if err := s.InsertBlock(&store.Block{
+			UUID:     b.UUID,
+			PageName: "test-page",
+			Content:  b.Content,
+		}); err != nil {
+			t.Fatalf("InsertBlock: %v", err)
+		}
+	}
+
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+
+	if count != 6 {
+		t.Errorf("GenerateEmbeddings returned %d, want 6", count)
+	}
+}
+
+// TestFlattenBlocks_CollectsAllNonEmpty verifies the flatten pass collects
+// blocks from all tree levels and skips empty ones.
+func TestFlattenBlocks_CollectsAllNonEmpty(t *testing.T) {
+	blocks := []types.BlockEntity{
+		{
+			UUID:    "r1",
+			Content: "# Top",
+			Children: []types.BlockEntity{
+				{UUID: "c1", Content: "Child content."},
+				{UUID: "c2", Content: ""},
+				{UUID: "c3", Content: "Another child."},
+			},
+		},
+		{UUID: "r2", Content: "   "},
+		{UUID: "r3", Content: "Root three."},
+	}
+
+	var chunks []blockChunk
+	flattenBlocks(blocks, nil, "page", &chunks)
+
+	// r1 (Top), c1, c3, r3 = 4 non-empty. r2 and c2 are empty/whitespace.
+	if len(chunks) != 4 {
+		t.Errorf("flattenBlocks collected %d chunks, want 4", len(chunks))
 	}
 }

@@ -2,19 +2,15 @@ package tools
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/embed"
-	"github.com/unbound-force/dewey/v3/sanitize"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -149,7 +145,10 @@ func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input t
 	result, allDocs := mgr.FetchAll(input.SourceID, true, lastFetchedTimes)
 
 	// Index fetched documents through the shared pipeline.
-	totalIndexed, totalEmbeddings := ix.indexDocuments(allDocs, configs)
+	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder)
+	if indexErr != nil {
+		indexingLogger.Warn("index had errors", "err", indexErr)
+	}
 
 	// Report source errors to the store.
 	ix.reportSourceErrors(result)
@@ -168,17 +167,17 @@ func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input t
 	elapsed := time.Since(start)
 	indexingLogger.Info("index complete",
 		"sources", len(result.Summaries),
-		"pages", totalIndexed,
-		"embeddings", totalEmbeddings,
+		"pages", indexResult.TotalIndexed,
+		"embeddings", indexResult.TotalEmbeddings,
 		"elapsed", elapsed.Round(time.Millisecond),
 	)
 
 	summary := indexSummary{
 		Status:              "completed",
 		SourcesProcessed:    len(result.Summaries),
-		PagesIndexed:        totalIndexed,
-		EmbeddingsGenerated: totalEmbeddings,
-		EmbeddingsSkipped:   totalIndexed - totalEmbeddings,
+		PagesIndexed:        indexResult.TotalIndexed,
+		EmbeddingsGenerated: indexResult.TotalEmbeddings,
+		EmbeddingsSkipped:   indexResult.TotalIndexed - indexResult.TotalEmbeddings,
 		ElapsedMs:           elapsed.Milliseconds(),
 		Sources:             sources,
 	}
@@ -276,7 +275,10 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 	result, allDocs := mgr.FetchAll("", true, lastFetchedTimes)
 
 	// Index fetched documents.
-	totalIndexed, totalEmbeddings := ix.indexDocuments(allDocs, configs)
+	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder)
+	if indexErr != nil {
+		indexingLogger.Warn("reindex had errors", "err", indexErr)
+	}
 
 	// Report source errors.
 	ix.reportSourceErrors(result)
@@ -296,17 +298,17 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 	indexingLogger.Info("reindex complete",
 		"deleted", totalDeleted,
 		"sources", len(result.Summaries),
-		"pages", totalIndexed,
-		"embeddings", totalEmbeddings,
+		"pages", indexResult.TotalIndexed,
+		"embeddings", indexResult.TotalEmbeddings,
 		"elapsed", elapsed.Round(time.Millisecond),
 	)
 
 	summary := indexSummary{
 		Status:              "completed",
 		SourcesProcessed:    len(result.Summaries),
-		PagesIndexed:        totalIndexed,
-		EmbeddingsGenerated: totalEmbeddings,
-		EmbeddingsSkipped:   totalIndexed - totalEmbeddings,
+		PagesIndexed:        indexResult.TotalIndexed,
+		EmbeddingsGenerated: indexResult.TotalEmbeddings,
+		EmbeddingsSkipped:   indexResult.TotalIndexed - indexResult.TotalEmbeddings,
 		PagesDeleted:        totalDeleted,
 		ElapsedMs:           elapsed.Milliseconds(),
 		Sources:             sources,
@@ -314,262 +316,6 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 
 	res, err := jsonTextResult(summary)
 	return res, nil, err
-}
-
-// indexDocuments upserts fetched documents into the persistent store with full
-// content persistence: blocks, links, and embeddings. This reimplements the
-// orchestration from cli.go's indexDocuments() because that function lives in
-// package main and cannot be imported (per plan D6, research R1).
-//
-// SYNC: identical sanitization logic in cli.go:indexDocuments()
-//
-// Returns the total number of documents indexed and embeddings generated.
-func (ix *Indexing) indexDocuments(allDocs map[string][]source.Document, configs []source.SourceConfig) (int, int) {
-	totalIndexed := 0
-	totalEmbeddings := 0
-
-	for sourceID, docs := range allDocs {
-		indexingLogger.Info("indexing source", "source", sourceID, "documents", len(docs))
-
-		// Look up source config for sanitize_mode, trust_tier, and source type.
-		var srcCfg *source.SourceConfig
-		for i := range configs {
-			if configs[i].ID == sourceID {
-				srcCfg = &configs[i]
-				break
-			}
-		}
-
-		// Determine sanitize_mode from source config (D9: unified sanitization mode).
-		// Default depends on source type: disk/code → off, web/github → warn.
-		sanitizeMode := determineSanitizeMode(srcCfg)
-
-		// Determine trust_tier from source config (task 7.3).
-		// Default to "authored" when not specified.
-		trustTier := determineTrustTier(srcCfg)
-
-		// Compute per-source SourceStats from document content lengths before
-		// per-document scanning (task 6.3, D5). Stats enable size anomaly detection.
-		var sourceStats *sanitize.SourceStats
-		if sanitizeMode != sanitize.ModeOff {
-			lengths := make([]int, len(docs))
-			for i, doc := range docs {
-				lengths[i] = len(doc.Content)
-			}
-			stats := sanitize.ComputeStats(lengths)
-			sourceStats = &stats
-		}
-
-		for _, doc := range docs {
-			// Namespace external page names: sourceID/docID (per research R6).
-			pageName := strings.ToLower(sourceID + "/" + doc.ID)
-
-			// Content sanitization: scan raw content BEFORE parsing (D1).
-			// Scan happens on raw doc.Content to detect injection patterns,
-			// structural anomalies, and content drift before any processing.
-			var scanResult *sanitize.ScanResult
-			if sanitizeMode != sanitize.ModeOff {
-				// Content hash drift (task 6.4): look up existing page to get
-				// previous content hash. Empty PreviousHash for first-time pages.
-				var previousHash string
-				existingForDrift, _ := ix.store.GetPage(pageName)
-				if existingForDrift != nil {
-					previousHash = existingForDrift.ContentHash
-				}
-
-				scanInput := sanitize.ScanInput{
-					Content:      doc.Content,
-					SourceID:     sourceID,
-					DocumentID:   doc.ID,
-					SourceType:   srcCfg.Type,
-					PreviousHash: previousHash,
-					CurrentHash:  doc.ContentHash,
-					SourceStats:  sourceStats,
-				}
-				scanCfg := sanitize.ScanConfig{
-					Mode: sanitizeMode,
-				}
-				var scanErr error
-				scanResult, scanErr = sanitize.Scan(scanInput, scanCfg)
-				if scanErr != nil {
-					indexingLogger.Warn("sanitize scan failed", "page", pageName, "err", scanErr)
-				}
-
-				// Strict mode: skip documents with critical or high severity findings.
-				if sanitizeMode == sanitize.ModeStrict && scanResult != nil {
-					if sanitize.HasBlockingFindings(scanResult.Findings) {
-						indexingLogger.Error("document rejected by strict sanitization",
-							"page", pageName,
-							"source", sourceID,
-							"findings", len(scanResult.Findings),
-						)
-						continue
-					}
-				}
-			}
-
-			// Parse document content into frontmatter and blocks.
-			props, blocks := vault.ParseDocument(pageName, doc.Content)
-
-			// Merge sanitize findings into properties (D7).
-			// Done after ParseDocument so findings survive alongside frontmatter properties.
-			if scanResult != nil && len(scanResult.Findings) > 0 {
-				if props == nil {
-					props = make(map[string]any)
-				}
-				props["sanitize_findings"] = scanResult.Findings
-			}
-
-			// Build properties JSON.
-			propsJSON := ""
-			if props != nil {
-				data, _ := json.Marshal(props)
-				propsJSON = string(data)
-			} else if doc.Properties != nil {
-				data, _ := json.Marshal(doc.Properties)
-				propsJSON = string(data)
-			}
-
-			// Upsert page record.
-			existing, _ := ix.store.GetPage(pageName)
-			if existing != nil {
-				// Re-index: delete existing blocks and links first.
-				if err := ix.store.DeleteBlocksByPage(pageName); err != nil {
-					indexingLogger.Warn("failed to delete existing blocks",
-						"page", pageName, "err", err)
-				}
-				if err := ix.store.DeleteLinksByPage(pageName); err != nil {
-					indexingLogger.Warn("failed to delete existing links",
-						"page", pageName, "err", err)
-				}
-
-				existing.ContentHash = doc.ContentHash
-				existing.SourceID = sourceID
-				existing.SourceDocID = doc.ID
-				existing.OriginalName = doc.Title
-				existing.Properties = propsJSON
-				existing.Tier = trustTier
-				if err := ix.store.UpdatePage(existing); err != nil {
-					indexingLogger.Warn("failed to update page",
-						"page", pageName, "err", err)
-					continue
-				}
-			} else {
-				page := &store.Page{
-					Name:         pageName,
-					OriginalName: doc.Title,
-					SourceID:     sourceID,
-					SourceDocID:  doc.ID,
-					Properties:   propsJSON,
-					ContentHash:  doc.ContentHash,
-					CreatedAt:    doc.FetchedAt.UnixMilli(),
-					UpdatedAt:    doc.FetchedAt.UnixMilli(),
-					Tier:         trustTier,
-				}
-				if err := ix.store.InsertPage(page); err != nil {
-					indexingLogger.Warn("failed to insert page",
-						"page", pageName, "err", err)
-					continue
-				}
-			}
-
-			// Persist blocks using the shared vault pipeline.
-			if err := vault.PersistBlocks(ix.store, pageName, blocks, sql.NullString{}, 0); err != nil {
-				indexingLogger.Warn("failed to persist blocks",
-					"page", pageName, "err", err)
-				continue
-			}
-
-			// Persist links using the shared vault pipeline.
-			if err := vault.PersistLinks(ix.store, pageName, blocks); err != nil {
-				indexingLogger.Warn("failed to persist links",
-					"page", pageName, "err", err)
-				continue
-			}
-
-			// Generate embeddings if the embedder is available.
-			if ix.embedder != nil && ix.embedder.Available() {
-				ec := vault.GenerateEmbeddings(ix.store, ix.embedder, pageName, blocks, nil)
-				totalEmbeddings += ec
-			}
-
-			totalIndexed++
-		}
-
-		// Update source record in the store.
-		ix.updateSourceRecord(sourceID, configs)
-	}
-
-	return totalIndexed, totalEmbeddings
-}
-
-// determineSanitizeMode extracts sanitize_mode from the source config map
-// and delegates to sanitize.DetermineSanitizeMode for the core logic.
-func determineSanitizeMode(cfg *source.SourceConfig) string {
-	if cfg == nil {
-		return sanitize.ModeOff
-	}
-	explicitMode := extractConfigString(cfg.Config, "sanitize_mode")
-	return sanitize.DetermineSanitizeMode(cfg.Type, explicitMode)
-}
-
-// determineTrustTier extracts trust_tier from the source config map
-// and delegates to sanitize.DetermineTrustTier for the core logic.
-func determineTrustTier(cfg *source.SourceConfig) string {
-	if cfg == nil {
-		return "authored"
-	}
-	explicitTier := extractConfigString(cfg.Config, "trust_tier")
-	return sanitize.DetermineTrustTier(explicitTier)
-}
-
-// extractConfigString safely extracts a string value from a config map.
-// Returns empty string if the key is missing, nil, or not a string.
-func extractConfigString(config map[string]any, key string) string {
-	if config == nil {
-		return ""
-	}
-	v, ok := config[key]
-	if !ok {
-		return ""
-	}
-	s, _ := v.(string)
-	return s
-}
-
-// updateSourceRecord creates or updates the source record in the store
-// after indexing completes for a source.
-func (ix *Indexing) updateSourceRecord(sourceID string, configs []source.SourceConfig) {
-	existingSrc, _ := ix.store.GetSource(sourceID)
-	if existingSrc == nil {
-		var srcType, srcName string
-		for _, cfg := range configs {
-			if cfg.ID == sourceID {
-				srcType = cfg.Type
-				srcName = cfg.Name
-				break
-			}
-		}
-		if err := ix.store.InsertSource(&store.SourceRecord{
-			ID:            sourceID,
-			Type:          srcType,
-			Name:          srcName,
-			Status:        "active",
-			LastFetchedAt: time.Now().UnixMilli(),
-		}); err != nil {
-			indexingLogger.Warn("failed to insert source record",
-				"source", sourceID, "err", err)
-		}
-	} else {
-		if err := ix.store.UpdateLastFetched(sourceID, time.Now().UnixMilli()); err != nil {
-			indexingLogger.Warn("failed to update source last fetched",
-				"source", sourceID, "err", err)
-		}
-		if err := ix.store.UpdateSourceStatus(sourceID, "active", ""); err != nil {
-			indexingLogger.Warn("failed to update source status",
-				"source", sourceID, "err", err)
-		}
-	}
 }
 
 // reportSourceErrors updates source status for any sources that failed

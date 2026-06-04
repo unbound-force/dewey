@@ -3,7 +3,10 @@ package source
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Manager orchestrates fetching across all configured content sources.
@@ -191,12 +194,18 @@ func extractStringList(v any) []string {
 	}
 }
 
+// maxConcurrentFetches is the maximum number of sources fetched concurrently.
+// Balances I/O parallelism against system resource usage (each source may open
+// files, make HTTP requests, or call GitHub APIs) (D3, FR-101).
+const maxConcurrentFetches = 4
+
 // FetchAll fetches content from all configured sources and returns the
 // aggregate result along with a map of source ID → fetched documents.
 // If sourceName is non-empty, only that source is fetched. If force is
 // true, refresh intervals are ignored and all sources are fetched
 // regardless of when they were last refreshed.
 //
+// Sources are fetched concurrently using bounded workers (FR-101).
 // Source failures are non-fatal — each failure is logged as a warning
 // and the fetch continues with remaining sources (FR-020). The returned
 // [FetchResult] contains per-source summaries including document counts,
@@ -204,6 +213,13 @@ func extractStringList(v any) []string {
 func (m *Manager) FetchAll(sourceName string, force bool, lastFetchedTimes map[string]time.Time) (*FetchResult, map[string][]Document) {
 	result := &FetchResult{}
 	allDocs := make(map[string][]Document)
+
+	// Collect sources eligible for fetching (filter and refresh-interval checks).
+	type fetchTarget struct {
+		src  Source
+		meta SourceMetadata
+	}
+	var targets []fetchTarget
 
 	for _, src := range m.sources {
 		meta := src.Meta()
@@ -237,37 +253,99 @@ func (m *Manager) FetchAll(sourceName string, force bool, lastFetchedTimes map[s
 			}
 		}
 
-		// Fetch documents from source.
-		logger.Info("fetching source", "source", meta.ID, "type", meta.Type)
+		targets = append(targets, fetchTarget{src: src, meta: meta})
+	}
 
-		docs, err := src.List()
-		if err != nil {
-			// Source failures are non-fatal (FR-020).
-			logger.Warn("source fetch failed, continuing with others",
-				"source", meta.ID, "err", err)
-			result.Summaries = append(result.Summaries, FetchSummary{
-				SourceID:   meta.ID,
-				SourceType: meta.Type,
-				Errors:     1,
-				Error:      err.Error(),
-			})
-			result.TotalErrs++
-			continue
+	// Single source: skip concurrency overhead.
+	if len(targets) <= 1 {
+		for _, t := range targets {
+			m.fetchSource(t.src, t.meta, result, allDocs)
 		}
+		return result, allDocs
+	}
 
-		allDocs[meta.ID] = docs
+	// Multiple sources: fetch concurrently with bounded workers (D3).
+	var mu sync.Mutex
+	g := new(errgroup.Group)
+	g.SetLimit(maxConcurrentFetches)
+
+	for _, t := range targets {
+		g.Go(func() error {
+			localResult, localDocs, localMeta := m.fetchSourceConcurrent(t.src, t.meta)
+
+			mu.Lock()
+			defer mu.Unlock()
+			result.Summaries = append(result.Summaries, localResult)
+			if localDocs != nil {
+				allDocs[localMeta.ID] = localDocs
+			}
+			result.TotalDocs += localResult.Documents
+			result.TotalErrs += localResult.Errors
+			return nil // Source failures are non-fatal — always return nil (D3).
+		})
+	}
+	_ = g.Wait() // All goroutines return nil, so error is always nil.
+
+	return result, allDocs
+}
+
+// fetchSource fetches a single source and appends results directly to the
+// shared result/allDocs. Used for the single-source fast path.
+func (m *Manager) fetchSource(src Source, meta SourceMetadata, result *FetchResult, allDocs map[string][]Document) {
+	logger.Info("fetching source", "source", meta.ID, "type", meta.Type)
+
+	docs, err := src.List()
+	if err != nil {
+		logger.Warn("source fetch failed, continuing with others",
+			"source", meta.ID, "err", err)
 		result.Summaries = append(result.Summaries, FetchSummary{
 			SourceID:   meta.ID,
 			SourceType: meta.Type,
-			Documents:  len(docs),
+			Errors:     1,
+			Error:      err.Error(),
 		})
-		result.TotalDocs += len(docs)
-
-		logger.Info("source fetched",
-			"source", meta.ID, "documents", len(docs))
+		result.TotalErrs++
+		return
 	}
 
-	return result, allDocs
+	allDocs[meta.ID] = docs
+	result.Summaries = append(result.Summaries, FetchSummary{
+		SourceID:   meta.ID,
+		SourceType: meta.Type,
+		Documents:  len(docs),
+	})
+	result.TotalDocs += len(docs)
+
+	logger.Info("source fetched",
+		"source", meta.ID, "documents", len(docs))
+}
+
+// fetchSourceConcurrent fetches a single source and returns the result
+// without writing to shared state. Thread-safe for concurrent use (D3).
+func (m *Manager) fetchSourceConcurrent(src Source, meta SourceMetadata) (FetchSummary, []Document, SourceMetadata) {
+	logger.Info("fetching source", "source", meta.ID, "type", meta.Type)
+
+	docs, err := src.List()
+	if err != nil {
+		// Source failures are non-fatal (FR-020).
+		logger.Warn("source fetch failed, continuing with others",
+			"source", meta.ID, "err", err)
+		return FetchSummary{
+			SourceID:   meta.ID,
+			SourceType: meta.Type,
+			Errors:     1,
+			Error:      err.Error(),
+		}, nil, meta
+	}
+
+	logger.Info("source fetched",
+		"source", meta.ID, "documents", len(docs))
+
+	return FetchSummary{
+		SourceID:   meta.ID,
+		SourceType: meta.Type,
+		Documents:  len(docs),
+	}, docs, meta
 }
 
 // Sources returns the list of instantiated [Source] implementations

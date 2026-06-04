@@ -22,6 +22,7 @@ import (
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 // TestRootCmd_Version verifies the root command reports the correct version.
@@ -1922,9 +1923,9 @@ func TestIndexDocuments_InsertNew(t *testing.T) {
 		},
 	}
 
-	got, _ := indexDocuments(s, docs, nil, nil)
-	if got != 1 {
-		t.Fatalf("indexDocuments() = %d, want 1", got)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	// Page name is now namespaced: sourceID/docID (per research R6).
@@ -1983,9 +1984,9 @@ func TestIndexDocuments_UpdateExisting(t *testing.T) {
 		},
 	}
 
-	got, _ := indexDocuments(s, docs, nil, nil)
-	if got != 1 {
-		t.Fatalf("indexDocuments() = %d, want 1", got)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	page, err := s.GetPage(pageName)
@@ -2033,7 +2034,7 @@ func TestIndexDocuments_SourceRecord(t *testing.T) {
 		},
 	}
 
-	_, _ = indexDocuments(s, docs, configs, nil)
+	_, _ = vault.IndexDocuments(s, docs, configs, nil)
 
 	src, err := s.GetSource("test-src")
 	if err != nil {
@@ -2074,9 +2075,9 @@ func TestIndexDocuments_WithProperties(t *testing.T) {
 		},
 	}
 
-	got, _ := indexDocuments(s, docs, nil, nil)
-	if got != 1 {
-		t.Fatalf("indexDocuments() = %d, want 1", got)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	// Page name is now namespaced: sourceID/docID.
@@ -2134,9 +2135,9 @@ Found a bug in [[architecture]] module.
 		},
 	}
 
-	got, _ := indexDocuments(s, docs, nil, nil)
-	if got != 1 {
-		t.Fatalf("indexDocuments() = %d, want 1", got)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	pageName := "github-org/issue-42"
@@ -2194,7 +2195,7 @@ func TestIndexDocuments_ReIndexReplacesBlocks(t *testing.T) {
 			},
 		},
 	}
-	_, _ = indexDocuments(s, docs1, nil, nil)
+	_, _ = vault.IndexDocuments(s, docs1, nil, nil)
 
 	blocks1, _ := s.GetBlocksByPage(pageName)
 	if len(blocks1) == 0 {
@@ -2214,7 +2215,7 @@ func TestIndexDocuments_ReIndexReplacesBlocks(t *testing.T) {
 			},
 		},
 	}
-	_, _ = indexDocuments(s, docs2, nil, nil)
+	_, _ = vault.IndexDocuments(s, docs2, nil, nil)
 
 	blocks2, _ := s.GetBlocksByPage(pageName)
 	if len(blocks2) == 0 {
@@ -2407,9 +2408,9 @@ func TestIndexDocuments_GracefulDegradationWithoutEmbedder(t *testing.T) {
 	}
 
 	// Index with nil embedder (simulates Ollama unavailable).
-	got, _ := indexDocuments(s, docs, nil, nil)
-	if got != 1 {
-		t.Fatalf("indexDocuments() = %d, want 1", got)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	if indexResult.TotalIndexed != 1 {
+		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
 
 	pageName := "github-org/issue-1"
@@ -2488,9 +2489,9 @@ func TestIndexDocuments_CrossSourceUUIDUniqueness(t *testing.T) {
 		},
 	}
 
-	got, _ := indexDocuments(s, docs, nil, nil)
-	if got != 3 {
-		t.Fatalf("indexDocuments() = %d, want 3", got)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	if indexResult.TotalIndexed != 3 {
+		t.Fatalf("IndexDocuments() = %d, want 3", indexResult.TotalIndexed)
 	}
 
 	// All three pages should have blocks persisted without collisions.

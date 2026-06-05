@@ -215,46 +215,7 @@ func (m *Manager) FetchAll(sourceName string, force bool, lastFetchedTimes map[s
 	allDocs := make(map[string][]Document)
 
 	// Collect sources eligible for fetching (filter and refresh-interval checks).
-	type fetchTarget struct {
-		src  Source
-		meta SourceMetadata
-	}
-	var targets []fetchTarget
-
-	for _, src := range m.sources {
-		meta := src.Meta()
-
-		// Filter by source name if specified.
-		if sourceName != "" && meta.ID != sourceName {
-			continue
-		}
-
-		// Check refresh interval (skip if within interval and not forced).
-		if !force {
-			lastFetched, ok := lastFetchedTimes[meta.ID]
-			if ok && !lastFetched.IsZero() {
-				cfg := m.findConfig(meta.ID)
-				if cfg != nil && cfg.RefreshInterval != "" {
-					interval, err := ParseRefreshInterval(cfg.RefreshInterval)
-					if err == nil && interval > 0 {
-						if time.Since(lastFetched) < interval {
-							logger.Info("source within refresh interval, skipping",
-								"source", meta.ID, "interval", cfg.RefreshInterval)
-							result.Summaries = append(result.Summaries, FetchSummary{
-								SourceID:   meta.ID,
-								SourceType: meta.Type,
-								Skipped:    true,
-							})
-							result.TotalSkip++
-							continue
-						}
-					}
-				}
-			}
-		}
-
-		targets = append(targets, fetchTarget{src: src, meta: meta})
-	}
+	targets := m.collectFetchTargets(sourceName, force, lastFetchedTimes, result)
 
 	// Single source: skip concurrency overhead.
 	if len(targets) <= 1 {
@@ -287,6 +248,71 @@ func (m *Manager) FetchAll(sourceName string, force bool, lastFetchedTimes map[s
 	_ = g.Wait() // All goroutines return nil, so error is always nil.
 
 	return result, allDocs
+}
+
+// fetchTarget pairs a source with its metadata for fetch dispatch.
+type fetchTarget struct {
+	src  Source
+	meta SourceMetadata
+}
+
+// collectFetchTargets filters and classifies sources into fetch-eligible
+// targets. Sources are filtered by name (if specified) and checked against
+// refresh intervals (unless forced). Skipped sources are recorded in result.
+func (m *Manager) collectFetchTargets(sourceName string, force bool, lastFetchedTimes map[string]time.Time, result *FetchResult) []fetchTarget {
+	var targets []fetchTarget
+
+	for _, src := range m.sources {
+		meta := src.Meta()
+
+		// Filter by source name if specified.
+		if sourceName != "" && meta.ID != sourceName {
+			continue
+		}
+
+		// Check refresh interval (skip if within interval and not forced).
+		if !force && m.shouldSkipRefresh(meta.ID, lastFetchedTimes, result) {
+			continue
+		}
+
+		targets = append(targets, fetchTarget{src: src, meta: meta})
+	}
+
+	return targets
+}
+
+// shouldSkipRefresh checks whether a source should be skipped because it was
+// fetched recently (within its configured refresh interval). If skipped,
+// a summary entry is appended to result.
+func (m *Manager) shouldSkipRefresh(sourceID string, lastFetchedTimes map[string]time.Time, result *FetchResult) bool {
+	lastFetched, ok := lastFetchedTimes[sourceID]
+	if !ok || lastFetched.IsZero() {
+		return false
+	}
+
+	cfg := m.findConfig(sourceID)
+	if cfg == nil || cfg.RefreshInterval == "" {
+		return false
+	}
+
+	interval, err := ParseRefreshInterval(cfg.RefreshInterval)
+	if err != nil || interval <= 0 {
+		return false
+	}
+
+	if time.Since(lastFetched) >= interval {
+		return false
+	}
+
+	logger.Info("source within refresh interval, skipping",
+		"source", sourceID, "interval", cfg.RefreshInterval)
+	result.Summaries = append(result.Summaries, FetchSummary{
+		SourceID:   sourceID,
+		SourceType: cfg.Type,
+		Skipped:    true,
+	})
+	result.TotalSkip++
+	return true
 }
 
 // fetchSource fetches a single source and appends results directly to the

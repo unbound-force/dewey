@@ -240,4 +240,3 @@ func TestIndexDocuments_PersistenceErrorReturnsError(t *testing.T) {
 		t.Logf("IndexDocuments completed without error, indexed=%d", result.TotalIndexed)
 	}
 }
-

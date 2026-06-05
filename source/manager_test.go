@@ -876,6 +876,26 @@ func TestManager_FetchAll_ConcurrentSources(t *testing.T) {
 	if len(allDocs) != numSources {
 		t.Errorf("source count = %d, want %d", len(allDocs), numSources)
 	}
+	// Verify no errors or skips in the concurrent path.
+	if result.TotalErrs != 0 {
+		t.Errorf("total errors = %d, want 0", result.TotalErrs)
+	}
+	if result.TotalSkip != 0 {
+		t.Errorf("total skipped = %d, want 0", result.TotalSkip)
+	}
+	// Verify per-source summaries were collected for all sources.
+	if len(result.Summaries) != numSources {
+		t.Errorf("summaries count = %d, want %d", len(result.Summaries), numSources)
+	}
+	// Verify each source has exactly 1 document in its summary.
+	for _, s := range result.Summaries {
+		if s.Documents != 1 {
+			t.Errorf("source %s summary docs = %d, want 1", s.SourceID, s.Documents)
+		}
+		if s.Errors != 0 {
+			t.Errorf("source %s summary errors = %d, want 0", s.SourceID, s.Errors)
+		}
+	}
 }
 
 // TestManager_FetchAll_SourceFailureDoesNotCancelOthers verifies that one
@@ -963,7 +983,10 @@ func TestManager_FetchAll_SingleSourceBypassesConcurrency(t *testing.T) {
 
 	// Verify other sources were not fetched.
 	for _, src := range sources {
-		ms := src.(*mockSource)
+		ms, ok := src.(*mockSource)
+		if !ok {
+			t.Fatal("expected *mockSource")
+		}
 		if ms.id != "src-c" && ms.listCalls.Load() != 0 {
 			t.Errorf("source %s should not have been fetched", ms.id)
 		}

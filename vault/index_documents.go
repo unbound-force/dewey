@@ -356,4 +356,3 @@ func updateSourceRecord(s *store.Store, sourceID string, configs []source.Source
 		}
 	}
 }
-

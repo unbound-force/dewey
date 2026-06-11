@@ -34,9 +34,9 @@ jobs:
         with:
           go-version: "1.25"
 
-      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+      - uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7.2.2
         with:
-          version: "~> v2"
+          version: "v2.14.1"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -185,21 +185,62 @@ jobs:
           gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --pattern "dewey.rb" --dir ./cask-staging
           CASK_FILE="./cask-staging/dewey.rb"
 
-          # Patch darwin checksums with signed values
-          awk -v amd64="$AMD64_SHA" -v arm64="$ARM64_SHA" '
-            /darwin_amd64/ { found_amd64=1 }
-            /darwin_arm64/ { found_arm64=1 }
-            /sha256/ && found_amd64 {
-              sub(/sha256 "[^"]*"/, "sha256 \"" amd64 "\"")
-              found_amd64=0
+          # Extract original unsigned darwin checksums by section context.
+          # Uses on_macos..on_linux range to scope to darwin sections only.
+          # Order-agnostic — works whether sha256 appears before or after url.
+          ORIG_AMD64=$(awk '/on_macos/,/on_linux/ {
+            if (/on_intel/) found=1
+            if (found && /sha256/) {
+              gsub(/.*sha256 "/, ""); gsub(/".*/, ""); print; found=0
             }
-            /sha256/ && found_arm64 {
-              sub(/sha256 "[^"]*"/, "sha256 \"" arm64 "\"")
-              found_arm64=0
+          }' "$CASK_FILE")
+
+          ORIG_ARM64=$(awk '/on_macos/,/on_linux/ {
+            if (/on_arm/) found=1
+            if (found && /sha256/) {
+              gsub(/.*sha256 "/, ""); gsub(/".*/, ""); print; found=0
             }
-            { print }
-          ' "$CASK_FILE" > "${CASK_FILE}.patched"
+          }' "$CASK_FILE")
+
+          # Validate extraction — fail if we didn't find exactly one hash per platform
+          if [ -z "$ORIG_AMD64" ]; then
+            echo "::error::Failed to extract original darwin_amd64 checksum from cask — expected on_macos > on_intel > sha256 section not found"
+            exit 1
+          fi
+          if [ -z "$ORIG_ARM64" ]; then
+            echo "::error::Failed to extract original darwin_arm64 checksum from cask — expected on_macos > on_arm > sha256 section not found"
+            exit 1
+          fi
+
+          echo "Original darwin_amd64 SHA256: $ORIG_AMD64"
+          echo "Original darwin_arm64 SHA256: $ORIG_ARM64"
+
+          # Replace original unsigned checksums with signed values (BSD sed compatible)
+          sed "s/${ORIG_AMD64}/${AMD64_SHA}/g; s/${ORIG_ARM64}/${ARM64_SHA}/g" "$CASK_FILE" > "${CASK_FILE}.patched"
           mv "${CASK_FILE}.patched" "$CASK_FILE"
+
+          # Verify patched checksums: signed hashes present, originals gone
+          ERRORS=""
+          if ! grep -q "$AMD64_SHA" "$CASK_FILE"; then
+            ERRORS="${ERRORS}darwin_amd64 signed checksum not found in patched cask\n"
+          fi
+          if ! grep -q "$ARM64_SHA" "$CASK_FILE"; then
+            ERRORS="${ERRORS}darwin_arm64 signed checksum not found in patched cask\n"
+          fi
+          if grep -q "$ORIG_AMD64" "$CASK_FILE"; then
+            ERRORS="${ERRORS}Original unsigned darwin_amd64 checksum still present — replacement failed\n"
+          fi
+          if grep -q "$ORIG_ARM64" "$CASK_FILE"; then
+            ERRORS="${ERRORS}Original unsigned darwin_arm64 checksum still present — replacement failed\n"
+          fi
+
+          if [ -n "$ERRORS" ]; then
+            echo "::error::Cask checksum verification failed:"
+            printf "$ERRORS" | while IFS= read -r line; do echo "::error::  $line"; done
+            exit 1
+          fi
+
+          echo "Cask checksum verification passed"
 
           # Push to the Homebrew tap
           git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/unbound-force/homebrew-tap.git" tap

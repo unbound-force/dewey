@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/unbound-force/dewey/source"
-	"github.com/unbound-force/dewey/store"
+	"github.com/unbound-force/dewey/v3/source"
+	"github.com/unbound-force/dewey/v3/store"
 )
 
 // --- Concurrent indexing tests (FR-102) ---

@@ -11,12 +11,12 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/unbound-force/dewey/embed"
-	"github.com/unbound-force/dewey/parser"
-	"github.com/unbound-force/dewey/sanitize"
-	"github.com/unbound-force/dewey/source"
-	"github.com/unbound-force/dewey/store"
-	"github.com/unbound-force/dewey/types"
+	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/sanitize"
+	"github.com/unbound-force/dewey/v3/source"
+	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/types"
 )
 
 // maxConcurrentIndexing is the maximum number of sources indexed concurrently.

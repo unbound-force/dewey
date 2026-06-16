@@ -1,20 +1,161 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.15.0)'
+        required: true
+        type: string
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    permissions:
+      contents: write
+      checks: read
+    timeout-minutes: 10
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
     outputs:
       has_signing_secrets: ${{ steps.check-secrets.outputs.has_secrets }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Validate branch
+        env:
+          BRANCH_REF: ${{ github.ref }}
+        run: |
+          if [ "$BRANCH_REF" != "refs/heads/main" ]; then
+            echo "::error::Releases MUST be triggered from the main branch. Current branch: $BRANCH_REF. Use the GitHub Actions UI branch dropdown to select 'main'."
+            exit 1
+          fi
+          echo "Branch validation passed: releasing from main"
+
+      - name: Validate tag format
+        run: |
+          if ! echo "$RELEASE_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid tag format: '$RELEASE_TAG'. Must match vMAJOR.MINOR.PATCH (e.g., v0.15.0)."
+            exit 1
+          fi
+          echo "Tag format valid: $RELEASE_TAG"
+
+      - name: Check tag uniqueness
+        run: |
+          EXISTING_SHA=$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | awk '{print $1}')
+          if [ -n "$EXISTING_SHA" ]; then
+            HEAD_SHA=$(git rev-parse HEAD)
+            # Resolve annotated tag to its commit (dereference ^{})
+            EXISTING_COMMIT=$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')
+            # If no dereferenced entry, it's a lightweight tag — use EXISTING_SHA directly
+            [ -z "$EXISTING_COMMIT" ] && EXISTING_COMMIT="$EXISTING_SHA"
+            if [ "$EXISTING_COMMIT" = "$HEAD_SHA" ]; then
+              echo "Tag '$RELEASE_TAG' already exists and points to HEAD (idempotent re-run). Skipping uniqueness check."
+            else
+              echo "::error::Tag '$RELEASE_TAG' already exists and points to commit $EXISTING_COMMIT, not HEAD ($HEAD_SHA). Choose a different version or delete the existing tag."
+              exit 1
+            fi
+          else
+            echo "Tag '$RELEASE_TAG' does not exist yet."
+          fi
+
+      - name: Verify semver ordering
+        # sort -V is a GNU coreutils extension, available on ubuntu-latest runners
+        run: |
+          # Exclude RELEASE_TAG from the list to support idempotent re-runs
+          # (tag may already exist from a previous preflight that succeeded
+          # before GoReleaser failed).
+          LATEST=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v "^${RELEASE_TAG}$" | head -1)
+          if [ -z "$LATEST" ]; then
+            echo "No existing tags found. First release."
+            exit 0
+          fi
+          echo "Latest existing tag: $LATEST"
+          # Compare using sort -V: if TAG sorts after LATEST, it is greater
+          HIGHER=$(printf '%s\n%s' "$LATEST" "$RELEASE_TAG" | sort -V | tail -1)
+          if [ "$HIGHER" = "$LATEST" ]; then
+            echo "::error::Tag '$RELEASE_TAG' is not greater than latest release '$LATEST'."
+            exit 1
+          fi
+          echo "Version ordering valid: $RELEASE_TAG > $LATEST"
+
+      - name: Verify CI passed on HEAD
+        # Check names must match job IDs/names in ci.yml and mega-linter.yml
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          HEAD_SHA=$(git rev-parse HEAD)
+          echo "Checking CI status for commit $HEAD_SHA"
+
+          FAILED=false
+
+          REQUIRED_CHECKS=(
+            "build-and-test"
+            "MegaLinter"
+          )
+
+          for CHECK_NAME in "${REQUIRED_CHECKS[@]}"; do
+            STATUS=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs" \
+              --jq ".check_runs | map(select(.name == \"${CHECK_NAME}\")) | sort_by(.started_at) | last | .conclusion" \
+              2>/dev/null)
+            if [ -z "$STATUS" ] || [ "$STATUS" = "null" ]; then
+              echo "::error::Required check '${CHECK_NAME}' not found on commit $HEAD_SHA. Verify CI ran on this commit before releasing."
+              FAILED=true
+            elif [ "$STATUS" != "success" ]; then
+              echo "::error::Required check '${CHECK_NAME}' has not passed (status: ${STATUS}). Push to main and wait for CI before releasing."
+              FAILED=true
+            else
+              echo "  ✓ ${CHECK_NAME}: success"
+            fi
+          done
+
+          if [ "$FAILED" = "true" ]; then
+            exit 1
+          fi
+
+          echo "All required CI checks passed."
+
+      - name: Verify unreleased commits
+        run: |
+          # Exclude RELEASE_TAG from the list to support idempotent re-runs
+          LATEST=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -v "^${RELEASE_TAG}$" | head -1)
+          if [ -z "$LATEST" ]; then
+            COUNT=$(git rev-list --count HEAD)
+          else
+            COUNT=$(git rev-list --count "${LATEST}..HEAD")
+          fi
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No unreleased commits since ${LATEST:-initial commit}. Nothing to release."
+            exit 1
+          fi
+          echo "$COUNT commit(s) since ${LATEST:-initial commit}."
+
+      - name: Create and push tag
+        run: |
+          # Skip if tag was already created (e.g., re-run after
+          # partial failure or manual tag via GitHub API).
+          if git ls-remote --tags origin | grep -q "refs/tags/${RELEASE_TAG}$"; then
+            echo "Tag $RELEASE_TAG already exists, skipping creation."
+            exit 0
+          fi
+          # Annotated tags require a committer identity on the
+          # CI runner (git tag -a uses GIT_COMMITTER_NAME/EMAIL).
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" -m "$RELEASE_TAG"
+          git push origin "$RELEASE_TAG"
+          echo "Created and pushed tag: $RELEASE_TAG"
+
       - name: Check signing secrets
         id: check-secrets
         run: |
@@ -26,9 +167,21 @@ jobs:
         env:
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
 
+  release:
+    runs-on: ubuntu-latest
+    needs: preflight
+    permissions:
+      contents: write
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+    outputs:
+      has_signing_secrets: ${{ needs.preflight.outputs.has_signing_secrets }}
+    steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ inputs.tag }}
 
       - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
         with:
@@ -45,7 +198,7 @@ jobs:
         # GoReleaser writes dist/homebrew/Casks/dewey.rb with skip_upload: true.
         # Upload it so the sign-macos job can download and patch darwin checksums.
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
+          gh release upload "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             dist/homebrew/Casks/dewey.rb \
             --clobber
@@ -56,7 +209,11 @@ jobs:
     runs-on: macos-latest
     needs: release
     if: ${{ needs.release.outputs.has_signing_secrets == 'true' }}
+    permissions:
+      contents: write
     timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Import certificate into Keychain
         run: |
@@ -85,10 +242,10 @@ jobs:
       - name: Download darwin archives
         run: |
           set -euo pipefail
-          gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --pattern "dewey_*_darwin_*.tar.gz" --dir ./artifacts
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "dewey_*_darwin_*.tar.gz" --dir ./artifacts
 
           # Verify both expected archives were downloaded
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           for arch in amd64 arm64; do
             if [ ! -f "./artifacts/dewey_${VERSION}_darwin_${arch}.tar.gz" ]; then
               echo "::error::Expected darwin_${arch} archive not found after download"
@@ -142,10 +299,10 @@ jobs:
         run: |
           set -euo pipefail
           # Upload signed darwin archives (replaces unsigned)
-          gh release upload "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" ./signed/*.tar.gz --clobber
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" ./signed/*.tar.gz --clobber
 
           # Download existing checksums
-          gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --pattern "checksums.txt" --dir ./
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "checksums.txt" --dir ./
 
           # Remove darwin lines from checksums (keep linux and other lines)
           grep -v darwin checksums.txt > checksums_updated.txt || true
@@ -157,14 +314,14 @@ jobs:
 
           # Replace checksums file
           mv checksums_updated.txt checksums.txt
-          gh release upload "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" checksums.txt --clobber
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" checksums.txt --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Homebrew cask
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
 
           # Verify signed archives exist before computing checksums
           for arch in arm64 amd64; do
@@ -182,7 +339,7 @@ jobs:
           echo "darwin_amd64 SHA256: $AMD64_SHA"
 
           # Download the GoReleaser-generated cask (uploaded by the release job)
-          gh release download "${GITHUB_REF_NAME}" --repo "$GITHUB_REPOSITORY" --pattern "dewey.rb" --dir ./cask-staging
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "dewey.rb" --dir ./cask-staging
           CASK_FILE="./cask-staging/dewey.rb"
 
           # Extract original unsigned darwin checksums by section context.

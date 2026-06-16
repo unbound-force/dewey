@@ -533,7 +533,7 @@ Three GitHub Actions workflows:
 
 1. **CI** (`.github/workflows/ci.yml`): Build + vet + test with `-race -count=1` + Gaze quality report with threshold enforcement on push/PR.
 2. **MegaLinter** (`.github/workflows/mega-linter.yml`): Runs golangci-lint, markdownlint, yamllint, and gitleaks on push/PR to `main`. Auto-commits lint fixes to PR branches.
-3. **Release** (`.github/workflows/release.yml`): Triggered on `v*` tag push. Runs GoReleaser to build cross-platform binaries (darwin/linux x amd64/arm64), create GitHub Releases, and update the Homebrew formula in `unbound-force/homebrew-tap`.
+3. **Release** (`.github/workflows/release.yml`): Triggered via `workflow_dispatch` with a `tag` input (e.g., `gh workflow run release.yml -f tag=v1.2.3`). Runs a `preflight` job that validates branch (main-only), tag format, tag uniqueness, semver ordering, CI status via Checks API (`build-and-test` + `MegaLinter`), and unreleased commits before creating the tag. Then runs GoReleaser to build cross-platform binaries (darwin/linux x amd64/arm64), create GitHub Releases, and update the Homebrew formula in `unbound-force/homebrew-tap`.
 
 ## Sibling Repositories
 

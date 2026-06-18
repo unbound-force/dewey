@@ -358,6 +358,16 @@ synthesis:
 
 Vertex providers use `golang.org/x/oauth2/google` application-default credentials. If no provider is specified, defaults to Ollama.
 
+**Embedding endpoint resolution** (highest to lowest precedence):
+1. `DEWEY_EMBEDDING_ENDPOINT` env var (app-specific override)
+2. `config.yaml` `embedding.endpoint` (per-vault, then global)
+3. `OLLAMA_HOST` env var (ecosystem-standard fallback)
+4. `http://localhost:11434` (default)
+
+When `OLLAMA_HOST` is set without a URL scheme (e.g., `0.0.0.0:11434`), `http://` is prepended automatically.
+
+**Graceful degradation**: When Ollama is reachable but the configured embedding model has not been pulled, Dewey logs a warning and continues in keyword-only mode instead of exiting. Semantic search MCP tools return clear error messages indicating embeddings are unavailable.
+
 **Global config**: `~/.config/dewey/config.yaml` (or `$XDG_CONFIG_HOME/dewey/config.yaml`) provides defaults for all vaults. Per-vault config overrides global. This avoids repeating provider config in every project.
 
 ### Store Learning API

@@ -1,6 +1,10 @@
 package llm
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/unbound-force/dewey/v3/embed"
+)
 
 // ProviderConfig holds the configuration for a synthesis provider.
 // Each provider type uses a subset of these fields.
@@ -31,7 +35,7 @@ func NewSynthesizerFromConfig(cfg ProviderConfig) (Synthesizer, error) {
 	case "ollama", "":
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
-			endpoint = "http://localhost:11434"
+			endpoint = embed.DefaultOllamaEndpoint
 		}
 		return NewOllamaSynthesizer(endpoint, cfg.Model), nil
 	case "vertex":

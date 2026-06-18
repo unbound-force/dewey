@@ -613,7 +613,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 
 	// Initialize embedder based on --no-embeddings flag.
 	// When noEmbeddings is true, skip embedder creation entirely.
-	// When false, require the embedding model to be available (hard error).
+	// When false, attempt to initialize embeddings with graceful degradation.
 	embCfg := embed.ReadEmbeddingConfig(deweyDir)
 
 	var embedder embed.Embedder
@@ -644,12 +644,19 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 				return nil, nil, nil, nil, fmt.Errorf("embedding provider error: %w", err)
 			}
 			if !e.Available() {
-				return nil, nil, nil, nil, fmt.Errorf("embedding model %q not available (provider: %s)\n\nTo fix:\n  ollama pull %s\n\nTo skip embeddings:\n  dewey serve --no-embeddings",
-					embCfg.Model, embCfg.Provider, embCfg.Model)
+				// Graceful degradation: keyword-only mode when model is missing.
+				// Matches the OllamaUnavailable path above — warn and continue
+				// without embeddings instead of hard-exiting (design decision D3).
+				logger.Warn("embedding model not available, continuing without embeddings",
+					"model", embCfg.Model,
+					"endpoint", embCfg.Endpoint,
+					"pull", fmt.Sprintf("ollama pull %s", embCfg.Model),
+					"note", "semantic search is unavailable")
+			} else {
+				embedder = e
+				logger.Info("embedding model available", "provider", embCfg.Provider, "model", embCfg.Model)
+				srvOpts = append(srvOpts, WithEmbedder(embedder))
 			}
-			embedder = e
-			logger.Info("embedding model available", "provider", embCfg.Provider, "model", embCfg.Model)
-			srvOpts = append(srvOpts, WithEmbedder(embedder))
 		}
 	}
 

@@ -494,6 +494,121 @@ func TestInitObsidianBackend_GracefulDegradation_WhenOllamaUnavailable(t *testin
 	}
 }
 
+// newMockOllamaServer returns an httptest.Server that responds to /api/tags.
+// When models is empty, Available() returns false (model not pulled).
+// When models contains entries, Available() returns true.
+func newMockOllamaServer(models string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"models":[` + models + `]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+}
+
+// assertDegradationLog checks that log output contains the expected
+// model name, endpoint, pull instructions, and semantic search warning.
+func assertDegradationLog(t *testing.T, logOutput, endpoint string) {
+	t.Helper()
+	checks := []struct {
+		substr string
+		desc   string
+	}{
+		{"granite-embedding:30m", "model name"},
+		{endpoint, "endpoint"},
+		{"ollama pull", "pull instructions"},
+		{"semantic search is unavailable", "semantic search warning"},
+		{"embedding model not available", "degradation warning"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(logOutput, c.substr) {
+			t.Errorf("log should contain %s %q, got: %q", c.desc, c.substr, logOutput)
+		}
+	}
+}
+
+// TestInitObsidianBackend_DegradesToKeywordModeWhenModelMissing verifies that
+// serve succeeds in keyword-only mode when Ollama is reachable but the
+// requested embedding model has not been pulled (design decision D3).
+func TestInitObsidianBackend_DegradesToKeywordModeWhenModelMissing(t *testing.T) {
+	srv := newMockOllamaServer("") // empty models list
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", srv.URL)
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "granite-embedding:30m")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	be, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", false)
+	if err != nil {
+		t.Fatalf("initObsidianBackend should succeed with graceful degradation, got error: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if be == nil {
+		t.Fatal("expected non-nil backend, got nil")
+	}
+
+	assertDegradationLog(t, logBuf.String(), srv.URL)
+}
+
+// TestCreateIndexEmbedder_DegradesToKeywordModeWhenModelMissing verifies that
+// createIndexEmbedder returns (nil, nil) when Ollama is reachable but the
+// embedding model has not been pulled (design decision D3, task 2.4).
+func TestCreateIndexEmbedder_DegradesToKeywordModeWhenModelMissing(t *testing.T) {
+	srv := newMockOllamaServer("") // empty models list
+	defer srv.Close()
+
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", srv.URL)
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "granite-embedding:30m")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	embedder, err := createIndexEmbedder(false)
+	if err != nil {
+		t.Fatalf("createIndexEmbedder should succeed with graceful degradation, got error: %v", err)
+	}
+	if embedder != nil {
+		t.Fatal("expected nil embedder (keyword-only mode), got non-nil")
+	}
+
+	assertDegradationLog(t, logBuf.String(), srv.URL)
+}
+
+// TestRunDoctorChecks_ResolvesOllamaHostEndpoint verifies that dewey doctor
+// uses the resolved OLLAMA_HOST endpoint in its Embedding Layer output
+// when no config.yaml or DEWEY_EMBEDDING_ENDPOINT is set.
+func TestRunDoctorChecks_ResolvesOllamaHostEndpoint(t *testing.T) {
+	srv := newMockOllamaServer(`{"name":"granite-embedding:30m"}`)
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("OLLAMA_HOST", srv.URL)
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "")
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+
+	output := buf.String()
+	if !strings.Contains(output, srv.URL) {
+		t.Errorf("doctor output should contain OLLAMA_HOST endpoint %q, got:\n%s", srv.URL, output)
+	}
+}
+
 // --- OllamaState tests (T011) ---
 
 // TestOllamaState_String verifies the String() method returns the correct

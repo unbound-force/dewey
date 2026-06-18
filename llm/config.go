@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/unbound-force/dewey/v3/embed"
 	"gopkg.in/yaml.v3"
 )
 
@@ -83,7 +84,7 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 	if cfg != nil && cfg.CompileModel != "" {
 		endpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
 		if endpoint == "" {
-			endpoint = "http://localhost:11434"
+			endpoint = embed.DefaultOllamaEndpoint
 		}
 		return ProviderConfig{
 			Provider: "ollama",
@@ -115,7 +116,7 @@ func synthConfigFromEnv() ProviderConfig {
 	}
 	endpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:11434"
+		endpoint = embed.DefaultOllamaEndpoint
 	}
 	return ProviderConfig{
 		Provider: "ollama",

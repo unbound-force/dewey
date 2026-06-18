@@ -31,7 +31,7 @@ func NewEmbedderFromConfig(cfg ProviderConfig) (Embedder, error) {
 	case "ollama", "":
 		endpoint := cfg.Endpoint
 		if endpoint == "" {
-			endpoint = "http://localhost:11434"
+			endpoint = DefaultOllamaEndpoint
 		}
 		return NewOllamaEmbedder(endpoint, cfg.Model), nil
 	case "vertex":

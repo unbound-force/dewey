@@ -32,6 +32,22 @@ func TestOllamaEmbedder_Embed(t *testing.T) {
 			return
 		}
 
+		// Verify input is always sent as an array, not a bare string.
+		// This mirrors the assertion in TestOllamaEmbedder_EmbedBatch.
+		inputs, ok := req.Input.([]any)
+		if !ok {
+			http.Error(w, "expected array input, got bare string", http.StatusBadRequest)
+			return
+		}
+		if len(inputs) != 1 {
+			http.Error(w, "expected exactly 1 input", http.StatusBadRequest)
+			return
+		}
+		if inputs[0] != "test text" {
+			http.Error(w, "unexpected input content", http.StatusBadRequest)
+			return
+		}
+
 		resp := embedResponse{
 			Embeddings: [][]float64{{0.1, 0.2, 0.3}},
 		}

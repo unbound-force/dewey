@@ -128,7 +128,7 @@ type tagModel struct {
 // Ollama returns a non-200 status, the response cannot be parsed, or
 // the response contains no embeddings.
 func (o *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
-	vectors, err := o.doEmbed(ctx, text)
+	vectors, err := o.doEmbed(ctx, []string{text})
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +185,7 @@ func (o *OllamaEmbedder) ModelID() string {
 }
 
 // doEmbed performs the actual HTTP call to POST /api/embed.
-// The input parameter can be a string (single) or []string (batch).
+// The input parameter should be a []string (one or more texts to embed).
 func (o *OllamaEmbedder) doEmbed(ctx context.Context, input any) ([][]float32, error) {
 	reqBody := embedRequest{
 		Model: o.model,

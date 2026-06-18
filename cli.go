@@ -249,7 +249,7 @@ func newInitCmd() *cobra.Command {
 
 embedding:
   model: granite-embedding:30m
-  endpoint: http://localhost:11434
+  # endpoint: http://localhost:11434  # Uncomment to override OLLAMA_HOST
 `
 			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 				return fmt.Errorf("write config.yaml: %w", err)
@@ -948,8 +948,15 @@ func createIndexEmbedder(noEmbeddings bool, deweyDirs ...string) (embed.Embedder
 		return nil, fmt.Errorf("embedding provider error: %w", err)
 	}
 	if !embedder.Available() {
-		return nil, fmt.Errorf("embedding model %q not available (provider: %s)\n\nTo skip embeddings:\n  dewey index --no-embeddings",
-			cfg.Model, cfg.Provider)
+		// Graceful degradation: keyword-only mode when model is missing.
+		// Matches the OllamaUnavailable path above — warn and continue
+		// without embeddings instead of hard-exiting (design decision D3).
+		logger.Warn("embedding model not available, continuing without embeddings",
+			"model", cfg.Model,
+			"endpoint", cfg.Endpoint,
+			"pull", fmt.Sprintf("ollama pull %s", cfg.Model),
+			"note", "semantic search is unavailable")
+		return nil, nil
 	}
 	logger.Info("embedding model available for indexing", "provider", cfg.Provider, "model", cfg.Model)
 	return embedder, nil
@@ -1347,14 +1354,9 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	dp("\n")
 
 	// --- Embedding Layer ---
-	embedEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT")
-	embedModel := os.Getenv("DEWEY_EMBEDDING_MODEL")
-	if embedEndpoint == "" {
-		embedEndpoint = "http://localhost:11434"
-	}
-	if embedModel == "" {
-		embedModel = "granite-embedding:30m"
-	}
+	embCfg := embed.ReadEmbeddingConfig(deweyDir)
+	embedEndpoint := embCfg.Endpoint
+	embedModel := embCfg.Model
 
 	section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
 

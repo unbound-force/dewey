@@ -22,6 +22,10 @@ type ProviderConfig struct {
 
 	// Region is the GCP region (e.g., "us-central1"). Required for vertex only.
 	Region string
+
+	// MaxChunkChars is the maximum number of characters per embedding chunk.
+	// Defaults to DefaultMaxChunkChars (12288) if zero.
+	MaxChunkChars int
 }
 
 // NewEmbedderFromConfig creates an Embedder from the given provider configuration.

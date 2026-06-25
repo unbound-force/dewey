@@ -58,19 +58,23 @@ var tagNormalizer = regexp.MustCompile(`[^a-z0-9-]`)
 // The vaultPath field is the vault root directory (not the .uf/dewey/
 // workspace). Markdown files are written to {vaultPath}/.uf/dewey/learnings/.
 type Learning struct {
-	embedder  embed.Embedder
-	store     *store.Store
-	vaultPath string
+	embedder      embed.Embedder
+	store         *store.Store
+	vaultPath     string
+	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewLearning creates a new Learning tool handler with the given embedder,
-// store, and vault root path. The embedder may be nil — the tool stores
-// learnings without embeddings when unavailable (graceful degradation).
-// The store must be non-nil for the tool to function; a clear error is
-// returned at call time if it is nil. The vaultPath is the vault root
-// directory; markdown files are written to {vaultPath}/.uf/dewey/learnings/.
-func NewLearning(e embed.Embedder, s *store.Store, vaultPath string) *Learning {
-	return &Learning{embedder: e, store: s, vaultPath: vaultPath}
+// store, vault root path, and max chunk chars. The embedder may be nil —
+// the tool stores learnings without embeddings when unavailable (graceful
+// degradation). The store must be non-nil for the tool to function; a
+// clear error is returned at call time if it is nil. The vaultPath is the
+// vault root directory; markdown files are written to
+// {vaultPath}/.uf/dewey/learnings/. The maxChunkChars parameter controls
+// the maximum character length per embedding chunk; pass 0 to use
+// embed.DefaultMaxChunkChars.
+func NewLearning(e embed.Embedder, s *store.Store, vaultPath string, maxChunkChars int) *Learning {
+	return &Learning{embedder: e, store: s, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
 }
 
 // normalizeTag lowercases, trims whitespace, replaces spaces with hyphens,
@@ -292,7 +296,11 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	// Ollama is unavailable, remaining searchable via keyword search.
 	var embeddingMsg string
 	if l.embedder != nil && l.embedder.Available() {
-		vault.GenerateEmbeddings(l.store, l.embedder, pageName, blocks, nil)
+		maxChars := l.maxChunkChars
+		if maxChars <= 0 {
+			maxChars = embed.DefaultMaxChunkChars
+		}
+		vault.GenerateEmbeddings(l.store, l.embedder, pageName, blocks, nil, maxChars)
 	} else {
 		embeddingMsg = " Note: Embeddings were not generated (Ollama unavailable). The learning is stored and searchable via keyword search. Semantic search will be available after embeddings are generated."
 	}

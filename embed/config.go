@@ -3,6 +3,7 @@ package embed
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -12,6 +13,11 @@ import (
 // All code referencing the default endpoint should use this constant
 // instead of hardcoding the URL string.
 const DefaultOllamaEndpoint = "http://localhost:11434"
+
+// DefaultMaxChunkChars is the default maximum number of characters per
+// embedding chunk. Used when no config file or environment variable
+// specifies a value.
+const DefaultMaxChunkChars = 12288
 
 // ResolveOllamaEndpoint resolves the Ollama endpoint from environment
 // variables with the following precedence (highest to lowest):
@@ -64,11 +70,12 @@ func globalConfigDir() string {
 // relevant to embedding configuration.
 type configFile struct {
 	Embedding struct {
-		Provider string `yaml:"provider"`
-		Model    string `yaml:"model"`
-		Endpoint string `yaml:"endpoint"`
-		Project  string `yaml:"project"`
-		Region   string `yaml:"region"`
+		Provider      string `yaml:"provider"`
+		Model         string `yaml:"model"`
+		Endpoint      string `yaml:"endpoint"`
+		Project       string `yaml:"project"`
+		Region        string `yaml:"region"`
+		MaxChunkChars int    `yaml:"max_chunk_chars"`
 	} `yaml:"embedding"`
 }
 
@@ -110,11 +117,12 @@ func ReadEmbeddingConfig(deweyDir string) ProviderConfig {
 	}
 
 	pc := ProviderConfig{
-		Provider: cfg.Embedding.Provider,
-		Model:    cfg.Embedding.Model,
-		Endpoint: cfg.Embedding.Endpoint,
-		Project:  cfg.Embedding.Project,
-		Region:   cfg.Embedding.Region,
+		Provider:      cfg.Embedding.Provider,
+		Model:         cfg.Embedding.Model,
+		Endpoint:      cfg.Embedding.Endpoint,
+		Project:       cfg.Embedding.Project,
+		Region:        cfg.Embedding.Region,
+		MaxChunkChars: cfg.Embedding.MaxChunkChars,
 	}
 
 	// Environment variables override config file values (existing behavior).
@@ -124,6 +132,17 @@ func ReadEmbeddingConfig(deweyDir string) ProviderConfig {
 	// DEWEY_EMBEDDING_ENDPOINT always overrides config.yaml.
 	if envEndpoint := os.Getenv("DEWEY_EMBEDDING_ENDPOINT"); envEndpoint != "" {
 		pc.Endpoint = envEndpoint
+	}
+
+	// DEWEY_CHUNK_MAX_CHARS env var overrides config file value.
+	if envChunk := resolveMaxChunkChars(); envChunk > 0 {
+		pc.MaxChunkChars = envChunk
+	}
+
+	// Default MaxChunkChars if neither config file nor env var set it,
+	// or if config file specified a non-positive value.
+	if pc.MaxChunkChars <= 0 {
+		pc.MaxChunkChars = DefaultMaxChunkChars
 	}
 
 	// If no endpoint was set by config.yaml or DEWEY_EMBEDDING_ENDPOINT,
@@ -141,16 +160,42 @@ func ReadEmbeddingConfig(deweyDir string) ProviderConfig {
 	return pc
 }
 
+// resolveMaxChunkChars parses DEWEY_CHUNK_MAX_CHARS from the environment.
+// Returns the parsed value if valid (positive integer), or 0 if unset.
+// Invalid values (non-numeric, zero, negative) log a warning and return DefaultMaxChunkChars.
+func resolveMaxChunkChars() int {
+	envChunk := os.Getenv("DEWEY_CHUNK_MAX_CHARS")
+	if envChunk == "" {
+		return 0 // signal: not set by env
+	}
+	if v, err := strconv.Atoi(envChunk); err != nil || v <= 0 {
+		embedLogger.Warn("invalid DEWEY_CHUNK_MAX_CHARS, using default", "value", envChunk, "default", DefaultMaxChunkChars)
+		return DefaultMaxChunkChars
+	} else {
+		return v
+	}
+}
+
 // embedConfigFromEnv builds an embedding config from environment variables.
 // Uses ResolveOllamaEndpoint() for the endpoint fallback chain.
 func embedConfigFromEnv() ProviderConfig {
 	model := os.Getenv("DEWEY_EMBEDDING_MODEL")
 	if model == "" {
+		// TODO(#53): Update to granite-embedding-small-english-r2 (or Ollama
+		// equivalent) once the R2 model is published to Ollama's library.
+		// See: https://github.com/unbound-force/dewey/issues/53
 		model = "granite-embedding:30m"
 	}
+
+	maxChunk := resolveMaxChunkChars()
+	if maxChunk <= 0 {
+		maxChunk = DefaultMaxChunkChars
+	}
+
 	return ProviderConfig{
-		Provider: "ollama",
-		Model:    model,
-		Endpoint: ResolveOllamaEndpoint(),
+		Provider:      "ollama",
+		Model:         model,
+		Endpoint:      ResolveOllamaEndpoint(),
+		MaxChunkChars: maxChunk,
 	}
 }

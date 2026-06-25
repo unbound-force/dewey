@@ -35,23 +35,26 @@ var curateLogger = log.NewWithOptions(os.Stderr, log.Options{
 // concurrent curation. The indexMutex is shared with indexing tools to
 // prevent curation during indexing (per FR-020).
 type Curate struct {
-	mu        *sync.Mutex
-	store     *store.Store
-	embedder  embed.Embedder
-	synth     llm.Synthesizer
-	vaultPath string
+	mu            *sync.Mutex
+	store         *store.Store
+	embedder      embed.Embedder
+	synth         llm.Synthesizer
+	vaultPath     string
+	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewCurate creates a new Curate tool handler with the given dependencies.
 // The store must be non-nil. The synth may be nil — the tool returns
 // extraction prompts when no synthesizer is available (MCP mode).
 // The mu parameter is the shared index mutex; when non-nil, curation
-// acquires it to prevent concurrent indexing operations.
-func NewCurate(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPath string, mu *sync.Mutex) *Curate {
+// acquires it to prevent concurrent indexing operations. The maxChunkChars
+// parameter controls the maximum character length per embedding chunk;
+// pass 0 to use embed.DefaultMaxChunkChars.
+func NewCurate(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPath string, mu *sync.Mutex, maxChunkChars int) *Curate {
 	if mu == nil {
 		mu = &sync.Mutex{}
 	}
-	return &Curate{store: s, embedder: e, synth: synth, vaultPath: vaultPath, mu: mu}
+	return &Curate{store: s, embedder: e, synth: synth, vaultPath: vaultPath, mu: mu, maxChunkChars: maxChunkChars}
 }
 
 // Curate handles the dewey_curate MCP tool. Reads knowledge-stores.yaml,
@@ -335,7 +338,11 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 
 		// Generate embeddings if available.
 		if c.embedder != nil && c.embedder.Available() {
-			vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil)
+			maxChars := c.maxChunkChars
+			if maxChars <= 0 {
+				maxChars = embed.DefaultMaxChunkChars
+			}
+			vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil, maxChars)
 		}
 
 		indexed++

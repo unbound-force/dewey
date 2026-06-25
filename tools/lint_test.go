@@ -76,7 +76,7 @@ func storeLearningForLint(t *testing.T, s *store.Store, tag string, seq int, cat
 // TestLint_NilStore verifies that a nil store returns an error result
 // mentioning persistent storage.
 func TestLint_NilStore(t *testing.T) {
-	lint := NewLint(nil, nil, "")
+	lint := NewLint(nil, nil, "", 0)
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestLint_NilStore(t *testing.T) {
 // clean report with all zero counts.
 func TestLint_NoLearnings(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "")
+	lint := NewLint(s, nil, "", 0)
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -136,7 +136,7 @@ func TestLint_NoLearnings(t *testing.T) {
 // 30 days is reported as stale.
 func TestLint_StaleDecision(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "")
+	lint := NewLint(s, nil, "", 0)
 
 	// Store a decision learning backdated 45 days.
 	staleDate := time.Now().Add(-45 * 24 * time.Hour)
@@ -206,7 +206,7 @@ func TestLint_StaleDecision(t *testing.T) {
 // decision is not reported as stale even if it's old.
 func TestLint_StaleDecision_ValidatedSkipped(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "")
+	lint := NewLint(s, nil, "", 0)
 
 	// Store a decision learning backdated 45 days.
 	staleDate := time.Now().Add(-45 * 24 * time.Hour)
@@ -238,7 +238,7 @@ func TestLint_StaleDecision_ValidatedSkipped(t *testing.T) {
 // any compiled article are reported as uncompiled.
 func TestLint_UncompiledLearnings(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "")
+	lint := NewLint(s, nil, "", 0)
 
 	now := time.Now()
 	storeLearningForLint(t, s, "auth", 1, "decision", "Auth content 1", now)
@@ -311,7 +311,7 @@ func TestLint_UncompiledLearnings(t *testing.T) {
 // are reported as embedding gaps.
 func TestLint_EmbeddingGaps(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "")
+	lint := NewLint(s, nil, "", 0)
 
 	// Insert a page with blocks but no embeddings.
 	page := &store.Page{
@@ -374,7 +374,7 @@ func TestLint_EmbeddingGaps(t *testing.T) {
 func TestLint_FixEmbeddingGaps(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(true)
-	lint := NewLint(s, e, "")
+	lint := NewLint(s, e, "", 0)
 
 	// Insert a page with a block but no embeddings.
 	page := &store.Page{
@@ -440,7 +440,7 @@ func TestLint_FixEmbeddingGaps(t *testing.T) {
 func TestLint_Contradictions(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(true)
-	lint := NewLint(s, e, "")
+	lint := NewLint(s, e, "", 0)
 
 	now := time.Now()
 	storeLearningForLint(t, s, "auth", 1, "decision", "Use basic auth", now)
@@ -496,7 +496,7 @@ func TestLint_Contradictions(t *testing.T) {
 // check is skipped when no embedder is available (invariant 6).
 func TestLint_NoContradictionsWithoutEmbedder(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "") // nil embedder
+	lint := NewLint(s, nil, "", 0) // nil embedder
 
 	now := time.Now()
 	storeLearningForLint(t, s, "auth", 1, "decision", "Use basic auth", now)
@@ -521,7 +521,7 @@ func TestLint_NoContradictionsWithoutEmbedder(t *testing.T) {
 func TestLint_NoContradictionsWithUnavailableEmbedder(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(false) // Available() returns false
-	lint := NewLint(s, e, "")
+	lint := NewLint(s, e, "", 0)
 
 	now := time.Now()
 	storeLearningForLint(t, s, "auth", 1, "decision", "Use basic auth", now)
@@ -544,7 +544,7 @@ func TestLint_NoContradictionsWithUnavailableEmbedder(t *testing.T) {
 // does not crash and reports zero fixed.
 func TestLint_FixWithoutEmbedder(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "") // nil embedder
+	lint := NewLint(s, nil, "", 0) // nil embedder
 
 	// Insert a page with a block but no embeddings.
 	page := &store.Page{
@@ -597,7 +597,7 @@ func TestLint_FixWithoutEmbedder(t *testing.T) {
 func TestLint_NoFixWithoutFlag(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(true)
-	lint := NewLint(s, e, "")
+	lint := NewLint(s, e, "", 0)
 
 	// Insert a page with a block but no embeddings.
 	page := &store.Page{
@@ -655,7 +655,7 @@ func TestLint_NoFixWithoutFlag(t *testing.T) {
 func TestLint_AllChecksClean(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(true)
-	lint := NewLint(s, e, "")
+	lint := NewLint(s, e, "", 0)
 
 	// Store a fresh, non-decision learning — should not trigger any check.
 	now := time.Now()
@@ -795,7 +795,7 @@ func TestLint_KnowledgeStoreMetrics(t *testing.T) {
 	writeKnowledgeFile(t, storePath, "security", 1, "low", []string{"missing_rationale"})
 	writeKnowledgeFile(t, storePath, "infra", 1, "flagged", []string{"implied_assumption", "unsupported_claim"})
 
-	lint := NewLint(s, nil, vaultDir)
+	lint := NewLint(s, nil, vaultDir, 0)
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -936,7 +936,7 @@ func TestLint_StaleStore(t *testing.T) {
 		t.Fatalf("InsertPage: %v", err)
 	}
 
-	lint := NewLint(s, nil, vaultDir)
+	lint := NewLint(s, nil, vaultDir, 0)
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -1016,7 +1016,7 @@ func TestLint_StaleStore_NeverCurated(t *testing.T) {
 		t.Fatalf("InsertPage: %v", err)
 	}
 
-	lint := NewLint(s, nil, vaultDir)
+	lint := NewLint(s, nil, vaultDir, 0)
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -1066,7 +1066,7 @@ func TestLint_NoKnowledgeStores(t *testing.T) {
 		t.Fatalf("create dewey dir: %v", err)
 	}
 
-	lint := NewLint(s, nil, vaultDir)
+	lint := NewLint(s, nil, vaultDir, 0)
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -1092,7 +1092,7 @@ func TestLint_NoKnowledgeStores(t *testing.T) {
 // store checks when vaultPath is empty.
 func TestLint_KnowledgeStoreEmptyVaultPath(t *testing.T) {
 	s := newTestStore(t)
-	lint := NewLint(s, nil, "") // empty vaultPath
+	lint := NewLint(s, nil, "", 0) // empty vaultPath
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
 	if err != nil {
@@ -1138,7 +1138,7 @@ func TestAutoIndex_KnowledgeStoreRegistered(t *testing.T) {
 	writeKnowledgeFile(t, storePath, "deploy", 1, "medium", []string{"missing_rationale"})
 
 	// Create a Curate tool and run auto-indexing.
-	curateTool := NewCurate(s, nil, nil, vaultDir, nil)
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
 	cfg := curate.StoreConfig{
 		Name:    "test-store",
 		Sources: []string{"disk-local"},
@@ -1220,7 +1220,7 @@ func TestAutoIndex_IdempotentReindex(t *testing.T) {
 		Path:    storePath,
 	}
 
-	curateTool := NewCurate(s, nil, nil, vaultDir, nil)
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
 
 	// First indexing.
 	indexed1 := curateTool.autoIndexKnowledgeStore(cfg)
@@ -1265,7 +1265,7 @@ func TestAutoIndex_UpdatedContentReindexed(t *testing.T) {
 		Path:    storePath,
 	}
 
-	curateTool := NewCurate(s, nil, nil, vaultDir, nil)
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
 
 	// First indexing.
 	indexed1 := curateTool.autoIndexKnowledgeStore(cfg)
@@ -1312,7 +1312,7 @@ func TestAutoIndex_CuratedTier(t *testing.T) {
 		Path:    storePath,
 	}
 
-	curateTool := NewCurate(s, nil, nil, vaultDir, nil)
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
 	curateTool.autoIndexKnowledgeStore(cfg)
 
 	// Verify the page has tier "curated".

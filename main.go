@@ -344,9 +344,10 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 				logger.Warn("failed to load knowledge stores config, skipping background curation",
 					"path", configPath, "err", err)
 			} else if len(stores) > 0 {
-				// Extract persistent store from server options for the curation pipeline.
+				// Extract persistent store and config from server options for the curation pipeline.
 				var curationStore *store.Store
 				var curationEmbedder embed.Embedder
+				var curationMaxChunkChars int
 				for _, opt := range srvOpts {
 					var tmpCfg serverConfig
 					opt(&tmpCfg)
@@ -356,9 +357,12 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 					if tmpCfg.embedder != nil {
 						curationEmbedder = tmpCfg.embedder
 					}
+					if tmpCfg.maxChunkChars > 0 {
+						curationMaxChunkChars = tmpCfg.maxChunkChars
+					}
 				}
 				if curationStore != nil {
-					go backgroundCuration(ctx, indexMu, indexReady, stores, curationStore, curationEmbedder, curationVaultPath)
+					go backgroundCuration(ctx, indexMu, indexReady, stores, curationStore, curationEmbedder, curationVaultPath, curationMaxChunkChars)
 				} else {
 					logger.Debug("background curation skipped — no persistent store")
 				}
@@ -662,9 +666,15 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 
 	vc := vault.New(vp, opts...)
 
-	// Configure embedder on the vault store for indexing pipeline integration.
-	if embedder != nil {
-		if vs := vc.Store(); vs != nil {
+	// Thread the configured max chunk chars to the server config so all
+	// MCP tools use the config-derived value instead of the hardcoded default.
+	srvOpts = append(srvOpts, WithMaxChunkChars(embCfg.MaxChunkChars))
+
+	// Configure embedder and max chunk chars on the vault store for
+	// indexing pipeline integration.
+	if vs := vc.Store(); vs != nil {
+		vs.SetMaxChunkChars(embCfg.MaxChunkChars)
+		if embedder != nil {
 			vs.SetEmbedder(embedder)
 		}
 	}
@@ -688,7 +698,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		// deleted or is missing entries. Must run before indexVault so
 		// re-ingested learnings participate in backlink and search construction.
 		if persistentStore != nil {
-			count, err := reIngestLearnings(persistentStore, embedder, vp)
+			count, err := reIngestLearnings(persistentStore, embedder, vp, embCfg.MaxChunkChars)
 			if err != nil {
 				logger.Warn("learning re-ingestion failed", "err", err)
 			} else if count > 0 {
@@ -792,6 +802,7 @@ func backgroundCuration(
 	s *store.Store,
 	embedder embed.Embedder,
 	vaultPath string,
+	maxChunkChars int,
 ) {
 	logger.Info("background curation starting", "stores", len(stores))
 
@@ -845,7 +856,7 @@ func backgroundCuration(
 		}
 
 		// Launch a goroutine per store for independent scheduling.
-		go backgroundCurateStore(ctx, indexMu, storeCfg, interval, s, synth, embedder, vaultPath)
+		go backgroundCurateStore(ctx, indexMu, storeCfg, interval, s, synth, embedder, vaultPath, maxChunkChars)
 	}
 }
 
@@ -865,6 +876,7 @@ func backgroundCurateStore(
 	synth llm.Synthesizer,
 	embedder embed.Embedder,
 	vaultPath string,
+	maxChunkChars int,
 ) {
 	logger.Info("background curation started for store",
 		"store", storeCfg.Name, "interval", interval)
@@ -903,7 +915,7 @@ func backgroundCurateStore(
 				// (FR-027, FR-028). Re-acquire mutex for indexing since we
 				// released it after curation.
 				if indexMu.TryLock() {
-					indexed := autoIndexKnowledgeStore(s, embedder, storeCfg, vaultPath)
+					indexed := autoIndexKnowledgeStore(s, embedder, storeCfg, vaultPath, maxChunkChars)
 					indexMu.Unlock()
 					logger.Info("background curation complete",
 						"store", storeCfg.Name, "files_created", filesCreated, "indexed", indexed)
@@ -927,7 +939,7 @@ func backgroundCurateStore(
 // Design decision: Extracted as a standalone function for use by both the
 // MCP tool (tools/curate.go) and background curation (main.go). Follows
 // the same PersistBlocks/GenerateEmbeddings pipeline as store_learning.
-func autoIndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string) int {
+func autoIndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int) int {
 	storePath := curate.ResolveStorePath(cfg, vaultPath)
 	sourceID := "knowledge-" + cfg.Name
 
@@ -1021,7 +1033,10 @@ func autoIndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate
 
 		// Generate embeddings if available.
 		if embedder != nil && embedder.Available() {
-			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil)
+			if maxChunkChars <= 0 {
+				maxChunkChars = embed.DefaultMaxChunkChars
+			}
+			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil, maxChunkChars)
 		}
 
 		indexed++
@@ -1054,7 +1069,7 @@ type learningFrontmatter struct {
 // (Dependency Inversion — accepts store and embedder as parameters rather
 // than accessing globals). Called during startup after the store is opened
 // but before background indexing starts.
-func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string) (int, error) {
+func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string, maxChunkChars int) (int, error) {
 	if s == nil {
 		return 0, nil
 	}
@@ -1172,7 +1187,10 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 
 		// Generate embeddings if available.
 		if embedder != nil && embedder.Available() {
-			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil)
+			if maxChunkChars <= 0 {
+				maxChunkChars = embed.DefaultMaxChunkChars
+			}
+			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil, maxChunkChars)
 		}
 
 		logger.Info("re-ingested learning from file", "identity", fm.Identity)

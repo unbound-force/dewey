@@ -17,11 +17,12 @@ import (
 
 // serverConfig holds optional dependencies for the MCP server.
 type serverConfig struct {
-	embedder   embed.Embedder
-	store      *store.Store
-	vaultPath  string
-	indexReady *atomic.Bool
-	indexMutex *sync.Mutex
+	embedder      embed.Embedder
+	store         *store.Store
+	vaultPath     string
+	indexReady    *atomic.Bool
+	indexMutex    *sync.Mutex
+	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // serverOption configures the MCP server.
@@ -54,6 +55,13 @@ func WithIndexReady(ready *atomic.Bool) serverOption {
 // and the index/reindex MCP tools to prevent concurrent indexing operations.
 func WithIndexMutex(mu *sync.Mutex) serverOption {
 	return func(c *serverConfig) { c.indexMutex = mu }
+}
+
+// WithMaxChunkChars sets the maximum character count per embedding chunk.
+// When set to a positive value, overrides embed.DefaultMaxChunkChars for
+// all embedding generation in tools registered on this server.
+func WithMaxChunkChars(n int) serverOption {
+	return func(c *serverConfig) { c.maxChunkChars = n }
 }
 
 // newServer creates and configures the MCP server with all tools registered.
@@ -109,26 +117,26 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 	toolCount += registerSemanticTools(srv, semantic)
 
 	if !readOnly {
-		learning := tools.NewLearning(cfg.embedder, cfg.store, cfg.vaultPath)
+		learning := tools.NewLearning(cfg.embedder, cfg.store, cfg.vaultPath, cfg.maxChunkChars)
 		toolCount += registerLearningTools(srv, learning)
 
-		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex)
+		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars)
 		toolCount += registerIndexingTools(srv, indexing)
 
 		// Knowledge compilation tools (013-knowledge-compile, T032/T033).
 		// MCP path: pass nil synthesizer — the compile tool returns clusters
 		// with synthesis prompts, and the calling agent performs synthesis.
 		// This avoids requiring a local LLM for MCP server operation.
-		compile := tools.NewCompile(cfg.store, cfg.embedder, nil, cfg.vaultPath)
+		compile := tools.NewCompile(cfg.store, cfg.embedder, nil, cfg.vaultPath, cfg.maxChunkChars)
 		toolCount += registerCompileTools(srv, compile)
 
 		// Knowledge curation tools (015-curated-knowledge-stores, T022).
 		// MCP path: pass nil synthesizer — the curate tool returns extraction
 		// prompts, and the calling agent performs synthesis externally.
-		curateTool := tools.NewCurate(cfg.store, cfg.embedder, nil, cfg.vaultPath, cfg.indexMutex)
+		curateTool := tools.NewCurate(cfg.store, cfg.embedder, nil, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars)
 		toolCount += registerCurateTools(srv, curateTool)
 
-		lint := tools.NewLint(cfg.store, cfg.embedder, cfg.vaultPath)
+		lint := tools.NewLint(cfg.store, cfg.embedder, cfg.vaultPath, cfg.maxChunkChars)
 		toolCount += registerLintTools(srv, lint)
 
 		promote := tools.NewPromote(cfg.store)

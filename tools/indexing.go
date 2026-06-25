@@ -48,27 +48,32 @@ var indexingLogger = log.NewWithOptions(os.Stderr, log.Options{
 // struct pattern. This enables testing with in-memory stores and nil
 // embedders.
 type Indexing struct {
-	mu        *sync.Mutex
-	store     *store.Store
-	embedder  embed.Embedder
-	vaultPath string
+	mu            *sync.Mutex
+	store         *store.Store
+	embedder      embed.Embedder
+	vaultPath     string
+	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewIndexing creates a new Indexing tool handler with the given store,
-// embedder, vault path, and optional shared mutex. The embedder may be
-// nil — indexing proceeds without embedding generation when unavailable
-// (graceful degradation). The store must be non-nil for the tools to
-// function; a clear error is returned at call time if it is nil. The
-// vaultPath is the vault root directory (not the .uf/dewey/ workspace).
+// embedder, vault path, optional shared mutex, and max chunk chars for
+// embedding generation. The embedder may be nil — indexing proceeds
+// without embedding generation when unavailable (graceful degradation).
+// The store must be non-nil for the tools to function; a clear error is
+// returned at call time if it is nil. The vaultPath is the vault root
+// directory (not the .uf/dewey/ workspace).
 //
 // The mu parameter enables shared mutual exclusion with background startup
 // indexing (per D1, spec 012). When mu is non-nil, it replaces the internal
 // mutex. When mu is nil, an internal mutex is created (backward compatible).
-func NewIndexing(s *store.Store, e embed.Embedder, vaultPath string, mu *sync.Mutex) *Indexing {
+//
+// The maxChunkChars parameter controls the maximum character length per
+// embedding chunk. Pass 0 to use embed.DefaultMaxChunkChars.
+func NewIndexing(s *store.Store, e embed.Embedder, vaultPath string, mu *sync.Mutex, maxChunkChars int) *Indexing {
 	if mu == nil {
 		mu = &sync.Mutex{}
 	}
-	return &Indexing{store: s, embedder: e, vaultPath: vaultPath, mu: mu}
+	return &Indexing{store: s, embedder: e, vaultPath: vaultPath, mu: mu, maxChunkChars: maxChunkChars}
 }
 
 // indexSummary is the structured JSON response returned by both Index
@@ -145,7 +150,7 @@ func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input t
 	result, allDocs := mgr.FetchAll(input.SourceID, true, lastFetchedTimes)
 
 	// Index fetched documents through the shared pipeline.
-	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder)
+	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars)
 	if indexErr != nil {
 		indexingLogger.Warn("index had errors", "err", indexErr)
 	}
@@ -275,7 +280,7 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 	result, allDocs := mgr.FetchAll("", true, lastFetchedTimes)
 
 	// Index fetched documents.
-	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder)
+	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars)
 	if indexErr != nil {
 		indexingLogger.Warn("reindex had errors", "err", indexErr)
 	}

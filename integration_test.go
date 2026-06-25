@@ -767,7 +767,7 @@ func TestEndToEnd_StoreCompileSearch(t *testing.T) {
 	// Pass tmpDir as vaultPath so file-based collision avoidance works when
 	// multiple learnings with the same tag are stored within the same second.
 	t.Setenv("DEWEY_AUTHOR", "testuser")
-	learning := tools.NewLearning(nil, s, tmpDir) // nil embedder — no Ollama in tests.
+	learning := tools.NewLearning(nil, s, tmpDir, 0) // nil embedder — no Ollama in tests.
 
 	// Learning 1: auth decision — "Use Option A"
 	result1, _, err := learning.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -817,7 +817,7 @@ func TestEndToEnd_StoreCompileSearch(t *testing.T) {
 		Avail:    true,
 		Model:    "test-noop",
 	}
-	compile := tools.NewCompile(s, nil, synth, tmpDir)
+	compile := tools.NewCompile(s, nil, synth, tmpDir, 0)
 
 	// Step 5: Call CompileAll (no incremental identities).
 	compileResult, _, err := compile.Compile(context.Background(), nil, types.CompileInput{})
@@ -1117,7 +1117,7 @@ func TestEndToEnd_CurateKnowledgeStore(t *testing.T) {
 	// Use Incremental=false to force re-processing (the first curation
 	// already set a checkpoint, so incremental mode would skip all docs).
 	forceIncremental := false
-	curateTool := tools.NewCurate(s, nil, synth, tmpDir, nil)
+	curateTool := tools.NewCurate(s, nil, synth, tmpDir, nil, 0)
 	curateResult, _, err := curateTool.Curate(context.Background(), nil, types.CurateInput{
 		Store:       "team-knowledge",
 		Incremental: &forceIncremental,

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
 )
@@ -1098,7 +1099,7 @@ func TestGenerateEmbeddings_RetryOnContextOverflow(t *testing.T) {
 
 	insertTestPageAndBlocks(t, s, "overflow-page", blocks)
 
-	count := GenerateEmbeddings(s, me, "overflow-page", blocks, nil)
+	count := GenerateEmbeddings(s, me, "overflow-page", blocks, nil, embed.DefaultMaxChunkChars)
 	if count != 1 {
 		t.Errorf("GenerateEmbeddings count = %d, want 1 (retry should succeed)", count)
 	}
@@ -1136,7 +1137,7 @@ func TestGenerateEmbeddings_RetryFailsBoth(t *testing.T) {
 
 	insertTestPageAndBlocks(t, s, "double-fail-page", blocks)
 
-	count := GenerateEmbeddings(s, me, "double-fail-page", blocks, nil)
+	count := GenerateEmbeddings(s, me, "double-fail-page", blocks, nil, embed.DefaultMaxChunkChars)
 	if count != 0 {
 		t.Errorf("GenerateEmbeddings count = %d, want 0 (both attempts failed)", count)
 	}

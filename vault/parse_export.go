@@ -112,7 +112,7 @@ func ExtractHeadingFromContent(content string) string {
 }
 
 // embeddingBatchSize is the number of chunks to batch per EmbedBatch() call.
-// Balances memory usage (32 * ~768 chars max per chunk) against HTTP round-trip
+// Balances memory usage (32 chunks * up to maxChunkChars each) against HTTP round-trip
 // reduction. Ollama's /api/embed endpoint accepts arrays natively (D1).
 const embeddingBatchSize = 32
 
@@ -135,12 +135,16 @@ type blockChunk struct {
 // EmbedBatch() with a batch size of 32 (D1). On batch failure, falls back
 // to individual Embed() calls with existing truncation retry logic.
 //
+// The maxChunkChars parameter controls the maximum character length per
+// embedding chunk. Use embed.DefaultMaxChunkChars when no config-derived
+// value is available.
+//
 // Returns the number of embeddings generated. Embedding failures are logged
 // but don't block indexing (graceful degradation).
-func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string, blocks []types.BlockEntity, headingPath []string) int {
+func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string, blocks []types.BlockEntity, headingPath []string, maxChunkChars int) int {
 	// Pass 1: Flatten block tree into chunk tuples.
 	var chunks []blockChunk
-	flattenBlocks(blocks, headingPath, pageName, &chunks)
+	flattenBlocks(blocks, headingPath, pageName, &chunks, maxChunkChars)
 
 	if len(chunks) == 0 {
 		return 0
@@ -192,7 +196,9 @@ func GenerateEmbeddings(s *store.Store, embedder embed.Embedder, pageName string
 
 // flattenBlocks recursively collects all non-empty blocks into a flat slice
 // of blockChunk tuples, preserving heading path context for each block.
-func flattenBlocks(blocks []types.BlockEntity, headingPath []string, pageName string, out *[]blockChunk) {
+// The maxChunkChars parameter is forwarded to embed.PrepareChunk to control
+// chunk truncation.
+func flattenBlocks(blocks []types.BlockEntity, headingPath []string, pageName string, out *[]blockChunk, maxChunkChars int) {
 	for _, b := range blocks {
 		if strings.TrimSpace(b.Content) == "" {
 			continue
@@ -204,7 +210,7 @@ func flattenBlocks(blocks []types.BlockEntity, headingPath []string, pageName st
 			currentPath = append(append([]string{}, headingPath...), heading)
 		}
 
-		chunk := embed.PrepareChunk(pageName, currentPath, b.Content)
+		chunk := embed.PrepareChunk(pageName, currentPath, b.Content, maxChunkChars)
 		*out = append(*out, blockChunk{
 			blockUUID:   b.UUID,
 			chunk:       chunk,
@@ -212,7 +218,7 @@ func flattenBlocks(blocks []types.BlockEntity, headingPath []string, pageName st
 		})
 
 		if len(b.Children) > 0 {
-			flattenBlocks(b.Children, currentPath, pageName, out)
+			flattenBlocks(b.Children, currentPath, pageName, out, maxChunkChars)
 		}
 	}
 }

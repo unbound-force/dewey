@@ -1923,7 +1923,7 @@ func TestIndexDocuments_InsertNew(t *testing.T) {
 		},
 	}
 
-	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -1984,7 +1984,7 @@ func TestIndexDocuments_UpdateExisting(t *testing.T) {
 		},
 	}
 
-	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -2034,7 +2034,7 @@ func TestIndexDocuments_SourceRecord(t *testing.T) {
 		},
 	}
 
-	_, _ = vault.IndexDocuments(s, docs, configs, nil)
+	_, _ = vault.IndexDocuments(s, docs, configs, nil, 0)
 
 	src, err := s.GetSource("test-src")
 	if err != nil {
@@ -2075,7 +2075,7 @@ func TestIndexDocuments_WithProperties(t *testing.T) {
 		},
 	}
 
-	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -2135,7 +2135,7 @@ Found a bug in [[architecture]] module.
 		},
 	}
 
-	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -2195,7 +2195,7 @@ func TestIndexDocuments_ReIndexReplacesBlocks(t *testing.T) {
 			},
 		},
 	}
-	_, _ = vault.IndexDocuments(s, docs1, nil, nil)
+	_, _ = vault.IndexDocuments(s, docs1, nil, nil, 0)
 
 	blocks1, _ := s.GetBlocksByPage(pageName)
 	if len(blocks1) == 0 {
@@ -2215,7 +2215,7 @@ func TestIndexDocuments_ReIndexReplacesBlocks(t *testing.T) {
 			},
 		},
 	}
-	_, _ = vault.IndexDocuments(s, docs2, nil, nil)
+	_, _ = vault.IndexDocuments(s, docs2, nil, nil, 0)
 
 	blocks2, _ := s.GetBlocksByPage(pageName)
 	if len(blocks2) == 0 {
@@ -2408,7 +2408,7 @@ func TestIndexDocuments_GracefulDegradationWithoutEmbedder(t *testing.T) {
 	}
 
 	// Index with nil embedder (simulates Ollama unavailable).
-	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("IndexDocuments() = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -2489,7 +2489,7 @@ func TestIndexDocuments_CrossSourceUUIDUniqueness(t *testing.T) {
 		},
 	}
 
-	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil)
+	indexResult, _ := vault.IndexDocuments(s, docs, nil, nil, 0)
 	if indexResult.TotalIndexed != 3 {
 		t.Fatalf("IndexDocuments() = %d, want 3", indexResult.TotalIndexed)
 	}
@@ -2671,6 +2671,51 @@ func TestDoctorCounter_PrintCheck(t *testing.T) {
 	}
 	if !strings.Contains(output, "/tmp/vault") {
 		t.Errorf("PASS description missing, got:\n%s", output)
+	}
+}
+
+// TestDoctorCounter_PrintCheck_InfoMarker verifies that the INFO marker
+// renders with the info emoji and does not increment pass/warn/fail counters.
+func TestDoctorCounter_PrintCheck_InfoMarker(t *testing.T) {
+	var buf bytes.Buffer
+	c := &doctorCounter{}
+
+	c.printCheck(&buf, "INFO", "model", "granite-embedding:30m has a newer replacement")
+
+	if c.pass != 0 || c.warn != 0 || c.fail != 0 {
+		t.Errorf("INFO should not increment any counter, got pass=%d warn=%d fail=%d", c.pass, c.warn, c.fail)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "model") {
+		t.Errorf("INFO line missing model name, got:\n%s", output)
+	}
+	if !strings.Contains(output, "newer replacement") {
+		t.Errorf("INFO line missing description, got:\n%s", output)
+	}
+}
+
+// TestDoctorLegacyModelAdvisory verifies the legacy model advisory logic:
+// granite-embedding:30m triggers an advisory, other models do not.
+func TestDoctorLegacyModelAdvisory(t *testing.T) {
+	tests := []struct {
+		model        string
+		wantAdvisory bool
+	}{
+		{"granite-embedding:30m", true},
+		{"granite-embedding:278m", false},
+		{"granite-embedding-small-english-r2", false},
+		{"nomic-embed-text", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := isLegacyEmbeddingModel(tt.model)
+			if got != tt.wantAdvisory {
+				t.Errorf("isLegacyEmbeddingModel(%q) = %v, want %v", tt.model, got, tt.wantAdvisory)
+			}
+		})
 	}
 }
 

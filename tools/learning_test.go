@@ -183,7 +183,7 @@ func TestResolveAuthor(t *testing.T) {
 func TestStoreLearning_Basic(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "The vault walker must build its ignore matcher in New()",
@@ -252,7 +252,7 @@ func TestStoreLearning_Basic(t *testing.T) {
 // string returns an error result mentioning "information".
 func TestStoreLearning_EmptyInformation(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "",
@@ -273,7 +273,7 @@ func TestStoreLearning_EmptyInformation(t *testing.T) {
 // TestStoreLearning_NilStore verifies that a nil store returns an error
 // result mentioning persistent storage.
 func TestStoreLearning_NilStore(t *testing.T) {
-	l := NewLearning(nil, nil, "")
+	l := NewLearning(nil, nil, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning",
@@ -296,7 +296,7 @@ func TestStoreLearning_NilStore(t *testing.T) {
 func TestStoreLearning_WithTag(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "OAuth tokens should be rotated every 24 hours",
@@ -367,7 +367,7 @@ func TestStoreLearning_WithTag(t *testing.T) {
 func TestStoreLearning_EmptyTag(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "a learning without any tag",
@@ -403,7 +403,7 @@ func TestStoreLearning_EmptyTag(t *testing.T) {
 func TestStoreLearning_BackwardCompat(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning with old tags field",
@@ -457,7 +457,7 @@ func TestStoreLearning_BackwardCompat(t *testing.T) {
 // are provided, Tag takes priority.
 func TestStoreLearning_TagPriorityOverTags(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning with both fields",
@@ -484,7 +484,7 @@ func TestStoreLearning_TagPriorityOverTags(t *testing.T) {
 // correctly on the page and returned in the response.
 func TestStoreLearning_WithCategory(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "Always rotate OAuth tokens after 24 hours",
@@ -533,7 +533,7 @@ func TestStoreLearning_WithCategory(t *testing.T) {
 // returns an MCP error result with a descriptive message.
 func TestStoreLearning_InvalidCategory(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning",
@@ -560,7 +560,7 @@ func TestStoreLearning_InvalidCategory(t *testing.T) {
 // allowed and stored as an empty string.
 func TestStoreLearning_EmptyCategory(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning without category",
@@ -591,7 +591,7 @@ func TestStoreLearning_AllValidCategories(t *testing.T) {
 	for _, cat := range categories {
 		t.Run(cat, func(t *testing.T) {
 			s := newTestStore(t)
-			l := NewLearning(nil, s, "")
+			l := NewLearning(nil, s, "", 0)
 
 			result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 				Information: "test learning for " + cat,
@@ -622,7 +622,7 @@ func TestStoreLearning_SequenceIncrement(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
-	l := NewLearning(nil, s, vaultPath)
+	l := NewLearning(nil, s, vaultPath, 0)
 
 	deployPattern := regexp.MustCompile(`^deployment-\d{8}T\d{6}-testuser(-\d+)?$`)
 	identities := make(map[string]bool)
@@ -690,7 +690,7 @@ func TestStoreLearning_TagNormalization(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := newTestStore(t)
-			l := NewLearning(nil, s, "")
+			l := NewLearning(nil, s, "", 0)
 
 			result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 				Information: "test learning",
@@ -716,7 +716,7 @@ func TestStoreLearning_TagNormalization(t *testing.T) {
 // tier "draft" regardless of input.
 func TestStoreLearning_TierDraft(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning for tier check",
@@ -748,7 +748,7 @@ func TestStoreLearning_TierDraft(t *testing.T) {
 // a non-empty created_at field in ISO 8601 format.
 func TestStoreLearning_CreatedAtInResponse(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning for created_at",
@@ -779,7 +779,7 @@ func TestStoreLearning_CreatedAtInResponse(t *testing.T) {
 func TestStoreLearning_EmbedderUnavailable(t *testing.T) {
 	s := newTestStore(t)
 	e := newMockEmbedder(false) // Available() returns false
-	l := NewLearning(e, s, "")
+	l := NewLearning(e, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "learning with unavailable embedder",
@@ -806,7 +806,7 @@ func TestStoreLearning_EmbedderUnavailable(t *testing.T) {
 // embeddings not being generated.
 func TestStoreLearning_NilEmbedder(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "") // nil embedder
+	l := NewLearning(nil, s, "", 0) // nil embedder
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "learning with nil embedder",
@@ -833,7 +833,7 @@ func TestStoreLearning_NilEmbedder(t *testing.T) {
 // set to "learning".
 func TestStoreLearning_Searchable(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "searchable learning content",
@@ -886,7 +886,7 @@ func TestStoreLearning_Searchable(t *testing.T) {
 // from other content sources.
 func TestStoreLearning_FilterBySourceType(t *testing.T) {
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	// Store a learning.
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -946,7 +946,7 @@ func TestStoreLearning_DifferentTagSequences(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
-	l := NewLearning(nil, s, vaultPath)
+	l := NewLearning(nil, s, vaultPath, 0)
 
 	authPattern := regexp.MustCompile(`^auth-\d{8}T\d{6}-testuser(-\d+)?$`)
 	deployPattern := regexp.MustCompile(`^deploy-\d{8}T\d{6}-testuser(-\d+)?$`)
@@ -1027,7 +1027,7 @@ func TestStoreLearning_DualWritesMarkdown(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
-	l := NewLearning(nil, s, vaultPath)
+	l := NewLearning(nil, s, vaultPath, 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "OAuth tokens should be rotated every 24 hours",
@@ -1076,7 +1076,7 @@ func TestStoreLearning_MarkdownFormat(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
-	l := NewLearning(nil, s, vaultPath)
+	l := NewLearning(nil, s, vaultPath, 0)
 
 	info := "Always use parameterized queries for SQL"
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
@@ -1135,7 +1135,7 @@ func TestStoreLearning_MarkdownFormatNoCategory(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
 	vaultPath := t.TempDir()
-	l := NewLearning(nil, s, vaultPath)
+	l := NewLearning(nil, s, vaultPath, 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "A learning without a category",
@@ -1186,7 +1186,7 @@ func TestStoreLearning_FileWriteFailure(t *testing.T) {
 		_ = os.Chmod(learningsDir, 0o755)
 	})
 
-	l := NewLearning(nil, s, vaultPath)
+	l := NewLearning(nil, s, vaultPath, 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "This learning should still be stored in SQLite",
@@ -1228,7 +1228,7 @@ func TestStoreLearning_FileWriteFailure(t *testing.T) {
 func TestStoreLearning_NoVaultPath(t *testing.T) {
 	t.Setenv("DEWEY_AUTHOR", "testuser")
 	s := newTestStore(t)
-	l := NewLearning(nil, s, "")
+	l := NewLearning(nil, s, "", 0)
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "Learning without vault path",

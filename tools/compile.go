@@ -55,11 +55,12 @@ type Cluster struct {
 // generate articles. When nil, it returns clusters with synthesis prompts
 // as structured output for the calling agent to perform synthesis (D4).
 type Compile struct {
-	mu        sync.Mutex
-	store     *store.Store
-	embedder  embed.Embedder
-	synth     llm.Synthesizer
-	vaultPath string
+	mu            sync.Mutex
+	store         *store.Store
+	embedder      embed.Embedder
+	synth         llm.Synthesizer
+	vaultPath     string
+	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewCompile creates a new Compile tool handler with the given dependencies.
@@ -69,8 +70,19 @@ type Compile struct {
 //   - nil synthesizer: returns clusters + prompts without LLM synthesis
 //
 // vaultPath is the vault root directory (not the .uf/dewey/ workspace).
-func NewCompile(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPath string) *Compile {
-	return &Compile{store: s, embedder: e, synth: synth, vaultPath: vaultPath}
+// The maxChunkChars parameter controls the maximum character length per
+// embedding chunk; pass 0 to use embed.DefaultMaxChunkChars.
+func NewCompile(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPath string, maxChunkChars int) *Compile {
+	return &Compile{store: s, embedder: e, synth: synth, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
+}
+
+// effectiveMaxChunkChars returns the configured max chunk chars, falling back
+// to embed.DefaultMaxChunkChars when no override is set.
+func (c *Compile) effectiveMaxChunkChars() int {
+	if c.maxChunkChars > 0 {
+		return c.maxChunkChars
+	}
+	return embed.DefaultMaxChunkChars
 }
 
 // compiledDir returns the path to the compiled articles directory.
@@ -630,7 +642,7 @@ func (c *Compile) persistCompiledArticle(cl Cluster, articleContent string) erro
 
 	// Generate embeddings if available.
 	if c.embedder != nil && c.embedder.Available() {
-		vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil)
+		vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil, c.effectiveMaxChunkChars())
 	}
 
 	return nil
@@ -782,7 +794,7 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 
 	// Generate embeddings if available.
 	if c.embedder != nil && c.embedder.Available() {
-		vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil)
+		vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil, c.effectiveMaxChunkChars())
 	}
 
 	compileLogger.Info("stored compiled article", "tag", input.Tag, "path", articlePath)

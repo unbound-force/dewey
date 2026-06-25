@@ -55,7 +55,7 @@ func TestIndexDocuments_TotalCountAccurate(t *testing.T) {
 		allDocs[id] = docs
 	}
 
-	result, err := IndexDocuments(s, allDocs, nil, nil)
+	result, err := IndexDocuments(s, allDocs, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("IndexDocuments: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestIndexDocuments_EmptyInput(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	result, err := IndexDocuments(s, map[string][]source.Document{}, nil, nil)
+	result, err := IndexDocuments(s, map[string][]source.Document{}, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("IndexDocuments: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestIndexDocuments_AllSourcesProcessed(t *testing.T) {
 	allDocs := makeSourceDocs(4, 2)
 
 	// Track that multiple sources are processed (they all complete).
-	result, err := IndexDocuments(s, allDocs, nil, nil)
+	result, err := IndexDocuments(s, allDocs, nil, nil, 0)
 	if err != nil {
 		t.Fatalf("IndexDocuments: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestIndexDocuments_WithEmbeddings(t *testing.T) {
 
 	allDocs := makeSourceDocs(2, 3)
 
-	result, err := IndexDocuments(s, allDocs, nil, e)
+	result, err := IndexDocuments(s, allDocs, nil, e, 0)
 	if err != nil {
 		t.Fatalf("IndexDocuments: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestIndexDocuments_SourceRecordCreated(t *testing.T) {
 		},
 	}
 
-	_, err = IndexDocuments(s, allDocs, configs, nil)
+	_, err = IndexDocuments(s, allDocs, configs, nil, 0)
 	if err != nil {
 		t.Fatalf("IndexDocuments: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestIndexDocuments_PersistenceErrorReturnsError(t *testing.T) {
 		},
 	}
 
-	result, indexErr := IndexDocuments(s, allDocs, nil, nil)
+	result, indexErr := IndexDocuments(s, allDocs, nil, nil, 0)
 
 	// The collision source should cause a persistence error. With concurrent
 	// execution, the error may come from either source depending on scheduling.

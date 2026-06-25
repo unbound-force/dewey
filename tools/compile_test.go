@@ -65,7 +65,7 @@ func storeLearningDirect(t *testing.T, s *store.Store, tag string, seq int, cate
 
 // TestCompile_NilStore verifies that a nil store returns an error result.
 func TestCompile_NilStore(t *testing.T) {
-	c := NewCompile(nil, nil, nil, t.TempDir())
+	c := NewCompile(nil, nil, nil, t.TempDir(), 0)
 
 	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
 	if err != nil {
@@ -85,7 +85,7 @@ func TestCompile_NilStore(t *testing.T) {
 func TestCompile_NoLearnings(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
-	c := NewCompile(s, nil, nil, tmpDir)
+	c := NewCompile(s, nil, nil, tmpDir, 0)
 
 	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
 	if err != nil {
@@ -251,7 +251,7 @@ func TestCompile_ArticleWrittenToFS(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir)
+	c := NewCompile(s, nil, synth, tmpDir, 0)
 
 	// Store learnings.
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
@@ -316,7 +316,7 @@ func TestCompile_ArticlePersistedInStore(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir)
+	c := NewCompile(s, nil, synth, tmpDir, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "deploy", 1, "pattern", "Blue-green deployment", baseTime)
@@ -364,7 +364,7 @@ func TestCompile_IndexGenerated(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir)
+	c := NewCompile(s, nil, synth, tmpDir, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Auth content", baseTime)
@@ -407,7 +407,7 @@ func TestCompile_IndexGenerated(t *testing.T) {
 func TestCompile_SynthesizerUnavailable(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
-	c := NewCompile(s, nil, nil, tmpDir) // nil synthesizer
+	c := NewCompile(s, nil, nil, tmpDir, 0) // nil synthesizer
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
@@ -473,7 +473,7 @@ func TestCompile_SynthesizerNotAvailable(t *testing.T) {
 		Avail:    false, // Not available
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir)
+	c := NewCompile(s, nil, synth, tmpDir, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
@@ -497,7 +497,7 @@ func TestCompile_SynthesizerNotAvailable(t *testing.T) {
 func TestCompile_ConcurrentCallRejected(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
-	c := NewCompile(s, nil, nil, tmpDir)
+	c := NewCompile(s, nil, nil, tmpDir, 0)
 
 	// Acquire the lock manually to simulate a running compilation.
 	c.mu.Lock()
@@ -529,7 +529,7 @@ func TestCompileIncremental_SingleTag(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir)
+	c := NewCompile(s, nil, synth, tmpDir, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Auth content 1", baseTime)
@@ -597,7 +597,7 @@ func TestCompile_FullRebuildDeletesOld(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir)
+	c := NewCompile(s, nil, synth, tmpDir, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Auth content", baseTime)
@@ -831,7 +831,7 @@ func TestStoreCompiled_Basic(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	vaultPath := t.TempDir()
-	c := NewCompile(s, nil, nil, vaultPath)
+	c := NewCompile(s, nil, nil, vaultPath, 0)
 
 	input := types.StoreCompiledInput{
 		Tag:     "authentication",
@@ -912,7 +912,7 @@ func TestStoreCompiled_ResponseBody(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir())
+	c := NewCompile(s, nil, nil, t.TempDir(), 0)
 	input := types.StoreCompiledInput{
 		Tag:     "auth",
 		Content: "Test article.",
@@ -982,7 +982,7 @@ func TestStoreCompiled_MissingTag(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir())
+	c := NewCompile(s, nil, nil, t.TempDir(), 0)
 	input := types.StoreCompiledInput{
 		Content: "some content",
 	}
@@ -1004,7 +1004,7 @@ func TestStoreCompiled_MissingContent(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir())
+	c := NewCompile(s, nil, nil, t.TempDir(), 0)
 	input := types.StoreCompiledInput{
 		Tag: "auth",
 	}
@@ -1027,7 +1027,7 @@ func TestStoreCompiled_NoModelProvenance(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	vaultPath := t.TempDir()
-	c := NewCompile(s, nil, nil, vaultPath)
+	c := NewCompile(s, nil, nil, vaultPath, 0)
 
 	input := types.StoreCompiledInput{
 		Tag:     "auth",
@@ -1057,7 +1057,7 @@ func TestStoreCompiled_PathTraversalRejected(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir())
+	c := NewCompile(s, nil, nil, t.TempDir(), 0)
 
 	badTags := []string{"../etc/passwd", "auth/evil", "tag\x00bad", "a.b", "tag with spaces"}
 	for _, tag := range badTags {
@@ -1084,7 +1084,7 @@ func TestStoreCompiled_OverwriteExisting(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	vaultPath := t.TempDir()
-	c := NewCompile(s, nil, nil, vaultPath)
+	c := NewCompile(s, nil, nil, vaultPath, 0)
 
 	// Store first version.
 	input1 := types.StoreCompiledInput{

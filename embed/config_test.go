@@ -107,3 +107,104 @@ func TestReadEmbeddingConfig_ConfigYAMLWinsOverOllamaHost(t *testing.T) {
 			cfg.Endpoint, "http://config-host:11434")
 	}
 }
+
+// TestReadEmbeddingConfig_MaxChunkCharsDefault verifies that MaxChunkChars
+// defaults to DefaultMaxChunkChars when no config file or env var sets it.
+func TestReadEmbeddingConfig_MaxChunkCharsDefault(t *testing.T) {
+	dir := t.TempDir()
+	// No config.yaml, no DEWEY_CHUNK_MAX_CHARS env var.
+	t.Setenv("DEWEY_CHUNK_MAX_CHARS", "")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.MaxChunkChars != DefaultMaxChunkChars {
+		t.Errorf("ReadEmbeddingConfig().MaxChunkChars = %d, want %d (default)",
+			cfg.MaxChunkChars, DefaultMaxChunkChars)
+	}
+}
+
+// TestReadEmbeddingConfig_MaxChunkCharsFromConfig verifies that
+// config.yaml embedding.max_chunk_chars is respected.
+func TestReadEmbeddingConfig_MaxChunkCharsFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := "embedding:\n  model: test-model\n  max_chunk_chars: 4096\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DEWEY_CHUNK_MAX_CHARS", "")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.MaxChunkChars != 4096 {
+		t.Errorf("ReadEmbeddingConfig().MaxChunkChars = %d, want %d (from config.yaml)",
+			cfg.MaxChunkChars, 4096)
+	}
+}
+
+// TestReadEmbeddingConfig_MaxChunkCharsEnvOverridesConfig verifies that
+// DEWEY_CHUNK_MAX_CHARS env var takes precedence over config.yaml.
+func TestReadEmbeddingConfig_MaxChunkCharsEnvOverridesConfig(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := "embedding:\n  model: test-model\n  max_chunk_chars: 4096\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("DEWEY_CHUNK_MAX_CHARS", "2048")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.MaxChunkChars != 2048 {
+		t.Errorf("ReadEmbeddingConfig().MaxChunkChars = %d, want %d (env var should override config.yaml)",
+			cfg.MaxChunkChars, 2048)
+	}
+}
+
+// TestReadEmbeddingConfig_MaxChunkCharsEnvInvalidFallsBack verifies that
+// an invalid (non-numeric) DEWEY_CHUNK_MAX_CHARS falls back to the default.
+func TestReadEmbeddingConfig_MaxChunkCharsEnvInvalidFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DEWEY_CHUNK_MAX_CHARS", "abc")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.MaxChunkChars != DefaultMaxChunkChars {
+		t.Errorf("ReadEmbeddingConfig().MaxChunkChars = %d, want %d (invalid env var should fall back to default)",
+			cfg.MaxChunkChars, DefaultMaxChunkChars)
+	}
+}
+
+// TestReadEmbeddingConfig_MaxChunkCharsEnvZeroFallsBack verifies that
+// DEWEY_CHUNK_MAX_CHARS=0 falls back to the default (zero is not a valid chunk size).
+func TestReadEmbeddingConfig_MaxChunkCharsEnvZeroFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DEWEY_CHUNK_MAX_CHARS", "0")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.MaxChunkChars != DefaultMaxChunkChars {
+		t.Errorf("ReadEmbeddingConfig().MaxChunkChars = %d, want %d (zero env var should fall back to default)",
+			cfg.MaxChunkChars, DefaultMaxChunkChars)
+	}
+}
+
+// TestReadEmbeddingConfig_MaxChunkCharsEnvNegativeFallsBack verifies that
+// a negative DEWEY_CHUNK_MAX_CHARS falls back to the default.
+func TestReadEmbeddingConfig_MaxChunkCharsEnvNegativeFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("DEWEY_CHUNK_MAX_CHARS", "-5")
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.MaxChunkChars != DefaultMaxChunkChars {
+		t.Errorf("ReadEmbeddingConfig().MaxChunkChars = %d, want %d (negative env var should fall back to default)",
+			cfg.MaxChunkChars, DefaultMaxChunkChars)
+	}
+}

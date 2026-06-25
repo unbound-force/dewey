@@ -221,7 +221,7 @@ func TestGenerateEmbeddings_BatchReducesRoundTrips(t *testing.T) {
 		}
 	}
 
-	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil, embed.DefaultMaxChunkChars)
 
 	if count != 64 {
 		t.Errorf("GenerateEmbeddings returned %d, want 64", count)
@@ -253,7 +253,7 @@ func TestGenerateEmbeddings_BatchFallback(t *testing.T) {
 		}
 	}
 
-	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil, embed.DefaultMaxChunkChars)
 
 	if count != 5 {
 		t.Errorf("GenerateEmbeddings returned %d, want 5", count)
@@ -301,7 +301,7 @@ func TestGenerateEmbeddings_EmptyBlocksSkipped(t *testing.T) {
 		}
 	}
 
-	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil, embed.DefaultMaxChunkChars)
 
 	// 10 blocks, 4 empty → 6 should be embedded.
 	if count != 6 {
@@ -351,7 +351,7 @@ func TestGenerateEmbeddings_CorrectCount(t *testing.T) {
 		}
 	}
 
-	count := GenerateEmbeddings(s, e, "test-page", blocks, nil)
+	count := GenerateEmbeddings(s, e, "test-page", blocks, nil, embed.DefaultMaxChunkChars)
 
 	if count != 6 {
 		t.Errorf("GenerateEmbeddings returned %d, want 6", count)
@@ -376,7 +376,7 @@ func TestFlattenBlocks_CollectsAllNonEmpty(t *testing.T) {
 	}
 
 	var chunks []blockChunk
-	flattenBlocks(blocks, nil, "page", &chunks)
+	flattenBlocks(blocks, nil, "page", &chunks, embed.DefaultMaxChunkChars)
 
 	// r1 (Top), c1, c3, r3 = 4 non-empty. r2 and c2 are empty/whitespace.
 	if len(chunks) != 4 {

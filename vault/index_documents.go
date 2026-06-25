@@ -42,7 +42,10 @@ type IndexResult struct {
 //
 // This is the shared implementation used by both the CLI (dewey index/reindex)
 // and MCP reindex tool, eliminating duplication (D6).
-func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder) (*IndexResult, error) {
+func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder, maxChunkChars int) (*IndexResult, error) {
+	if maxChunkChars <= 0 {
+		maxChunkChars = embed.DefaultMaxChunkChars
+	}
 	if len(allDocs) == 0 {
 		return &IndexResult{}, nil
 	}
@@ -62,7 +65,7 @@ func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 			default:
 			}
 
-			indexed, embeds, err := indexSourceDocuments(s, sourceID, docs, configs, embedder)
+			indexed, embeds, err := indexSourceDocuments(s, sourceID, docs, configs, embedder, maxChunkChars)
 			if err != nil {
 				return fmt.Errorf("index source %s: %w", sourceID, err)
 			}
@@ -92,7 +95,7 @@ func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 
 // indexSourceDocuments processes all documents from a single source sequentially.
 // Returns the number of documents indexed and embeddings generated.
-func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Document, configs []source.SourceConfig, embedder embed.Embedder) (int, int, error) {
+func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Document, configs []source.SourceConfig, embedder embed.Embedder, maxChunkChars int) (int, int, error) {
 	start := time.Now()
 	var blockCount, linkCount, embedCount, indexed int
 
@@ -241,7 +244,7 @@ func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Documen
 
 		// Generate and persist embeddings if embedder is available.
 		if embedder != nil && embedder.Available() {
-			ec := GenerateEmbeddings(s, embedder, pageName, blocks, nil)
+			ec := GenerateEmbeddings(s, embedder, pageName, blocks, nil, maxChunkChars)
 			embedCount += ec
 		}
 

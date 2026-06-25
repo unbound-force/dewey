@@ -51,18 +51,22 @@ type Finding struct {
 // while still providing value from the other 3 checks. The vaultPath is
 // optional — when empty, knowledge store quality checks are skipped.
 type Lint struct {
-	store     *store.Store
-	embedder  embed.Embedder
-	vaultPath string
+	store         *store.Store
+	embedder      embed.Embedder
+	vaultPath     string
+	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewLint creates a new Lint tool handler with the given store, embedder,
-// and vault path. The store must be non-nil for the tool to function; a
-// clear error is returned at call time if it is nil (invariant 7). The
-// embedder may be nil — contradiction checking is skipped when unavailable.
-// The vaultPath may be empty — knowledge store quality checks are skipped.
-func NewLint(s *store.Store, e embed.Embedder, vaultPath string) *Lint {
-	return &Lint{store: s, embedder: e, vaultPath: vaultPath}
+// vault path, and max chunk chars. The store must be non-nil for the tool
+// to function; a clear error is returned at call time if it is nil
+// (invariant 7). The embedder may be nil — contradiction checking is
+// skipped when unavailable. The vaultPath may be empty — knowledge store
+// quality checks are skipped. The maxChunkChars parameter controls the
+// maximum character length per embedding chunk; pass 0 to use
+// embed.DefaultMaxChunkChars.
+func NewLint(s *store.Store, e embed.Embedder, vaultPath string, maxChunkChars int) *Lint {
+	return &Lint{store: s, embedder: e, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
 }
 
 // Lint handles the dewey_lint MCP tool. Scans the index for knowledge
@@ -443,7 +447,11 @@ func (l *Lint) fixEmbeddingGaps(ctx context.Context, gaps []Finding) (int, error
 			})
 		}
 
-		count := vault.GenerateEmbeddings(l.store, l.embedder, pageName, blockEntities, nil)
+		maxChars := l.maxChunkChars
+		if maxChars <= 0 {
+			maxChars = embed.DefaultMaxChunkChars
+		}
+		count := vault.GenerateEmbeddings(l.store, l.embedder, pageName, blockEntities, nil, maxChars)
 		if count > 0 {
 			fixed++
 			lintLogger.Info("regenerated embeddings", "page", pageName, "embeddings", count)

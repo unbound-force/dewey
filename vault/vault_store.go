@@ -25,10 +25,11 @@ import (
 // (SOLID Single Responsibility). The vault.Client owns in-memory indexing;
 // VaultStore owns the persistence bridge.
 type VaultStore struct {
-	store     *store.Store
-	embedder  embed.Embedder // optional — nil when Ollama is unavailable
-	vaultPath string
-	sourceID  string // e.g., "disk-local"
+	store        *store.Store
+	embedder     embed.Embedder // optional — nil when Ollama is unavailable
+	vaultPath    string
+	sourceID     string // e.g., "disk-local"
+	maxChunkChars int   // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewVaultStore creates a VaultStore adapter for bridging vault and store.
@@ -46,6 +47,22 @@ func NewVaultStore(s *store.Store, vaultPath, sourceID string) *VaultStore {
 // Pass nil to disable embedding generation (graceful degradation).
 func (vs *VaultStore) SetEmbedder(e embed.Embedder) {
 	vs.embedder = e
+}
+
+// SetMaxChunkChars configures the maximum character count per embedding chunk.
+// When set to a positive value, overrides embed.DefaultMaxChunkChars for all
+// embedding generation in this vault store. Pass 0 to use the default.
+func (vs *VaultStore) SetMaxChunkChars(n int) {
+	vs.maxChunkChars = n
+}
+
+// effectiveMaxChunkChars returns the configured max chunk chars, falling back
+// to embed.DefaultMaxChunkChars when no override is set.
+func (vs *VaultStore) effectiveMaxChunkChars() int {
+	if vs.maxChunkChars > 0 {
+		return vs.maxChunkChars
+	}
+	return embed.DefaultMaxChunkChars
 }
 
 // PersistPage writes a single page and its blocks/links to the store.
@@ -447,7 +464,7 @@ func (vs *VaultStore) generateEmbeddings(pageName string, blocks []types.BlockEn
 	if vs.store == nil {
 		return
 	}
-	GenerateEmbeddings(vs.store, vs.embedder, pageName, blocks, headingPath)
+	GenerateEmbeddings(vs.store, vs.embedder, pageName, blocks, headingPath, vs.effectiveMaxChunkChars())
 }
 
 // LoadExternalPages loads all non-local pages from the persistent store into

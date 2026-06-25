@@ -248,8 +248,9 @@ func newInitCmd() *cobra.Command {
 # See: https://github.com/unbound-force/dewey
 
 embedding:
-  model: granite-embedding:30m
+  model: granite-embedding:30m  # Override with DEWEY_EMBEDDING_MODEL env var
   # endpoint: http://localhost:11434  # Uncomment to override OLLAMA_HOST
+  # max_chunk_chars: 12288  # Override with DEWEY_CHUNK_MAX_CHARS env var
 `
 			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
 				return fmt.Errorf("write config.yaml: %w", err)
@@ -713,7 +714,8 @@ Fetches content from all configured sources and indexes it.`,
 			mgr := source.NewManager(configs, vp, cacheDir)
 			result, allDocs := mgr.FetchAll(sourceName, force, lastFetchedTimes)
 
-			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder)
+			embCfg := embed.ReadEmbeddingConfig(deweyDir)
+			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder, embCfg.MaxChunkChars)
 			reportSourceErrors(s, result)
 
 			if indexErr != nil {
@@ -851,7 +853,8 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
 				logger.Info("source fetched for reindex", "source", srcID, "documents", len(docs))
 			}
 
-			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder)
+			embCfg := embed.ReadEmbeddingConfig(deweyDir)
+			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder, embCfg.MaxChunkChars)
 			reportSourceErrors(s, result)
 
 			if indexErr != nil {
@@ -1066,8 +1069,17 @@ func (c *doctorCounter) printCheck(w io.Writer, marker, name, description string
 	case "FAIL":
 		c.fail++
 		emoji = "❌"
+	case "INFO":
+		emoji = "ℹ️"
 	}
 	_, _ = fmt.Fprintf(w, "  %s %-20s%s\n", emoji, name, description)
+}
+
+// isLegacyEmbeddingModel reports whether the given model name is a legacy
+// embedding model that has a newer replacement available. Used by the doctor
+// advisory to suggest upgrading.
+func isLegacyEmbeddingModel(model string) bool {
+	return model == "granite-embedding:30m"
 }
 
 // countExcludedDirs walks the vault directory and counts how many directories
@@ -1390,6 +1402,12 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		}
 	} else {
 		c.printCheck(w, "WARN", "model", fmt.Sprintf("%s skipped (ollama not reachable)", embedModel))
+	}
+
+	// Legacy model advisory — inform users about the newer R2 model.
+	if isLegacyEmbeddingModel(embedModel) {
+		c.printCheck(w, "INFO", "model", "granite-embedding:30m has a newer replacement (Granite Embedding R2)")
+		dp("     Tip: update embedding.model in config.yaml, then run: dewey reindex\n")
 	}
 
 	// Embedding count — uses value queried from the already-open store above.
@@ -1947,7 +1965,8 @@ Examples:
 			}
 
 			// Create compile tool and run.
-			compile := tools.NewCompile(s, embedder, synth, vp)
+			compileEmbCfg := embed.ReadEmbeddingConfig(deweyDir)
+			compile := tools.NewCompile(s, embedder, synth, vp, compileEmbCfg.MaxChunkChars)
 			input := types.CompileInput{Incremental: incremental}
 
 			start := time.Now()
@@ -2168,7 +2187,8 @@ Exit code 0 if clean, 1 if issues found.`,
 			}
 
 			// Create lint tool and run.
-			lint := tools.NewLint(s, embedder, vp)
+			lintEmbCfg := embed.ReadEmbeddingConfig(deweyDir)
+			lint := tools.NewLint(s, embedder, vp, lintEmbCfg.MaxChunkChars)
 			input := types.LintInput{Fix: fix}
 
 			result, _, mcpErr := lint.Lint(context.Background(), nil, input)

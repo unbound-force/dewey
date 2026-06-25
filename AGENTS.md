@@ -348,6 +348,7 @@ embedding:
   provider: ollama  # or: vertex
   model: granite-embedding:30m
   endpoint: http://localhost:11434
+  max_chunk_chars: 12288  # optional: override chunk size limit
 
 synthesis:
   provider: vertex
@@ -365,6 +366,13 @@ Vertex providers use `golang.org/x/oauth2/google` application-default credential
 4. `http://localhost:11434` (default)
 
 When `OLLAMA_HOST` is set without a URL scheme (e.g., `0.0.0.0:11434`), `http://` is prepended automatically.
+
+**Chunk size limit resolution** (highest to lowest precedence):
+1. `DEWEY_CHUNK_MAX_CHARS` env var
+2. `config.yaml` `embedding.max_chunk_chars` (per-vault, then global)
+3. Default: `12288` (~8192 tokens at 1.5 chars/token)
+
+The chunk size limit controls the maximum character length of text chunks sent to the embedding model. Different models have different context windows — adjust this value to match your model. Invalid values (non-positive or non-numeric) are logged as a warning and fall back to the default.
 
 **Graceful degradation**: When Ollama is reachable but the configured embedding model has not been pulled, Dewey logs a warning and continues in keyword-only mode instead of exiting. Semantic search MCP tools return clear error messages indicating embeddings are unavailable.
 

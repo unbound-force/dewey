@@ -985,7 +985,7 @@ func TestBackgroundIndex_MutexBlocksIndexDuringStartup(t *testing.T) {
 	indexMu.Lock()
 
 	// Create an Indexing tool handler with the shared mutex and a valid store.
-	ix := tools.NewIndexing(s, nil, tmpDir, indexMu)
+	ix := tools.NewIndexing(s, nil, tmpDir, indexMu, 0)
 
 	// Attempt to call Index — should be rejected because the mutex is held.
 	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
@@ -1066,7 +1066,7 @@ Always use blue-green deployments for zero-downtime releases.
 	defer func() { _ = s.Close() }()
 
 	// Re-ingest — both files should be recovered.
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1166,7 +1166,7 @@ Existing learning content.
 	}
 
 	// Re-ingest — should skip the existing page.
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1201,7 +1201,7 @@ func TestReIngestLearnings_NoFiles(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1222,7 +1222,7 @@ func TestReIngestLearnings_NoDirectory(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1236,7 +1236,7 @@ func TestReIngestLearnings_NoDirectory(t *testing.T) {
 func TestReIngestLearnings_NilStore(t *testing.T) {
 	vaultPath := t.TempDir()
 
-	count, err := reIngestLearnings(nil, nil, vaultPath)
+	count, err := reIngestLearnings(nil, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1278,7 +1278,7 @@ Test learning with specific timestamp.
 	}
 	defer func() { _ = s.Close() }()
 
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1339,7 +1339,7 @@ Use basic auth for internal services.
 	}
 	defer func() { _ = s.Close() }()
 
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1438,7 +1438,7 @@ New deploy learning by bob.
 	}
 	defer func() { _ = s.Close() }()
 
-	count, err := reIngestLearnings(s, nil, vaultPath)
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings error: %v", err)
 	}
@@ -1610,7 +1610,7 @@ func TestBackgroundCuration_SkipsWhenMutexHeld(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCurateStore(ctx, indexMu, storeCfg, 10*time.Millisecond, s, synth, nil, vaultPath)
+		backgroundCurateStore(ctx, indexMu, storeCfg, 10*time.Millisecond, s, synth, nil, vaultPath, 0)
 	}()
 
 	// Wait enough time for several ticker cycles.
@@ -1662,7 +1662,7 @@ func TestBackgroundCuration_NoConfig(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCuration(ctx, indexMu, indexReady, nil, s, nil, t.TempDir())
+		backgroundCuration(ctx, indexMu, indexReady, nil, s, nil, t.TempDir(), 0)
 	}()
 
 	select {
@@ -1704,7 +1704,7 @@ func TestBackgroundCuration_RespectsContextCancellation(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCurateStore(ctx, indexMu, storeCfg, 100*time.Millisecond, s, synth, nil, vaultPath)
+		backgroundCurateStore(ctx, indexMu, storeCfg, 100*time.Millisecond, s, synth, nil, vaultPath, 0)
 	}()
 
 	// Let it run for a bit, then cancel.
@@ -1755,7 +1755,7 @@ func TestBackgroundCuration_WaitsForIndexReady(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCuration(ctx, indexMu, indexReady, stores, s, nil, t.TempDir())
+		backgroundCuration(ctx, indexMu, indexReady, stores, s, nil, t.TempDir(), 0)
 	}()
 
 	// Verify the goroutine is still waiting (indexReady is false).
@@ -1811,7 +1811,7 @@ func TestBackgroundCuration_ContinuesAfterError(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCurateStore(ctx, indexMu, storeCfg, 10*time.Millisecond, s, synth, nil, vaultPath)
+		backgroundCurateStore(ctx, indexMu, storeCfg, 10*time.Millisecond, s, synth, nil, vaultPath, 0)
 	}()
 
 	// Let it run through several cycles (some will encounter errors).

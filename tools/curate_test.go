@@ -12,7 +12,7 @@ import (
 )
 
 func TestCurateTool_NilStore(t *testing.T) {
-	curateTool := NewCurate(nil, nil, nil, "", nil)
+	curateTool := NewCurate(nil, nil, nil, "", nil, 0)
 
 	result, _, err := curateTool.Curate(context.Background(), nil, types.CurateInput{})
 	if err != nil {
@@ -37,7 +37,7 @@ func TestCurateTool_NoConfig(t *testing.T) {
 		t.Fatalf("create dewey dir: %v", err)
 	}
 
-	curateTool := NewCurate(s, nil, nil, dir, nil)
+	curateTool := NewCurate(s, nil, nil, dir, nil, 0)
 
 	result, _, err := curateTool.Curate(context.Background(), nil, types.CurateInput{})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestCurateTool_StoreNotFound(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	curateTool := NewCurate(s, nil, nil, dir, nil)
+	curateTool := NewCurate(s, nil, nil, dir, nil, 0)
 
 	result, _, err := curateTool.Curate(context.Background(), nil, types.CurateInput{
 		Store: "nonexistent",
@@ -103,7 +103,7 @@ func TestCurateTool_ConcurrentCallRejected(t *testing.T) {
 	}
 
 	mu := &sync.Mutex{}
-	curateTool := NewCurate(s, nil, nil, dir, mu)
+	curateTool := NewCurate(s, nil, nil, dir, mu, 0)
 
 	// Lock the mutex to simulate an indexing operation in progress.
 	mu.Lock()

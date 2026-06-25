@@ -70,7 +70,7 @@ func buildDocs(sourceID, docID, title, content string) map[string][]source.Docum
 // in the stored page.
 func TestIndexDocuments_ScanCalledForWebSource(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -84,7 +84,7 @@ func TestIndexDocuments_ScanCalledForWebSource(t *testing.T) {
 	}
 	docs := buildDocs("web-docs", "page-with-injection", "Injected Page", injectionContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -141,7 +141,7 @@ func TestIndexDocuments_ScanCalledForWebSource(t *testing.T) {
 // patterns should NOT produce sanitize_findings in the stored page.
 func TestIndexDocuments_ScanSkippedForDiskSource(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -155,7 +155,7 @@ func TestIndexDocuments_ScanSkippedForDiskSource(t *testing.T) {
 	}
 	docs := buildDocs("disk-local", "local-page", "Local Page", injectionContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -190,7 +190,7 @@ func TestIndexDocuments_ScanSkippedForDiskSource(t *testing.T) {
 // appear in the store after indexing.
 func TestIndexDocuments_StrictModeSkipsDocument(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -205,7 +205,7 @@ func TestIndexDocuments_StrictModeSkipsDocument(t *testing.T) {
 	}
 	docs := buildDocs("web-strict", "malicious-page", "Malicious Page", injectionContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 0 {
 		t.Fatalf("totalIndexed = %d, want 0 (document should be rejected by strict mode)", indexResult.TotalIndexed)
 	}
@@ -226,7 +226,7 @@ func TestIndexDocuments_StrictModeSkipsDocument(t *testing.T) {
 // merge into properties → store → retrieve → parse.
 func TestIndexDocuments_FindingsSurvivePersistence(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -240,7 +240,7 @@ func TestIndexDocuments_FindingsSurvivePersistence(t *testing.T) {
 	}
 	docs := buildDocs("web-persist", "persist-doc", "Persist Doc", injectionContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -313,7 +313,7 @@ func TestIndexDocuments_FindingsSurvivePersistence(t *testing.T) {
 // JSON. Neither should overwrite the other.
 func TestIndexDocuments_FindingsMergedWithFrontmatter(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -327,7 +327,7 @@ func TestIndexDocuments_FindingsMergedWithFrontmatter(t *testing.T) {
 	}
 	docs := buildDocs("web-frontmatter", "fm-doc", "Frontmatter Doc", frontmatterContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}
@@ -395,7 +395,7 @@ func TestIndexDocuments_FindingsMergedWithFrontmatter(t *testing.T) {
 // Clean documents should be indexed normally even under strict sanitization.
 func TestIndexDocuments_StrictModeAllowsCleanDocument(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -410,7 +410,7 @@ func TestIndexDocuments_StrictModeAllowsCleanDocument(t *testing.T) {
 	}
 	docs := buildDocs("web-strict-clean", "clean-page", "Clean Page", cleanContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("totalIndexed = %d, want 1 (clean document should pass strict mode)", indexResult.TotalIndexed)
 	}
@@ -429,7 +429,7 @@ func TestIndexDocuments_StrictModeAllowsCleanDocument(t *testing.T) {
 // source config is propagated to the stored page's Tier field.
 func TestIndexDocuments_TrustTierFromConfig(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
 
 	configs := []source.SourceConfig{
 		{
@@ -444,7 +444,7 @@ func TestIndexDocuments_TrustTierFromConfig(t *testing.T) {
 	}
 	docs := buildDocs("web-untrusted", "untrusted-doc", "Untrusted Doc", cleanContent)
 
-	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder)
+	indexResult, _ := vault.IndexDocuments(ix.store, docs, configs, ix.embedder, 0)
 	if indexResult.TotalIndexed != 1 {
 		t.Fatalf("totalIndexed = %d, want 1", indexResult.TotalIndexed)
 	}

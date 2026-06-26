@@ -78,6 +78,34 @@ impact.
 | SRE | Style improvement in error messages, optional health check enhancement, minor doc gap |
 | Architect | Formatting preference, optional structural improvement, minor comment enhancement |
 
+## Compound Severity Escalation
+
+When multiple findings share a root cause, personas MUST
+assess the **combined** severity rather than classifying
+each finding in isolation. Findings that individually
+appear LOW or MEDIUM can compound into a HIGH or
+CRITICAL finding when they create a single coherent
+attack surface or failure mode.
+
+**Rule**: If two or more findings (a) affect the same
+component or pipeline stage, (b) share a common root
+cause, and (c) together produce a risk greater than any
+individual finding, consolidate them into a single
+finding at the escalated severity. The consolidated
+finding MUST cite each contributing factor.
+
+| Pattern | Individual | Compound |
+|---------|-----------|----------|
+| Unverified binary + privileged CI container | MEDIUM + MEDIUM | HIGH (supply chain attack in privileged context) |
+| Broad permissions + missing input validation + external-facing endpoint | MEDIUM + MEDIUM + MEDIUM | HIGH (unauthenticated access with elevated privileges) |
+| Missing error handling + missing retry + critical data path | MEDIUM + LOW + context | HIGH (silent data loss on transient failure) |
+
+**When NOT to escalate**: Findings that happen to appear
+in the same PR but have independent root causes and
+independent blast radii MUST NOT be artificially
+consolidated. Consolidation applies only when the
+findings are causally linked.
+
 ## Auto-Fix Policy (Spec Review Mode)
 
 | Severity | Action | Rationale |

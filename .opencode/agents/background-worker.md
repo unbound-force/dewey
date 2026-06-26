@@ -1,6 +1,8 @@
 ---
 name: background-worker
 description: Runs background tasks without MCP tool access.
+mode: subagent
+hidden: true
 ---
 
 # Background Worker

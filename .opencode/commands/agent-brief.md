@@ -180,9 +180,10 @@ These rules are non-negotiable. Violations are CRITICAL severity.
   entries, `AGENTS.md` for structural updates (project
   structure, conventions, build commands), `README.md` for
   description changes.
-- **Website gate**: MUST file `unbound-force/website` issue
-  for user-facing changes before PR merge. Exempt: internal
-  refactoring, test-only, CI-only, spec artifacts.
+- **Documentation gate**: MUST file a documentation issue
+  against the current repo for user-facing changes before
+  PR merge. Exempt: internal refactoring, test-only,
+  CI-only, spec artifacts.
 - **Zero-waste**: No orphaned specs, unused standards, or
   aspirational documents that do not map to actionable work.
 

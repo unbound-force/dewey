@@ -127,28 +127,34 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    MUST execute in order. Both phases apply only to
    Code Review Mode -- Spec Review Mode skips them.
 
-   #### Phase 1a -- CI Checks (mandatory, hard gate)
+   #### Phase 1a -- Pre-flight Checks (mandatory, hard gate)
 
-   a. Read all files in `.github/workflows/` to
-      identify the exact commands CI runs. Do not
-      rely on a memorized list -- the workflow files
-      are the source of truth.
+   Load the `pre-flight` skill and run in `hard-gate`
+   mode:
 
-   b. Execute each CI command locally in the order
-      they appear in the workflow (typically:
-      `go build ./...`, `go vet ./...`,
-      `go test -race -count=1 ./...`, plus any
-      coverage ratchet steps).
+   a. Invoke the `skill` tool with name `pre-flight` to
+      load the shared pre-flight check instructions.
 
-   c. **If any command fails**: **STOP immediately.**
-      Report each failure as a CRITICAL finding with
-      the full error output. Do NOT proceed to Phase
-      1b or to step 2 (Divisor agent delegation).
-      The rationale: reviewing code that doesn't
-      compile or pass tests is wasted work.
+   b. Execute the pre-flight skill's phases in order:
+      1. CI Workflow Parsing — discover commands from
+         `.github/workflows/`
+      2. Local Tool Detection — check for config files
+         and verify binary availability
+      3. CI Coverage Matrix — display the matrix (in
+         hard-gate mode, all tools are marked "Run
+         locally = Yes")
+      4. Execution — run all detected and available
+         tools in hard-gate mode
 
-   d. **If all commands pass**: report success and
-      proceed to Phase 1b.
+   c. **If the pre-flight verdict is FAIL**: **STOP
+      immediately.** Report each failure as a CRITICAL
+      finding with the full error output. Do NOT
+      proceed to Phase 1b or to step 2 (Divisor agent
+      delegation). The rationale: reviewing code that
+      doesn't compile or pass tests is wasted work.
+
+   d. **If the pre-flight verdict is PASS**: report
+      success and proceed to Phase 1b.
 
    #### Phase 1b -- Gaze Quality Analysis (conditional)
 
@@ -167,9 +173,11 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
    c. **If `gaze` is NOT available**: skip with an
       informational note:
-      > "Gaze not installed -- skipping quality
-      > analysis. Install with
-      > `brew install unbound-force/tap/gaze`."
+       > "Gaze not installed -- skipping quality
+       > analysis. Install with
+       > `brew install unbound-force/tap/gaze`
+       > (or on Fedora/RHEL:
+       > `go install github.com/unbound-force/gaze/cmd/gaze@latest`)."
 
       Proceed to step 2 without Gaze data.
 
@@ -203,7 +211,27 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
    For each agent, instruct it to review the full branch diff (all changed files vs `main`) and return its verdict (**APPROVE** or **REQUEST CHANGES**) along with all findings.
 
-3. Collect all **REQUEST CHANGES** findings from the discovered reviewers. If all discovered reviewers return **APPROVE**, report the result and stop.
+3. Collect all **REQUEST CHANGES** findings from the
+   discovered reviewers. If all discovered reviewers
+   return **APPROVE**, report the result and stop.
+
+   **Cross-persona finding consolidation**: Before
+   proceeding to the fix loop, group findings from
+   different personas that (a) affect the same
+   component, file, or pipeline stage, (b) share a
+   common root cause, and (c) together produce a risk
+   greater than any individual finding. Merge each
+   group into a single consolidated finding:
+   - Apply compound severity escalation from
+     `severity.md` to determine the combined severity.
+   - Preserve per-persona attribution (e.g.,
+     "Adversary: missing checksum + SRE: privileged
+     blast radius → consolidated MEDIUM").
+   - Present the consolidated finding with one unified
+     recommendation addressing the root cause.
+
+   Findings with independent root causes MUST remain
+   separate even if they affect the same file.
 
 4. If there are **REQUEST CHANGES**, address the findings by making the necessary code fixes. Then re-run all discovered reviewers to verify the fixes. Repeat this loop until all discovered reviewers return **APPROVE** or the process has exceeded 3 iterations.
 
@@ -250,7 +278,16 @@ step, determine which artifacts to review:
 
    For each agent, instruct it to **operate in Spec Review Mode**: review the spec artifacts identified in the review scope above (not code), plus `.specify/memory/constitution.md` and `AGENTS.md`. Include the workflow tier (Speckit/OpenSpec) in the agent prompt so it can tailor its review accordingly. Instruct the agent to return its verdict (**APPROVE** or **REQUEST CHANGES**) along with all findings.
 
-2. Collect all **REQUEST CHANGES** findings from the discovered reviewers. If all discovered reviewers return **APPROVE**, report the result and stop.
+2. Collect all **REQUEST CHANGES** findings from the
+   discovered reviewers. If all discovered reviewers
+   return **APPROVE**, report the result and stop.
+
+   **Cross-persona finding consolidation**: Apply the
+   same consolidation rule as Code Review Mode Step 3
+   — group findings from different personas that share
+   a root cause, apply compound severity escalation
+   from `severity.md`, and present as consolidated
+   findings with per-persona attribution preserved.
 
 3. If there are **REQUEST CHANGES**, apply the **hybrid fix policy**:
 

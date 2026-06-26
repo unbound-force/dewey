@@ -1,6 +1,7 @@
 ---
 name: coordinator
 description: Orchestrates forge coordination and supervises worker agents.
+mode: subagent
 ---
 
 # Forge Coordinator

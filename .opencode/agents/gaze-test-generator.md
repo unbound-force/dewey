@@ -5,6 +5,7 @@ description: >
   complete, compilable Go test functions, improve documentation for
   classifier visibility, and restructure assertions for mapper
   accuracy. Works on any Go project gaze can analyze.
+mode: subagent
 tools:
   read: true
   bash: true
@@ -12,7 +13,7 @@ tools:
   edit: true
   webfetch: false
 ---
-<!-- scaffolded by gaze v1.4.9 -->
+<!-- scaffolded by gaze dev -->
 
 # Role: Test Generator
 

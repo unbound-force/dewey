@@ -327,12 +327,13 @@ analysis + quality validation) in a single pass.
 Parse `FEATURE_DIR/tasks.md` for phases and execute
 tasks.
 
-**Derive build/test commands**: Read all files in
-`.github/workflows/` to identify the exact CI commands
-(build, test, vet, lint). Do NOT hardcode language-
-specific commands -- the workflow files are the source
-of truth. This is the same pattern used by
-`/review-council` Phase 1a.
+**Derive build/test commands**: Load the `pre-flight`
+skill (invoke the `skill` tool with name `pre-flight`)
+and use its CI Workflow Parsing phase to discover the
+exact CI commands from `.github/workflows/`. Also run
+its Local Tool Detection phase to discover additional
+tools from config files. This is the shared pre-flight
+logic used by `/review-council` and `/review-pr`.
 
 **For each phase in tasks.md**:
 
@@ -448,8 +449,8 @@ of truth. This is the same pattern used by
 
 4. **Phase checkpoint**: after all tasks in the phase
    are complete (both sequential and parallel), run the
-   CI build and test commands derived from
-   `.github/workflows/`.
+   pre-flight skill in `hard-gate` mode to execute all
+   detected CI and local tool commands.
    - If all pass: proceed to the next phase.
    - If any fail: **EXIT** with the failure details:
 
@@ -655,6 +656,6 @@ Format the output as:
 - **NEVER create WorkflowInstance objects** -- `/unleash`
   operates at the Speckit pipeline level, not the hero
   lifecycle workflow level (Specs 008/012/016)
-- **NEVER hardcode build/test commands** -- derive them
-  from `.github/workflows/` (CI files are source of
-  truth)
+- **NEVER hardcode build/test commands** -- load the
+  `pre-flight` skill to derive them from
+  `.github/workflows/` and local tool configs

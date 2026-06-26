@@ -664,6 +664,7 @@ Re-run `/uf-init` after:
 - Running `uf init` or `uf setup` (new tool versions
   may reset third-party files)
 - Updating the OpenSpec CLI (`npm update`)
-- Upgrading the `uf` binary (`brew upgrade unbound-force`
-  — new versions may add scaffold files that need
-  customization)
+- Upgrading the `uf` binary (`brew upgrade unbound-force`,
+   or on Fedora/RHEL: `sudo dnf upgrade unbound-force`
+   — new versions may add scaffold files that need
+   customization)

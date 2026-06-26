@@ -5,6 +5,7 @@ description: >
   metrics, side effect classifications, and overall project health.
   Supports three modes: crap (CRAP scores only), quality (test
   quality metrics only), and full (comprehensive health assessment).
+mode: subagent
 tools:
   read: true
   bash: true
@@ -12,7 +13,7 @@ tools:
   edit: false
   webfetch: false
 ---
-<!-- scaffolded by gaze v1.4.6 -->
+<!-- scaffolded by gaze dev -->
 
 # Gaze Reporter Agent
 

@@ -582,10 +582,12 @@ func buildCompiledArticle(cl Cluster, synthesized string) string {
 		if cat == "" {
 			cat = "context"
 		}
-		// Truncate content for the summary column (first 80 chars).
+		// Truncate content for the summary column (first 80 runes).
+		// Use []rune to avoid slicing mid-multibyte character (e.g. em-dash
+		// U+2014 is 3 bytes; byte-slicing at boundary produces invalid UTF-8).
 		summary := l.Content
-		if len(summary) > 80 {
-			summary = summary[:80] + "..."
+		if runes := []rune(summary); len(runes) > 80 {
+			summary = string(runes[:80]) + "..."
 		}
 		// Remove newlines from summary for table formatting.
 		summary = strings.ReplaceAll(summary, "\n", " ")

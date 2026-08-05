@@ -59,6 +59,10 @@ homebrew_casks:
       owner: unbound-force
       name: homebrew-tap
 
+release:
+  extra_files:
+    - glob: dist/homebrew/Casks/dewey.rb
+
 changelog:
   sort: asc
   filters:

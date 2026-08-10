@@ -541,7 +541,7 @@ Three GitHub Actions workflows:
 
 1. **CI** (`.github/workflows/ci.yml`): Build + vet + test with `-race -count=1` + Gaze quality report with threshold enforcement on push/PR.
 2. **MegaLinter** (`.github/workflows/mega-linter.yml`): Runs golangci-lint, markdownlint, yamllint, and gitleaks on push/PR to `main`. Auto-commits lint fixes to PR branches.
-3. **Release** (`.github/workflows/release.yml`): Triggered via `workflow_dispatch` with a `tag` input (e.g., `gh workflow run release.yml -f tag=v1.2.3`). Runs a `preflight` job that validates branch (main-only), tag format, tag uniqueness, semver ordering, CI status via Checks API (`build-and-test` + `MegaLinter`), and unreleased commits before creating the tag. Then runs GoReleaser to build cross-platform binaries (darwin/linux x amd64/arm64), create GitHub Releases, and update the Homebrew formula in `unbound-force/homebrew-tap`.
+3. **Release** (`.github/workflows/release.yml`): Triggered via `workflow_dispatch` with a `tag` input (e.g., `gh workflow run release.yml -f tag=v1.2.3`). Delegates to `complytime/org-infra` reusable workflows (pinned by SHA) for preflight validation (branch, semver format, tag uniqueness with re-run resilience, semver ordering, CI check status via `build-and-test` + `MegaLinter`, unreleased commits) and GoReleaser execution with supply chain artifacts (cosign signatures, SBOMs). Optional skip inputs (`skip_semver_check`, `skip_ci_checks`, `skip_unreleased_check`) allow bypassing individual preflight checks for emergency releases. Builds cross-platform binaries (darwin/linux x amd64/arm64) and RPM packages, creates GitHub Releases, signs and notarizes macOS archives with Apple Developer ID, patches Homebrew cask checksums with signed values, and pushes to `unbound-force/homebrew-tap`.
 
 ## Sibling Repositories
 
@@ -550,7 +550,7 @@ Three GitHub Actions workflows:
 | `unbound-force/unbound-force` | Meta repo (specs, governance, CLI) | v1.1.0 (org constitution) | Active |
 | `unbound-force/gaze` | Go static analysis (tester hero) | v1.3.0 (Accuracy, Minimal Assumptions, Actionable Output, Testability) | Active |
 | `unbound-force/website` | Public website (Hugo + Doks) | v1.0.0 (Content Accuracy, Minimal Footprint, Visitor Clarity) | Active |
-| `unbound-force/homebrew-tap` | Homebrew formula distribution | N/A | Active |
+| `unbound-force/homebrew-tap` | Homebrew cask distribution | N/A | Active |
 
 ## Spec Organization
 

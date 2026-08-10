@@ -33,7 +33,7 @@ nfpms:
     description: >-
       Knowledge graph MCP server with persistence, semantic
       search, and pluggable content sources
-    license: Apache-2.0
+    license: MIT
     formats:
       - rpm
     bindir: /usr/bin

@@ -24,24 +24,44 @@ on:
         description: 'Release tag (e.g., v0.15.0)'
         required: true
         type: string
+      # Emergency escape hatches — use only for re-runs after partial
+      # failures or when a specific preflight check is known to be
+      # inapplicable. All default to false (safe path).
       skip_semver_check:
-        description: 'Skip semver ordering verification'
+        description: 'Skip semver ordering verification (e.g., re-tagging after a failed release)'
         type: boolean
         default: false
       skip_ci_checks:
-        description: 'Skip CI check verification on HEAD'
+        description: 'Skip CI check verification on HEAD (e.g., re-run after GoReleaser failure where CI already passed)'
         type: boolean
         default: false
       skip_unreleased_check:
-        description: 'Skip unreleased commits verification'
+        description: 'Skip unreleased commits verification (e.g., re-releasing the same tag after partial failure)'
         type: boolean
         default: false
 
 permissions: {}
 
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 jobs:
+  validate-branch:
+    name: Validate Branch
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 5
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases MUST be triggered from the main branch. Current ref: ${{ github.ref }}. Use the GitHub Actions UI branch dropdown to select 'main'."
+          exit 1
+
   preflight:
     name: Preflight
+    needs: validate-branch
     uses: complytime/org-infra/.github/workflows/reusable_release_preflight.yml@0c784711926c9864f027ec565fd7c06a382d80f8 # v0.7.1
     with:
       tag: ${{ inputs.tag }}
@@ -77,6 +97,7 @@ jobs:
       - name: Check signing secrets
         id: check
         run: |
+          set -euo pipefail
           if [ -n "$MACOS_SIGN_P12" ]; then
             echo "has_secrets=true" >> "$GITHUB_OUTPUT"
           else
@@ -86,6 +107,7 @@ jobs:
           MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
 
   sign-macos:
+    name: Sign macOS Archives
     runs-on: macos-latest
     needs: [preflight, release, check-signing-secrets]
     if: needs.check-signing-secrets.outputs.has_signing_secrets == 'true'

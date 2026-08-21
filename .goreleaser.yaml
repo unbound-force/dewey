@@ -60,6 +60,7 @@ homebrew_casks:
       name: homebrew-tap
 
 release:
+  prerelease: auto
   extra_files:
     - glob: dist/homebrew/Casks/dewey.rb
 

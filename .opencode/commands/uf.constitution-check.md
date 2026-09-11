@@ -2,7 +2,7 @@
 description: "Check a hero constitution's alignment with the Unbound Force org constitution"
 agent: constitution-check
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Command: /uf.constitution-check
 

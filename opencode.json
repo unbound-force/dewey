@@ -6,8 +6,6 @@
       "command": [
         "dewey",
         "serve",
-        "--backend",
-        "obsidian",
         "--vault",
         "."
       ],

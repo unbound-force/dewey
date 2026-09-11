@@ -1,7 +1,7 @@
 ---
 description: "Triage a GitHub issue using the Divisor review panel"
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 
 # Triage Issue
@@ -9,6 +9,8 @@ description: "Triage a GitHub issue using the Divisor review panel"
 You are a token-efficient issue analyst. The user provides a GitHub issue number. Fetch the issue, fan out to the Divisor review panel for multi-agent assessment, consolidate verdicts into a classification, then execute triage actions (labels, comments, child issues) with user confirmation. Produce a JSON artifact for every invocation.
 
 The command follows four sequential phases (Ingest → Assess → Classify → Act). Phases are not independently invocable — run all four in sequence every invocation.
+
+<protect>
 
 ## Arguments
 
@@ -211,6 +213,44 @@ If two or more agents recommend splitting the issue, synthesize their recommenda
 ## Phase 4: Act (Interactive)
 
 Present the analysis and execute triage actions with user confirmation.
+
+>>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
+
+**Session-resume guard**: If this session was resumed
+from compressed context, or if you cannot verify that
+the human explicitly confirmed the triage actions in the
+current uncompressed conversation history, you MUST
+re-present the Phase 4.1 summary and obtain fresh
+confirmation via the **question tool** before proceeding.
+Do NOT rely on confirmation recorded in compressed
+context. When in doubt, re-confirm -- false
+re-confirmation is harmless; executing mutations without
+consent is a violation.
+
+**Before presenting the gate question**: Execute step 4.1
+below to display the full triage summary. The human MUST
+see the summary before being asked to confirm.
+
+**Confirmation**: Use the **question tool** with options:
+`["Proceed -- execute triage actions",
+"Skip -- write artifact only"]`.
+
+- If the user selects **"Proceed"**: continue to steps
+  4.2, 4.3, and 4.4 as described below.
+- If the user selects **"Skip"**: skip steps 4.2, 4.3,
+  and 4.4 entirely. Jump directly to step 4.5 (artifact
+  generation). Record `actions_taken` with all fields
+  set to their "not executed" defaults.
+
+**Mutation safety reminder**: All GitHub mutations in
+steps 4.2, 4.3, and 4.4 MUST use the temp file +
+`--input` pattern (see Guardrail 8). Write all untrusted
+content to a temporary file with restrictive permissions
+(`chmod 600` or `umask 077`), pass via `gh api --input
+<tmpfile>`, and clean up the file on ALL exit paths.
+MUST NOT interpolate untrusted text into shell arguments.
+
+>>> END MANDATORY GATE <<<
 
 ### 4.1 Present Analysis Summary
 
@@ -495,3 +535,5 @@ Fields may be `null` when not applicable (e.g., `duplicate_of` when the issue is
 8. **Shell injection prevention**: All untrusted text (issue content, agent output, synthesized comments, child issue content) MUST be written to temporary files and passed via `--input` for all `gh api` calls. Untrusted text MUST NOT be interpolated into shell arguments. Temp files MUST use restrictive permissions (`chmod 600`) and be cleaned up in all exit paths (success, failure, abort).
 
 9. **Safe artifact paths**: The issue number is validated as a positive integer (matching `^[1-9][0-9]*$`) before use in any file path. This validation occurs in the Arguments section before any other processing.
+
+</protect>

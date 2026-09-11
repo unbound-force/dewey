@@ -7,7 +7,7 @@ permission:
   bash: deny
   webfetch: deny
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Role: The Tester
 

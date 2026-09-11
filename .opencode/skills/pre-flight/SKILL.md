@@ -1,8 +1,8 @@
 ---
 name: pre-flight
-description: "Shared pre-flight skill for CI detection and local tool execution. Supports hard-gate and ci-aware execution policies."
+description: "Shared pre-flight skill for CI detection and local tool execution. Supports hard-gate, ci-aware, and soft-gate execution policies."
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 # Skill: Pre-flight Checks
 
 Shared logic for CI workflow detection, local tool
@@ -14,8 +14,9 @@ an execution policy.
 
 | Mode | Behavior | Typical consumer |
 |------|----------|-----------------|
-| `hard-gate` | Run all detected tools. Stop on first failure. | `/uf.review-council`, `/uf.unleash` |
-| `ci-aware` | Build CI coverage matrix against PR check results. Skip tools CI already verified. Run the rest. | `/uf.review-pr` |
+| `hard-gate` | Run all detected tools. Stop on first failure. | `/unleash` (phase checkpoints) |
+| `ci-aware` | Build CI coverage matrix against PR check results. Skip tools CI already verified. Run the rest. | `/review-pr` |
+| `soft-gate` | Run all detected tools. Classify failures as branch-caused vs pre-existing. Gate only on branch-caused failures. | `/review-council` |
 
 The consuming command specifies which mode to use.
 
@@ -115,6 +116,108 @@ and proceed to Phase 3.
 
 ---
 
+## Phase 2a: File-Scope Filter
+
+Before building the CI coverage matrix, filter out tools
+that have no applicable files in the branch diff. This
+avoids running tools whose scope does not intersect with
+the changes on this branch.
+
+### File-scope mapping
+
+| Tool | In-scope file patterns |
+|------|----------------------|
+| `go test` | `*.go`, `go.mod`, `go.sum` |
+| `golangci-lint` | `*.go`, `go.mod`, `go.sum`, `.golangci.yml`, `.golangci.yaml` |
+| `ruff` | `*.py`, `ruff.toml`, `pyproject.toml` |
+| `pytest` | `*.py`, `pyproject.toml`, `setup.py`, `conftest.py` |
+| `yamllint` | `*.yml`, `*.yaml`, `.yamllint.yml`, `.yamllint.yaml` |
+| `make check` | _always in scope_ |
+| `pre-commit` | _always in scope_ |
+
+Tools marked "always in scope" MUST NOT be skipped by the
+file-scope filter. These are aggregate tools whose scope
+cannot be reliably determined from file extensions alone.
+
+Additional tools added to Phase 2's tool-to-command mapping
+in the future MUST have a corresponding file-scope entry
+added to this table.
+
+Note: `go vet` and `go build` are CI commands discovered
+in Phase 1 (CI Workflow Parsing), not independently detected
+tools in Phase 2 (Tool Detection). They do not need scope
+entries because they are not individually executed by the
+pre-flight skill. They are covered by the `make check`
+aggregate tool entry (always in scope) and, in the case of
+`go vet`, by `golangci-lint`'s inclusion of vet rules.
+
+File patterns use suffix matching against the full path
+returned by `git diff --name-only`. A pattern `*.go`
+matches any file whose path ends in `.go`, regardless of
+directory depth (e.g., `internal/scaffold/foo.go` matches
+`*.go`).
+
+### Branch diff computation
+
+Compute the list of files changed on this branch relative
+to the default branch:
+
+```bash
+DEFAULT_BRANCH=<detected per Phase 4a: Baseline Establishment, "Detect the default branch" subsection>
+MERGE_BASE=$(git merge-base HEAD origin/${DEFAULT_BRANCH})
+CHANGED_FILES=$(git diff --name-only ${MERGE_BASE}...HEAD)
+```
+
+Use the same default branch detection logic described in
+Phase 4a ("Detect the default branch" subsection). If the
+default branch cannot be
+detected, or if the diff command fails, skip the file-scope
+filter entirely and proceed to Phase 3 with all tools
+(conservative fallback).
+
+If the diff is empty (no changed files) and the current
+branch is NOT the default branch, skip the file-scope
+filter and run all tools (conservative fallback), since
+an empty diff on a feature branch may indicate a git state
+anomaly. Report: "Empty diff detected — running all tools
+as conservative fallback."
+
+If the repository is a shallow clone (detected via
+`git rev-parse --is-shallow-repository`), skip the
+file-scope filter and run all tools, since the merge-base
+computation may produce incomplete results in shallow
+clones.
+
+### Filter logic
+
+For each detected and available tool from Phase 2:
+
+1. Look up the tool's in-scope file patterns in the
+   mapping table above.
+2. If the tool is marked "always in scope," it proceeds
+   to Phase 3 unconditionally.
+3. Intersect the branch diff file list with the tool's
+   file-scope patterns using suffix matching.
+4. If zero diff files match the tool's patterns, mark the
+   tool as "SKIP — no in-scope files."
+5. If one or more diff files match, the tool proceeds to
+   Phase 3 as normal.
+
+### Output
+
+Report the file-scope filter results:
+
+```
+File-scope filter (Phase 2a):
+  Branch diff: 2 files (release.yml, .goreleaser.yaml)
+  - go test: SKIP — no in-scope files
+  - golangci-lint: SKIP — no in-scope files
+  - yamllint: in scope (1 file matches)
+  - make check: always in scope
+```
+
+---
+
 ## Phase 3: CI Coverage Matrix
 
 Build and display a coverage matrix that maps each
@@ -124,11 +227,16 @@ visible and auditable.
 
 ### Matrix construction
 
-For each detected and available tool, determine which CI
-check (if any) covers the same verification. Map tool
-names to CI check names by matching on the tool's purpose
-(e.g., `go test` maps to a CI check containing "test",
-`golangci-lint` maps to a check containing "lint").
+For each detected and available tool that has in-scope
+files in the branch diff (i.e., tools that survived
+Phase 2a's file-scope filter), determine which CI check
+(if any) covers the same verification. Tools marked
+"SKIP — no in-scope files" in Phase 2a are excluded from
+the matrix and are not evaluated for CI coverage. Map
+tool names to CI check names by matching on the tool's
+purpose (e.g., `go test` maps to a CI check containing
+"test", `golangci-lint` maps to a check containing
+"lint").
 
 ### Decision rules (ci-aware mode)
 
@@ -141,12 +249,15 @@ names to CI check names by matching on the tool's purpose
 
 ### Decision rules (hard-gate mode)
 
-In hard-gate mode, ALL detected and available tools are
-marked "Run locally = Yes" regardless of CI status. The
-CI status column in the matrix shows the actual status if
-available, or "N/A" if CI results were not provided. The
-coverage matrix is still displayed for visibility, but
-skip decisions are not applied.
+In hard-gate mode, all detected and available tools that
+have in-scope files in the branch diff (per Phase 2a) are
+marked "Run locally = Yes" regardless of CI status. Tools
+marked "SKIP — no in-scope files" in Phase 2a are excluded
+from the coverage matrix's "Run locally" decisions and are
+not executed. The CI status column in the matrix shows the
+actual status if available, or "N/A" if CI results were
+not provided. The coverage matrix is still displayed for
+visibility.
 
 ### Display format
 
@@ -192,11 +303,179 @@ Record all exit codes and output.
 If no tools are marked "Yes" (all covered by CI): report
 "All tools covered by CI — no local execution needed."
 
+### soft-gate mode
+
+Execute all detected and available tools that have
+in-scope files in the branch diff (same scope filtering
+as hard-gate, per Phase 2a). Do NOT stop on first
+failure — record all exit codes and output for every
+tool.
+
+- If ALL tools pass: verdict is PASS. No baseline
+  establishment is needed. Skip Phase 4a and 4b.
+- If ANY tools fail: proceed to Phase 4a (Baseline
+  Establishment) to classify each failure.
+
+---
+
+## Phase 4a: Baseline Establishment (soft-gate only)
+
+This phase runs only in `soft-gate` mode, and only when
+at least one tool failed during Phase 4 execution.
+
+Establish a baseline for the default branch to determine
+which failures are branch-caused vs pre-existing. Use a
+two-tier strategy: CI API first, local worktree fallback.
+
+### Detect the default branch
+
+Before establishing a baseline, detect the repository's
+default branch. Do NOT hardcode `main` — repositories
+may use `master` or another default branch name.
+
+```bash
+DEFAULT_BRANCH=$(git symbolic-ref \
+  refs/remotes/origin/HEAD 2>/dev/null \
+  | sed 's|refs/remotes/origin/||')
+```
+
+If that fails (remote HEAD not set, which happens after
+a fresh clone without
+`git remote set-head origin --auto`), fall back to
+checking for common names:
+
+```bash
+if [ -z "${DEFAULT_BRANCH}" ]; then
+  if git rev-parse --verify origin/main \
+    >/dev/null 2>&1; then
+    DEFAULT_BRANCH="main"
+  elif git rev-parse --verify origin/master \
+    >/dev/null 2>&1; then
+    DEFAULT_BRANCH="master"
+  fi
+fi
+```
+
+If neither resolves, treat the baseline as unavailable
+and fall through to the conservative fallback (all
+failures classified as `unknown` = branch-caused).
+
+Record which baseline method was used: `CI API`,
+`worktree`, or `unavailable`.
+
+### Tier 1 — CI API baseline
+
+Check if the `gh` CLI is available:
+
+```bash
+which gh
+```
+
+If `gh` is available, query the latest check-run results
+for the default branch:
+
+```bash
+gh api \
+  repos/{owner}/{repo}/commits/${DEFAULT_BRANCH}/check-runs \
+  --jq '.check_runs[] | {name, conclusion}'
+```
+
+Use `--arg` for any dynamic values to prevent injection
+(consistent with `/review-pr` Step 3a).
+
+Map CI check names to local tool names using the same
+coverage matrix logic from Phase 3. For each failing
+tool from Phase 4, look up the corresponding CI check
+conclusion on `${DEFAULT_BRANCH}`:
+
+- `conclusion: "success"` → baseline PASS
+- `conclusion: "failure"` → baseline FAIL
+- No matching check → baseline NO DATA
+
+If `gh` is not available, or the API call returns no
+data, or the API call fails: proceed to Tier 2.
+
+### Tier 2 — Local worktree baseline
+
+Create a temporary detached worktree of the default
+branch:
+
+```bash
+SHORT_SHA=$(git rev-parse --short=8 ${DEFAULT_BRANCH})
+git worktree add /tmp/preflight-baseline-${SHORT_SHA} \
+  ${DEFAULT_BRANCH} --detach
+```
+
+Run ONLY the tools that failed on the branch in the
+worktree directory. Tools that passed on the branch
+MUST NOT be run against the baseline — they are not
+branch-caused by definition.
+
+```bash
+# For each failing tool, run it in the worktree:
+cd /tmp/preflight-baseline-${SHORT_SHA}
+<tool-command>
+# Record exit code
+```
+
+After running all failing tools, clean up the worktree:
+
+```bash
+git worktree remove \
+  /tmp/preflight-baseline-${SHORT_SHA} --force
+```
+
+Compare exit codes:
+- Tool fails in worktree → baseline FAIL
+- Tool passes in worktree → baseline PASS
+
+### Fallback — conservative classification
+
+If both Tier 1 and Tier 2 fail (e.g., `gh` unavailable
+AND worktree creation fails due to disk space or dirty
+state), or the default branch could not be detected,
+classify ALL failures as `unknown`. The `unknown`
+classification is treated as branch-caused
+(conservative), matching `/review-pr` behavior.
+
+Record which baseline method was used: `CI API`,
+`worktree`, or `unavailable`.
+
+---
+
+## Phase 4b: Causality Classification (soft-gate only)
+
+This phase runs only in `soft-gate` mode, after Phase 4a
+has established a baseline.
+
+For each failing tool from Phase 4, classify it using
+the baseline result from Phase 4a:
+
+| Baseline status | Branch status | Classification |
+|-----------------|---------------|----------------|
+| Pass            | Fail          | **branch-caused** |
+| Fail            | Fail          | **pre-existing** |
+| No data         | Fail          | **unknown** (treat as branch-caused) |
+
+### Gate decision
+
+After classifying all failures:
+
+- If ANY failures are `branch-caused` or `unknown`:
+  verdict is **FAIL (branch-caused)**. The consuming
+  command MUST NOT proceed past the pre-flight gate.
+- If ALL failures are `pre-existing`: verdict is
+  **PASS**. The consuming command MAY proceed, with
+  pre-existing failures reported as informational
+  findings.
+
 ---
 
 ## Phase 5: Result Format
 
-Present results in a standardized format:
+Present results in a standardized format.
+
+### hard-gate and ci-aware modes
 
 ```
 ## Pre-flight Results
@@ -204,20 +483,69 @@ Present results in a standardized format:
 ### CI Coverage Matrix
 | Local tool | CI check | CI status | Run locally? |
 |------------|----------|-----------|--------------|
-| ...        | ...      | ...       | ...          |
+| ...        | ...      | ...       | Yes          |
+| ...        | ...      | ...       | SKIP — no in-scope files |
 
 ### Execution Results
 | Tool | Command | Exit code | Status |
 |------|---------|-----------|--------|
 | ...  | ...     | ...       | ...    |
+| ...  | ...     | —         | SKIP — no in-scope files |
 
 ### Verdict
 - **Mode**: hard-gate | ci-aware
 - **Result**: PASS | FAIL
+- **Skipped — no in-scope files**: N tools
 - **Failures**: [list if any]
 ```
 
+### soft-gate mode
+
+```
+## Pre-flight Results
+
+### CI Coverage Matrix
+| Local tool | CI check | CI status | Run locally? |
+|------------|----------|-----------|--------------|
+| ...        | ...      | ...       | Yes          |
+| ...        | ...      | ...       | SKIP — no in-scope files |
+
+### Execution Results
+| Tool | Command | Exit code | Status | Causality |
+|------|---------|-----------|--------|-----------|
+| ...  | ...     | ...       | ...    | ...       |
+| ...  | ...     | —         | SKIP — no in-scope files | — |
+
+### Verdict
+- **Mode**: soft-gate
+- **Result**: PASS | FAIL (branch-caused)
+- **Skipped — no in-scope files**: N tools
+- **Branch-caused failures**: [list if any]
+- **Pre-existing failures**: [list if any]
+- **Baseline method**: CI API | worktree | unavailable
+```
+
+Tools skipped by the file-scope filter (Phase 2a) use the
+canonical status string `SKIP — no in-scope files` (em
+dash) in both the coverage matrix "Run locally?" column
+and the execution results Status column. Skipped tools are
+counted as PASS for the overall verdict — a tool with zero
+applicable files in the diff cannot produce findings.
+
+The `Causality` column in the Execution Results table
+contains one of: `branch-caused`, `pre-existing`,
+`unknown`, `—` (for tools that passed), or `—` (for
+skipped tools).
+
+The `Result` field is:
+- `PASS` if no branch-caused or unknown failures exist
+  (even if pre-existing failures exist)
+- `FAIL (branch-caused)` if any branch-caused or unknown
+  failures exist
+
 The consuming command uses this result to decide whether
-to proceed (hard-gate: stop on FAIL) or to include
-failure context in AI review (ci-aware: continue with
-context).
+to proceed:
+- `hard-gate`: stop on FAIL
+- `ci-aware`: continue with failure context for AI review
+- `soft-gate`: stop on FAIL (branch-caused), continue
+  with pre-existing failures as informational findings

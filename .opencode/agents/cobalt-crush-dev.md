@@ -3,7 +3,7 @@ description: "Adaptive implementation engine — coding persona with engineering
 mode: subagent
 temperature: 0.4
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Role: Cobalt-Crush — The Developer
 

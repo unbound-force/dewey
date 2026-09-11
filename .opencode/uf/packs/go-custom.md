@@ -3,7 +3,7 @@ pack_id: go-custom
 language: Go
 version: 1.0.0
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Custom Rules: Go
 

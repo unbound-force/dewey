@@ -6,8 +6,9 @@ description: >
   Without arguments: detects active workflow and runs /speckit.implement
   or /opsx-apply.
 ---
-<!-- scaffolded by gaze v1.4.9 -->
+<!-- scaffolded by gaze v1.8.0 -->
 
+<protect>
 # Command: /gaze fix
 
 ## Description
@@ -48,7 +49,7 @@ implementation command:
    `.specify/scripts/bash/check-prerequisites.sh --json --paths-only`
    from the repo root. If it succeeds and returns a `FEATURE_DIR`
    with a `tasks.md`, this is a Speckit strategic workflow.
-   Read the full contents of `.opencode/command/speckit.implement.md`
+   Read the full contents of `.opencode/commands/speckit.implement.md`
    and execute its instructions directly — follow the implementation
    workflow it describes.
 
@@ -64,7 +65,7 @@ implementation command:
    > `<current-branch>`. Run: `git checkout opsx/<name>`"
 
    If on the correct branch, read the full contents of
-   `.opencode/command/opsx-apply.md` and execute its instructions
+   `.opencode/commands/opsx-apply.md` and execute its instructions
    directly.
 
 3. **If neither is detected**: Ask the user using the question tool:
@@ -183,3 +184,4 @@ Files modified:
 - If a generated test fails: report the failure, suggest the
   assertion may need adjustment, keep the test (failing tests are
   still valuable as documentation of expected behavior)
+</protect>

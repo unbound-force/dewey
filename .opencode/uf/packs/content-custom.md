@@ -3,7 +3,7 @@ pack_id: content-custom
 language: Any
 version: 1.0.0
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Custom Rules: Content
 

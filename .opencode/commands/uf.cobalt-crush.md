@@ -5,7 +5,7 @@ description: >
   arguments: detects active workflow and runs /speckit.implement or
   /opsx-apply.
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Command: /uf.cobalt-crush
 

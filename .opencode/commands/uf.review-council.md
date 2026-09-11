@@ -1,8 +1,10 @@
 ---
 description: Run the reviewer governance council to audit codebase or spec compliance.
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 # Command: /uf.review-council
+
+<protect>
 
 > **Session-resume guard**: If this session was resumed
 > from compressed context, re-read this entire template
@@ -13,6 +15,8 @@ description: Run the reviewer governance council to audit codebase or spec compl
 > item. When in doubt, re-read — false re-reads are
 > harmless; skipping steps due to stale context causes
 > incomplete reviews or unauthorized actions.
+
+
 
 > **EXECUTION CHECKLIST** — Update each item using the
 > Edit tool as you complete it. Mark `[x]` when done.
@@ -32,6 +36,7 @@ description: Run the reviewer governance council to audit codebase or spec compl
 > - [ ] Step 7e: Inline comment preparation
 > - [ ] Step 7f: Human confirmation (MANDATORY GATE)
 > - [ ] Step 7g: Post review
+
 
 ## User Input
 
@@ -295,6 +300,7 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
 2. Delegate the review to all **discovered** reviewer agents in parallel using the Task tool. For each discovered agent, use the focus area from the Known Reviewer Roles reference table to provide targeted context. For any discovered agent not in the table, use a generic prompt: "Review the current changes for quality, correctness, and compliance. Return your verdict (APPROVE or REQUEST CHANGES) along with all findings."
 
+
    **CRITICAL — Review Scope Rule**: The review scope is
    ALWAYS the **full branch diff** (`git diff main...HEAD`),
    meaning ALL files changed on the branch relative to
@@ -306,6 +312,7 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    be included in each agent's prompt. Violating this rule
    produces incomplete reviews that miss findings in
    earlier commits on the branch.
+
 
    **Review context enrichment**: Append the following
    context sections to each Divisor agent's review
@@ -655,6 +662,7 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
    **Checkpoint**: Mark `Step 7e` complete in the EXECUTION CHECKLIST using the Edit tool before proceeding.
 
+
    #### Step 7f -- Verdict Mapping and Human Confirmation
 
    >>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
@@ -717,6 +725,7 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    human confirms.
 
    >>> END MANDATORY GATE <<<
+
 
    #### Step 7g -- Post Review
 
@@ -833,6 +842,53 @@ step, determine which artifacts to review:
    from `severity.md`, and present as consolidated
    findings with per-persona attribution preserved.
 
+>>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
+
+**Session-resume guard**: If this session was resumed
+from compressed context, or if you cannot verify that
+the human explicitly confirmed the auto-fix plan in
+the current uncompressed conversation history, you
+MUST re-present the findings summary below and obtain
+fresh confirmation via the **question tool** before
+applying fixes. Do NOT rely on confirmation recorded
+in compressed context. When in doubt, re-confirm —
+false re-confirmation is harmless; editing spec files
+without consent is a violation.
+
+Present the auto-fix plan to the user:
+
+> **Spec Auto-Fix Plan:**
+>
+> LOW findings to auto-fix: N
+> MEDIUM findings to auto-fix: N
+> HIGH/CRITICAL findings (report only): N
+>
+> Files to be modified:
+> - <file1>: <finding summary>
+> - <file2>: <finding summary>
+>
+> Auto-fixes will address formatting, terminology,
+> cross-references, and metadata issues. HIGH/CRITICAL
+> findings will be reported without modification.
+
+Use the **question tool** with options
+`["Apply auto-fixes",
+"Review findings first",
+"Skip auto-fixes -- report only"]`.
+
+- **"Apply auto-fixes"**: Proceed to apply LOW/MEDIUM
+  fixes per the hybrid fix policy below.
+- **"Review findings first"**: Display each finding
+  with full context before proceeding.
+- **"Skip auto-fixes -- report only"**: Skip all
+  auto-fixes and report all findings as-is.
+
+**CRITICAL RULE**: NEVER apply auto-fixes to spec
+files without explicit human confirmation via the
+**question tool**.
+
+>>> END MANDATORY GATE <<<
+
 3. If there are **REQUEST CHANGES**, apply the **hybrid fix policy**:
 
    Severity levels are defined in the shared severity convention pack at `.opencode/uf/packs/severity.md`. The auto-fix boundary (LOW/MEDIUM = auto-fix, HIGH/CRITICAL = report only) is grounded in these shared definitions to ensure consistent behavior across all 5 personas.
@@ -868,8 +924,12 @@ step, determine which artifacts to review:
 
 ---
 
+
 ## Verdict
 
 The council returns **APPROVE** only when all discovered reviewers return **APPROVE**. Any single **REQUEST CHANGES** from a discovered reviewer means the council verdict is **REQUEST CHANGES**. Absent reviewers (known roles whose agent files were not found during discovery) do not affect the verdict but are noted in the discovery summary.
 
 In Spec Review Mode, the council may return **APPROVE WITH ADVISORIES** when all LOW/MEDIUM findings have been auto-fixed but HIGH/CRITICAL findings remain that require human judgment. The advisories are the outstanding HIGH/CRITICAL findings. The discovery summary is included regardless of the verdict.
+
+</protect>
+

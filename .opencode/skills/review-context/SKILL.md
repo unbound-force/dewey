@@ -2,7 +2,7 @@
 name: review-context
 description: "Shared review context discovery for spec artifacts, linked issues, path classification, and walkthrough generation."
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 # Skill: Review Context Discovery
 
 Shared logic for discovering and loading review context

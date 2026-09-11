@@ -5,7 +5,7 @@ description: >
   correct insertion points. Run after uf init, uf setup, or
   updating the OpenSpec CLI.
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Command: /uf.init
 
@@ -577,30 +577,37 @@ For each file:
    variant at the very end of the file. Report
    `✅ <filename>: guardrails injected`
 4. **If already present — spec-phase commands**: Perform
-   a secondary check — search for the phrase "review
-   defeats the purpose". If the Guardrails heading exists
-   but the review-rationale sentence is missing, append
-   the sentence to the existing Guardrails section.
-   Report `✅ <filename>: review-rationale added`.
-   If the sentence is already present, report
+   a secondary check — search for BOTH the phrase "review
+   defeats the purpose" AND the UF-reference markers
+   `dewey_semantic_search` and
+   `.specify/memory/constitution.md`. If the Guardrails
+   heading exists but ANY of these markers is missing,
+   the block is stale (pre-reconciliation): replace the
+   entire `## Guardrails` section (from the heading to the
+   next `##` heading or end of file) with the current
+   Spec-phase guardrails block below.
+   Report `✅ <filename>: guardrails corrected`.
+   If ALL markers are already present, report
    `⊘ <filename>: guardrails already present (skipped)`
 5. **If already present — command-specific commands**
    (`implement`, `constitution`, `taskstoissues`):
-   Check for the command's correctness marker:
+   Check for ALL of the command's correctness markers.
+   A block is correct only when EVERY marker is present:
 
-   | Command | Correctness marker |
-   |---------|-------------------|
-   | `speckit.implement.md` | "writes source code" |
-   | `speckit.constitution.md` | ".specify/memory/" |
+   | Command | Correctness markers |
+   |---------|--------------------|
+   | `speckit.implement.md` | "writes source code" AND `dewey_semantic_search` AND `.specify/memory/constitution.md` AND `/uf.review-council` |
+   | `speckit.constitution.md` | ".specify/memory/" AND `dewey_semantic_search` AND `.specify/memory/constitution.md` |
    | `speckit.taskstoissues.md` | "GitHub issues via" |
 
-   If the correctness marker IS present in the existing
+   If EVERY correctness marker IS present in the existing
    `## Guardrails` section, the guardrails are correct.
    Report
    `⊘ <filename>: guardrails already present (skipped)`
 
-   If the correctness marker is ABSENT, the guardrails
-   are incorrect (likely the old shared template).
+   If ANY correctness marker is ABSENT, the guardrails
+   are incorrect (likely the old shared template or a
+   pre-reconciliation block missing the UF references).
    Replace the entire `## Guardrails` section (from the
    heading to the next `##` heading or end of file) with
    the command-specific guardrail block. Report
@@ -626,6 +633,10 @@ For each file:
 - The user needs to review the plan before
   implementation begins. Implementing without review
   defeats the purpose of the spec-first workflow.
+- Consult the project constitution
+  (`.specify/memory/constitution.md`) and retrieve prior
+  context via Dewey (`dewey_semantic_search`) before
+  writing spec artifacts.
 ```
 
 **Implement guardrails block** (`speckit.implement.md`):
@@ -641,6 +652,12 @@ For each file:
   implementation plan. Do not make changes unrelated to
   the current task group.
 - Mark task checkboxes `[x]` as each task is completed.
+- Consult the project constitution
+  (`.specify/memory/constitution.md`) and retrieve prior
+  context via Dewey (`dewey_semantic_search`) before
+  writing code.
+- Run `/uf.review-council` before completing
+  implementation.
 ```
 
 **Constitution guardrails block** (`speckit.constitution.md`):
@@ -657,6 +674,10 @@ For each file:
     propagation)
 - Do NOT modify source code, test files, or any files
   outside the `.specify/` directory.
+- Consult the project constitution
+  (`.specify/memory/constitution.md`) and retrieve prior
+  context via Dewey (`dewey_semantic_search`) before
+  amending governance documents.
 ```
 
 **Taskstoissues guardrails block** (`speckit.taskstoissues.md`):

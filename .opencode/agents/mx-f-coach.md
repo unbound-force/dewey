@@ -3,7 +3,7 @@ description: "Flow Facilitator and Continuous Improvement Coach — reflective q
 mode: subagent
 temperature: 0.3
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Role: Mx F — The Coach
 

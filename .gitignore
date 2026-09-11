@@ -36,6 +36,26 @@ CLAUDE.md
 .DS_Store
 Thumbs.db
 
+# Speckit — managed by specify init (recreate with: specify init --ai opencode)
+.specify/extensions.yml
+.specify/extensions/
+.specify/init-options.json
+.specify/integration.json
+.specify/integrations/
+.specify/scripts
+.specify/templates
+.specify/workflows/
+.opencode/commands/speckit.*.md
+.opencode/commands/opsx-*.md
+.opencode/skills/speckit-workflow/
+.opencode/skills/openspec-*/
+
+# Unbound Force convention packs not applicable to this repository.
+.opencode/uf/packs/typescript.md
+.opencode/uf/packs/typescript-custom.md
+.opencode/uf/packs/python.md
+.opencode/uf/packs/python-custom.md
+
 # Unbound Force — managed by uf init
 # Runtime data under .uf/ (databases, caches, locks, logs)
 .uf/config.yaml
@@ -55,6 +75,7 @@ Thumbs.db
 .uf/replicator/*.log
 .uf/muti-mind/artifacts/
 .uf/mx-f/data/
+.uf/feedback/
 
 # Dev containers
 .devcontainer/

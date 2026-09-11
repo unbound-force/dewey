@@ -13,7 +13,7 @@ tools:
   edit: true
   webfetch: false
 ---
-<!-- scaffolded by gaze dev -->
+<!-- scaffolded by gaze v1.8.0 -->
 
 # Role: Test Generator
 
@@ -252,7 +252,10 @@ For each target function, output:
 3. **File target**: Which `*_test.go` file to write to
 4. **Verification**: Whether the code compiles and tests pass
 
-After generating all code, run:
+After generating all code, run a final integrity check across all
+modified packages. Individual files have already been verified by
+the pre-write compile gate (see Important Constraints). This final
+check is a full-package verification:
 
 ```bash
 go build ./path/to/package/...
@@ -273,6 +276,14 @@ added, compilation status, test pass/fail.
   guess at the function signature
 - ALWAYS read existing tests before adding assertions — do not
   duplicate existing coverage
-- ALWAYS verify generated code compiles before reporting success
+- Before any Write or Edit tool call that modifies a Go source
+  or test file, MUST run compile verification:
+  1. Run via bash: `go build ./path/to/package/...` (scoped to
+     the target package being modified)
+  2. If the command exits with non-zero code, MUST NOT proceed
+     with the Write or Edit call. Report the compilation error
+     and continue to the next target.
+  3. Only proceed with the Write or Edit call after a successful
+     (exit code 0) compile check.
 - When adding to an existing file, preserve all existing content —
   append only, never delete or modify existing tests

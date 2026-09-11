@@ -5,7 +5,7 @@ description: >
   review. One command to wrap up any feature or OpenSpec
   branch.
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Command: /uf.finale
 
@@ -32,6 +32,8 @@ stays open for human review. Works with both Speckit
 ```
 
 ## Instructions
+
+<protect>
 
 **Session-resume guard**: If this session has been
    resumed from compressed context, or if you cannot
@@ -191,6 +193,19 @@ b. Generate a conventional commit message:
   - `gpt-4o` → `gpt-4o`
   - `gemini-2.5-pro` → `gemini-2.5-pro`
 
+>>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
+
+**Session-resume guard**: If this session was resumed
+from compressed context, or if you cannot verify that
+the human explicitly confirmed the commit message in
+the current uncompressed conversation history, you
+MUST re-present the proposed commit message below and
+obtain fresh confirmation via the **question tool**
+before committing. Do NOT
+rely on confirmation recorded in compressed context.
+When in doubt, re-confirm — false re-confirmation is
+harmless; committing without consent is a violation.
+
 c. Show the proposed message to the user:
 
 > **Proposed commit message:**
@@ -211,6 +226,22 @@ The user MAY edit or remove the attribution during
 the approval step. If the user removes it, use their
 edited message without re-adding attribution.
 
+Use the **question tool** with options
+`["Approve and commit", "Edit commit message",
+"Provide my own message"]`.
+
+- **"Approve and commit"**: Proceed with the displayed
+  commit message.
+- **"Edit commit message"**: Let the user modify the
+  message, then re-confirm.
+- **"Provide my own message"**: Accept a full
+  replacement message from the user.
+
+**CRITICAL RULE**: NEVER commit without explicit human
+confirmation via the **question tool**.
+
+>>> END MANDATORY GATE <<<
+
 d. Commit with the approved message.
 
 **Checkpoint**: Update the execution checklist — set
@@ -230,6 +261,19 @@ git fetch origin <branch>
 git status
 ```
 
+>>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
+
+**Session-resume guard**: If this session was resumed
+from compressed context, or if you cannot verify that
+the human explicitly confirmed the push in the current
+uncompressed conversation history, you MUST re-present
+the push target and branch status below and obtain
+fresh confirmation via the **question tool** before
+pushing. Do NOT rely on confirmation recorded in
+compressed context. When in doubt, re-confirm — false
+re-confirmation is harmless; pushing without consent
+is a violation.
+
 **If branch has diverged** (the remote has commits not
 in the local branch): warn the user about the divergence
 before presenting the confirmation gate.
@@ -245,6 +289,11 @@ Use the **question tool** with options
 - If the user selects **"Abort -- keep commits local"**:
   report that local commits are preserved and **STOP**.
   Do not proceed to Step 5 or any subsequent steps.
+
+**CRITICAL RULE**: NEVER push to the remote without
+explicit human confirmation via the **question tool**.
+
+>>> END MANDATORY GATE <<<
 
 **Checkpoint**: Update the execution checklist (mark
 Step 4 `[x]`) before proceeding.
@@ -969,3 +1018,5 @@ the OpenSpec and Speckit workflows:
 - All changes are committed before any branch switch
 - The remote branch is NOT deleted — it stays open with
   the PR until a reviewer merges
+
+</protect>

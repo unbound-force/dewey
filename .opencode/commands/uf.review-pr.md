@@ -1,11 +1,13 @@
 ---
 description: "Review PR #$ARGUMENTS — alignment, security, and constitution compliance"
 ---
-<!-- scaffolded by uf vdev -->
+<!-- scaffolded by uf v0.17.0 -->
 
 # Review Pull Request
 
 You are a token-efficient code reviewer. The user will provide a PR number or you will auto-detect it from the current branch. Delegate deterministic checks to local tools and CI results first, then apply AI judgment only where tools cannot reach: intent alignment, security patterns, and architectural concerns.
+
+<protect>
 
 ## Arguments
 
@@ -66,6 +68,7 @@ tool execution. The local tool results are the
 foundation of the review — without them, AI-only
 findings lack verification and the review does not
 meet the command's quality standard.
+
 
 ### 1. Resolve PR Number
 
@@ -431,6 +434,7 @@ When the combined comment text exceeds this limit:
 4. Truncate the remainder with a note: "N additional
    prior comments truncated for token budget"
 
+
 ###### Step E.5. Error Handling
 
 If any `gh api` call in this step returns 403, 404, or
@@ -465,6 +469,7 @@ analysis. For each finding:
 - Do NOT fully suppress findings — the current review may
   have additional context or a different severity
   assessment. Annotate, don't hide.
+
 
 **Path-based review focus and walkthrough**: Use the
 file classifications and walkthrough summaries from
@@ -796,6 +801,57 @@ Use the **question tool** with options
 
 5. **Analyze and propose the fix**: Use the CI failure output and the failing file(s) to determine the minimal change needed. Keep the scope as small as possible — fix only what is failing.
 
+   >>> MANDATORY GATE: HUMAN CONFIRMATION REQUIRED <<<
+
+   **Session-resume guard**: If this session was resumed
+   from compressed context, or if you cannot verify that
+   the human explicitly confirmed the fix-branch commit
+   in the current uncompressed conversation history,
+   you MUST re-present the commit preview below and
+   obtain fresh confirmation via the **question tool**
+   before committing. Do NOT rely on confirmation
+   recorded in compressed context. When in doubt,
+   re-confirm — false re-confirmation is harmless;
+   committing without consent is a violation.
+
+   Before committing, show the user:
+
+   > **Fix-branch commit preview:**
+   >
+   > ```
+   > git diff --cached --stat
+   > ```
+   >
+   > **Proposed commit message:**
+   > ```
+   > fix: resolve <failing-check> CI failure
+   >
+   > <Brief description>
+   >
+   > This failure was pre-existing on <BASE_BRANCH>
+   > and unrelated to PR #<PR_NUMBER>.
+   >
+   > Assisted-by: <model>
+   > ```
+
+   Use the **question tool** with options
+   `["Commit -- apply fix",
+   "Edit commit message", "Abort -- discard changes"]`.
+
+   - **"Commit -- apply fix"**: Proceed with the commit
+     using the displayed message.
+   - **"Edit commit message"**: Let the user modify the
+     commit message, then re-confirm.
+   - **"Abort -- discard changes"**: Discard staged
+     changes and skip the fix branch. Switch back to
+     the PR branch.
+
+   **CRITICAL RULE**: NEVER commit on a fix branch
+   without explicit human confirmation via the
+   **question tool**.
+
+   >>> END MANDATORY GATE <<<
+
 6. **Commit with Conventional Commits format**:
    Write the commit message to a temporary file to avoid
    shell injection from AI-generated description text,
@@ -982,6 +1038,7 @@ account is not listed in CODEOWNERS.
    in doubt, re-confirm — false re-confirmation is
    harmless; posting without consent is a violation.
 
+
 1. **Prepare comments**: For each finding that maps to a
    specific file and line range in the diff, prepare an
    in-line comment with:
@@ -1097,3 +1154,6 @@ account is not listed in CODEOWNERS.
    merge-unblocking consequence.
 
 >>> END MANDATORY GATE <<<
+
+</protect>
+

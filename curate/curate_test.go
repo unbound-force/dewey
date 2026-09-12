@@ -673,6 +673,12 @@ func TestParseExtractionResponse_QualityFlagsString(t *testing.T) {
 	if len(files[0].QualityFlags) != 0 {
 		t.Errorf("got %d quality flags, want 0", len(files[0].QualityFlags))
 	}
+	if files[0].Content != "Use OAuth2." {
+		t.Errorf("files[0].Content = %q, want %q", files[0].Content, "Use OAuth2.")
+	}
+	if files[0].Confidence != "high" {
+		t.Errorf("files[0].Confidence = %q, want %q", files[0].Confidence, "high")
+	}
 }
 
 func TestParseExtractionResponse_ConfidenceValidation(t *testing.T) {

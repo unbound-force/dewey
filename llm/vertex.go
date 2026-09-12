@@ -27,6 +27,12 @@ const (
 	vertexSynthBaseDelay = 1 * time.Second
 	// vertexSynthMaxDelay caps the exponential backoff to prevent excessive waits.
 	vertexSynthMaxDelay = 60 * time.Second
+	// vertexSynthTimeout is the HTTP client timeout for Vertex AI requests.
+	// Large curation prompts (36K+ tokens) need ~120-180s for response generation.
+	vertexSynthTimeout = 300 * time.Second
+	// vertexSynthMaxTokens is the maximum output tokens for Vertex AI responses.
+	// Curation extractions routinely exceed 4K tokens; 16K provides headroom.
+	vertexSynthMaxTokens = 16000
 )
 
 // VertexSynthesizer implements Synthesizer using Google Vertex AI's rawPredict API.

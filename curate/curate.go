@@ -319,6 +319,7 @@ func (p *Pipeline) BuildExtractionPrompt(documents []DocumentContent) string {
 // ParseExtractionResponse parses the LLM's JSON response into KnowledgeFile structs.
 // Handles JSON embedded in markdown code blocks (```json ... ```).
 // Validates required fields and returns an error for completely malformed responses.
+// Silently skips individual items that cannot be parsed after fallback attempts.
 func ParseExtractionResponse(response string) ([]KnowledgeFile, error) {
 	// Strip markdown code block fences if present.
 	cleaned := strings.TrimSpace(response)

@@ -1449,13 +1449,14 @@ func findBlockByContent(blocks []types.BlockEntity, content string) *types.Block
 
 // --- Optional search interfaces ---
 
-// FindBlocksByTag scans all pages for blocks containing the given #tag.
-// Implements backend.TagSearcher.
+// FindBlocksByTag scans all pages for the given tag.
+// Matches inline #tag / #[[tag]] in block content, and also YAML frontmatter
+// `tag:` / `tags:` (used by store_learning). Implements backend.TagSearcher.
 func (c *Client) FindBlocksByTag(_ context.Context, tag string, includeChildren bool) ([]backend.TagResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	tagLower := strings.ToLower(tag)
+	tagLower := strings.ToLower(strings.TrimSpace(tag))
 	var results []backend.TagResult
 
 	seen := make(map[string]bool)
@@ -1467,6 +1468,9 @@ func (c *Client) FindBlocksByTag(_ context.Context, tag string, includeChildren 
 
 		var matches []types.BlockEntity
 		findTagInBlocks(page.blocks, tagLower, &matches)
+		if len(matches) == 0 && frontmatterHasTag(page.entity.Properties, tagLower) {
+			matches = pageBlocksForFrontmatterTag(page)
+		}
 		if len(matches) > 0 {
 			results = append(results, backend.TagResult{
 				Page:   page.entity.Name,
@@ -1475,7 +1479,105 @@ func (c *Client) FindBlocksByTag(_ context.Context, tag string, includeChildren 
 		}
 	}
 
+	extra, err := c.storeLearningTagResults(tagLower, seen)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, extra...)
 	return results, nil
+}
+
+// storeLearningTagResults finds store_learning pages whose YAML/JSON `tag`
+// matches. Those files live under .uf/ and are skipped by Load(), so they
+// never appear in c.pages even though semantic search can retrieve them.
+func (c *Client) storeLearningTagResults(tagLower string, seen map[string]bool) ([]backend.TagResult, error) {
+	if c.vaultStore == nil || c.vaultStore.store == nil {
+		return nil, nil
+	}
+	pages, err := c.vaultStore.store.ListLearningPages()
+	if err != nil {
+		return nil, fmt.Errorf("list learning pages for tag search: %w", err)
+	}
+	var extra []backend.TagResult
+	for _, p := range pages {
+		if p == nil {
+			continue
+		}
+		key := strings.ToLower(p.Name)
+		if seen[key] {
+			continue
+		}
+		var props map[string]any
+		if p.Properties != "" {
+			if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
+				continue
+			}
+		}
+		if !frontmatterHasTag(props, tagLower) {
+			continue
+		}
+		seen[key] = true
+		blocks, err := c.vaultStore.store.GetBlocksByPage(p.Name)
+		if err != nil {
+			return nil, fmt.Errorf("get learning blocks for tag search %s: %w", p.Name, err)
+		}
+		ents := make([]types.BlockEntity, 0, len(blocks))
+		for _, b := range blocks {
+			if b == nil {
+				continue
+			}
+			ents = append(ents, types.BlockEntity{UUID: b.UUID, Content: b.Content})
+		}
+		if len(ents) == 0 {
+			ents = []types.BlockEntity{{UUID: key, Content: p.Name}}
+		}
+		extra = append(extra, backend.TagResult{Page: p.Name, Blocks: ents})
+	}
+	return extra, nil
+}
+
+// frontmatterHasTag reports whether page properties carry tagLower on `tag` or `tags`.
+func frontmatterHasTag(props map[string]any, tagLower string) bool {
+	if props == nil || tagLower == "" {
+		return false
+	}
+	if v, ok := props["tag"]; ok && valueHasTag(v, tagLower) {
+		return true
+	}
+	if v, ok := props["tags"]; ok && valueHasTag(v, tagLower) {
+		return true
+	}
+	return false
+}
+
+func valueHasTag(v any, tagLower string) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), tagLower)
+	case []any:
+		for _, item := range t {
+			if valueHasTag(item, tagLower) {
+				return true
+			}
+		}
+		return false
+	default:
+		return strings.EqualFold(strings.TrimSpace(fmt.Sprint(v)), tagLower)
+	}
+}
+
+// pageBlocksForFrontmatterTag returns the page body so a frontmatter-only tag
+// still produces find_by_tag hits. Empty bodies get a synthetic page block.
+func pageBlocksForFrontmatterTag(page *cachedPage) []types.BlockEntity {
+	if len(page.blocks) > 0 {
+		out := make([]types.BlockEntity, len(page.blocks))
+		copy(out, page.blocks)
+		return out
+	}
+	return []types.BlockEntity{{
+		UUID:    page.lowerName,
+		Content: page.entity.Name,
+	}}
 }
 
 // findTagInBlocks recursively searches blocks for a tag.

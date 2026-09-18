@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/unbound-force/dewey/v3/backend"
+	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
 )
 
@@ -540,6 +541,191 @@ func TestFindBlocksByTag(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected to find #decision in daily notes/2026-01-31")
+	}
+}
+
+func TestFindBlocksByTag_FrontmatterTag(t *testing.T) {
+	dir := t.TempDir()
+	learning := "---\ntag: scaffold-agents-md-stale-refs\nauthor: alice\n---\n\nReplace /review-council with /uf.review-council.\n"
+	if err := os.WriteFile(filepath.Join(dir, "learning-note.md"), []byte(learning), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte("See #decision in the log.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New(dir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	ctx := context.Background()
+	results, err := c.FindBlocksByTag(ctx, "scaffold-agents-md-stale-refs", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("frontmatter tag results = %d, want 1", len(results))
+	}
+	if results[0].Page != "learning-note" {
+		t.Errorf("page = %q, want learning-note", results[0].Page)
+	}
+	if len(results[0].Blocks) == 0 {
+		t.Fatal("expected at least one block for the learning")
+	}
+	if !strings.Contains(results[0].Blocks[0].Content, "review-council") {
+		t.Errorf("content = %q, want learning body", results[0].Blocks[0].Content)
+	}
+
+	inline, err := c.FindBlocksByTag(ctx, "decision", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag inline: %v", err)
+	}
+	if len(inline) != 1 || inline[0].Page != "notes" {
+		t.Fatalf("inline #decision results = %+v, want notes page", inline)
+	}
+
+	none, err := c.FindBlocksByTag(ctx, "missing-tag", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag missing: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("missing tag results = %d, want 0", len(none))
+	}
+}
+
+func TestFindBlocksByTag_FrontmatterTagsList(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "page.md"), []byte("---\ntags: [go, mcp]\n---\n\nBody without hash tags.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := New(dir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	results, err := c.FindBlocksByTag(context.Background(), "mcp", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag: %v", err)
+	}
+	if len(results) != 1 || results[0].Page != "page" {
+		t.Fatalf("tags list results = %+v, want page", results)
+	}
+}
+
+func TestFindBlocksByTag_StoreLearningPages(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	pageName := "learning/scaffold-agents-md-stale-refs-20260328T120000-alice"
+	if err := s.InsertPage(&store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "learning",
+		SourceDocID:  "learning-scaffold-agents-md-stale-refs-20260328T120000-alice",
+		Properties:   `{"tag":"scaffold-agents-md-stale-refs","author":"alice","created_at":"2026-03-28T12:00:00Z"}`,
+		Tier:         "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if err := s.InsertBlock(&store.Block{
+		UUID:     "learn-block-1",
+		PageName: pageName,
+		Content:  "Replace /review-council with /uf.review-council.",
+	}); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	// Dual-written markdown lives under .uf/ and is skipped by Load().
+	learnDir := filepath.Join(dir, ".uf", "dewey", "learnings")
+	if err := os.MkdirAll(learnDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\ntag: scaffold-agents-md-stale-refs\nauthor: alice\n---\n\nReplace /review-council with /uf.review-council.\n"
+	if err := os.WriteFile(filepath.Join(learnDir, "scaffold-agents-md-stale-refs-20260328T120000-alice.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	noStore := New(dir)
+	if err := noStore.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	none, err := noStore.FindBlocksByTag(context.Background(), "scaffold-agents-md-stale-refs", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag no store: %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("without store, hidden .uf learnings should be skipped, got %+v", none)
+	}
+
+	c := New(dir, WithStore(s))
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load with store: %v", err)
+	}
+	results, err := c.FindBlocksByTag(context.Background(), "scaffold-agents-md-stale-refs", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("store learning results = %d, want 1: %+v", len(results), results)
+	}
+	if results[0].Page != pageName {
+		t.Errorf("page = %q, want %q", results[0].Page, pageName)
+	}
+	if len(results[0].Blocks) == 0 || !strings.Contains(results[0].Blocks[0].Content, "review-council") {
+		t.Errorf("blocks = %+v, want learning body", results[0].Blocks)
+	}
+
+	miss, err := c.FindBlocksByTag(context.Background(), "other-tag", false)
+	if err != nil {
+		t.Fatalf("FindBlocksByTag miss: %v", err)
+	}
+	if len(miss) != 0 {
+		t.Errorf("other-tag results = %d, want 0", len(miss))
+	}
+}
+
+func TestFindBlocksByTag_StoreListError(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	c := New(dir, WithStore(s))
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, err = c.FindBlocksByTag(context.Background(), "any", false)
+	if err == nil {
+		t.Fatal("expected store query error, got nil")
+	}
+}
+
+func TestFrontmatterHasTag(t *testing.T) {
+	tests := []struct {
+		name  string
+		props map[string]any
+		tag   string
+		want  bool
+	}{
+		{name: "nil", props: nil, tag: "x", want: false},
+		{name: "empty tag", props: map[string]any{"tag": "x"}, tag: "", want: false},
+		{name: "singular", props: map[string]any{"tag": "Foo"}, tag: "foo", want: true},
+		{name: "list any", props: map[string]any{"tags": []any{"go", "mcp"}}, tag: "mcp", want: true},
+		{name: "mismatch", props: map[string]any{"tag": "a"}, tag: "b", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := frontmatterHasTag(tt.props, tt.tag); got != tt.want {
+				t.Errorf("frontmatterHasTag(%v, %q) = %v, want %v", tt.props, tt.tag, got, tt.want)
+			}
+		})
 	}
 }
 

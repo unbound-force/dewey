@@ -52,9 +52,9 @@ func setupTestStore(t *testing.T) *store.Store {
 
 	// Insert test pages for source "disk-meetings".
 	pages := []struct {
-		name      string
-		docID     string
-		content   string
+		name    string
+		docID   string
+		content string
 	}{
 		{"disk-meetings/sprint-planning", "sprint-planning", "Team decided to use OAuth2 for authentication."},
 		{"disk-meetings/architecture-review", "architecture-review", "We will use blue-green deployment for releases."},

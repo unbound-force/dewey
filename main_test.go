@@ -1515,10 +1515,10 @@ author: bob
 New deploy learning by bob.
 `
 	files := map[string]string{
-		"auth-1.md":                        old1,
-		"deploy-2.md":                      old2,
-		"auth-20260421T143022-alice.md":    new1,
-		"deploy-20260421T150000-bob.md":    new2,
+		"auth-1.md":                     old1,
+		"deploy-2.md":                   old2,
+		"auth-20260421T143022-alice.md": new1,
+		"deploy-20260421T150000-bob.md": new2,
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(learningsDir, name), []byte(content), 0o644); err != nil {

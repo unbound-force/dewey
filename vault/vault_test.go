@@ -688,6 +688,25 @@ func TestFindBlocksByTag_StoreLearningPages(t *testing.T) {
 	}
 }
 
+func TestFindBlocksByTag_StoreListError(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	c := New(dir, WithStore(s))
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	_, err = c.FindBlocksByTag(context.Background(), "any", false)
+	if err == nil {
+		t.Fatal("expected store query error, got nil")
+	}
+}
+
 func TestFrontmatterHasTag(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -699,7 +718,6 @@ func TestFrontmatterHasTag(t *testing.T) {
 		{name: "empty tag", props: map[string]any{"tag": "x"}, tag: "", want: false},
 		{name: "singular", props: map[string]any{"tag": "Foo"}, tag: "foo", want: true},
 		{name: "list any", props: map[string]any{"tags": []any{"go", "mcp"}}, tag: "mcp", want: true},
-		{name: "list string", props: map[string]any{"tags": []string{"go", "mcp"}}, tag: "go", want: true},
 		{name: "mismatch", props: map[string]any{"tag": "a"}, tag: "b", want: false},
 	}
 	for _, tt := range tests {

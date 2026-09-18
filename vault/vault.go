@@ -1479,21 +1479,24 @@ func (c *Client) FindBlocksByTag(_ context.Context, tag string, includeChildren 
 		}
 	}
 
-	results = append(results, c.storeLearningTagResults(tagLower, seen)...)
+	extra, err := c.storeLearningTagResults(tagLower, seen)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, extra...)
 	return results, nil
 }
 
 // storeLearningTagResults finds store_learning pages whose YAML/JSON `tag`
 // matches. Those files live under .uf/ and are skipped by Load(), so they
 // never appear in c.pages even though semantic search can retrieve them.
-func (c *Client) storeLearningTagResults(tagLower string, seen map[string]bool) []backend.TagResult {
+func (c *Client) storeLearningTagResults(tagLower string, seen map[string]bool) ([]backend.TagResult, error) {
 	if c.vaultStore == nil || c.vaultStore.store == nil {
-		return nil
+		return nil, nil
 	}
 	pages, err := c.vaultStore.store.ListLearningPages()
 	if err != nil {
-		logger.Debug("list learning pages for tag search", "err", err)
-		return nil
+		return nil, fmt.Errorf("list learning pages for tag search: %w", err)
 	}
 	var extra []backend.TagResult
 	for _, p := range pages {
@@ -1506,7 +1509,9 @@ func (c *Client) storeLearningTagResults(tagLower string, seen map[string]bool) 
 		}
 		var props map[string]any
 		if p.Properties != "" {
-			_ = json.Unmarshal([]byte(p.Properties), &props)
+			if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
+				continue
+			}
 		}
 		if !frontmatterHasTag(props, tagLower) {
 			continue
@@ -1514,8 +1519,7 @@ func (c *Client) storeLearningTagResults(tagLower string, seen map[string]bool) 
 		seen[key] = true
 		blocks, err := c.vaultStore.store.GetBlocksByPage(p.Name)
 		if err != nil {
-			logger.Debug("get learning blocks for tag search", "page", p.Name, "err", err)
-			continue
+			return nil, fmt.Errorf("get learning blocks for tag search %s: %w", p.Name, err)
 		}
 		ents := make([]types.BlockEntity, 0, len(blocks))
 		for _, b := range blocks {
@@ -1529,7 +1533,7 @@ func (c *Client) storeLearningTagResults(tagLower string, seen map[string]bool) 
 		}
 		extra = append(extra, backend.TagResult{Page: p.Name, Blocks: ents})
 	}
-	return extra
+	return extra, nil
 }
 
 // frontmatterHasTag reports whether page properties carry tagLower on `tag` or `tags`.
@@ -1556,16 +1560,10 @@ func valueHasTag(v any, tagLower string) bool {
 				return true
 			}
 		}
-	case []string:
-		for _, item := range t {
-			if strings.EqualFold(strings.TrimSpace(item), tagLower) {
-				return true
-			}
-		}
+		return false
 	default:
 		return strings.EqualFold(strings.TrimSpace(fmt.Sprint(v)), tagLower)
 	}
-	return false
 }
 
 // pageBlocksForFrontmatterTag returns the page body so a frontmatter-only tag

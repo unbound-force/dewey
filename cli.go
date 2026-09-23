@@ -267,14 +267,14 @@ func newInitCmd() *cobra.Command {
 			}
 
 			if !alreadyInitialized {
-			// Create .uf/dewey/ directory (MkdirAll creates .uf/ parent too — D3).
-			if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-				return fmt.Errorf("create .uf/dewey/ directory: %w", err)
-			}
+				// Create .uf/dewey/ directory (MkdirAll creates .uf/ parent too — D3).
+				if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+					return fmt.Errorf("create .uf/dewey/ directory: %w", err)
+				}
 
-			// Write default config.yaml.
-			configPath := filepath.Join(deweyDir, "config.yaml")
-			configContent := `# Dewey configuration
+				// Write default config.yaml.
+				configPath := filepath.Join(deweyDir, "config.yaml")
+				configContent := `# Dewey configuration
 # See: https://github.com/unbound-force/dewey
 
 embedding:
@@ -282,13 +282,13 @@ embedding:
   # endpoint: http://localhost:11434  # Uncomment to override OLLAMA_HOST
   # max_chunk_chars: 12288  # Override with DEWEY_CHUNK_MAX_CHARS env var
 `
-			if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
-				return fmt.Errorf("write config.yaml: %w", err)
-			}
+				if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+					return fmt.Errorf("write config.yaml: %w", err)
+				}
 
-			// Write default sources.yaml.
-			sourcesPath := filepath.Join(deweyDir, "sources.yaml")
-			sourcesContent := `# Dewey content sources
+				// Write default sources.yaml.
+				sourcesPath := filepath.Join(deweyDir, "sources.yaml")
+				sourcesContent := `# Dewey content sources
 # Each source provides documents for the knowledge graph index.
 
 sources:
@@ -300,15 +300,15 @@ sources:
       # ignore: [pattern1, pattern2]  # additional patterns beyond .gitignore
       # recursive: true               # set false to index only top-level files
 `
-			if err := os.WriteFile(sourcesPath, []byte(sourcesContent), 0o644); err != nil {
-				return fmt.Errorf("write sources.yaml: %w", err)
-			}
+				if err := os.WriteFile(sourcesPath, []byte(sourcesContent), 0o644); err != nil {
+					return fmt.Errorf("write sources.yaml: %w", err)
+				}
 
-			// Write default knowledge-stores.yaml (T008, 015-curated-knowledge-stores).
-			// Scaffolds a commented-out example store. Follows the same idempotency
-			// pattern as sources.yaml — don't overwrite if file exists.
-			ksPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
-			ksContent := `# Knowledge store configuration
+				// Write default knowledge-stores.yaml (T008, 015-curated-knowledge-stores).
+				// Scaffolds a commented-out example store. Follows the same idempotency
+				// pattern as sources.yaml — don't overwrite if file exists.
+				ksPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+				ksContent := `# Knowledge store configuration
 # Each store curates knowledge from indexed sources.
 # Uncomment and customize the example below.
 
@@ -319,44 +319,44 @@ sources:
 #     # curate_on_index: false                     # default
 #     # curation_interval: 10m                     # default
 `
-			if err := os.WriteFile(ksPath, []byte(ksContent), 0o644); err != nil {
-				return fmt.Errorf("write knowledge-stores.yaml: %w", err)
-			}
+				if err := os.WriteFile(ksPath, []byte(ksContent), 0o644); err != nil {
+					return fmt.Errorf("write knowledge-stores.yaml: %w", err)
+				}
 
-			// Append granular .uf/dewey/ runtime artifact patterns to .gitignore.
-			// Only runtime artifacts (db, log, lock) are ignored — sources.yaml
-			// and config.yaml remain trackable for team sharing.
-			gitignorePath := filepath.Join(vaultPath, ".gitignore")
-			if _, err := os.Stat(gitignorePath); err == nil {
-				content, err := os.ReadFile(gitignorePath)
-				if err == nil {
-					text := string(content)
-					switch {
-					case strings.Contains(text, ".uf/dewey/graph.db"):
-						// Current granular patterns already present — skip.
-					case strings.Contains(text, ".dewey/graph.db"):
-						// Old granular patterns — inform user to update.
-						logger.Info("old .dewey/ gitignore patterns found — update to .uf/dewey/ patterns")
-					case strings.Contains(text, ".dewey/"):
-						// Legacy blanket pattern — don't modify, inform user.
-						logger.Info("existing .dewey/ gitignore pattern found — update to .uf/dewey/ patterns")
-					default:
-						// No dewey patterns — append granular patterns.
-						f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
-						if err == nil {
-							defer func() { _ = f.Close() }()
-							if len(content) > 0 && content[len(content)-1] != '\n' {
-								_, _ = f.WriteString("\n")
+				// Append granular .uf/dewey/ runtime artifact patterns to .gitignore.
+				// Only runtime artifacts (db, log, lock) are ignored — sources.yaml
+				// and config.yaml remain trackable for team sharing.
+				gitignorePath := filepath.Join(vaultPath, ".gitignore")
+				if _, err := os.Stat(gitignorePath); err == nil {
+					content, err := os.ReadFile(gitignorePath)
+					if err == nil {
+						text := string(content)
+						switch {
+						case strings.Contains(text, ".uf/dewey/graph.db"):
+							// Current granular patterns already present — skip.
+						case strings.Contains(text, ".dewey/graph.db"):
+							// Old granular patterns — inform user to update.
+							logger.Info("old .dewey/ gitignore patterns found — update to .uf/dewey/ patterns")
+						case strings.Contains(text, ".dewey/"):
+							// Legacy blanket pattern — don't modify, inform user.
+							logger.Info("existing .dewey/ gitignore pattern found — update to .uf/dewey/ patterns")
+						default:
+							// No dewey patterns — append granular patterns.
+							f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
+							if err == nil {
+								defer func() { _ = f.Close() }()
+								if len(content) > 0 && content[len(content)-1] != '\n' {
+									_, _ = f.WriteString("\n")
+								}
+								_, _ = f.WriteString(".uf/dewey/graph.db\n")
+								_, _ = f.WriteString(".uf/dewey/graph.db-shm\n")
+								_, _ = f.WriteString(".uf/dewey/graph.db-wal\n")
+								_, _ = f.WriteString(".uf/dewey/dewey.log\n")
+								_, _ = f.WriteString(".uf/dewey/dewey.lock\n")
 							}
-							_, _ = f.WriteString(".uf/dewey/graph.db\n")
-							_, _ = f.WriteString(".uf/dewey/graph.db-shm\n")
-							_, _ = f.WriteString(".uf/dewey/graph.db-wal\n")
-							_, _ = f.WriteString(".uf/dewey/dewey.log\n")
-							_, _ = f.WriteString(".uf/dewey/dewey.lock\n")
 						}
 					}
 				}
-			}
 			} // end if !alreadyInitialized
 
 			// Scaffold Dewey-specific slash commands into .opencode/commands/
@@ -1953,7 +1953,7 @@ func formatManifest(blocks []chunker.Block) string {
 
 	var sb strings.Builder
 	sb.WriteString("# Project Manifest\n\n")
-	sb.WriteString(fmt.Sprintf("> Auto-generated by `dewey manifest` on %s\n", time.Now().UTC().Format("2006-01-02T15:04:05Z")))
+	_, _ = fmt.Fprintf(&sb, "> Auto-generated by `dewey manifest` on %s\n", time.Now().UTC().Format("2006-01-02T15:04:05Z"))
 	sb.WriteString("> Do not edit manually — regenerate with `dewey manifest`\n")
 
 	if len(commands) == 0 && len(tools) == 0 && len(packages) == 0 {
@@ -1968,7 +1968,7 @@ func formatManifest(blocks []chunker.Block) string {
 		for _, c := range commands {
 			// Extract command name and description from the block content.
 			name, desc := parseCommandBlock(c)
-			sb.WriteString(fmt.Sprintf("| `%s` | %s |\n", name, desc))
+			_, _ = fmt.Fprintf(&sb, "| `%s` | %s |\n", name, desc)
 		}
 	}
 
@@ -1978,7 +1978,7 @@ func formatManifest(blocks []chunker.Block) string {
 		sb.WriteString("|------|-------------|\n")
 		for _, t := range tools {
 			name, desc := parseToolBlock(t)
-			sb.WriteString(fmt.Sprintf("| `%s` | %s |\n", name, desc))
+			_, _ = fmt.Fprintf(&sb, "| `%s` | %s |\n", name, desc)
 		}
 	}
 
@@ -1986,7 +1986,7 @@ func formatManifest(blocks []chunker.Block) string {
 		sb.WriteString("\n## Exported Packages\n\n")
 		for _, p := range packages {
 			// Heading is "package <name>", content includes doc comment.
-			sb.WriteString(fmt.Sprintf("### %s\n\n", p.Heading))
+			_, _ = fmt.Fprintf(&sb, "### %s\n\n", p.Heading)
 			// Extract just the doc comment portion (before the package declaration line).
 			doc := extractPackageDocText(p.Content)
 			if doc != "" {

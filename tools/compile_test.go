@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/store"
@@ -821,6 +822,71 @@ func TestCompile_CompiledArticleFormat(t *testing.T) {
 	}
 	if !strings.Contains(article, "| decision |") {
 		t.Error("article missing category in history table")
+	}
+}
+
+func TestCompile_CompiledArticleHistorySummaryUnicodeBoundaries(t *testing.T) {
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name            string
+		input           string
+		expectedSummary string
+	}{
+		{
+			name:            "em dash",
+			input:           strings.Repeat("a", 79) + "—trailing content",
+			expectedSummary: strings.Repeat("a", 79) + "—...",
+		},
+		{
+			name:            "CJK",
+			input:           strings.Repeat("a", 79) + "界trailing content",
+			expectedSummary: strings.Repeat("a", 79) + "界...",
+		},
+		{
+			name:            "emoji",
+			input:           strings.Repeat("a", 79) + "🙂trailing content",
+			expectedSummary: strings.Repeat("a", 79) + "🙂...",
+		},
+		{
+			name:            "exactly 80 runes",
+			input:           strings.Repeat("a", 79) + "界",
+			expectedSummary: strings.Repeat("a", 79) + "界",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cluster := Cluster{
+				Topic:       "Authentication",
+				DominantTag: "auth",
+				Learnings: []LearningEntry{
+					{
+						Identity:  "auth-1",
+						Tag:       "auth",
+						Category:  "decision",
+						CreatedAt: baseTime,
+						Content:   tt.input,
+					},
+				},
+			}
+
+			article := buildCompiledArticle(cluster, "## Current State\n\nCompiled content.")
+			if !utf8.ValidString(article) {
+				t.Error("compiled article is not valid UTF-8")
+			}
+
+			expectedRow := fmt.Sprintf("| auth-1 | 2026-03-15 | decision | %s |", tt.expectedSummary)
+			var historyRow string
+			for row := range strings.SplitSeq(article, "\n") {
+				if strings.HasPrefix(row, "| auth-1 | 2026-03-15 | decision | ") {
+					historyRow = row
+					break
+				}
+			}
+			if historyRow != expectedRow {
+				t.Errorf("history row = %q, want %q", historyRow, expectedRow)
+			}
+		})
 	}
 }
 

@@ -2,6 +2,7 @@
 description: Query and manage work items (cells)
 ---
 
+<protect>
 # /org
 
 Manage cells with `org_*` tools.
@@ -34,3 +35,4 @@ org_create_epic(epic_title="...", subtasks=[{title: "...", files: [...]}])
 
 - `org_session_start()` — begin a work session, get previous handoff notes
 - `org_session_end(handoff_notes="...")` — end session with context for next agent
+</protect>

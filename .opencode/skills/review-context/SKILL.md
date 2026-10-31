@@ -2,7 +2,7 @@
 name: review-context
 description: "Shared review context discovery for spec artifacts, linked issues, path classification, and walkthrough generation."
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 # Skill: Review Context Discovery
 
 Shared logic for discovering and loading review context
@@ -15,9 +15,9 @@ walkthrough summaries are discovered and formatted.
 
 | Command | How it loads | Notes |
 |---------|-------------|-------|
-| `/review-pr` | Skill tool | Replaces inline Steps 6-8 logic |
-| `/review-council` | Skill tool | Phase 1c — Protocols 1, 3, 4; Protocol 2 conditional (explicit PR number only) |
-| `/address-feedback` | Skill tool | Replaces inline fallback (line 143) |
+| `/uf.review-pr` | Skill tool | Replaces inline Steps 6-8 logic |
+| `/uf.review-council` | Skill tool | Phase 1c — Protocols 1, 3, 4; Protocol 2 conditional (explicit PR number only) |
+| `/uf.address-feedback` | Skill tool | Replaces inline fallback (line 143) |
 
 The consuming command specifies which protocols to
 execute based on the available inputs (e.g., a local

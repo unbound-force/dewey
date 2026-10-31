@@ -2,6 +2,7 @@
 description: Check forge coordination status - workers, messages, cells
 ---
 
+<protect>
 # /forge:status
 
 Show active forge state.
@@ -22,3 +23,4 @@ Show active forge state.
 
 Run all three tools to get a complete picture of forge state.
 If any workers are blocked, read their messages and respond.
+</protect>

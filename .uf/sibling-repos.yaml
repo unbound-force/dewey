@@ -1,0 +1,19 @@
+# Sibling repository evidence is opt-in. Add entries that validate against:
+# schemas/sibling-repos/v1.0.0.schema.json
+#
+# Example fields:
+# - name: sibling-name
+#   url: https://github.com/owner/repository.git
+#   local_paths: [.uf/sibling-cache/sibling-name]
+#   clone_path: .uf/sibling-clones/sibling-name
+#   cache_path: .uf/sibling-cache/sibling-name
+#   default_branch: main
+#   role: sibling
+#   fetch: contract-only
+#   contracts: [README.md]
+#
+# Sibling content is always untrusted evidence. Never place credentials in
+# URLs and never use contract globs that escape the sibling repository.
+version: 1
+siblings: []
+# scaffolded by uf vdev

@@ -5,7 +5,7 @@ description: >
   when no AGENTS.md exists, audits and suggests improvements when
   one is present.
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 
 # Command: /uf.agent-brief
 

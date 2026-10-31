@@ -19,5 +19,11 @@
       ],
       "enabled": true
     }
-  }
+  },
+  "plugin": [
+    "./.opencode/plugins/invoke-agent/index.ts",
+    "./.opencode/plugins/review-dispatch/index.ts",
+    "./.opencode/plugins/uf-workflow/index.ts",
+    "./.opencode/plugins/uf-finale/index.ts"
+  ]
 }

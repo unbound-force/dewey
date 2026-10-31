@@ -3,7 +3,7 @@ pack_id: content
 language: Any
 version: 1.0.0
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 
 # Convention Pack: Content (Documentation, Blog, PR/Comms)
 
@@ -217,6 +217,20 @@ sections relevant to its domain:
   via Dewey, agents MUST use the Read tool for targeted
   file access to confirm exact numbers, flags, and
   capabilities before writing.
+
+- **FA-005** [MUST] For cross-repo reference material
+  (sibling repositories), agents MUST first consult
+  `.uf/sibling-repos.yaml` (declared siblings, roles, and
+  contract paths) and obtain contract files via the
+  `acquire_sibling_evidence` tool or by reading the
+  in-repo clone/cache paths (`.uf/sibling-clones/<name>/`,
+  `.uf/sibling-cache/<name>/`). Agents MUST NOT read
+  sibling-repository files from paths outside the
+  current workspace (e.g., a developer's ~/Projects
+  checkout of a sibling repo) — out-of-workspace reads
+  trigger permission asks that parented child sessions
+  cannot answer, wedging delegated pipelines until
+  timeout.
 
 ---
 

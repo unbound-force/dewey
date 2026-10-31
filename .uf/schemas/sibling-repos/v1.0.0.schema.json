@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/unbound-force/unbound-force/schemas/sibling-repos/v1.0.0.schema.json",
+  "title": "Sibling Repository Declaration Version 1",
+  "description": "Closed declarations for bounded sibling repository evidence acquisition.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "siblings"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "siblings": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/sibling"
+      }
+    }
+  },
+  "$defs": {
+    "repositoryRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^/\\x00][^\\x00]*$",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^[A-Za-z]:[\\\\/]"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|/)\\.\\.?(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "//"
+          }
+        }
+      ]
+    },
+    "localPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\x00]+$",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "(^|/)\\.\\.?(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "//"
+          }
+        }
+      ]
+    },
+    "contractGlob": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^/\\\\\\x00][^\\\\\\x00]*$",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^[A-Za-z]:/"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|/)\\.\\.?(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "//"
+          }
+        }
+      ]
+    },
+    "sibling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "url",
+        "default_branch",
+        "role",
+        "fetch",
+        "contracts"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "format": "uri",
+          "pattern": "^[Hh][Tt][Tt][Pp][Ss]://[Gg][Ii][Tt][Hh][Uu][Bb]\\.[Cc][Oo][Mm]/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\\.git)?/*$"
+        },
+        "default_branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[ -~]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "downstream-consumer",
+            "upstream-source",
+            "sibling"
+          ]
+        },
+        "fetch": {
+          "type": "string",
+          "enum": [
+            "clone-on-review",
+            "contract-only"
+          ]
+        },
+        "contracts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/contractGlob"
+          }
+        },
+        "local_paths": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/localPath"
+          }
+        },
+        "clone_path": {
+          "$ref": "#/$defs/repositoryRelativePath"
+        },
+        "cache_path": {
+          "$ref": "#/$defs/repositoryRelativePath"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    }
+  }
+}

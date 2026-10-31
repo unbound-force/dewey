@@ -6,7 +6,7 @@ tags:
   - workflow
   - decomposition
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 
 # Speckit Workflow — Swarm Skill
 
@@ -132,15 +132,15 @@ Each task follows this format:
 
 ## Worker Instructions
 
-When spawning workers via `swarm_spawn_subtask()`:
+When spawning workers via `forge_spawn_subtask()`:
 
 1. Include the task description and file path in the
    worker's prompt
-2. Workers MUST call `swarmmail_reserve()` on the target
+2. Workers MUST call `comms_reserve()` on the target
    file(s) before editing
 3. Workers MUST mark the task `[x]` in `tasks.md` after
    completing it
-4. Workers MUST call `swarm_complete()` when done
+4. Workers MUST call `forge_complete()` when done
 
 ## Phase Checkpoints
 
@@ -150,7 +150,7 @@ After all tasks in a phase are complete:
    the build/test commands)
 2. If tests fail, create a new cell to fix the failure
    before advancing to the next phase
-3. Report phase completion via `swarm_status()`
+3. Report phase completion via `forge_status()`
 
 ## Prerequisite Skill
 

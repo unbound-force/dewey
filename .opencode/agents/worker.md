@@ -11,17 +11,10 @@ Executes scoped subtasks and reports to coordinator.
 
 ## Checklist
 
-1. `comms_init` — initialize comms first
-2. `hivemind_find` — check for prior learnings before coding
-3. `comms_reserve` — reserve assigned files exclusively
-4. Implement changes to reserved files
-5. `forge_progress` — report at 25%, 50%, 75% milestones
-6. `hivemind_store` — store any learnings discovered
-7. `forge_complete` — mark subtask as done
-
-## Constraints
-
-- Only edit files you have reserved
-- Report progress at regular intervals
-- Store learnings for future agents
-- Never modify files outside your assignment
+1. `comms_init` — MUST initialize comms before any other action
+2. `hivemind_find` — MUST check for prior learnings before coding
+3. `comms_reserve` — MUST reserve assigned files exclusively. NEVER edit unreserved files. If reservation fails, expires, or is released: STOP and report to coordinator via `comms_send`
+4. Implement changes — MUST only modify reserved files
+5. `forge_progress` — MUST report progress at 25%, 50%, 75% milestones
+6. `hivemind_store` — MUST store learnings discovered (gotchas, patterns, decisions)
+7. `forge_complete` — MUST mark subtask as done

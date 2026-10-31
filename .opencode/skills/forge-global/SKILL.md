@@ -1,4 +1,5 @@
 ---
+name: forge-global
 description: Cross-project forge coordination patterns
 tags: [forge, global, coordination]
 ---
@@ -9,23 +10,17 @@ Patterns for forge coordination that apply across projects.
 
 ## When to Forge
 
-Use a forge when:
-- Task touches 3+ files
-- Task has independent subtasks that can parallelize
-- Task benefits from specialized workers (e.g., tests vs implementation)
-
-Don't forge when:
-- Task is a single-file change
-- Task requires sequential steps with tight coupling
-- Task is exploratory or investigative
+| Signal | Forge | Skip |
+|--------|-------|------|
+| File count | Task touches 3+ files | Task is a single-file change |
+| Task structure | Independent subtasks that can parallelize | Sequential steps with tight coupling |
+| Work type | Benefits from specialized workers (e.g., tests vs implementation) | Exploratory or investigative work |
 
 ## File Reservation Protocol
 
-1. Workers MUST call `comms_reserve(paths=[...])` before editing
-2. Reservations are exclusive by default
-3. Set `ttl_seconds` to auto-release after timeout
-4. Always release when done: `comms_release(paths=[...])`
-5. Coordinator can emergency release: `comms_release_all()`
+1. FIRST, workers MUST call `comms_reserve(paths=[...], ttl_seconds=300)` before editing any files (5-minute auto-release) — reservations are exclusive by default
+2. THEN, always release when done: `comms_release(paths=[...])`
+3. FINALLY, coordinator can emergency release if workers fail: `comms_release_all()`
 
 ## Worker Spawning
 

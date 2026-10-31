@@ -2,7 +2,7 @@
 name: pre-flight
 description: "Shared pre-flight skill for CI detection and local tool execution. Supports hard-gate, ci-aware, and soft-gate execution policies."
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 # Skill: Pre-flight Checks
 
 Shared logic for CI workflow detection, local tool
@@ -14,9 +14,9 @@ an execution policy.
 
 | Mode | Behavior | Typical consumer |
 |------|----------|-----------------|
-| `hard-gate` | Run all detected tools. Stop on first failure. | `/unleash` (phase checkpoints) |
-| `ci-aware` | Build CI coverage matrix against PR check results. Skip tools CI already verified. Run the rest. | `/review-pr` |
-| `soft-gate` | Run all detected tools. Classify failures as branch-caused vs pre-existing. Gate only on branch-caused failures. | `/review-council` |
+| `hard-gate` | Run all detected tools. Stop on first failure. | `/uf.unleash` (phase checkpoints) |
+| `ci-aware` | Build CI coverage matrix against PR check results. Skip tools CI already verified. Run the rest. | `/uf.review-pr` |
+| `soft-gate` | Run all detected tools. Classify failures as branch-caused vs pre-existing. Gate only on branch-caused failures. | `/uf.review-council` |
 
 The consuming command specifies which mode to use.
 
@@ -381,7 +381,7 @@ gh api \
 ```
 
 Use `--arg` for any dynamic values to prevent injection
-(consistent with `/review-pr` Step 3a).
+(consistent with `/uf.review-pr` Step 3a).
 
 Map CI check names to local tool names using the same
 coverage matrix logic from Phase 3. For each failing
@@ -436,7 +436,7 @@ AND worktree creation fails due to disk space or dirty
 state), or the default branch could not be detected,
 classify ALL failures as `unknown`. The `unknown`
 classification is treated as branch-caused
-(conservative), matching `/review-pr` behavior.
+(conservative), matching `/uf.review-pr` behavior.
 
 Record which baseline method was used: `CI API`,
 `worktree`, or `unavailable`.

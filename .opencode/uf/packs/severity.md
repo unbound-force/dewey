@@ -1,7 +1,7 @@
 ---
 description: "Shared severity level definitions for all Divisor Council personas."
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 
 # Severity Convention Pack
 
@@ -119,3 +119,12 @@ This policy is implemented in `/uf.review-council` Spec
 Review Mode. The severity definitions above ensure all 5
 personas classify the same type of issue at the same
 level, making the auto-fix boundary predictable.
+
+**Human-directed fixes vs autonomous auto-fixes**: The
+policy table above bounds *autonomous* auto-fixes to
+LOW/MEDIUM findings. A *human-directed* per-finding fix --
+applied only through an explicit per-finding "Apply
+suggested fix" choice in the spec review decision gate --
+is a consented edit and is available at every severity,
+including HIGH and CRITICAL. The severity definitions and
+the policy rows above are unchanged by this distinction.

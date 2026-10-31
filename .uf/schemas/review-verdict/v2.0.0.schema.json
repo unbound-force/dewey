@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/unbound-force/unbound-force/schemas/review-verdict/v2.0.0.schema.json",
+  "title": "Review verdict payload 2.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "persona_verdicts",
+    "council_decision",
+    "iteration_count",
+    "pr_url",
+    "convention_pack_used"
+  ],
+  "properties": {
+    "persona_verdicts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/personaVerdict" }
+    },
+    "council_decision": {
+      "enum": [
+        "APPROVED",
+        "CHANGES_REQUESTED",
+        "ESCALATED",
+        "INCONCLUSIVE",
+        "UNAVAILABLE"
+      ]
+    },
+    "iteration_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unresolved_findings": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "pr_url": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$"
+    },
+    "convention_pack_used": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "$defs": {
+    "severity": {
+      "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "category", "description"],
+      "properties": {
+        "severity": { "$ref": "#/$defs/severity" },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "personaVerdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["persona", "verdict", "findings", "summary"],
+      "properties": {
+        "persona": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "verdict": {
+          "enum": ["APPROVED", "CHANGES_REQUESTED"]
+        },
+        "findings": {
+          "type": "array",
+          "maxItems": 512,
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 16384
+        }
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@
 description: Check comms inbox for messages from other agents
 ---
 
+<protect>
 # /inbox
 
 Check your message inbox.
@@ -24,3 +25,4 @@ To send a message to another agent:
 ```
 comms_send(to=["worker-1"], subject="...", body="...", importance="normal")
 ```
+</protect>

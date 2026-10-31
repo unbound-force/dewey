@@ -3,7 +3,7 @@ name: always-on-guidance
 description: Global coding rules and tool usage discipline
 tags: [always-on, coding, quality]
 ---
-<!-- scaffolded by uf v0.17.0 -->
+<!-- scaffolded by uf vdev -->
 
 # Always-On Guidance
 
@@ -50,6 +50,13 @@ Rules that apply to every coding session.
 - After compression, the template file is the sole
   authority for prescribed output format — never
   reconstruct it from memory or compressed summaries
+
+## Tool Output Overflow Recovery
+
+When any tool result reports overflow to a file
+(matching the pattern "Full output saved to: <path>"),
+read only the missing sections with `offset`/`limit`;
+never read the whole file.
 
 ## Git Discipline
 

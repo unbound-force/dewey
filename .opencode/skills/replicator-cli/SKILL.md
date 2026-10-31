@@ -1,4 +1,5 @@
 ---
+name: replicator-cli
 description: Replicator CLI quick reference
 tags: [cli, reference, replicator]
 ---
@@ -11,7 +12,7 @@ Quick reference for all replicator commands.
 
 | Command | Purpose |
 |---------|---------|
-| `replicator init` | Per-repo setup: creates `.uf/replicator/` + agent kit |
+| `replicator init` | Per-repo setup: creates `.uf/replicator/` + scaffolds agent kit (smart-sync: updates drifted files; `--skip-existing` to preserve) |
 | `replicator setup` | Per-machine setup: creates global SQLite DB |
 | `replicator serve` | Start MCP JSON-RPC server on stdio |
 | `replicator cells` | List work items (cells) |
@@ -35,7 +36,13 @@ make install  # Install to GOPATH/bin
 ## Init Flags
 
 - `--path <dir>` — target directory (default: `.`)
-- `--force` — overwrite existing agent kit files
+- `--skip-existing` — preserve all existing agent kit files (old behavior)
+- `--force` — deprecated no-op; accepted but ignored
+
+By default `init` smart-syncs the agent kit: missing files are created,
+byte-identical files are skipped, and drifted files are updated to the
+embedded (canonical) content. `cells.json` and DCP config handling are
+unchanged.
 
 ## MCP Tool Categories
 

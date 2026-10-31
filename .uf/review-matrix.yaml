@@ -1,0 +1,75 @@
+# Canonical model policy for Divisor review dispatch.
+# Per-developer model/variant overrides can be placed in
+# .uf/review-matrix.override.yaml (gitignored). Only
+# profiles.*.model and profiles.*.variant paths are
+# permitted in the override file.
+version: 3
+
+profiles:
+  lightweight: {}
+  standard: {}
+  heavy: {}
+
+defaults:
+  code: standard
+  spec: standard
+  triage: standard
+  feedback: standard
+
+# These overrides apply only when the advisor generates a run.
+always:
+  divisor-adversary: heavy
+  divisor-sre: lightweight
+
+# Membership permits generated runs; reviewer capabilities still
+# determine
+# whether an agent is relevant to a particular review.
+advisor:
+  code:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  spec:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  triage:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+  feedback:
+    - divisor-adversary
+    - divisor-architect
+    - divisor-curator
+    - divisor-guard
+    - divisor-sre
+    - divisor-testing
+
+# Explicit mode/agent arrays are authoritative and preserve
+# declaration order.
+# The canonical policy starts without explicit replacements.
+runs: {}
+
+risk_augmentation:
+  enabled: true
+  agents:
+    - divisor-adversary
+    - divisor-architect
+
+limits:
+  max_personas: 16
+  max_runs_per_persona: 3
+  max_total_runs: 24
+  max_parallel_runs: 4
+  per_run_timeout_seconds: 1200
+  max_reported_cost_usd: 25
+# scaffolded by uf vdev

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/unbound-force/unbound-force/schemas/reviewer-capabilities/v1.0.0.schema.json",
+  "title": "Reviewer Capabilities Version 1",
+  "description": "Closed eligibility policy for Divisor personas.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "reviewers"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "reviewers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/reviewer"
+      }
+    }
+  },
+  "$defs": {
+    "scope": {
+      "type": "string",
+      "enum": [
+        "security",
+        "cli-ux",
+        "test-quality",
+        "documentation",
+        "ci-cd",
+        "dependencies",
+        "standard"
+      ]
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "capability",
+        "scopes"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string",
+          "pattern": "^divisor-[a-z0-9-]{1,63}$"
+        },
+        "capability": {
+          "type": "string",
+          "enum": [
+            "review",
+            "content"
+          ]
+        },
+        "scopes": {
+          "type": "array",
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/scope"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "review"
+              }
+            },
+            "required": [
+              "capability"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scopes": {
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "const": "content"
+              }
+            },
+            "required": [
+              "capability"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scopes": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

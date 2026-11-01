@@ -4387,3 +4387,79 @@ func TestArtifactsPlanSync_EndToEnd(t *testing.T) {
 		})
 	}
 }
+
+// TestInitCmd_ScaffoldsDeweyPublishFromMap verifies the dewey-publish command
+// file scaffolds byte-identical to its deweySlashCommands map entry and to the
+// command file tracked in this repository (task 5.2 identity requirement).
+func TestInitCmd_ScaffoldsDeweyPublishFromMap(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Pre-create .opencode/ so init scaffolds command files, plus .gitignore.
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode", "commands"), 0o755); err != nil {
+		t.Fatalf("create opencode commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	scaffolded, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "commands", "dewey-publish.md"))
+	if err != nil {
+		t.Fatalf("read scaffolded dewey-publish.md: %v", err)
+	}
+
+	want, ok := deweySlashCommands["dewey-publish.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-publish.md entry")
+	}
+	if string(scaffolded) != want {
+		t.Errorf("scaffolded dewey-publish.md differs from deweySlashCommands map entry")
+	}
+
+	// The command file tracked in this repo must stay identical to the map
+	// entry so scaffolded vaults and the repository ship the same command.
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-publish.md"))
+	if err != nil {
+		t.Fatalf("read tracked dewey-publish.md: %v", err)
+	}
+	if string(tracked) != want {
+		t.Errorf("tracked .opencode/commands/dewey-publish.md differs from deweySlashCommands map entry")
+	}
+}
+
+// TestInitCmd_ScaffoldingSkipsExistingDeweyPublish verifies init does not
+// overwrite an existing dewey-publish.md in .opencode/commands/.
+func TestInitCmd_ScaffoldingSkipsExistingDeweyPublish(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	newDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	sentinel := "custom dewey-publish content"
+	if err := os.WriteFile(filepath.Join(newDir, "dewey-publish.md"), []byte(sentinel), 0o644); err != nil {
+		t.Fatalf("write existing dewey-publish.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(newDir, "dewey-publish.md"))
+	if err != nil {
+		t.Fatalf("read dewey-publish.md: %v", err)
+	}
+	if string(content) != sentinel {
+		t.Errorf("existing dewey-publish.md was overwritten, got %q, want %q", string(content), sentinel)
+	}
+}

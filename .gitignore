@@ -63,6 +63,7 @@ Thumbs.db
 .uf/dewey/*.lock
 .uf/dewey/cache/
 .uf/dewey/dewey.log
+.uf/dewey/manifest.md
 .uf/replicator/*.db
 .uf/replicator/*.db-shm
 .uf/replicator/*.db-wal

@@ -4516,3 +4516,147 @@ func TestInitCmd_ScaffoldingSkipsExistingDeweyPublish(t *testing.T) {
 		t.Errorf("existing dewey-publish.md was overwritten, got %q, want %q", string(content), sentinel)
 	}
 }
+
+func TestResolveArtifactsContext_VaultFlag(t *testing.T) {
+	repo := newArtifactsCLIRepo(t)
+
+	repoRoot, vaultRoot, storePaths, err := resolveArtifactsContext(repo)
+	if err != nil {
+		t.Fatalf("resolveArtifactsContext(%q) failed: %v", repo, err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q) failed: %v", repo, err)
+	}
+	if repoRoot != wantRoot {
+		t.Errorf("repoRoot = %q, want %q (symlink-resolved)", repoRoot, wantRoot)
+	}
+	wantVault, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve vault symlink: %v", err)
+	}
+	if vaultRoot != wantVault {
+		t.Errorf("vaultRoot = %q, want %q", vaultRoot, wantVault)
+	}
+	if len(storePaths) != 0 {
+		t.Errorf("storePaths = %v, want empty (fixture has no knowledge-stores.yaml)", storePaths)
+	}
+}
+
+func TestResolveArtifactsContext_EnvVar(t *testing.T) {
+	repo := newArtifactsCLIRepo(t)
+	t.Setenv("OBSIDIAN_VAULT_PATH", repo)
+
+	repoRoot, vaultRoot, storePaths, err := resolveArtifactsContext("")
+	if err != nil {
+		t.Fatalf("resolveArtifactsContext(\"\") with OBSIDIAN_VAULT_PATH failed: %v", err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q) failed: %v", repo, err)
+	}
+	if repoRoot != wantRoot {
+		t.Errorf("repoRoot = %q, want %q", repoRoot, wantRoot)
+	}
+	wantVault, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("resolve vault symlink: %v", err)
+	}
+	if vaultRoot != wantVault {
+		t.Errorf("vaultRoot = %q, want %q", vaultRoot, wantVault)
+	}
+	if len(storePaths) != 0 {
+		t.Errorf("storePaths = %v, want empty", storePaths)
+	}
+}
+
+func TestResolveArtifactsContext_CwdFallback(t *testing.T) {
+	repo := newArtifactsCLIRepo(t)
+	t.Setenv("OBSIDIAN_VAULT_PATH", "")
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() failed: %v", err)
+	}
+	if err := os.Chdir(repo); err != nil {
+		t.Fatalf("os.Chdir(%q) failed: %v", repo, err)
+	}
+	defer func() {
+		if err := os.Chdir(oldWd); err != nil {
+			t.Errorf("restoring working directory failed: %v", err)
+		}
+	}()
+
+	repoRoot, _, _, err := resolveArtifactsContext("")
+	if err != nil {
+		t.Fatalf("resolveArtifactsContext(\"\") via cwd fallback failed: %v", err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q) failed: %v", repo, err)
+	}
+	if repoRoot != wantRoot {
+		t.Errorf("repoRoot = %q, want %q", repoRoot, wantRoot)
+	}
+}
+
+func TestResolveArtifactsContext_NotARepo(t *testing.T) {
+	vault := t.TempDir()
+
+	_, _, _, err := resolveArtifactsContext(vault)
+	if err == nil {
+		t.Fatalf("resolveArtifactsContext(%q) succeeded, want failure (not a git repo)", vault)
+	}
+	if !strings.Contains(err.Error(), "resolve git repository root") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "resolve git repository root")
+	}
+}
+
+func TestResolveArtifactsContext_StoreConfig(t *testing.T) {
+	repo := newArtifactsCLIRepo(t)
+	deweyDir := filepath.Join(repo, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) failed: %v", deweyDir, err)
+	}
+	configPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+	configYAML := "stores:\n  - name: team\n    sources:\n      - disk-src\n"
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) failed: %v", configPath, err)
+	}
+
+	_, _, storePaths, err := resolveArtifactsContext(repo)
+	if err != nil {
+		t.Fatalf("resolveArtifactsContext(%q) with store config failed: %v", repo, err)
+	}
+	wantStore := filepath.Join(".uf", "dewey", "knowledge", "team")
+	found := false
+	for _, sp := range storePaths {
+		if sp == wantStore {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("storePaths = %v, want it to contain %q", storePaths, wantStore)
+	}
+}
+
+func TestResolveArtifactsContext_BadYaml(t *testing.T) {
+	repo := newArtifactsCLIRepo(t)
+	deweyDir := filepath.Join(repo, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) failed: %v", deweyDir, err)
+	}
+	configPath := filepath.Join(deweyDir, "knowledge-stores.yaml")
+	if err := os.WriteFile(configPath, []byte("{{{ not yaml\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) failed: %v", configPath, err)
+	}
+
+	_, _, _, err := resolveArtifactsContext(repo)
+	if err == nil {
+		t.Fatalf("resolveArtifactsContext(%q) with malformed yaml succeeded, want failure", repo)
+	}
+	if !strings.Contains(err.Error(), "load knowledge stores config") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "load knowledge stores config")
+	}
+}

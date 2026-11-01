@@ -486,23 +486,8 @@ func buildHunk(ops []diffOp, firstChange, lastChange, context int) diffHunk {
 	}
 	h := diffHunk{ops: ops[start:end]}
 
-	aBefore, bBefore := 0, 0
-	for _, op := range ops[:start] {
-		if op.kind == ' ' || op.kind == '-' {
-			aBefore++
-		}
-		if op.kind == ' ' || op.kind == '+' {
-			bBefore++
-		}
-	}
-	for _, op := range h.ops {
-		if op.kind == ' ' || op.kind == '-' {
-			h.aCount++
-		}
-		if op.kind == ' ' || op.kind == '+' {
-			h.bCount++
-		}
-	}
+	aBefore, bBefore := countSides(ops[:start])
+	h.aCount, h.bCount = countSides(h.ops)
 	h.aStart = aBefore + 1
 	h.bStart = bBefore + 1
 	if h.aCount == 0 {
@@ -512,4 +497,18 @@ func buildHunk(ops []diffOp, firstChange, lastChange, context int) diffHunk {
 		h.bStart = bBefore
 	}
 	return h
+}
+
+// countSides counts the lines each diff side contributes to ops: context
+// and deletions advance the a-side, context and additions advance the b-side.
+func countSides(ops []diffOp) (a, b int) {
+	for _, op := range ops {
+		if op.kind == ' ' || op.kind == '-' {
+			a++
+		}
+		if op.kind == ' ' || op.kind == '+' {
+			b++
+		}
+	}
+	return a, b
 }

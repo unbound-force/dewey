@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -4395,6 +4396,41 @@ func TestArtifactsPlanSync_EndToEnd(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("sync files_written missing %s: %v", artifactRel, result.FilesWritten)
+	}
+
+	// The plan file is consumed unchanged by sync: the bytes written by
+	// plan are byte-identical after the approved sync ran.
+	after, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("re-read plan file after sync: %v", err)
+	}
+	if !bytes.Equal(payload, after) {
+		t.Error("plan file was modified by sync")
+	}
+
+	// The committed artifact is readable via git show in the temp worktree
+	// with content equal to the planned sha256.
+	shown, err := exec.Command("git", "-C", result.Worktree, "show", result.Commit+":"+artifactRel).Output()
+	if err != nil {
+		t.Fatalf("git show committed artifact: %v", err)
+	}
+	gotSHA := fmt.Sprintf("%x", sha256.Sum256(shown))
+	wantSHA := ""
+	artifactsList, _ := planPayload["artifacts"].([]any)
+	for _, entry := range artifactsList {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if p, _ := m["path"].(string); p == artifactRel {
+			wantSHA, _ = m["sha256"].(string)
+		}
+	}
+	if wantSHA == "" {
+		t.Fatalf("plan JSON has no artifact entry for %s", artifactRel)
+	}
+	if gotSHA != wantSHA {
+		t.Errorf("committed artifact sha256 = %s, want plan sha256 %s", gotSHA, wantSHA)
 	}
 	if result.Worktree != "" {
 		wt := result.Worktree

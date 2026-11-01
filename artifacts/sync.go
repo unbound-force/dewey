@@ -503,3 +503,343 @@ func commitPlanned(worktree, message string) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// RunSync executes the publish sync for a consumed plan file: it validates the
+// plan structurally (fail closed before any effect), materializes the planned
+// files in an OS-tempdir git worktree on a fresh chore branch, stages and
+// verifies them, and commits with the deterministic chore message carrying the
+// Approved-by and Plan-sha256 trailers (design D7).
+//
+// The sanctioned artifact directories are re-derived at execution time from
+// the repository, vault root, and store paths — the plan's recorded
+// repo.artifact_roots is only a cross-check, never the confinement authority.
+// Collisions must carry path-keyed resolutions naming a clean variant.
+// approve must be true (the human gate lives in the command layer); approvedBy
+// must be printable-only. An empty publish set returns NothingToPublish without
+// creating anything.
+func RunSync(repoRoot, vaultRoot string, storePaths []string, planPath, resolutionsPath string, approve bool, approvedBy string) (*SyncResult, error) {
+	if !approve {
+		return nil, fmt.Errorf("sync requires --approve — present the plan's rendered summary to the human gate before approving")
+	}
+	if err := validateApprovedBy(approvedBy); err != nil {
+		return nil, err
+	}
+
+	repoRoot = filepath.Clean(repoRoot)
+	vaultRoot = filepath.Clean(vaultRoot)
+	resolvedRepo, err := filepath.EvalSymlinks(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repository root %s: %w", repoRoot, err)
+	}
+	resolvedVault, err := filepath.EvalSymlinks(vaultRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve vault root %s: %w", vaultRoot, err)
+	}
+	if !withinDir(resolvedVault, resolvedRepo) {
+		return nil, fmt.Errorf("vault root %s (resolved %s) is outside the git repository %s (resolved %s)", vaultRoot, resolvedVault, repoRoot, resolvedRepo)
+	}
+	roots, err := workingTreeWalkRoots(repoRoot, resolvedRepo, vaultRoot, relWithin(resolvedVault, resolvedRepo), storePaths)
+	if err != nil {
+		return nil, fmt.Errorf("derive sanctioned roots: %w", err)
+	}
+	sanctioned := sanctionedRoots(roots)
+
+	plan, planSHA256, err := loadPlan(planPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := validatePlan(plan, sanctioned); err != nil {
+		return nil, err
+	}
+
+	resolutions := map[string]string{}
+	if resolutionsPath != "" {
+		resolutions, err = loadResolutions(resolutionsPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := validateResolutions(plan, resolutions); err != nil {
+		return nil, err
+	}
+
+	writes, err := plannedWrites(plan, resolutions)
+	if err != nil {
+		return nil, err
+	}
+	if len(writes) == 0 {
+		return &SyncResult{
+			FilesWritten:     []string{},
+			NothingToPublish: true,
+			ApprovedBy:       approvedBy,
+			PlanSHA256:       planSHA256,
+		}, nil
+	}
+
+	worktree, branch, err := createSyncWorktree(repoRoot, plan.Repo.BaseSHA, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	filesWritten, gitignoreFixApplied, err := materializePlan(repoRoot, worktree, plan, resolutions)
+	if err != nil {
+		return nil, fmt.Errorf("%w (worktree dir left at %s; remove it and run `git worktree prune`)", err, worktree)
+	}
+	if err := stagePlannedFiles(worktree, filesWritten, gitignoreFixApplied); err != nil {
+		return nil, fmt.Errorf("%w (worktree dir left at %s; remove it and run `git worktree prune`)", err, worktree)
+	}
+	commitSHA, err := commitPlanned(worktree, renderCommitMessage(writes, approvedBy, planSHA256))
+	if err != nil {
+		return nil, fmt.Errorf("%w (worktree dir left at %s; remove it and run `git worktree prune`)", err, worktree)
+	}
+	return &SyncResult{
+		Branch:              branch,
+		Worktree:            worktree,
+		Commit:              commitSHA,
+		FilesWritten:        filesWritten,
+		GitignoreFixApplied: gitignoreFixApplied,
+		NothingToPublish:    false,
+		PRBody:              renderPRBody(writes, gitignoreFixApplied, approvedBy),
+		ApprovedBy:          approvedBy,
+		PlanSHA256:          planSHA256,
+	}, nil
+}
+
+// validateApprovedBy rejects approver identities carrying control characters:
+// a newline in --approved-by could forge additional commit trailers such as a
+// second Plan-sha256 (design D7 step 1). An empty identity is allowed here;
+// the fallback resolution happens later in the flow.
+func validateApprovedBy(s string) error {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("approved-by contains control characters")
+		}
+	}
+	return nil
+}
+
+// validatePlan performs the structural, fail-closed validation of a consumed
+// plan against the execution-time sanctioned roots: schema version, hex
+// fields, source-label vocabulary, path hygiene and confinement, and the
+// bounded gitignore-fix shape (design D7 step 1). Any violation is an error
+// before any worktree, branch, or file exists.
+func validatePlan(plan *Plan, sanctioned []string) error {
+	if plan.SchemaVersion != PlanSchemaVersion {
+		return fmt.Errorf("unsupported plan schema version %d", plan.SchemaVersion)
+	}
+	if !isHex40(plan.Repo.BaseSHA) {
+		return fmt.Errorf("plan repo.base_sha %q is not 40-hex", plan.Repo.BaseSHA)
+	}
+	labels := make([]string, 0, len(plan.Repo.StashRefs))
+	for label := range plan.Repo.StashRefs {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+	for _, label := range labels {
+		if !isHex40(plan.Repo.StashRefs[label]) {
+			return fmt.Errorf("plan repo.stash_refs[%s] is not 40-hex", label)
+		}
+	}
+	if err := matchRoots(plan.Repo.ArtifactRoots, sanctioned); err != nil {
+		return err
+	}
+	for _, art := range plan.Artifacts {
+		if err := validPlanPath(art.Path, sanctioned); err != nil {
+			return err
+		}
+		if !isHex64(art.SHA256) {
+			return fmt.Errorf("plan artifact %s sha256 is not 64-hex", art.Path)
+		}
+		for _, src := range art.Sources {
+			if !validSourceLabel(src) {
+				return fmt.Errorf("plan artifact %s carries vocabulary-violating source label %q", art.Path, src)
+			}
+		}
+	}
+	for _, conf := range plan.Conflicts {
+		if err := validPlanPath(conf.Path, sanctioned); err != nil {
+			return err
+		}
+		for _, v := range conf.Variants {
+			if !isHex64(v.SHA256) {
+				return fmt.Errorf("plan conflict %s variant sha256 is not 64-hex", conf.Path)
+			}
+			for _, src := range v.Sources {
+				if !validSourceLabel(src) {
+					return fmt.Errorf("plan conflict %s carries vocabulary-violating source label %q", conf.Path, src)
+				}
+			}
+		}
+	}
+	for _, b := range plan.Blocked {
+		if err := validPlanPath(b.Path, sanctioned); err != nil {
+			return err
+		}
+	}
+	if fix := plan.Gitignore.Fix; fix != nil {
+		if fix.File != ".gitignore" {
+			return fmt.Errorf("gitignore fix names unsupported file %q", fix.File)
+		}
+		if fix.Anchor.From != "dewey" || fix.Anchor.To != "/dewey" {
+			return fmt.Errorf("gitignore fix anchor is not the bounded dewey-to-/dewey shape")
+		}
+		if len(fix.Reignore) == 0 {
+			return fmt.Errorf("gitignore fix carries no runtime-state re-ignores")
+		}
+	}
+	return nil
+}
+
+// validPlanPath enforces plan-path hygiene: repository-relative, clean,
+// traversal-free, free of control characters, colons, and leading-hyphen
+// components, and confined to the sanctioned artifact directories.
+func validPlanPath(p string, sanctioned []string) error {
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("plan path %q is absolute", p)
+	}
+	if p != filepath.Clean(p) {
+		return fmt.Errorf("plan path %q is not clean", p)
+	}
+	if hasControlChars(p) {
+		return fmt.Errorf("plan path %q carries control characters", p)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return fmt.Errorf("plan path %q traverses out of the repository", p)
+		}
+		if strings.HasPrefix(seg, "-") {
+			return fmt.Errorf("plan path %q has a leading-hyphen component", p)
+		}
+		if strings.Contains(seg, ":") {
+			return fmt.Errorf("plan path %q carries a colon", p)
+		}
+	}
+	for _, root := range sanctioned {
+		if strings.HasPrefix(p, root) {
+			return nil
+		}
+	}
+	return fmt.Errorf("plan path %q is outside the sanctioned artifact directories", p)
+}
+
+// validSourceLabel reports whether a plan source label is in the plan
+// vocabulary: working-tree, stash:stash@{N}, stash-untracked:stash@{N}, or
+// commit:<40-hex>.
+func validSourceLabel(s string) bool {
+	if s == SourceWorkingTree {
+		return true
+	}
+	if rest, ok := strings.CutPrefix(s, SourceStashUntrackedPrefix); ok {
+		return isStashLabel(rest)
+	}
+	if rest, ok := strings.CutPrefix(s, SourceStashPrefix); ok {
+		return isStashLabel(rest)
+	}
+	if rest, ok := strings.CutPrefix(s, SourceCommitPrefix); ok {
+		return isHex40(rest)
+	}
+	return false
+}
+
+// isStashLabel reports whether s is a raw stash label of the form
+// stash@{N} with a non-empty numeric N.
+func isStashLabel(s string) bool {
+	rest, ok := strings.CutPrefix(s, "stash@{")
+	if !ok {
+		return false
+	}
+	digits, ok := strings.CutSuffix(rest, "}")
+	if !ok || digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isHex64 reports whether s is 64 lowercase hexadecimal characters.
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// loadResolutions reads the path-keyed resolutions file (path → chosen
+// variant sha256) produced by the human gate.
+func loadResolutions(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read resolutions %s: %w", path, err)
+	}
+	var resolutions map[string]string
+	if err := json.Unmarshal(raw, &resolutions); err != nil {
+		return nil, fmt.Errorf("parse resolutions: %w", err)
+	}
+	return resolutions, nil
+}
+
+// validateResolutions checks every resolution entry against the plan's
+// conflicts: the path must name a real conflict, the sha256 must be one of
+// its variants, and a variant carrying blocking findings is never a valid
+// resolution (design D7 step 1).
+func validateResolutions(plan *Plan, resolutions map[string]string) error {
+	keys := make([]string, 0, len(resolutions))
+	for k := range resolutions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, path := range keys {
+		sha := resolutions[path]
+		if !isHex64(sha) {
+			return fmt.Errorf("resolution for %s names a sha256 that is not 64-hex", path)
+		}
+		var conf *Conflict
+		for i := range plan.Conflicts {
+			if plan.Conflicts[i].Path == path {
+				conf = &plan.Conflicts[i]
+				break
+			}
+		}
+		if conf == nil {
+			return fmt.Errorf("resolution names unknown conflict path %s", path)
+		}
+		for _, v := range conf.Variants {
+			if v.SHA256 != sha {
+				continue
+			}
+			if shaBlocked(v.Findings) {
+				return fmt.Errorf("resolution for %s names blocked variant %s — choose a clean variant", path, sha)
+			}
+			return nil
+		}
+		return fmt.Errorf("resolution for %s names sha256 %s, which is not a variant of the conflict", path, sha)
+	}
+	return nil
+}
+
+// matchRoots cross-checks the plan's recorded artifact roots against the
+// execution-time sanctioned set; a mismatch means the plan is stale relative
+// to the repository's current configuration and must be re-run.
+func matchRoots(planRoots, sanctioned []string) error {
+	a := append([]string(nil), planRoots...)
+	b := append([]string(nil), sanctioned...)
+	sort.Strings(a)
+	sort.Strings(b)
+	if len(a) != len(b) {
+		return fmt.Errorf("plan artifact roots do not match the sanctioned set — re-run plan")
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return fmt.Errorf("plan artifact roots do not match the sanctioned set — re-run plan")
+		}
+	}
+	return nil
+}

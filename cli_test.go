@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -4663,5 +4665,124 @@ func TestResolveArtifactsContext_BadYaml(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "load knowledge stores config") {
 		t.Errorf("error = %q, want it to contain %q", err.Error(), "load knowledge stores config")
+	}
+}
+
+// --- Promote lock diagnostics (mcp-internal-store-access task 4.1) ---
+
+// holdLockFileForTest creates a lock file at path, acquires an exclusive
+// non-blocking flock on it from this test process, and writes content as
+// the first line. A second open of the same file (as done by
+// detectLockHolder) fails to flock even within the same process because
+// flock locks belong to the open file description, not the process. The
+// lock is held until the test ends.
+func holdLockFileForTest(t *testing.T, path, content string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("create lock file %q: %v", path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		t.Fatalf("flock %q: %v", path, err)
+	}
+	if content != "" {
+		if _, err := f.WriteString(content); err != nil {
+			t.Fatalf("write lock file content: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	})
+}
+
+// TestPromoteStoreOpenError_HeldLock verifies that a store.New failure is
+// enriched with the lock holder's recorded PID and command, points to the
+// dewey_promote MCP tool, and wraps the underlying error.
+func TestPromoteStoreOpenError_HeldLock(t *testing.T) {
+	dir := t.TempDir()
+	pid := os.Getpid()
+	holdLockFileForTest(t, filepath.Join(dir, "dewey.lock"),
+		fmt.Sprintf("%d dewey serve --vault /tmp/vault\n", pid))
+
+	underlying := errors.New("another Dewey process is using this database: resource temporarily unavailable")
+	got := promoteStoreOpenError(dir, underlying)
+	msg := got.Error()
+
+	if !strings.Contains(msg, fmt.Sprintf("PID %d", pid)) {
+		t.Errorf("error %q does not identify holder PID %d", msg, pid)
+	}
+	if !strings.Contains(msg, "dewey serve --vault /tmp/vault") {
+		t.Errorf("error %q does not include the recorded holder command", msg)
+	}
+	if !strings.Contains(msg, "dewey_promote") {
+		t.Errorf("error %q does not point to the dewey_promote MCP tool", msg)
+	}
+	if !errors.Is(got, underlying) {
+		t.Errorf("errors.Is(got, underlying) = false, want the underlying store.New error wrapped")
+	}
+}
+
+// TestPromoteStoreOpenError_OldFormatLock verifies that a held lock file
+// with no recorded PID (pre-T011 format) still produces the unknown-holder
+// description and the MCP promote hint.
+func TestPromoteStoreOpenError_OldFormatLock(t *testing.T) {
+	dir := t.TempDir()
+	// Held lock file with empty content: old format, no PID line.
+	holdLockFileForTest(t, filepath.Join(dir, "dewey.lock"), "")
+
+	underlying := errors.New("another Dewey process is using this database: resource temporarily unavailable")
+	got := promoteStoreOpenError(dir, underlying)
+	msg := got.Error()
+
+	if !strings.Contains(msg, "lock held (unknown process)") {
+		t.Errorf("error %q does not mention the unknown lock holder", msg)
+	}
+	if !strings.Contains(msg, "dewey_promote") {
+		t.Errorf("error %q does not point to the dewey_promote MCP tool", msg)
+	}
+	if !errors.Is(got, underlying) {
+		t.Errorf("errors.Is(got, underlying) = false, want the underlying store.New error wrapped")
+	}
+}
+
+// TestPromoteStoreOpenError_NoLockFile verifies graceful degradation: with
+// no lock file at all, the error is exactly the plain wrapped form with no
+// lock-holder text and no MCP hint.
+func TestPromoteStoreOpenError_NoLockFile(t *testing.T) {
+	dir := t.TempDir() // no dewey.lock exists
+
+	underlying := errors.New("migrate schema: boom")
+	got := promoteStoreOpenError(dir, underlying)
+
+	want := fmt.Errorf("open store: %w", underlying).Error()
+	if got.Error() != want {
+		t.Errorf("error = %q, want exactly %q (plain wrapped form)", got.Error(), want)
+	}
+	if !errors.Is(got, underlying) {
+		t.Errorf("errors.Is(got, underlying) = false, want the underlying store.New error wrapped")
+	}
+}
+
+// TestPromoteStoreOpenError_UnheldLockFile verifies graceful degradation
+// for a stale lock file: the file exists with PID content, but nothing
+// holds the flock, so the error stays in the plain wrapped form.
+func TestPromoteStoreOpenError_UnheldLockFile(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "dewey.lock")
+	if err := os.WriteFile(lockPath, []byte("99999 dewey serve\n"), 0o644); err != nil {
+		t.Fatalf("write stale lock file: %v", err)
+	}
+
+	underlying := errors.New("migrate schema: boom")
+	got := promoteStoreOpenError(dir, underlying)
+
+	want := fmt.Errorf("open store: %w", underlying).Error()
+	if got.Error() != want {
+		t.Errorf("error = %q, want exactly %q (no lock-holder diagnostics when lock is unheld)", got.Error(), want)
+	}
+	if !errors.Is(got, underlying) {
+		t.Errorf("errors.Is(got, underlying) = false, want the underlying store.New error wrapped")
 	}
 }

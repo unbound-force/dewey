@@ -74,9 +74,10 @@ here. The resulting PR closes #90 and #91.
 3. **Promote reliability and diagnosability (#91).** `promote`
    distinguishes "page not found" from underlying store errors,
    resolves internal page names the way agents call them (exact name,
-   then `compiled/{tag}`, then `learning/{name}` —
-   [NEEDS CLARIFICATION: confirm the shorthand resolution is wanted;
-   default is to include it since #91 shows both call forms failing]),
+   then `compiled/{tag}`, then `learning/{name}` — resolved decision:
+   shorthand resolution is included; when the exact name misses and
+   the input contains no `/`, promote tries `compiled/{name}` then
+   `learning/{name}`, first existing wins),
    and gains regression tests covering learning and compiled pages.
 
 4. **CLI promote lock error names the holder.** When `dewey promote`

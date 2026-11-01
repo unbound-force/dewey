@@ -108,7 +108,7 @@ type sourceSummary struct {
 // operation is already in progress.
 func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input types.IndexInput) (*mcp.CallToolResult, any, error) {
 	if ix.store == nil {
-		return errorResult("index requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
+		return errorResult(persistentStorageError("index").Error()), nil, nil
 	}
 
 	// Non-blocking mutual exclusion: if another Index or Reindex is running,
@@ -204,7 +204,7 @@ func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input t
 // another indexing operation is already in progress.
 func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input types.ReindexInput) (*mcp.CallToolResult, any, error) {
 	if ix.store == nil {
-		return errorResult("reindex requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
+		return errorResult(persistentStorageError("reindex").Error()), nil, nil
 	}
 
 	// Non-blocking mutual exclusion: shared mutex with Index (per FR-005).

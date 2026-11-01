@@ -28,6 +28,8 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 50 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
+Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
+
 ### Navigate
 
 | Tool | Backend | Description |
@@ -131,7 +133,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `promote` | Both | Promote draft content to validated after human review |
+| `promote` | Both | Promote draft content to validated after human review; accepts exact names or shorthand (`name` tries `compiled/name`, then `learning/name`) |
 
 ### Indexing
 
@@ -139,7 +141,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 |------|---------|-------------|
 | `index` | Both | Fetch and index configured content sources |
 | `reindex` | Both | Delete and rebuild all external source content |
-| `reload` | Obsidian | Force a full vault re-index from disk |
+| `reload` | Obsidian | Force a full vault re-index from disk; store-backed pages (learnings, compiled articles) are re-loaded from the persistent store, not dropped |
 
 ### Learning
 
@@ -442,6 +444,10 @@ Promote a page from `draft` tier to `validated` after human review. Only draft-t
 ```bash
 dewey promote [--vault PATH] PAGE_NAME
 ```
+
+The page is located by its exact name; when that name is absent and `PAGE_NAME` contains no `/`, the shorthand is resolved by trying `compiled/PAGE_NAME`, then `learning/PAGE_NAME`. A missing page reports `Page '<name>' not found`; a store failure reports `failed to look up page '<name>'` so the error is not mistaken for absence.
+
+When the store cannot be opened because another Dewey process holds the database lock, the error identifies the lock holder (PID and command, read from `.uf/dewey/dewey.lock`) and points to the `dewey_promote` MCP tool as the supported write path while a server is running.
 
 ### dewey curate
 

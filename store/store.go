@@ -376,6 +376,62 @@ func (s *Store) GetBlocksByPage(pageName string) ([]*Block, error) {
 	return blocks, rows.Err()
 }
 
+// SearchBlocksByContent returns blocks whose content contains the given query
+// as a case-insensitive substring (containment) match, ordered by page name
+// then position for deterministic results. Each returned block carries its
+// page name. Used by the vault layer to merge store-backed hits into
+// full-text search results (mcp-internal-store-access, Unified Full-Text
+// Search).
+//
+// The query is matched as literal text: LIKE metacharacters (%, _, \) in the
+// query are escaped so they cannot alter the match pattern, and the pattern
+// is passed as a parameterized argument (FR-028). SQLite's LIKE operator is
+// case-insensitive for ASCII by default, which matches the vault layer's
+// case-insensitive search semantics. An empty query matches every block
+// (all content is non-NULL).
+//
+// A limit greater than 0 caps the number of returned blocks; limit <= 0
+// returns all matches, following the same convention as SearchSimilar.
+//
+// Returns an empty slice (not nil) if no blocks match. Returns an error if
+// the query or row scanning fails.
+func (s *Store) SearchBlocksByContent(query string, limit int) ([]*Block, error) {
+	// Containment semantics: wrap the escaped literal query in % wildcards.
+	// escapeLike prevents user-supplied % and _ from acting as wildcards
+	// (pattern injection); the ESCAPE '\' clause activates those escapes.
+	pattern := "%" + escapeLike(query) + "%"
+
+	// SQLite treats a negative LIMIT as unbounded, so limit <= 0 means
+	// "no cap" without dynamic SQL construction.
+	if limit <= 0 {
+		limit = -1
+	}
+
+	rows, err := s.db.Query(`
+		SELECT uuid, page_name, parent_uuid, content, heading_level, position
+		FROM blocks
+		WHERE content LIKE ? ESCAPE '\'
+		ORDER BY page_name, position
+		LIMIT ?`, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search blocks by content %q: %w", query, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	blocks := make([]*Block, 0)
+	for rows.Next() {
+		b := &Block{}
+		if err := rows.Scan(
+			&b.UUID, &b.PageName, &b.ParentUUID,
+			&b.Content, &b.HeadingLevel, &b.Position,
+		); err != nil {
+			return nil, fmt.Errorf("scan block: %w", err)
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, rows.Err()
+}
+
 // DeleteBlocksByPage removes all blocks belonging to the named page.
 // Returns an error if the delete query fails. Does not return an error
 // if no blocks exist for the page (idempotent delete).

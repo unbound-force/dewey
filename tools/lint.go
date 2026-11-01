@@ -84,7 +84,7 @@ func NewLint(s *store.Store, e embed.Embedder, vaultPath string, maxChunkChars i
 // Semantic issues (contradictions, staleness) require human/agent judgment.
 func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.LintInput) (*mcp.CallToolResult, any, error) {
 	if l.store == nil {
-		return errorResult("lint requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
+		return errorResult(persistentStorageError("lint").Error()), nil, nil
 	}
 
 	lintLogger.Info("lint starting", "fix", input.Fix)

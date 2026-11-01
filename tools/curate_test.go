@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -20,6 +21,13 @@ func TestCurateTool_NilStore(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected MCP error result for nil store")
+	}
+	text := resultText(result)
+	if !strings.Contains(text, "curate requires persistent storage") {
+		t.Errorf("error message = %q, should mention 'curate requires persistent storage'", text)
+	}
+	if !strings.Contains(text, "may hold the database lock") {
+		t.Errorf("error message = %q, should mention the lock hint 'may hold the database lock'", text)
 	}
 }
 

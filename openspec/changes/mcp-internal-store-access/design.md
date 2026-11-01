@@ -223,13 +223,12 @@ agents to discover learnings; the current learning-only fallback
 (vault/vault.go) already proves the pattern. Compiled pages carry
 `topic` (not `tag`) in frontmatter — the spec scenario uses
 `find_by_tag(tag="gateway")` against a compiled page whose
-properties include `topic: gateway`. [NEEDS CLARIFICATION: should
-`topic` be treated as a tag-equivalent property for compiled pages,
-or should compiled pages rely on block-content `#tags` only? Default
-decision: also match `topic` for pages whose `source_id` is
-`compiled`, since `compile` clusters by dominant tag and `topic` is
-the user-visible tag of a compiled article. Adjust the spec scenario
-if declined.]
+properties include `topic: gateway`. Resolved decision: `topic` IS
+treated as a tag-equivalent property, source-scoped to pages whose
+`source_id` is `compiled` — a stray `topic` property on a learning or
+external page does not match. Rationale: `compile` clusters by
+dominant tag and `topic` is the user-visible tag of a compiled
+article.
 
 ### D6 — Promote: exact match, then prefix resolution; honest errors
 
@@ -240,9 +239,9 @@ vault layer — correct). Change two things:
    `failed to look up page: <err>` so store failures are diagnosable
    (the current code reports both as "not found").
 2. When the exact name misses and the input contains no `/`, try
-   `compiled/{name}` then `learning/{name}` before failing
-   ([NEEDS CLARIFICATION] carried from the spec; #91 shows agents
-   calling both forms).
+   `compiled/{name}` then `learning/{name}`, first existing wins
+   (resolved decision: shorthand resolution is included; #91 records
+   agents calling both forms).
 
 **Rationale.** `store_compiled` and `store_learning` results both
 return the full page name, so exact matching remains primary;

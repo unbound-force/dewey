@@ -125,16 +125,6 @@ func (f *fixtureRepo) write(rel, content string) {
 	}
 }
 
-// read returns the content at the repository-relative path rel.
-func (f *fixtureRepo) read(rel string) string {
-	f.t.Helper()
-	b, err := os.ReadFile(filepath.Join(f.root, filepath.FromSlash(rel)))
-	if err != nil {
-		f.t.Fatalf("fixture: read %s: %v", rel, err)
-	}
-	return string(b)
-}
-
 // path returns the absolute path for the repository-relative path rel.
 func (f *fixtureRepo) path(rel string) string {
 	return filepath.Join(f.root, filepath.FromSlash(rel))

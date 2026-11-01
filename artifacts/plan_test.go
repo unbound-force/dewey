@@ -594,7 +594,7 @@ func TestBuildPlan_GitignoreExternalSource(t *testing.T) {
 	if _, err := fh.WriteString("\ndewey\n"); err != nil {
 		t.Fatalf("append exclude: %v", err)
 	}
-	fh.Close()
+	_ = fh.Close()
 
 	repo, vault := planRepoVault(t, f)
 	plan := mustPlan(t, repo, vault, nil)

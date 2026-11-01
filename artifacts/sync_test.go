@@ -435,7 +435,7 @@ func TestRunSync_ExternalIgnoreFixSkipped(t *testing.T) {
 	if _, err := fd.WriteString("\ndewey\n"); err != nil {
 		t.Fatalf("append exclude: %v", err)
 	}
-	fd.Close()
+	_ = fd.Close()
 
 	plan, planPath := buildPlanFile(t, f)
 	if plan.Gitignore.Status != GitignoreStatusIgnoreSourceExternal {
@@ -508,11 +508,11 @@ func TestRunSync_LockHeldFullFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open lock: %v", err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatalf("flock: %v", err)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 
 	// Sync must succeed while another process holds the dewey.lock flock
 	// (spec: sync operates exclusively through git plumbing and never

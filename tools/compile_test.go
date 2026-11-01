@@ -81,6 +81,38 @@ func TestCompile_NilStore(t *testing.T) {
 	}
 }
 
+// TestStoreCompiled_NilStore verifies that store_compiled with a nil store
+// returns an MCP error result (the shared persistent-storage error) and does
+// not panic (spec: Degraded-Mode Safety — previously the method dereferenced
+// the nil store in DeletePage). The guard must fire before any article file
+// is written, so no orphaned, unindexed file is left behind.
+func TestStoreCompiled_NilStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	c := NewCompile(nil, nil, nil, tmpDir, 0)
+
+	result, _, err := c.StoreCompiled(context.Background(), nil, types.StoreCompiledInput{
+		Tag:     "auth",
+		Content: "# Current State\n\nbody",
+	})
+	if err != nil {
+		t.Fatalf("StoreCompiled error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when store is nil")
+	}
+	text := resultText(result)
+	if !strings.Contains(text, "store_compiled requires persistent storage") {
+		t.Errorf("error message = %q, should mention 'store_compiled requires persistent storage'", text)
+	}
+
+	// Fail fast check: the guard must prevent the article file write that
+	// previously preceded the nil-store panic.
+	articlePath := filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md")
+	if _, statErr := os.Stat(articlePath); statErr == nil {
+		t.Errorf("compiled article file %s was written despite nil store", articlePath)
+	}
+}
+
 // TestCompile_NoLearnings verifies that compiling with no learnings produces
 // an empty summary with no errors and writes an _index.md.
 func TestCompile_NoLearnings(t *testing.T) {

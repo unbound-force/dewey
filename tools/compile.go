@@ -107,7 +107,7 @@ func (c *Compile) compiledDir() string {
 // existing compiled articles by re-compiling affected tags.
 func (c *Compile) Compile(ctx context.Context, req *mcp.CallToolRequest, input types.CompileInput) (*mcp.CallToolResult, any, error) {
 	if c.store == nil {
-		return errorResult("compile requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
+		return errorResult(persistentStorageError("compile").Error()), nil, nil
 	}
 
 	// Non-blocking mutual exclusion: if another compile is running,
@@ -691,7 +691,13 @@ func (c *Compile) writeEmptyIndex() error {
 // StoreCompiled persists a compiled article that was synthesized by the calling
 // agent. This closes the loop on the nil-synthesizer MCP path: the agent calls
 // compile → gets prompts → synthesizes → calls store_compiled to persist.
+// Returns the shared persistent-storage error when the store is nil (degraded,
+// store-less mode) instead of panicking, and does so before any article file
+// is written (spec: Degraded-Mode Safety).
 func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input types.StoreCompiledInput) (*mcp.CallToolResult, any, error) {
+	if c.store == nil {
+		return errorResult(persistentStorageError("store_compiled").Error()), nil, nil
+	}
 	if input.Tag == "" {
 		return errorResult("tag is required"), nil, nil
 	}

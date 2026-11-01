@@ -546,6 +546,239 @@ func TestDeleteBlocksByPage(t *testing.T) {
 	}
 }
 
+// --- Block Content Search Tests (mcp-internal-store-access) ---
+
+func TestSearchBlocksByContent_Match(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.InsertPage(testPage("compiled/gateway")); err != nil {
+		t.Fatalf("InsertPage(compiled/gateway): %v", err)
+	}
+	if err := s.InsertPage(testPage("notes/other")); err != nil {
+		t.Fatalf("InsertPage(notes/other): %v", err)
+	}
+
+	// Matching blocks on two pages plus one non-matching block.
+	insert := []Block{
+		{UUID: "gw-uuid-1", PageName: "compiled/gateway", Content: "# Gateway\n\nBody text with unique-phrase.", HeadingLevel: 1, Position: 0},
+		{UUID: "gw-uuid-2", PageName: "compiled/gateway", Content: "The gateway mentions unique-phrase again.", Position: 1},
+		{UUID: "other-uuid", PageName: "notes/other", Content: "notes mentioning unique-phrase", Position: 0},
+		{UUID: "unrelated-uuid", PageName: "notes/other", Content: "completely different topic", Position: 1},
+	}
+	for i := range insert {
+		if err := s.InsertBlock(&insert[i]); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", insert[i].UUID, err)
+		}
+	}
+
+	got, err := s.SearchBlocksByContent("unique-phrase", 20)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d blocks, want 3", len(got))
+	}
+
+	// Results are ordered by page name then position, with page names
+	// populated and stored content intact.
+	wantUUIDs := []string{"gw-uuid-1", "gw-uuid-2", "other-uuid"}
+	wantPages := []string{"compiled/gateway", "compiled/gateway", "notes/other"}
+	for i, b := range got {
+		if b.UUID != wantUUIDs[i] {
+			t.Errorf("got[%d].UUID = %q, want %q", i, b.UUID, wantUUIDs[i])
+		}
+		if b.PageName != wantPages[i] {
+			t.Errorf("got[%d].PageName = %q, want %q", i, b.PageName, wantPages[i])
+		}
+	}
+	if got[0].Content != "# Gateway\n\nBody text with unique-phrase." {
+		t.Errorf("got[0].Content = %q, want stored content", got[0].Content)
+	}
+}
+
+func TestSearchBlocksByContent_CaseInsensitive(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.InsertPage(testPage("ci-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if err := s.InsertBlock(&Block{
+		UUID:     "ci-uuid-1",
+		PageName: "ci-page",
+		Content:  "Use Parameterized SQL to prevent injection",
+		Position: 0,
+	}); err != nil {
+		t.Fatalf("InsertBlock(ci-uuid-1): %v", err)
+	}
+	if err := s.InsertBlock(&Block{
+		UUID:     "ci-uuid-2",
+		PageName: "ci-page",
+		Content:  "sqlite like is case-insensitive for ascii",
+		Position: 1,
+	}); err != nil {
+		t.Fatalf("InsertBlock(ci-uuid-2): %v", err)
+	}
+
+	// Lowercase query against mixed-case content.
+	got, err := s.SearchBlocksByContent("parameterized", 10)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent(lowercase): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("lowercase query: got %d blocks, want 1", len(got))
+	}
+	if got[0].UUID != "ci-uuid-1" {
+		t.Errorf("lowercase query: UUID = %q, want %q", got[0].UUID, "ci-uuid-1")
+	}
+
+	// Uppercase query against mixed-case content.
+	got, err = s.SearchBlocksByContent("PARAMETERIZED", 10)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent(uppercase): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("uppercase query: got %d blocks, want 1", len(got))
+	}
+	if got[0].UUID != "ci-uuid-1" {
+		t.Errorf("uppercase query: UUID = %q, want %q", got[0].UUID, "ci-uuid-1")
+	}
+
+	// Mixed-case query against lowercase content.
+	got, err = s.SearchBlocksByContent("Case-Insensitive", 10)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent(mixed): %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("mixed-case query: got %d blocks, want 1", len(got))
+	}
+	if got[0].UUID != "ci-uuid-2" {
+		t.Errorf("mixed-case query: UUID = %q, want %q", got[0].UUID, "ci-uuid-2")
+	}
+}
+
+func TestSearchBlocksByContent_NoMatch(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.InsertPage(testPage("nm-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if err := s.InsertBlock(&Block{
+		UUID:     "nm-uuid",
+		PageName: "nm-page",
+		Content:  "existing content",
+		Position: 0,
+	}); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	got, err := s.SearchBlocksByContent("nonexistent-phrase", 10)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent: %v", err)
+	}
+	if got == nil {
+		t.Error("got nil slice, want empty (non-nil) slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d blocks, want 0", len(got))
+	}
+}
+
+func TestSearchBlocksByContent_Limit(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.InsertPage(testPage("limit-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := s.InsertBlock(&Block{
+			UUID:     fmt.Sprintf("limit-uuid-%d", i),
+			PageName: "limit-page",
+			Content:  fmt.Sprintf("needle in block %d", i),
+			Position: i,
+		}); err != nil {
+			t.Fatalf("InsertBlock(%d): %v", i, err)
+		}
+	}
+
+	// Limit below the match count truncates results in order.
+	got, err := s.SearchBlocksByContent("needle", 3)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent(limit=3): %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("limit 3: got %d blocks, want 3", len(got))
+	}
+	for i, b := range got {
+		want := fmt.Sprintf("limit-uuid-%d", i)
+		if b.UUID != want {
+			t.Errorf("limit 3: got[%d].UUID = %q, want %q", i, b.UUID, want)
+		}
+	}
+
+	// Limit above the match count returns all matches.
+	got, err = s.SearchBlocksByContent("needle", 100)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent(limit=100): %v", err)
+	}
+	if len(got) != 5 {
+		t.Errorf("limit 100: got %d blocks, want 5", len(got))
+	}
+
+	// limit <= 0 means no cap (SearchSimilar convention).
+	got, err = s.SearchBlocksByContent("needle", 0)
+	if err != nil {
+		t.Fatalf("SearchBlocksByContent(limit=0): %v", err)
+	}
+	if len(got) != 5 {
+		t.Errorf("limit 0: got %d blocks, want 5", len(got))
+	}
+}
+
+func TestSearchBlocksByContent_LikeWildcardsLiteral(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.InsertPage(testPage("wild-page")); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	insert := []Block{
+		{UUID: "wild-percent", PageName: "wild-page", Content: "completed 100% of the work", Position: 0},
+		{UUID: "wild-underscore", PageName: "wild-page", Content: "task_a is done", Position: 1},
+		{UUID: "wild-backslash", PageName: "wild-page", Content: `path C:\Users\jay`, Position: 2},
+		// Would match the queries above if % and _ acted as LIKE
+		// wildcards instead of literal text.
+		{UUID: "wild-decoy", PageName: "wild-page", Content: "completed 100x of taskza", Position: 3},
+	}
+	for i := range insert {
+		if err := s.InsertBlock(&insert[i]); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", insert[i].UUID, err)
+		}
+	}
+
+	cases := []struct {
+		name  string
+		query string
+		want  string // UUID of the single expected match.
+	}{
+		{"percent literal", "100%", "wild-percent"},
+		{"underscore literal", "task_a", "wild-underscore"},
+		{"backslash literal", `C:\Users`, "wild-backslash"},
+	}
+	for _, tc := range cases {
+		got, err := s.SearchBlocksByContent(tc.query, 10)
+		if err != nil {
+			t.Fatalf("%s: SearchBlocksByContent: %v", tc.name, err)
+		}
+		if len(got) != 1 {
+			t.Errorf("%s: got %d blocks, want 1", tc.name, len(got))
+			continue
+		}
+		if got[0].UUID != tc.want {
+			t.Errorf("%s: UUID = %q, want %q", tc.name, got[0].UUID, tc.want)
+		}
+	}
+}
+
 // --- Link Tests ---
 
 func TestInsertLink_Success(t *testing.T) {

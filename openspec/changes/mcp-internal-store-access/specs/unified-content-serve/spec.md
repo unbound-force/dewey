@@ -139,11 +139,11 @@ without duplicating pages already matched from the vault file index.
 
 #### Scenario: find_by_tag matches a compiled article by frontmatter tag
 
-[NEEDS CLARIFICATION: should compiled pages' `topic` property be
-treated as tag-equivalent for `find_by_tag` (the default assumed
-here), or should store pages match only on frontmatter `tag`/`tags`
-and block-content `#tags`? Design D5 records the rationale for the
-default.]
+Resolved decision: the `topic` property IS tag-equivalent for
+`find_by_tag`, source-scoped to pages from the compiled source — a
+stray `topic` property on a learning or external page does not match.
+Store pages otherwise match on frontmatter `tag`/`tags` and
+block-content `#tags` only.
 
 - **GIVEN** a persistent store containing `compiled/gateway` whose
   stored properties include `topic: gateway`
@@ -212,19 +212,16 @@ When the input name does not match a store page exactly, `promote`
 MUST resolve it by trying the `compiled/{name}` and `learning/{name}`
 prefixes before reporting failure.
 
-[NEEDS CLARIFICATION: confirm that shorthand resolution
-(`gateway` → `compiled/gateway`) is desired; the default decision is
-to include it because #91 records both call forms failing. If
-declined, promote keeps exact-name matching only and this requirement
-is dropped.]
+Resolved decision: shorthand resolution is INCLUDED — when the exact
+name misses and the input contains no `/`, promote tries
+`compiled/{name}` then `learning/{name}`, first existing wins.
 
 #### Scenario: Shorthand resolution
 
 - **GIVEN** a persistent store containing `compiled/gateway` with tier
   `draft`
 - **WHEN** `promote(page="gateway")` is called
-- **THEN** `compiled/gateway` is resolved and promoted (subject to the
-  open clarification above)
+- **THEN** `compiled/gateway` is resolved and promoted
 
 ### Requirement: Promote Error Distinction
 

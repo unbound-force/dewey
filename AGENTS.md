@@ -267,7 +267,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `--verbose` | `-v` | Enable debug logging (UUID seeds, block insertions, lock detection) |
 | `--log-file PATH` | | Write logs to file in addition to stderr |
 | `--no-embeddings` | | Skip embedding generation (on serve, index, reindex) |
-| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor, manifest) |
+| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor, manifest, artifacts plan, artifacts sync) |
 
 ### CLI Commands
 
@@ -288,6 +288,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey lint` | Scan the knowledge base for quality issues (stale decisions, embedding gaps, contradictions, knowledge store quality) |
 | `dewey promote` | Promote a page from `draft` tier to `validated` |
 | `dewey curate` | Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores |
+| `dewey artifacts` | Plan and publish stranded knowledge artifacts to git behind a human gate |
 
 ### Content Source Types
 
@@ -306,7 +307,7 @@ MCP server + CLI tool with flat package layout:
 
 ```text
 main.go              # Entry point, Cobra root command, serve logic
-cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote, curate)
+cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote, curate, artifacts)
 server.go            # MCP server setup, 50 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
@@ -323,6 +324,7 @@ source/              # Pluggable content sources (disk, GitHub, web crawl, code,
 chunker/             # Language-aware source code parsing (Chunker interface, Go implementation, registry)
 curate/              # Knowledge store configuration parsing + curation pipeline (config, extraction, quality analysis)
 sanitize/            # Content sanitization pipeline (injection pattern scanning, structure validation, drift detection, size anomaly detection)
+artifacts/           # Knowledge-artifact publishing: plan/sync sweep, screening, gitignore posture
 ```
 
 ### Key Patterns
@@ -599,8 +601,10 @@ specs/
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 - Go 1.25 (per `go.mod`) + `gopkg.in/yaml.v3` (knowledge store config parsing), `github.com/unbound-force/dewey/v3/llm` (LLM synthesis for curation), `github.com/unbound-force/dewey/v3/curate` (new package — config parsing + curation pipeline), `github.com/spf13/cobra` (CLI — `dewey curate` command), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — `curate` tool) (015-curated-knowledge-stores)
 - N/A (no schema changes — `curated` is a new value in the existing `tier TEXT` column. File-backed learnings use filesystem, not new tables) (015-curated-knowledge-stores)
+- Go 1.25 (per `go.mod`) + stdlib git plumbing via `os/exec` (worktrees, stashes, commit surgery), `github.com/unbound-force/dewey/v3/sanitize` (credential screening), `github.com/spf13/cobra` (CLI — `dewey artifacts plan|sync` commands) (dewey-publish)
 
 ## Recent Changes
+- dewey-publish (OpenSpec): Added `artifacts` package (plan/sync sweep of `.uf/dewey/{learnings,compiled,knowledge}` from working tree, stashes, unpushed commits; credential screening; bounded gitignore fix), `dewey artifacts plan|sync` CLI commands, `/dewey-publish` slash command (non-destructive, mandatory human approval gate)
 - 016-pluggable-providers: Added Vertex AI embedding and synthesis providers, `store_compiled` MCP tool, global config fallback (`~/.config/dewey/config.yaml`), factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()`, `golang.org/x/oauth2/google` dependency
 - learning-identity-collision-fix (OpenSpec): Changed learning identity format from `{tag}-{sequence}` to `{tag}-{YYYYMMDDTHHMMSS}-{author}` with three-tier author resolution (`DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`), sub-second collision avoidance via `O_CREATE|O_EXCL` with suffix fallback, removed `NextLearningSequence` from store, backward-compatible re-ingestion of old-format files
 - 015-curated-knowledge-stores: Added `curate/` package (config parsing + curation pipeline), `dewey curate` CLI command, `curate` MCP tool, file-backed learnings (`.uf/dewey/learnings/`), `curated` trust tier, knowledge stores (`.uf/dewey/knowledge-stores.yaml`), background curation goroutine, lint knowledge store quality metrics

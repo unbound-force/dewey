@@ -304,7 +304,7 @@ This creates:
 - `.uf/dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
 - `.uf/dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
 
-Ignore runtime state, not knowledge. The index (`.uf/dewey/graph.db`, logs) is machine-local and rebuilt from source files — add `.uf/dewey/graph.db` to your `.gitignore`. The knowledge artifact directories (`.uf/dewey/learnings/`, `compiled/`, `knowledge/`) are **not** rebuildable: do not ignore them. Publish them with `/dewey-publish` or `dewey artifacts` instead.
+Ignore runtime state, not knowledge. The machine-local runtime state — `.uf/dewey/graph.db` (with its `-shm` and `-wal` sidecars), `dewey.log`, `dewey.lock`, and `cache/` — is rebuilt from source files and belongs in your `.gitignore`; the private configuration files (`config.yaml`, `sources.yaml`, `knowledge-stores.yaml`) should stay out of git too. The knowledge artifact directories (`.uf/dewey/learnings/`, `compiled/`, `knowledge/`) are **not** rebuildable: do not ignore them. Publish them with `/dewey-publish` or `dewey artifacts` instead.
 
 ### Environment variables
 
@@ -475,6 +475,8 @@ The plan JSON is a stable scripting surface for the `/dewey-publish` flow. Top-l
 Credential screening is a pre-exposure floor, not a guarantee. The scanner's rules — private-key blocks and credential-bearing connection strings at critical severity; `sk-`, `ghp_`, `xoxb_`, and `AKIA` prefixes at high severity — are heuristics. Secret scanners such as gitleaks run only after PR creation and provide the second line of defense once content leaves the machine.
 
 When the plan reports gitignore status `bare-dewey-fix`, sync commits a bounded fix that re-ignores runtime state under `.uf/dewey/`-prefixed rules while leaving the artifact directories stageable. After the chore PR merges, artifact files become committable while runtime state stays ignored.
+
+Sync materializes the plan in a dedicated worktree (its path is the sync result's `worktree` field) and leaves the chore branch checked out there. Once the PR is created, remove it with `git worktree remove <worktree>`; the chore branch itself stays for the PR.
 
 ## Content Sources
 

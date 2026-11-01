@@ -167,11 +167,6 @@ func enumerateWorkingTree(repoRoot, vaultRoot string, storePaths []string) ([]ca
 // trio, then the configured store paths sorted by repository-relative path.
 // Roots colliding on repository-relative path are kept first-wins.
 func workingTreeWalkRoots(repoRoot, resolvedRepo, vaultRoot, vaultRel string, storePaths []string) ([]walkRoot, error) {
-	trioKinds := map[string]string{
-		dirLearnings: KindLearning,
-		dirCompiled:  KindCompiled,
-		dirKnowledge: KindKnowledge,
-	}
 	trioNames := []string{dirLearnings, dirCompiled, dirKnowledge}
 
 	var roots []walkRoot

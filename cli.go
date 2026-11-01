@@ -2520,21 +2520,9 @@ Nothing is published until a human approves the plan with --approve.`,
 // directory. Knowledge-store paths are resolved relative to the repository
 // root; a missing knowledge-stores.yaml yields no extra stores (not an error).
 func resolveArtifactsContext(vaultPath string) (repoRoot, vaultRoot string, storePaths []string, err error) {
-	vault := vaultPath
-	if vault == "" {
-		vault = os.Getenv("OBSIDIAN_VAULT_PATH")
-	}
-	if vault == "" {
-		cwd, cwdErr := os.Getwd()
-		if cwdErr != nil {
-			return "", "", nil, fmt.Errorf("get working directory: %w", cwdErr)
-		}
-		vault = cwd
-	}
-
-	vaultAbs, err := filepath.Abs(vault)
+	vaultAbs, err := resolveVaultPathOrCwd(vaultPath)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("resolve vault path %s: %w", vault, err)
+		return "", "", nil, err
 	}
 	// git resolves symlinks in its output; resolve them here too so store
 	// paths computed relative to the repository root stay inside it when the
@@ -2543,11 +2531,10 @@ func resolveArtifactsContext(vaultPath string) (repoRoot, vaultRoot string, stor
 		vaultAbs = resolved
 	}
 
-	out, err := exec.Command("git", "-C", vaultAbs, "rev-parse", "--show-toplevel").Output()
+	repo, err := artifacts.ResolveRepoRoot(vaultAbs)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("resolve git repository root from %s: %w", vaultAbs, err)
+		return "", "", nil, err
 	}
-	repo := strings.TrimSpace(string(out))
 
 	storesPath := filepath.Join(vaultAbs, deweyWorkspaceDir, "knowledge-stores.yaml")
 	if _, statErr := os.Stat(storesPath); statErr == nil {

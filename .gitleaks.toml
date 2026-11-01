@@ -1,0 +1,15 @@
+# gitleaks configuration for the dewey repository.
+#
+# The artifacts package's credential-scanner tests exercise detection with
+# synthetic fixture strings that deliberately match detector rules (e.g.
+# 36-character `ghp_` GitHub PAT shapes). They are generated test data, not
+# real secrets. This allowlist scopes the exemption to the package's test
+# files; every other path keeps the full default rule set.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic credential-shaped fixtures in artifacts scanner tests; not real secrets."
+paths = [
+  '''artifacts/.*_test\.go''',
+]

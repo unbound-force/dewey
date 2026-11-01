@@ -17,6 +17,7 @@ import (
 	"github.com/mattn/go-runewidth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
+	"github.com/unbound-force/dewey/v3/artifacts"
 	"github.com/unbound-force/dewey/v3/chunker"
 	"github.com/unbound-force/dewey/v3/client"
 	"github.com/unbound-force/dewey/v3/curate"
@@ -2484,6 +2485,201 @@ Examples:
 		},
 	}
 
+	cmd.Flags().StringVar(&vaultPath, "vault", "",
+		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
+}
+
+// newArtifactsCmd creates the `dewey artifacts` command group.
+func newArtifactsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "artifacts",
+		Short: "Publish knowledge artifacts to git",
+		Long: `Plan and publish stranded knowledge artifacts (learnings, compiled
+articles, and knowledge-store output) to git.
+
+The flow is two-step with a mandatory human gate between the steps:
+
+  1. dewey artifacts plan — scan the working tree, stashes, and unpushed
+     commits for stranded artifacts and write a plan file.
+  2. dewey artifacts sync — execute an approved plan on a chore branch.
+
+Nothing is published until a human approves the plan with --approve.`,
+	}
+
+	cmd.AddCommand(newArtifactsPlanCmd())
+	cmd.AddCommand(newArtifactsSyncCmd())
+
+	return cmd
+}
+
+// resolveArtifactsContext resolves the vault root, git repository root, and
+// configured knowledge-store paths for the artifacts commands. The vault
+// resolves from the --vault flag, then OBSIDIAN_VAULT_PATH, then the current
+// directory. Knowledge-store paths are resolved relative to the repository
+// root; a missing knowledge-stores.yaml yields no extra stores (not an error).
+func resolveArtifactsContext(vaultPath string) (repoRoot, vaultRoot string, storePaths []string, err error) {
+	vault := vaultPath
+	if vault == "" {
+		vault = os.Getenv("OBSIDIAN_VAULT_PATH")
+	}
+	if vault == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return "", "", nil, fmt.Errorf("get working directory: %w", cwdErr)
+		}
+		vault = cwd
+	}
+
+	vaultAbs, err := filepath.Abs(vault)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolve vault path %s: %w", vault, err)
+	}
+
+	out, err := exec.Command("git", "-C", vaultAbs, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolve git repository root from %s: %w", vaultAbs, err)
+	}
+	repo := strings.TrimSpace(string(out))
+
+	storesPath := filepath.Join(vaultAbs, deweyWorkspaceDir, "knowledge-stores.yaml")
+	if _, statErr := os.Stat(storesPath); statErr == nil {
+		cfgs, cfgErr := curate.LoadKnowledgeStoresConfig(storesPath)
+		if cfgErr != nil {
+			return "", "", nil, fmt.Errorf("load knowledge stores config: %w", cfgErr)
+		}
+		for _, cfg := range cfgs {
+			absStore := curate.ResolveStorePath(cfg, vaultAbs)
+			rel, relErr := filepath.Rel(repo, absStore)
+			if relErr != nil {
+				return "", "", nil, fmt.Errorf("relativize store path %s: %w", absStore, relErr)
+			}
+			storePaths = append(storePaths, rel)
+		}
+	}
+
+	return repo, vaultAbs, storePaths, nil
+}
+
+// newArtifactsPlanCmd creates the `dewey artifacts plan` subcommand.
+func newArtifactsPlanCmd() *cobra.Command {
+	var planJSON bool
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "plan",
+		Short: "Plan a knowledge-artifact publish chore",
+		Long: `Scans the working tree, stash entries, and unpushed commits for stranded
+knowledge artifacts, screens every candidate, and assembles a publish plan.
+
+The canonical plan JSON is written to a private (0600) temp file; the rendered
+summary is relayed verbatim. Pass --json to emit the full plan JSON to stdout
+(the plan file path is logged to stderr either way).`,
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoRoot, vaultRoot, storePaths, err := resolveArtifactsContext(vaultPath)
+			if err != nil {
+				return err
+			}
+
+			plan, err := artifacts.BuildPlan(repoRoot, vaultRoot, storePaths)
+			if err != nil {
+				return fmt.Errorf("build plan: %w", err)
+			}
+
+			payload, err := json.Marshal(plan)
+			if err != nil {
+				return fmt.Errorf("marshal plan: %w", err)
+			}
+
+			tmp, err := os.CreateTemp("", "dewey-plan-*.json")
+			if err != nil {
+				return fmt.Errorf("create plan file: %w", err)
+			}
+			if err := tmp.Chmod(0o600); err != nil {
+				tmp.Close()
+				return fmt.Errorf("restrict plan file permissions: %w", err)
+			}
+			if _, err := tmp.Write(payload); err != nil {
+				tmp.Close()
+				return fmt.Errorf("write plan file: %w", err)
+			}
+			if err := tmp.Close(); err != nil {
+				return fmt.Errorf("close plan file: %w", err)
+			}
+
+			if planJSON {
+				logger.Info("plan written", "path", tmp.Name())
+				fmt.Println(string(payload))
+			} else {
+				fmt.Printf("plan written to %s\n\n", tmp.Name())
+				fmt.Println(plan.RenderedSummary)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&planJSON, "json", false, "Emit the full plan JSON to stdout")
+	cmd.Flags().StringVar(&vaultPath, "vault", "",
+		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
+
+	return cmd
+}
+
+// newArtifactsSyncCmd creates the `dewey artifacts sync` subcommand.
+func newArtifactsSyncCmd() *cobra.Command {
+	var planPath string
+	var approve bool
+	var approvedBy string
+	var resolutionsPath string
+	var vaultPath string
+
+	cmd := &cobra.Command{
+		Use:   "sync --plan <file>",
+		Short: "Execute an approved knowledge-artifact publish",
+		Long: `Executes a plan produced by dewey artifacts plan: materializes the planned
+artifacts on a dedicated chore branch inside an OS-temp worktree, commits them
+with a rendered commit message and PR body, and prints the sync result JSON
+(chore branch, commit, worktree, PR body) verbatim.
+
+Nothing is published without --approve; --approved-by records the human
+approver in the commit trailer (defaults to git config user.name). If the plan
+reported collisions, pass the reviewed resolutions file via --resolutions.`,
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoRoot, vaultRoot, storePaths, err := resolveArtifactsContext(vaultPath)
+			if err != nil {
+				return err
+			}
+
+			result, err := artifacts.RunSync(repoRoot, vaultRoot, storePaths, planPath, resolutionsPath, approve, approvedBy)
+			if err != nil {
+				return fmt.Errorf("sync: %w", err)
+			}
+
+			out, err := json.Marshal(result)
+			if err != nil {
+				return fmt.Errorf("marshal sync result: %w", err)
+			}
+			fmt.Println(string(out))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&planPath, "plan", "",
+		"Path to the plan file produced by dewey artifacts plan (required)")
+	if err := cmd.MarkFlagRequired("plan"); err != nil {
+		panic(fmt.Sprintf("mark plan flag required: %v", err))
+	}
+	cmd.Flags().BoolVar(&approve, "approve", false,
+		"Approve the publish (required — the human gate between plan and sync)")
+	cmd.Flags().StringVar(&approvedBy, "approved-by", "",
+		"Approver identity recorded in the commit trailer (default: git config user.name)")
+	cmd.Flags().StringVar(&resolutionsPath, "resolutions", "",
+		"Path to a path-keyed JSON file of collision resolutions")
 	cmd.Flags().StringVar(&vaultPath, "vault", "",
 		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
 

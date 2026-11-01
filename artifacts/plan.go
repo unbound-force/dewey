@@ -18,7 +18,7 @@ const (
 	diffMaxTotalBytes = 16384
 )
 
-// buildPlan assembles the full artifact publish plan for the repository at
+// BuildPlan assembles the full artifact publish plan for the repository at
 // repoRoot: it enumerates stranded artifacts from the working tree, stash
 // entries, and unpushed commits, resolves the repository's publish posture
 // (remotes, base ref, base tree), dedupes candidates across sources, screens
@@ -28,7 +28,7 @@ const (
 // pure function of repository state — running it twice yields byte-identical
 // JSON. vaultRoot must resolve inside the git repository; storePaths may add
 // custom knowledge-store paths (each must resolve inside the repository).
-func buildPlan(repoRoot, vaultRoot string, storePaths []string) (*Plan, error) {
+func BuildPlan(repoRoot, vaultRoot string, storePaths []string) (*Plan, error) {
 	repoRoot = filepath.Clean(repoRoot)
 	vaultRoot = filepath.Clean(vaultRoot)
 

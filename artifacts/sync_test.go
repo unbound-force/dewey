@@ -27,7 +27,7 @@ func writePlanFile(t *testing.T, plan *Plan) string {
 // both the in-memory plan and the plan-file path.
 func buildPlanFile(t *testing.T, f *fixtureRepo) (*Plan, string) {
 	t.Helper()
-	plan, err := buildPlan(physicalPath(t, f.root), f.path(""), nil)
+	plan, err := BuildPlan(physicalPath(t, f.root), f.path(""), nil)
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}

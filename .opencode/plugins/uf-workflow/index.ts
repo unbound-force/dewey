@@ -9,18 +9,31 @@ import {
   DEFAULT_TIMEOUT_MILLISECONDS,
   PromptSchema,
   TimeoutSchema,
+  directModelIdentity,
   executeAgentSession,
   resolveHostModel,
   StructuralHostModelError,
   type InvocationProvenance,
   type InvocationUsage,
+  type ModelIdentity,
 } from "../../lib/agent-executor.js"
 import { classifyBranch } from "../../lib/branch-classification.js"
+import {
+  ClassifierCascade,
+  createClassifierCache,
+  loadModelMatrix,
+  resolveSelection,
+  type ClassifierCache,
+  type ModelMatrix,
+  type SelectionResult,
+  type SelectionSource,
+} from "../../lib/model-matrix.js"
 import {
   DISPATCH_ARTIFACT_DIRECTORY,
   parseReviewDispatchArtifact,
   type ReviewDispatchArtifactSummary,
 } from "../../lib/review-dispatch-artifact.js"
+import { createBunYamlParser, type YamlParser } from "../../lib/reviewer-manifest.js"
 import {
   BASE_REF_CANDIDATES,
   resolveBaseRefWithDivergence,
@@ -1613,6 +1626,34 @@ export interface DelegateCommandData {
    * filtering is applied; null when none was supplied.
    */
   skill_absent_reason: string | null
+  /**
+   * Model-matrix selection outcome for this delegation (model-matrix
+   * design D7, MM-FR-007): the precedence-chain winner. "host" is the
+   * zero-config fallback -- every delegation records this field, even
+   * when no matrix is configured.
+   */
+  selection_source: SelectionSource
+  /**
+   * Convention pack resolved by selection, when any (explicit input,
+   * profile's pack, or classifier-selected). The same pack is rendered
+   * into the composed prompt as a tool-rendered directive (task 5.3).
+   */
+  selection_pack: string | null
+  /** Matrix capability the selection resolved through, when any. */
+  selection_capability: string | null
+  /**
+   * Resolved provider/model identity for the child session (explicit
+   * input or matrix profile); null when the child runs on the host
+   * model (selection_source "host").
+   */
+  selection_model: string | null
+  /** Classifier confidence for classifier-driven selections, when reported. */
+  selection_confidence: number | null
+  /**
+   * Why selection fell through to a later chain step (e.g. classifier
+   * failure), when the matrix recorded one; null otherwise.
+   */
+  selection_fallback_reason: string | null
   /** Child session usage, when the executor reported step-finish parts. */
   usage: InvocationUsage | null
   /** Request, host-resolution, and child-report provenance. */
@@ -1632,6 +1673,58 @@ export interface DelegateCommandDependencies {
   readonly readText: (path: string) => Promise<string>
   /** File-existence checker for expected-artifact verification. */
   readonly fileExists: FileExists
+  /**
+   * Model-matrix selection dependencies (model-matrix-delegation designs
+   * D1/D2/D5, tasks 5.1-5.4). Grouped so existing test sites extend with
+   * one line instead of five, mirroring the review-dispatch dependency
+   * convention.
+   */
+  readonly modelMatrix: ModelMatrixSelectionDependencies
+}
+
+/**
+ * Parent-session context the classifier agent-engine spawn binds for each
+ * delegation invocation (agent-executor pattern: child sessions carry their
+ * parent's session/message context so the host associates them correctly).
+ */
+export interface ClassifierSpawnContext {
+  readonly sessionID: string
+  readonly messageID: string
+  readonly directory: string
+}
+
+/**
+ * Model-matrix selection seams for uf_delegate_command (design D5): the
+ * YAML parser (Bun in production, JSON-subset stubs in Node-side tests),
+ * the classifier engine's HTTP/env seams, and the hidden classifier
+ * subagent spawn. Selection is fail-closed and never launches the content
+ * child session before it resolves (UF-FR-002).
+ */
+export interface ModelMatrixSelectionDependencies {
+  /** Parses .uf/model-matrix.yaml / .uf/model-matrix.override.yaml text. */
+  readonly parseYaml: YamlParser
+  /** HTTP fetch seam for the LLM engine (global fetch in production). */
+  readonly classifierFetch: typeof fetch
+  /** Environment reader for the LLM engine (process.env lookup in production). */
+  readonly classifierReadEnv: (name: string) => string | undefined
+  /**
+   * Runs the hidden model-matrix-classifier subagent and returns its final
+   * text (agent-engine path, MM-FR-005). Rejects on any engine failure so
+   * the cascade records an agent-engine fallback -- classification never
+   * blocks delegation.
+   */
+  readonly spawnClassifierAgent: (
+    context: ClassifierSpawnContext,
+    agent: string,
+    prompt: string,
+    signal: AbortSignal,
+  ) => Promise<string>
+  /**
+   * Classifier result cache shared across invocations of one tool instance.
+   * Injected by tests for isolation; production constructs one per plugin
+   * instance (never module-level, design D5).
+   */
+  readonly classifierCache?: ClassifierCache
 }
 
 /**
@@ -1673,6 +1766,38 @@ const DelegateCommandInputSchema = z
       .string()
       .min(1, "empty string is invalid -- absence is expressed by omitting the field")
       .max(512)
+      .optional(),
+    // Model-matrix selection params (model-matrix-delegation UF-FR-002,
+    // MM-FR-003). Selection is MUTUALLY INDEPENDENT of the classification
+    // contract above: classification governs deterministic-work skill
+    // enforcement, selection governs which model the child session runs
+    // on. A call may carry both (e.g. deterministic Go work with
+    // pack: "go" and skill enforcement) -- one is never a substitute for
+    // the other. Precedence order (MM-FR-003): explicit model > profile >
+    // pack > agent pin > task-kind default > classifier cascade > host.
+    model: z
+      .string()
+      .min(3)
+      .max(256)
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._@-]*(?:\/[A-Za-z0-9][A-Za-z0-9._@-]*)*$/,
+        "model must be a provider/model identity (e.g. provider/model)",
+      )
+      .optional(),
+    variant: z
+      .string()
+      .max(64)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, "variant must match the agent-executor VariantSchema shape")
+      .optional(),
+    profile: z
+      .string()
+      .min(1, "empty string is invalid -- omit the parameter when no profile applies")
+      .max(128)
+      .optional(),
+    pack: z
+      .string()
+      .min(1, "empty string is invalid -- omit the parameter when no pack applies")
+      .max(128)
       .optional(),
   })
   .strict()
@@ -1723,6 +1848,17 @@ const DelegateCommandInputSchema = z
           })
         }
       }
+    }
+    // MM-FR-003: variant is model's companion parameter. The precedence
+    // chain gives a variant without a model no defined meaning (profiles
+    // own their variants; host fallback does not read the input variant),
+    // so the pair is validated together, fail-closed with remediation.
+    if (input.variant !== undefined && input.model === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["variant"],
+        message: "variant requires model -- pair the runtime variant with an explicit provider/model identity",
+      })
     }
   })
 
@@ -1896,6 +2032,29 @@ function renderSkillDirective(resolvedReference: string): string {
   )
 }
 
+/**
+ * Render the tool-rendered convention-pack directive injected into the
+ * composed prompt (model-matrix-delegation design D6, task 5.3). The exact
+ * wording is a design constant — tool-rendered, never agent-reconstructed,
+ * and never the pack content inlined (the child loads
+ * `.opencode/uf/packs/<pack>.md` itself, MM-FR-005's double duty) — pinned
+ * by golden-shape tests: a header line naming the pack, then the fixed
+ * paragraph instructing the child to load the pack file and treat it as
+ * the source of truth. Rendered only for calls whose selection carries a
+ * pack (explicitly supplied or classifier-selected), at the fixed
+ * position — after the feature-dir context and any skill directive,
+ * immediately before the extra prompt (UF-FR-002); task 5.4 records the
+ * same pack in the audit trail.
+ */
+function renderPackDirective(pack: string): string {
+  return (
+    `Required convention pack: ${pack}\n\n` +
+    `Before writing, load the convention pack at .opencode/uf/packs/${pack}.md and apply ` +
+    "its rules to this task. The pack file is the source of truth for its conventions — " +
+    "do not reconstruct its content from memory or improvise equivalent rules."
+  )
+}
+
 /** Standard catch-all failure envelope from a thrown unknown error. */
 function failureFromError(err: unknown, code: string, retryable = false): string {
   const msg = err instanceof Error ? err.message : String(err)
@@ -1916,6 +2075,66 @@ function expectedArtifactStopMessage(expectedArtifact: string): string {
     return TASKS_ARTIFACT_STOP_MESSAGE
   }
   return `Artifact generation failed -- ${expectedArtifact} was not created. Check the agent output for errors.`
+}
+
+/**
+ * Production classifier agent-engine spawn (model-matrix-delegation design
+ * D5, MM-FR-005): runs the hidden model-matrix-classifier subagent through
+ * the shared executeAgentSession session path with the invocation's
+ * parent-session context. The classifier child inherits the session model
+ * hierarchy — the spawn resolves the host model for its own child session,
+ * independent of the delegation's selection — and any failure here rejects
+ * the seam so the cascade records an agent-engine fallback (classification
+ * never blocks delegation). read_only marks the least-privilege
+ * investigator; the agent file itself denies edit/bash/webfetch.
+ */
+async function spawnClassifierAgentSession(
+  client: PluginInput["client"],
+  context: ClassifierSpawnContext,
+  agent: string,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const host = await resolveHostModel(
+    {
+      client,
+      sessionID: context.sessionID,
+      messageID: context.messageID,
+      directory: context.directory,
+    },
+    signal,
+  )
+  const result = await executeAgentSession(
+    {
+      client,
+      sessionID: context.sessionID,
+      directory: context.directory,
+      parentAbort: signal,
+      timeoutMilliseconds: DEFAULT_TIMEOUT_MILLISECONDS,
+    },
+    agent,
+    prompt,
+    host.identity,
+    host.variant,
+    true,
+    {
+      agent,
+      requested_model: null,
+      requested_variant: null,
+      resolved_parent_model: host.identity.combined,
+      resolved_parent_variant: host.variant ?? null,
+      reported_child_model: null,
+      model_mismatch: false,
+      read_only: true,
+    },
+  )
+  if (result.status !== "success" || result.error !== null) {
+    throw new Error(
+      `classifier agent run ended with status "${result.status}"` +
+        (result.error !== null ? ` (${result.error.code}: ${result.error.message})` : ""),
+    )
+  }
+  return result.text
 }
 
 /**
@@ -1942,7 +2161,20 @@ function expectedArtifactStopMessage(expectedArtifact: string): string {
  * - the prompt is composed deterministically: command text when present,
  *   then feature-dir context, then the tool-rendered skill directive
  *   (delegation-skill-enforcement D3, rendered only when a skill
- *   reference resolved), then the extra prompt
+ *   reference resolved), then the tool-rendered convention-pack directive
+ *   (model-matrix-delegation D6, rendered only when selection carries a
+ *   pack), then the extra prompt
+ * - model-matrix selection (model-matrix-delegation D2/D8, MM-FR-003)
+ *   runs after skill resolution and before host introspection: an absent
+ *   matrix (the default) skips to the host model with zero behavioral
+ *   change; a present matrix resolves the child model and pack through
+ *   the precedence chain (explicit model > profile > pack > agent pin >
+ *   task-kind default > classifier cascade > host), with profile/pack
+ *   validation failures returned pre-spawn (one tool round-trip, zero
+ *   child sessions) and a structurally invalid matrix failing closed
+ *   (MATRIX_INVALID); a matrix-resolved model skips host introspection
+ *   entirely, while host fallback preserves the pre-change
+ *   variant-fallback and structural-failure semantics verbatim
  * - the child session runs through the shared executeAgentSession executor
  *   (host model resolution via parent introspection, parenting, abort
  *   linkage, timeout — default 600,000 ms) and expected_artifact is
@@ -1954,11 +2186,15 @@ function expectedArtifactStopMessage(expectedArtifact: string): string {
  *   delegation facts as data -- including the classification contract's
  *   audit trail (delegation-skill-enforcement D5): task_classification,
  *   the resolved skill reference, and skill_absent_reason when present,
- *   also surfaced in the success envelope
+ *   and the model-matrix selection audit trail (model-matrix-delegation
+ *   D7, MM-FR-007): selection_source always, plus pack, capability,
+ *   model, confidence, and fallback_reason when non-null -- both also
+ *   surfaced in the success envelope
  *
  * @param exec Git executor used to derive the auto-checkpoint state key.
  * @param cwd Repository root used for repo-relative path resolution.
- * @param deps Client, command-file reader, and artifact-existence dependencies.
+ * @param deps Client, command-file reader, artifact-existence, and
+ *   model-matrix selection dependencies.
  * @returns The uf_delegate_command tool.
  */
 export function createDelegateCommandTool(
@@ -1966,15 +2202,25 @@ export function createDelegateCommandTool(
   cwd: string,
   deps: DelegateCommandDependencies,
 ): ReturnType<typeof tool> {
+  // Model-matrix-delegation D5: the classifier result cache belongs to the
+  // tool instance (one per plugin activation), never module-level state.
+  // The cascade itself is constructed per invocation — its agent-engine
+  // spawn binds the invocation's parent-session context — and shares this
+  // cache, so cache semantics match a per-instance cascade while the
+  // spawn seam stays context-correct for concurrent invocations.
+  const classifierCache = deps.modelMatrix.classifierCache ?? createClassifierCache()
   return tool({
     description:
       "Delegate a command or task to a content agent (default cobalt-crush-dev) in a " +
-      "parented child session with host model resolution. Reads the command file from " +
-      "command_path when supplied (repo-relative, traversal-safe, max 1 MiB), composes " +
-      "the prompt (command text + feature-dir context + extra prompt), verifies " +
+      "parented child session. Reads the command file from command_path when supplied " +
+      "(repo-relative, traversal-safe, max 1 MiB), composes the prompt (command text + " +
+      "feature-dir context + skill/pack directives + extra prompt), verifies " +
       "expected_artifact after the run (missing artifacts return the command's exact " +
-      "STOP message), and auto-checkpoints checkpoint_step on success. Reviewer agents " +
-      "(divisor-*) are rejected — use invoke_agent for review invocations.",
+      "STOP message), and auto-checkpoints checkpoint_step on success. The child model " +
+      "resolves through the model-matrix precedence chain (explicit model > profile > " +
+      "pack > agent pin > task-kind default > classifier cascade > host model) and every " +
+      "selection is recorded in the audit trail. Reviewer agents (divisor-*) are " +
+      "rejected — use invoke_agent for review invocations.",
     args: {
       agent: DelegateCommandInputSchema.shape.agent.describe(
         "Content agent to delegate to (default cobalt-crush-dev). Reviewer agents (divisor-*) are rejected; dispatch them via invoke_agent.",
@@ -2014,6 +2260,27 @@ export function createDelegateCommandTool(
         "Optional reason recorded when deterministic-classified work has no applicable repo " +
           "skill or script, stating what was searched and what was found (1-512 chars). " +
           "Mutually exclusive with skill and valid only with task_classification \"deterministic\".",
+      ),
+      model: DelegateCommandInputSchema.shape.model.describe(
+        "Optional explicit provider/model identity for the child session (e.g. provider/model). " +
+          "Wins the model-selection precedence chain outright, skipping matrix resolution and host " +
+          "introspection; validated by shape only and used verbatim. Pair with variant when a " +
+          "runtime variant applies.",
+      ),
+      variant: DelegateCommandInputSchema.shape.variant.describe(
+        "Optional runtime variant paired with model (requires model). Follows the agent-executor " +
+          "variant shape (max 64 chars).",
+      ),
+      profile: DelegateCommandInputSchema.shape.profile.describe(
+        "Optional model-matrix capability name (1-128 chars, e.g. code-writing). Precedence step 2: " +
+          "resolves the profile's model and pack through .uf/model-matrix.yaml when configured; fails " +
+          "closed when the profile is unknown or no matrix exists.",
+      ),
+      pack: DelegateCommandInputSchema.shape.pack.describe(
+        "Optional UF convention pack name (1-128 chars, e.g. go). Double duty (precedence step 3): " +
+          "resolves the mapped profile's model AND renders a tool-authored directive instructing the " +
+          "child to load .opencode/uf/packs/<pack>.md before writing. Must be a packs key of the " +
+          "loaded matrix; fails closed otherwise.",
       ),
     },
     async execute(args, context) {
@@ -2152,56 +2419,174 @@ export function createDelegateCommandTool(
         if (resolvedSkill !== null) {
           sections.push(renderSkillDirective(resolvedSkill))
         }
+
+        // ── Model-matrix selection (model-matrix-delegation D2/D8, task
+        // 5.2) ──
+        // Runs after skill resolution and before host introspection, so a
+        // rejected selection costs one tool round-trip and zero child
+        // sessions (same fail-closed position as the skill check above).
+        // The classifier prompt is the base sections plus the extra
+        // prompt — deliberately WITHOUT the pack directive, which is
+        // selection-dependent and cannot participate in its own
+        // selection's input (the circularity D5 rules out); the base
+        // sections also make the cache key stable across selections.
+        const classifierPrompt =
+          input.prompt !== undefined ? [...sections, input.prompt].join("\n\n") : sections.join("\n\n")
+
+        // Zero-config probe (D8): loadModelMatrix treats an absent file as
+        // "absent" (ENOENT through the read seam), a present file parses
+        // and validates through the injected YAML seam, and a structurally
+        // invalid file reports "invalid" — which fails closed here rather
+        // than silently falling back to the host model (a misconfigured
+        // matrix must be loud). Relative matrix paths resolve against the
+        // repository root, mirroring the review-dispatch readText
+        // convention; pack-file existence probes go through the same
+        // fileExists seam expected-artifact verification uses.
+        const load = await loadModelMatrix({
+          readText: (relativePath) => deps.readText(resolve(cwd, relativePath)),
+          parseYaml: deps.modelMatrix.parseYaml,
+          fileExists: (relativePath) => deps.fileExists(resolve(cwd, relativePath)),
+        })
+        if (load.status === "invalid") {
+          return {
+            output: JSON.stringify(
+              failure(
+                `Model matrix at .uf/model-matrix.yaml is structurally invalid: ${load.error}. ` +
+                  "Remediation: fix the matrix file (or remove it to fall back to the host model); " +
+                  "retrying will not fix this.",
+                { retryable: false, code: "MATRIX_INVALID" },
+              ),
+            ),
+          }
+        }
+        const matrix: ModelMatrix | null = load.status === "ok" ? load.matrix : null
+
+        // The classifier cascade is constructed per invocation so its
+        // agent-engine spawn binds this invocation's parent-session
+        // context; it shares the per-tool-instance cache (see factory).
+        // classify() never throws and never blocks selection — engine
+        // failures degrade to the static fallback inside the cascade.
+        const cascade = new ClassifierCascade({
+          spawnAgent: (agent, prompt, signal) =>
+            deps.modelMatrix.spawnClassifierAgent(
+              {
+                sessionID: context.sessionID,
+                messageID: context.messageID,
+                directory: context.directory,
+              },
+              agent,
+              prompt,
+              signal,
+            ),
+          fetch: deps.modelMatrix.classifierFetch,
+          readEnv: deps.modelMatrix.classifierReadEnv,
+          cache: classifierCache,
+        })
+        const selectionInputs = {
+          model: input.model,
+          variant: input.variant,
+          profile: input.profile,
+          pack: input.pack,
+          checkpoint_step: input.checkpoint_step,
+          agent: input.agent,
+        }
+        const outcome = await cascade.classify(matrix, {
+          inputs: selectionInputs,
+          feature_dir: input.feature_dir ?? null,
+          prompt: classifierPrompt,
+        })
+        const resolution = resolveSelection(matrix, selectionInputs, outcome)
+        if (!resolution.ok) {
+          // Non-retryable, pre-spawn: unknown profile, invalid pack, or a
+          // selection param with no matrix configured. The selection
+          // failure code carries the lib's precise reason.
+          return {
+            output: JSON.stringify(
+              failure(
+                `${resolution.error}. Remediation: fix the selection parameter or the matrix at ` +
+                  ".uf/model-matrix.yaml; retrying will not fix this.",
+                { retryable: false, code: resolution.code },
+              ),
+            ),
+          }
+        }
+        const selection: SelectionResult = resolution.selection
+
+        // The pack directive renders at its fixed position (D6): after the
+        // skill directive, immediately before the extra prompt — for
+        // every call whose selection carries a pack, whether explicitly
+        // supplied, profile-resolved, or classifier-selected.
+        if (selection.pack !== null) {
+          sections.push(renderPackDirective(selection.pack))
+        }
         if (input.prompt !== undefined) {
           sections.push(input.prompt)
         }
         const promptText = sections.join("\n\n")
 
-        // Resolve the host model through parent-session introspection so the
-        // child replays the parent's active model and variant.
-        let host: Awaited<ReturnType<typeof resolveHostModel>>
-        try {
-          host = await resolveHostModel(
-            {
-              client: deps.client,
-              sessionID: context.sessionID,
-              messageID: context.messageID,
-              directory: context.directory,
-            },
-            context.abort,
-          )
-        } catch (err: unknown) {
-          if (context.abort.aborted) {
-            return {
-              output: JSON.stringify(
-                failure("uf_delegate_command run was cancelled", {
-                  retryable: false,
-                  code: "DELEGATE_CANCELLED",
-                }),
-              ),
-            }
-          }
-          if (err instanceof StructuralHostModelError) {
-            return {
-              output: JSON.stringify(
-                failure(
-                  `${err.message}. Remediation: ${err.remediation}; retrying will not fix this.`,
-                  { retryable: false, code: "HOST_MODEL_UNAVAILABLE" },
+        // Resolve the child model: a matrix/explicit selection
+        // (MM-FR-003 steps 1-6) supplies the provider/model identity
+        // directly and skips host introspection entirely; host fallback
+        // (step 7, and the zero-config default) preserves the pre-change
+        // variant-fallback and structural-failure semantics verbatim.
+        let childModel: ModelIdentity
+        let childVariant: string | undefined
+        if (selection.model !== null) {
+          // Shape was validated at input (explicit) or in the matrix
+          // schema (profiles), so directModelIdentity cannot split an
+          // invalid identity here.
+          childModel = directModelIdentity(selection.model)
+          childVariant = selection.variant ?? undefined
+        } else {
+          let host: Awaited<ReturnType<typeof resolveHostModel>>
+          try {
+            host = await resolveHostModel(
+              {
+                client: deps.client,
+                sessionID: context.sessionID,
+                messageID: context.messageID,
+                directory: context.directory,
+              },
+              context.abort,
+            )
+          } catch (err: unknown) {
+            if (context.abort.aborted) {
+              return {
+                output: JSON.stringify(
+                  failure("uf_delegate_command run was cancelled", {
+                    retryable: false,
+                    code: "DELEGATE_CANCELLED",
+                  }),
                 ),
-              ),
+              }
             }
+            if (err instanceof StructuralHostModelError) {
+              return {
+                output: JSON.stringify(
+                  failure(
+                    `${err.message}. Remediation: ${err.remediation}; retrying will not fix this.`,
+                    { retryable: false, code: "HOST_MODEL_UNAVAILABLE" },
+                  ),
+                ),
+              }
+            }
+            return { output: failureFromError(err, "HOST_MODEL_UNAVAILABLE", true) }
           }
-          return { output: failureFromError(err, "HOST_MODEL_UNAVAILABLE", true) }
+          childModel = host.identity
+          childVariant = host.variant
         }
 
         // Content delegation writes files (plans, tasks, code), so the
         // provenance records read_only: false, unlike review invocations.
+        // requested_model/requested_variant carry the explicit selection
+        // params; resolved_parent_model carries the model the child
+        // actually ran on (matrix-resolved or host, D7).
         const provenance: InvocationProvenance = {
           agent: input.agent,
-          requested_model: null,
-          requested_variant: null,
-          resolved_parent_model: host.identity.combined,
-          resolved_parent_variant: host.variant ?? null,
+          requested_model: input.model ?? null,
+          requested_variant: input.variant ?? null,
+          resolved_parent_model: childModel.combined,
+          resolved_parent_variant: childVariant ?? null,
           reported_child_model: null,
           model_mismatch: false,
           read_only: false,
@@ -2218,8 +2603,8 @@ export function createDelegateCommandTool(
           },
           input.agent,
           promptText,
-          host.identity,
-          host.variant,
+          childModel,
+          childVariant,
           false,
           provenance,
         )
@@ -2298,6 +2683,28 @@ export function createDelegateCommandTool(
           if (input.skill_absent_reason !== undefined) {
             checkpointData.skill_absent_reason = input.skill_absent_reason
           }
+          // Model-matrix-delegation D7 (task 5.4, MM-FR-007): the
+          // selection audit trail. selection_source is recorded for every
+          // checkpointed delegation (zero-config calls record "host");
+          // the remaining fields ride along only when they carry values,
+          // so calls that never touch the matrix keep the pre-change
+          // checkpoint shape plus selection_source.
+          checkpointData.selection_source = selection.selection_source
+          if (selection.pack !== null) {
+            checkpointData.selection_pack = selection.pack
+          }
+          if (selection.capability !== null) {
+            checkpointData.selection_capability = selection.capability
+          }
+          if (selection.model !== null) {
+            checkpointData.selection_model = selection.model
+          }
+          if (selection.confidence !== null) {
+            checkpointData.selection_confidence = selection.confidence
+          }
+          if (selection.fallback_reason !== null) {
+            checkpointData.selection_fallback_reason = selection.fallback_reason
+          }
           recordAutoCheckpoint(cwd, key, "uf.unleash", input.checkpoint_step, checkpointData)
           checkpointRecorded = true
         }
@@ -2314,6 +2721,17 @@ export function createDelegateCommandTool(
           task_classification: input.task_classification ?? null,
           skill: resolvedSkill,
           skill_absent_reason: input.skill_absent_reason ?? null,
+          // Model-matrix-delegation D7 (task 5.4, MM-FR-007): the same
+          // selection audit fields the checkpoint records, surfaced
+          // machine-parseably in the success envelope. selection_source
+          // is always present; the rest are null when selection resolved
+          // no value for them (host fallback carries only the source).
+          selection_source: selection.selection_source,
+          selection_pack: selection.pack,
+          selection_capability: selection.capability,
+          selection_model: selection.model,
+          selection_confidence: selection.confidence,
+          selection_fallback_reason: selection.fallback_reason,
           usage: result.usage,
           provenance: result.provenance,
           text: result.text,
@@ -4931,6 +5349,17 @@ const UfWorkflowPlugin = {
           client: input.client,
           readText: (path: string) => readFile(path, "utf8"),
           fileExists: defaultFileExists,
+          // Model-matrix-delegation D5 (task 5.2): production selection
+          // seams. The classifier runs on the host-resolved session model
+          // (MM-FR-005); spawnClassifierAgentSession owns that resolution
+          // so it stays independent of the delegation's own selection.
+          modelMatrix: {
+            parseYaml: createBunYamlParser(),
+            classifierFetch: fetch,
+            classifierReadEnv: (name: string) => process.env[name],
+            spawnClassifierAgent: (context, agent, prompt, signal) =>
+              spawnClassifierAgentSession(input.client, context, agent, prompt, signal),
+          },
         }),
         uf_unleash_detect_resume: createUnleashDetectResumeTool(defaultGitExec, cwd, {
           readText: (path: string) => readFile(path, "utf8"),

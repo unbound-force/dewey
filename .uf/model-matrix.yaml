@@ -1,0 +1,47 @@
+# Tracked starter model matrix for delegated content-agent
+# model selection (design D9, MM-FR-001). The tracked file
+# carries structure only: per-developer model identities
+# arrive via .uf/model-matrix.override.yaml (gitignored),
+# which permits profiles.*.model, profiles.*.variant, and
+# classifier.llm.* paths only.
+version: 1
+
+# Capability profiles. Empty by design: a profile without a
+# model resolves to the host model until the override
+# supplies one. The mechanical capability is intentionally
+# explicit-profile-only in the starter set: no packs entry
+# or defaults kind maps to it.
+profiles:
+  spec-authoring: {}
+  code-writing: {}
+  content-writing: {}
+  mechanical: {}
+
+# Convention pack name to capability. Every key MUST match a
+# pack file under .opencode/uf/packs/.
+packs:
+  meta-prompt: spec-authoring
+  go: code-writing
+  typescript: code-writing
+  python: code-writing
+  content: content-writing
+
+# Task kind to capability. Mapping plan and tasks to
+# spec-authoring is a tracked-file conformance rule
+# (MM-FR-001): meta-prompt authoring work runs on the
+# meta-prompt model. implement maps to code-writing, the
+# classifier cascade's static fallback.
+defaults:
+  plan: spec-authoring
+  tasks: spec-authoring
+  implement: code-writing
+
+# Optional per-agent capability pins. None in the starter
+# set.
+agents: {}
+
+# Classifier structure only: the LLM engine's endpoint, model,
+# apiKey, and request_timeout_ms values live exclusively in
+# the override under classifier.llm.*.
+classifier: {}
+# scaffolded by uf vdev

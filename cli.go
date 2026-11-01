@@ -2592,11 +2592,11 @@ summary is relayed verbatim. Pass --json to emit the full plan JSON to stdout
 				return fmt.Errorf("create plan file: %w", err)
 			}
 			if err := tmp.Chmod(0o600); err != nil {
-				tmp.Close()
+				_ = tmp.Close()
 				return fmt.Errorf("restrict plan file permissions: %w", err)
 			}
 			if _, err := tmp.Write(payload); err != nil {
-				tmp.Close()
+				_ = tmp.Close()
 				return fmt.Errorf("write plan file: %w", err)
 			}
 			if err := tmp.Close(); err != nil {

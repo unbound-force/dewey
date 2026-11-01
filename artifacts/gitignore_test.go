@@ -117,7 +117,7 @@ func TestProbeGitignore_ExternalExclude(t *testing.T) {
 	if _, err := fh.WriteString("\ndewey\n"); err != nil {
 		t.Fatalf("append to .git/info/exclude: %v", err)
 	}
-	fh.Close()
+	_ = fh.Close()
 
 	finding, warnings, err := probeGitignore(physicalPath(t, f.root), nil)
 	if err != nil {

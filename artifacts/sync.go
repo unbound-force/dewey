@@ -314,3 +314,50 @@ func applyGitignoreFix(worktree string, fix *GitignoreFix) (bool, error) {
 	}
 	return true, nil
 }
+
+// stagePlannedFiles stages the planned artifact files in the sync worktree
+// with `git add -f` — the force flag is load-bearing because repositories
+// ignoring .uf/ wholesale are the most common stranded state, and tracked
+// files legitimately override gitignore (design D7 step 6). The repaired
+// .gitignore rides along when a fix was applied. After staging, the cached
+// index is verified against the planned set exactly; any mismatch fails
+// closed rather than publishing an unplanned or incomplete change.
+func stagePlannedFiles(worktree string, filesWritten []string, gitignoreFixApplied bool) error {
+	args := make([]string, 0, len(filesWritten)+5)
+	args = append(args, "add", "-f", "--")
+	args = append(args, filesWritten...)
+	if gitignoreFixApplied {
+		args = append(args, ".gitignore")
+	}
+	if _, err := run(worktree, args...); err != nil {
+		return fmt.Errorf("git add: %w", err)
+	}
+
+	out, err := run(worktree, "diff", "--cached", "--name-only")
+	if err != nil {
+		return fmt.Errorf("git diff --cached: %w", err)
+	}
+	staged := []string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			staged = append(staged, line)
+		}
+	}
+	sort.Strings(staged)
+
+	planned := append([]string{}, filesWritten...)
+	if gitignoreFixApplied {
+		planned = append(planned, ".gitignore")
+	}
+	sort.Strings(planned)
+
+	if len(staged) != len(planned) {
+		return fmt.Errorf("staged set mismatch: staged %v, planned %v", staged, planned)
+	}
+	for i := range staged {
+		if staged[i] != planned[i] {
+			return fmt.Errorf("staged set mismatch: staged %v, planned %v", staged, planned)
+		}
+	}
+	return nil
+}

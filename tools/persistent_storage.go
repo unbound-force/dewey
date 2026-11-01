@@ -19,5 +19,5 @@ import "fmt"
 // Callers surface it via errorResult(persistentStorageError("tool").Error()).
 func persistentStorageError(tool string) error {
 	return fmt.Errorf("%s requires persistent storage. Configure --vault with a .uf/dewey/ directory. "+
-		"If --vault is already set, another Dewey process (such as a running dewey serve) may hold the database lock.", tool)
+		"If --vault is already set, another Dewey process (such as a running dewey serve) may hold the database lock", tool)
 }

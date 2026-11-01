@@ -19,7 +19,7 @@ func planRepoVault(t *testing.T, f *fixtureRepo) (string, string) {
 
 func mustPlan(t *testing.T, repo, vault string, stores []string) *Plan {
 	t.Helper()
-	plan, err := buildPlan(repo, vault, stores)
+	plan, err := BuildPlan(repo, vault, stores)
 	if err != nil {
 		t.Fatalf("buildPlan: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestBuildPlan_CustomStorePath(t *testing.T) {
 func TestBuildPlan_OutOfRepoStorePathFailsClosed(t *testing.T) {
 	f := newFixtureRepo(t)
 	repo, vault := planRepoVault(t, f)
-	if _, err := buildPlan(repo, vault, []string{"../outside-store"}); err == nil {
+	if _, err := BuildPlan(repo, vault, []string{"../outside-store"}); err == nil {
 		t.Fatal("out-of-repo store path did not fail closed")
 	}
 }
@@ -228,7 +228,7 @@ func TestBuildPlan_VaultOutsideRepoFailsClosed(t *testing.T) {
 	f := newFixtureRepo(t)
 	repo := physicalPath(t, f.root)
 	outside := t.TempDir()
-	_, err := buildPlan(repo, outside, nil)
+	_, err := BuildPlan(repo, outside, nil)
 	if err == nil {
 		t.Fatal("vault outside repo did not fail closed")
 	}
@@ -643,7 +643,7 @@ func TestBuildPlan_UpstreamWithoutOriginFailsClosed(t *testing.T) {
 	f.addUpstreamRemote()
 	f.git("remote", "remove", "origin")
 	repo, vault := planRepoVault(t, f)
-	if _, err := buildPlan(repo, vault, nil); err == nil {
+	if _, err := BuildPlan(repo, vault, nil); err == nil {
 		t.Fatal("upstream without origin did not fail closed")
 	}
 }
@@ -653,7 +653,7 @@ func TestBuildPlan_UnresolvableBaseFailsClosed(t *testing.T) {
 	f.git("update-ref", "-d", "refs/remotes/origin/"+f.base)
 	f.git("update-ref", "-d", "refs/remotes/origin/HEAD")
 	repo, vault := planRepoVault(t, f)
-	if _, err := buildPlan(repo, vault, nil); err == nil {
+	if _, err := BuildPlan(repo, vault, nil); err == nil {
 		t.Fatal("unresolvable base did not fail closed")
 	}
 }
@@ -671,7 +671,7 @@ func TestBuildPlan_SymlinkedWalkRootFailsClosed(t *testing.T) {
 		t.Fatalf("symlink walk root: %v", err)
 	}
 	repo, vault := planRepoVault(t, f)
-	if _, err := buildPlan(repo, vault, nil); err == nil {
+	if _, err := BuildPlan(repo, vault, nil); err == nil {
 		t.Fatal("symlinked walk root did not fail closed")
 	}
 }
@@ -690,7 +690,7 @@ func TestBuildPlan_UnreadableDirFailsClosed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(learnings, 0o755) })
 	repo, vault := planRepoVault(t, f)
-	if _, err := buildPlan(repo, vault, nil); err == nil {
+	if _, err := BuildPlan(repo, vault, nil); err == nil {
 		t.Fatal("unreadable directory did not fail closed")
 	}
 }

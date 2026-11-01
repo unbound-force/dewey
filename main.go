@@ -143,6 +143,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newCurateCmd())
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPromoteCmd())
+	rootCmd.AddCommand(newArtifactsCmd())
 
 	return rootCmd
 }

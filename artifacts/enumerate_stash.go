@@ -141,7 +141,17 @@ func isHex40(s string) bool {
 	return true
 }
 
-// enumerateTreeRef lists the tree of a git ref (`git ls-tree -r -z`, full
+// treeRecord is the per-path decision from scanning one git tree: either the
+// artifact candidate is kept (cand != nil) or the path is skipped with the
+// surfaced warning. path is the repository-relative slash path and serves as
+// the decision key for newest-touching-commit-wins deduplication.
+type treeRecord struct {
+	path    string
+	cand    *candidate
+	warning string
+}
+
+// scanTreeRef lists the tree of a git ref (`git ls-tree -r -z`, full
 // records so entry mode and type survive parsing), keeps only paths inside
 // the sanctioned artifact roots, and reads each kept artifact's content
 // byte-exactly via `git show <ref>:<path>`.
@@ -152,25 +162,24 @@ func isHex40(s string) bool {
 // control characters, colons, or a leading hyphen are skipped with warnings.
 // Out-of-scope paths (not under a sanctioned root) are ignored without
 // warnings — the sweep is not interested in the rest of the tree.
-func enumerateTreeRef(repoRoot, ref, source string, storeRels []walkRoot) ([]candidate, []string, error) {
+func scanTreeRef(repoRoot, ref, source string, storeRels []walkRoot) ([]treeRecord, error) {
 	out, err := run(repoRoot, "ls-tree", "-r", "-z", ref)
 	if err != nil {
-		return nil, nil, fmt.Errorf("list tree of %s: %w", ref, err)
+		return nil, fmt.Errorf("list tree of %s: %w", ref, err)
 	}
 
-	var candidates []candidate
-	var warnings []string
+	var records []treeRecord
 	for _, record := range strings.Split(string(out), "\x00") {
 		if record == "" {
 			continue
 		}
 		tab := strings.IndexByte(record, '\t')
 		if tab < 0 {
-			return nil, nil, fmt.Errorf("parse ls-tree record of %s: malformed record %q", ref, record)
+			return nil, fmt.Errorf("parse ls-tree record of %s: malformed record %q", ref, record)
 		}
 		meta := strings.Fields(record[:tab])
 		if len(meta) != 3 {
-			return nil, nil, fmt.Errorf("parse ls-tree record of %s: malformed metadata %q", ref, record[:tab])
+			return nil, fmt.Errorf("parse ls-tree record of %s: malformed metadata %q", ref, record[:tab])
 		}
 		mode, typ := meta[0], meta[1]
 		p := record[tab+1:]
@@ -184,21 +193,21 @@ func enumerateTreeRef(repoRoot, ref, source string, storeRels []walkRoot) ([]can
 			continue
 		}
 		if typ != "blob" {
-			warnings = append(warnings, fmt.Sprintf("skipped non-blob: %s (in %s)", p, ref))
+			records = append(records, treeRecord{path: p, warning: fmt.Sprintf("skipped non-blob: %s (in %s)", p, ref)})
 			continue
 		}
 		if mode == treeModeSymlink {
-			warnings = append(warnings, fmt.Sprintf("skipped symlink: %s (in %s)", p, ref))
+			records = append(records, treeRecord{path: p, warning: fmt.Sprintf("skipped symlink: %s (in %s)", p, ref)})
 			continue
 		}
 		if reason, unsafe := unsafeBaseName(base); unsafe {
-			warnings = append(warnings, fmt.Sprintf("skipped unsafe basename: %s (%s)", p, reason))
+			records = append(records, treeRecord{path: p, warning: fmt.Sprintf("skipped unsafe basename: %s (%s)", p, reason)})
 			continue
 		}
 
 		content, err := run(repoRoot, "show", ref+":"+p)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read %s from %s: %w", p, ref, err)
+			return nil, fmt.Errorf("read %s from %s: %w", p, ref, err)
 		}
 		sum := sha256.Sum256(content)
 		c := candidate{
@@ -209,7 +218,27 @@ func enumerateTreeRef(repoRoot, ref, source string, storeRels []walkRoot) ([]can
 			Kind:    wr.kind,
 		}
 		applyIdentity(&c, base, p, wr)
-		candidates = append(candidates, c)
+		records = append(records, treeRecord{path: p, cand: &c})
+	}
+	return records, nil
+}
+
+// enumerateTreeRef applies keep-all semantics to a scanned tree: every kept
+// candidate and every skip warning is surfaced. This is the stash
+// enumeration behavior — every stash tree contributes its full content.
+func enumerateTreeRef(repoRoot, ref, source string, storeRels []walkRoot) ([]candidate, []string, error) {
+	records, err := scanTreeRef(repoRoot, ref, source, storeRels)
+	if err != nil {
+		return nil, nil, err
+	}
+	var candidates []candidate
+	var warnings []string
+	for _, r := range records {
+		if r.cand != nil {
+			candidates = append(candidates, *r.cand)
+		} else {
+			warnings = append(warnings, r.warning)
+		}
 	}
 	return candidates, warnings, nil
 }

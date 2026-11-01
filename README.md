@@ -304,7 +304,7 @@ This creates:
 - `.uf/dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
 - `.uf/dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
 
-Add `.uf/dewey/` to your `.gitignore`. The index is machine-local and rebuilt from source files.
+Ignore runtime state, not knowledge. The index (`.uf/dewey/graph.db`, logs) is machine-local and rebuilt from source files — add `.uf/dewey/graph.db` to your `.gitignore`. The knowledge artifact directories (`.uf/dewey/learnings/`, `compiled/`, `knowledge/`) are **not** rebuildable: do not ignore them. Publish them with `/dewey-publish` or `dewey artifacts` instead.
 
 ### Environment variables
 
@@ -327,7 +327,7 @@ Add `.uf/dewey/` to your `.gitignore`. The index is machine-local and rebuilt fr
 | `--verbose` | `-v` | Enable debug logging (shows UUID seeds, block insertions, lock detection) |
 | `--log-file PATH` | | Write logs to file in addition to stderr |
 | `--no-embeddings` | | Skip embedding generation (on serve, index, reindex) |
-| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor, manifest) |
+| `--vault PATH` | | Path to vault (on serve, index, reindex, status, search, doctor, manifest, artifacts plan, artifacts sync) |
 
 When running as an MCP server (`dewey serve`), Dewey automatically logs to `.uf/dewey/dewey.log` for diagnostics. The log file is truncated when it exceeds 10 MB.
 
@@ -454,6 +454,27 @@ dewey curate [--vault PATH] [--store NAME] [--force] [--no-embeddings]
 - `--store` — Curate a specific named store (default: all configured stores)
 - `--force` — Run full curation instead of incremental (re-process all documents)
 - `--no-embeddings` — Skip embedding generation for curated files
+
+### dewey artifacts
+
+Plan and publish stranded knowledge artifacts — learnings, compiled articles, and knowledge-store output under `.uf/dewey/` — into a git branch behind a mandatory human approval gate. The plan sweeps the working tree, git stashes, and unpushed commits, deduplicates identical variants, screens for credential-like content, and reports a bounded `.gitignore` fix. Sync materializes an approved plan in a dedicated worktree, commits artifacts in tag groups, and renders a PR body. The vault working tree is never touched — the sweep is non-destructive and only reads what git already tracks.
+
+```bash
+dewey artifacts plan [--json] [--vault PATH]
+dewey artifacts sync --plan FILE --approve [--approved-by ID] [--resolutions FILE] [--vault PATH]
+```
+
+- `--json` — Emit the full plan JSON to stdout (the plan file is always written to a `0600` temp file, with its path printed first)
+- `--plan` — Path to the plan file to execute (required)
+- `--approve` — The human gate: sync refuses to run without it
+- `--approved-by` — Approver identity recorded in the commit trailer (default: `git config user.name`)
+- `--resolutions` — Path-keyed JSON choosing among clean variants for conflicting artifacts
+
+The plan JSON is a stable scripting surface for the `/dewey-publish` flow. Top-level keys: `schema_version`; `repo` (`base_branch`, `base_sha`, `publish_remote`, `push_remote`, `artifact_roots`, `stash_refs`); `gitignore` (a `status` plus an optional bounded `fix`, present only when the status is `bare-dewey-fix`); `artifacts[]` (`path`, `identity`, `tag`, `kind`, `sha256`, `sources`, `status`, `findings`); `conflicts[]` (`path`, `identity`, `variants[]` with `sha256`, `sources`, `findings`); `blocked[]` (`path`, `identity`, `findings` of `scanner`, `pattern`, `severity`, `line`, `message`); `warnings[]`; `summary`; and `rendered_summary` (rendered for humans — relay it verbatim). Artifact sources are labeled `working-tree`, `stash:stash@{N}`, `stash-untracked:stash@{N}`, or `commit:<sha>`; `kind` is one of `learning`, `compiled`, or `knowledge`. The summary is arithmetic over the arrays: `total` is the number of artifacts, `new` + `unchanged` equals it, `conflicts` counts the conflicts array, `blocked` counts the blocked array. Sync emits `branch`, `worktree`, `commit`, `files_written`, `gitignore_fix_applied`, `nothing_to_publish`, `pr_body`, `approved_by`, and `plan_sha256`.
+
+Credential screening is a pre-exposure floor, not a guarantee. The scanner's rules — private-key blocks and credential-bearing connection strings at critical severity; `sk-`, `ghp_`, `xoxb_`, and `AKIA` prefixes at high severity — are heuristics. Secret scanners such as gitleaks run only after PR creation and provide the second line of defense once content leaves the machine.
+
+When the plan reports gitignore status `bare-dewey-fix`, sync commits a bounded fix that re-ignores runtime state under `.uf/dewey/`-prefixed rules while leaving the artifact directories stageable. After the chore PR merges, artifact files become committable while runtime state stays ignored.
 
 ## Content Sources
 
@@ -717,7 +738,7 @@ When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexi
 ```text
 main.go              Entry point — backend routing, MCP server startup
 cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
-                     source, doctor, manifest, compile, lint, promote, curate
+                     source, doctor, manifest, compile, lint, promote, curate, artifacts
 server.go            MCP server setup — 50 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
@@ -769,6 +790,7 @@ chunker/             Language-aware source code parsing (Go chunker, registry)
 curate/              Knowledge store config parsing + curation pipeline
 sanitize/            Content sanitization pipeline (injection scanning, structure validation,
                      drift detection, size anomaly detection)
+artifacts/            Knowledge-artifact publishing: plan/sync sweep, screening, gitignore posture
 ```
 
 ## Attribution

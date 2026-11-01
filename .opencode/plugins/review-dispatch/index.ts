@@ -2319,8 +2319,8 @@ function validateRunModel(run: DispatchRun, plan: ReviewDispatchPayload["plan"][
     if (run.requested_model !== null || run.provider !== null || run.model_id !== null || run.variant !== null) {
       errors.push(`host run ${run.run_id} must retain null requested model provenance`)
     }
-    if (run.status === "success" && (run.resolved_parent_model === null || run.resolved_parent_variant === null)) {
-      errors.push(`successful host run ${run.run_id} requires resolved parent model and variant`)
+    if (run.status === "success" && run.resolved_parent_model === null) {
+      errors.push(`successful host run ${run.run_id} requires resolved parent model`)
     }
     expectedModel = run.resolved_parent_model
   } else if (run.source === "advisor" && run.requested_model === null) {
@@ -2328,8 +2328,8 @@ function validateRunModel(run: DispatchRun, plan: ReviewDispatchPayload["plan"][
     if (run.provider !== null || run.model_id !== null || run.variant !== null) {
       errors.push(`host-resolved advisor run ${run.run_id} must retain null requested model provenance`)
     }
-    if (run.status === "success" && (run.resolved_parent_model === null || run.resolved_parent_variant === null)) {
-      errors.push(`successful host-resolved advisor run ${run.run_id} requires resolved parent model and variant`)
+    if (run.status === "success" && run.resolved_parent_model === null) {
+      errors.push(`successful host-resolved advisor run ${run.run_id} requires resolved parent model`)
     }
     expectedModel = run.resolved_parent_model
   } else {
@@ -3559,6 +3559,16 @@ export async function dispatchAgentRun(
 
 // ── submit_review_findings ───────────────────────────────────
 
+const SubmitReviewFindingsInputSchema = z
+  .object({
+    findings: z
+      .array(RunFindingSchema)
+      .min(1)
+      .max(512)
+      .describe("Array of review findings with severity, category, description, root_cause, file, and line."),
+  })
+  .strict()
+
 /**
  * Creates the submit_review_findings tool for child Divisor agent sessions.
  * Findings are Zod-validated and stored in the module-level Map for later
@@ -3570,23 +3580,37 @@ function createSubmitReviewFindingsTool(): ReturnType<typeof tool> {
       "Submit structured review findings from a child Divisor agent run. " +
       "Findings are Zod-validated and stored for later consolidation. " +
       "Call once per run; multiple calls in the same session are additive.",
-    args: {
-      findings: z
-        .array(RunFindingSchema)
-        .min(1)
-        .max(512)
-        .describe("Array of review findings with severity, category, description, root_cause, file, and line."),
-    },
+    args: SubmitReviewFindingsInputSchema.shape,
     async execute(args, context): Promise<{ readonly output: string }> {
+      // OpenCode 1.19.0 does not enforce plugin tool arg schemas host-side,
+      // so the declared schema is re-applied here: an invalid submission
+      // fails inside the child session — where the reviewer can fix and
+      // resubmit — instead of stranding the dispatch at
+      // finalize_review_dispatch after the session has ended.
+      const parsed = SubmitReviewFindingsInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: `submit_review_findings validation failed: ${formatValidationError(parsed.error)}` }
+      }
       const entry = submissionStore.get(context.sessionID) ?? { findings: [], proposals: [] }
-      entry.findings.push(...args.findings)
+      entry.findings.push(...parsed.data.findings)
       submissionStore.set(context.sessionID, entry)
-      return { output: `${args.findings.length} finding(s) submitted` }
+      return { output: `${parsed.data.findings.length} finding(s) submitted` }
     },
   })
 }
 
 // ── submit_lesson_proposal ───────────────────────────────────
+
+const SubmitLessonProposalInputSchema = z
+  .object({
+    information: z.string().min(1).max(16_384).describe("The learning text to store."),
+    tag: z.string().min(1).max(128).describe("Required topic tag (e.g. authentication, review-dispatch)."),
+    category: z
+      .enum(["decision", "pattern", "gotcha", "context", "reference"])
+      .optional()
+      .describe("Optional category for the learning."),
+  })
+  .strict()
 
 /**
  * Creates the submit_lesson_proposal tool for child Divisor agent sessions.
@@ -3597,19 +3621,18 @@ function createSubmitLessonProposalTool(): ReturnType<typeof tool> {
     description:
       "Submit a lesson proposal (insight, pattern, gotcha) from a child Divisor agent run. " +
       "Proposals are Zod-validated and stored for later processing by consolidate_dispatch.",
-    args: {
-      information: z.string().min(1).max(16_384).describe("The learning text to store."),
-      tag: z.string().min(1).max(128).describe("Required topic tag (e.g. authentication, review-dispatch)."),
-      category: z
-        .enum(["decision", "pattern", "gotcha", "context", "reference"])
-        .optional()
-        .describe("Optional category for the learning."),
-    },
+    args: SubmitLessonProposalInputSchema.shape,
     async execute(args, context): Promise<{ readonly output: string }> {
+      // Same host-side arg-schema gap as submit_review_findings: validate
+      // before storing so the child can fix and resubmit in-session.
+      const parsed = SubmitLessonProposalInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: `submit_lesson_proposal validation failed: ${formatValidationError(parsed.error)}` }
+      }
       const entry = submissionStore.get(context.sessionID) ?? { findings: [], proposals: [] }
-      entry.proposals.push({ information: args.information, tag: args.tag, category: args.category })
+      entry.proposals.push({ information: parsed.data.information, tag: parsed.data.tag, category: parsed.data.category })
       submissionStore.set(context.sessionID, entry)
-      return { output: `lesson proposal submitted (tag: ${args.tag})` }
+      return { output: `lesson proposal submitted (tag: ${parsed.data.tag})` }
     },
   })
 }
@@ -3879,6 +3902,175 @@ interface EmptyCoverageAttestationWarning {
 }
 
 /**
+ * Machine-readable consolidate_dispatch warning: a successful run's persisted
+ * findings or lesson proposals failed schema validation (defense-in-depth for
+ * submit-time validation). OpenCode 1.19.0 does not enforce plugin tool arg
+ * schemas host-side, so run files written before the submit tools enforced
+ * their schemas — or by any foreign writer — may carry entries the strict
+ * finalization schemas would reject. Invalid entries are excluded from the
+ * payload and reported here, one entry per affected run with the per-issue
+ * validation errors, so nothing is silently dropped. This shape is
+ * consolidate-result observability only; it MUST NOT flow into the
+ * finalization payload, whose strict schema rejects unknown top-level keys.
+ */
+interface InvalidSubmissionsExcludedWarning {
+  readonly type: "invalid_submissions_excluded"
+  readonly agent: string
+  readonly run_id: string
+  readonly invalid_findings: number
+  readonly invalid_proposals: number
+  readonly errors: readonly string[]
+}
+
+/**
+ * Cardinality bounds the finalizer's payload schemas declare — per-run
+ * findings (DispatchRunSchema) and consolidated findings
+ * (ReviewDispatchPayloadSchema), both 512. The schema declarations are the
+ * source of truth; these constants mirror them so the consolidate path can
+ * enforce the same bounds earlier. Over-cap accumulation is reachable —
+ * submit_review_findings is additive across calls and run files are
+ * foreign-writable — and individually-valid entries beyond the bound would
+ * strand finalize_review_dispatch on the array max, the same failure class
+ * the per-entry validation exists to eliminate. The bounds are enforced
+ * here, never modified: the finalizer's declared limits stay exactly as
+ * declared.
+ */
+const MAX_RUN_FINDINGS = 512
+const MAX_CONSOLIDATED_FINDINGS = 512
+
+/**
+ * Maximum diagnostic error lines one invalid_submissions_excluded warning
+ * carries. Run files are foreign-writable, so the per-issue lines grow
+ * linearly with invalid entries; the bound caps that growth while the
+ * invalid_findings/invalid_proposals counts stay exact and a truncation
+ * note names the total.
+ */
+const MAX_WARNING_ERROR_LINES = 20
+
+/**
+ * Machine-readable consolidate_dispatch warning: a successful run's valid
+ * findings exceeded the per-run cardinality bound (DispatchRunSchema
+ * findings max). The first MAX_RUN_FINDINGS entries keep flowing toward the
+ * payload; the overflow is excluded here and surfaced with kept and
+ * overflow counts instead of silently truncating. This shape is
+ * consolidate-result observability only; it MUST NOT flow into the
+ * finalization payload, whose strict schema rejects unknown top-level keys.
+ */
+interface RunFindingsOverflowWarning {
+  readonly type: "run_findings_overflow"
+  readonly agent: string
+  readonly run_id: string
+  readonly kept_findings: number
+  readonly overflow_findings: number
+}
+
+/**
+ * Machine-readable consolidate_dispatch warning: the deduplicated
+ * consolidated findings exceeded the top-level cardinality bound
+ * (ReviewDispatchPayloadSchema findings max). Same treatment as the per-run
+ * bound — the payload keeps the first MAX_CONSOLIDATED_FINDINGS entries and
+ * the dropped remainder is surfaced with kept and dropped counts. This
+ * shape is consolidate-result observability only; it MUST NOT flow into
+ * the finalization payload, whose strict schema rejects unknown top-level
+ * keys.
+ */
+interface ConsolidatedFindingsOverflowWarning {
+  readonly type: "consolidated_findings_overflow"
+  readonly kept_findings: number
+  readonly dropped_findings: number
+}
+
+/**
+ * Bound an invalid_submissions_excluded warning's diagnostic error lines to
+ * MAX_WARNING_ERROR_LINES. The invalid counts stay exact; the appended note
+ * names how many lines were truncated and the total, so no information is
+ * silently lost.
+ */
+function boundWarningErrors(errors: readonly string[]): readonly string[] {
+  if (errors.length <= MAX_WARNING_ERROR_LINES) {
+    return errors
+  }
+  return [
+    ...errors.slice(0, MAX_WARNING_ERROR_LINES),
+    `... ${errors.length - MAX_WARNING_ERROR_LINES} more validation error line(s) truncated (${errors.length} total)`,
+  ]
+}
+
+/**
+ * Render one harvested entry's ZodError as `<label>[<index>].<path>:
+ * <message>` lines — the path-and-message convention of
+ * formatValidationError, prefixed with the entry's array position so the
+ * warning names exactly which stored finding or proposal was dropped.
+ */
+function submissionIssueLines(label: string, index: number, error: z.ZodError): string[] {
+  return error.issues.map((issue) => {
+    const path = issue.path.join(".")
+    return path.length > 0 ? `${label}[${index}].${path}: ${issue.message}` : `${label}[${index}]: ${issue.message}`
+  })
+}
+
+/**
+ * Partition one run's harvested findings and lesson proposals into
+ * schema-valid entries and per-issue validation errors. Findings are checked
+ * against RunFindingSchema and proposals against the submit tool's declared
+ * schema — a stored proposal is the projection of that tool's validated
+ * args, so the shapes are identical. Valid entries keep flowing toward the
+ * payload; invalid entries are excluded with their errors preserved for the
+ * invalid_submissions_excluded warning. The per-run cardinality bound
+ * (DispatchRunSchema findings max) is enforced here too: valid findings
+ * beyond MAX_RUN_FINDINGS are kept-before-dropped and counted as overflow
+ * for the run_findings_overflow warning, so the payload is finalize-shaped
+ * by count as well as by entry. Overflow findings are valid — they are
+ * counted only in overflowFindings, never in invalidFindings.
+ */
+function partitionRunSubmissions(run: PersistedRunData): {
+  readonly findings: z.infer<typeof RunFindingSchema>[]
+  readonly proposals: LessonProposal[]
+  readonly invalidFindings: number
+  readonly invalidProposals: number
+  readonly overflowFindings: number
+  readonly errors: readonly string[]
+} {
+  const findings: z.infer<typeof RunFindingSchema>[] = []
+  const proposals: LessonProposal[] = []
+  const errors: string[] = []
+  run.findings.forEach((finding, index) => {
+    const parsed = RunFindingSchema.safeParse(finding)
+    if (parsed.success) {
+      findings.push(parsed.data)
+    } else {
+      errors.push(...submissionIssueLines("findings", index, parsed.error))
+    }
+  })
+  run.proposals.forEach((proposal, index) => {
+    const parsed = SubmitLessonProposalInputSchema.safeParse(proposal)
+    if (parsed.success) {
+      proposals.push({ information: parsed.data.information, tag: parsed.data.tag, category: parsed.data.category })
+    } else {
+      errors.push(...submissionIssueLines("proposals", index, parsed.error))
+    }
+  })
+  // Enforce the finalizer's per-run findings array max here, the single
+  // choke point before the payload: individually-valid entries beyond the
+  // bound would strand finalize_review_dispatch on the array max with no
+  // recovery path. Keep the first MAX_RUN_FINDINGS; count the overflow for
+  // the run_findings_overflow warning. The bound mirrors the schema
+  // declaration and MUST NOT drift from it.
+  const overflowFindings = Math.max(0, findings.length - MAX_RUN_FINDINGS)
+  const keptFindings = overflowFindings > 0 ? findings.slice(0, MAX_RUN_FINDINGS) : findings
+  return {
+    findings: keptFindings,
+    proposals,
+    // findings.length is the pre-cap valid count, so invalidFindings counts
+    // only schema-invalid entries — never the valid-but-over-cap overflow.
+    invalidFindings: run.findings.length - findings.length,
+    invalidProposals: run.proposals.length - proposals.length,
+    overflowFindings,
+    errors,
+  }
+}
+
+/**
  * Creates the consolidate_dispatch tool that reads persisted run files,
  * deduplicates findings, computes verdict, and returns a finalization-ready payload.
  * When provenance is supplied, calls finalizeReviewDispatch internally to skip
@@ -3898,6 +4090,11 @@ export function createConsolidateDispatchTool(
       "call dewey_store_learning for each. " +
       "Findings and proposals harvested from non-success runs are excluded from the payload and reported in a " +
       "top-level warnings array as orphaned_submissions_excluded entries (agent, run_id, discarded counts); " +
+      "harvested findings or proposals that fail their schemas are likewise excluded and reported as " +
+      "invalid_submissions_excluded entries (agent, run_id, invalid counts, per-entry validation errors " +
+      "bounded to the first 20 lines with the total issue count); valid findings exceeding the finalizer's " +
+      "cardinality bounds are kept to the bounds (512 per run, 512 consolidated after deduplication) and " +
+      "reported as run_findings_overflow / consolidated_findings_overflow warnings (kept and dropped counts); " +
       "successful manifest-mode runs whose persisted final text carries a missing or empty `**Files Reviewed**:` " +
       "coverage attestation are reported as empty_coverage_attestation warnings (advisory quality signal only, " +
       "no finding and no verdict change); when " +
@@ -4018,6 +4215,52 @@ export function createConsolidateDispatchTool(
           run_id: run.run_id,
         }))
 
+      // Defense-in-depth for submit-time validation
+      // (fix-review-submission-validation): run files written before the
+      // submit tools enforced their schemas — or by any foreign writer —
+      // may carry findings or proposals the strict finalization schemas
+      // would reject, stranding the dispatch at finalize_review_dispatch
+      // with no recovery path. Validate every harvested submission from
+      // successful runs here, the single choke point before the finalizer:
+      // valid entries keep flowing, invalid entries are excluded from the
+      // payload and surfaced as invalid_submissions_excluded warnings (with
+      // bounded diagnostic lines), and the finalizer's array-level
+      // cardinality bounds are enforced alongside the per-entry checks so
+      // the payload is finalize-shaped by count as well as by entry.
+      // Non-success runs pass through untouched — their submissions are
+      // already excluded by success scoping above.
+      const invalidSubmissionWarnings: InvalidSubmissionsExcludedWarning[] = []
+      const findingsOverflowWarnings: RunFindingsOverflowWarning[] = []
+      const validatedRuns: PersistedRunData[] = []
+      for (const run of runs) {
+        if (run.status !== "success") {
+          validatedRuns.push(run)
+          continue
+        }
+        const submissions = partitionRunSubmissions(run)
+        if (submissions.errors.length > 0) {
+          invalidSubmissionWarnings.push({
+            type: "invalid_submissions_excluded",
+            agent: run.agent,
+            run_id: run.run_id,
+            invalid_findings: submissions.invalidFindings,
+            invalid_proposals: submissions.invalidProposals,
+            errors: boundWarningErrors(submissions.errors),
+          })
+        }
+        if (submissions.overflowFindings > 0) {
+          findingsOverflowWarnings.push({
+            type: "run_findings_overflow",
+            agent: run.agent,
+            run_id: run.run_id,
+            kept_findings: submissions.findings.length,
+            overflow_findings: submissions.overflowFindings,
+          })
+        }
+        validatedRuns.push({ ...run, findings: submissions.findings, proposals: submissions.proposals })
+      }
+      const validatedSuccessRuns = validatedRuns.filter((run) => run.status === "success")
+
       // Observability for what the scoping discards (RD-FR-025, design D1):
       // one warning entry per excluded run whose harvested submissions were
       // actually dropped. A non-success run with no submissions emits no
@@ -4026,7 +4269,13 @@ export function createConsolidateDispatchTool(
       // Zero-success dispatches keep the RD-FR-007 fail-closed path; the
       // warnings array is result observability only and MUST NOT flow into
       // the finalization payload (strict schema).
-      const warnings: (OrphanedSubmissionsExcludedWarning | EmptyCoverageAttestationWarning)[] = [
+      const warnings: (
+        | OrphanedSubmissionsExcludedWarning
+        | EmptyCoverageAttestationWarning
+        | InvalidSubmissionsExcludedWarning
+        | RunFindingsOverflowWarning
+        | ConsolidatedFindingsOverflowWarning
+      )[] = [
         ...runs
           .filter((run) => run.status !== "success" && (run.findings.length > 0 || run.proposals.length > 0))
           .map(
@@ -4039,15 +4288,37 @@ export function createConsolidateDispatchTool(
             }),
           ),
         ...attestationWarnings,
+        ...invalidSubmissionWarnings,
+        ...findingsOverflowWarnings,
       ]
 
       // Collect lesson proposals from successful runs only, tagged with agent name.
-      const collectedProposals = successRuns.flatMap((run) =>
+      const collectedProposals = validatedSuccessRuns.flatMap((run) =>
         run.proposals.map((p) => ({ agent: run.agent, information: p.information, tag: p.tag, category: p.category })),
       )
 
-      // Deduplicate findings across successful runs only.
-      const consolidatedFindings = deduplicateFindings(successRuns)
+      // Deduplicate findings across successful runs only, then enforce the
+      // finalizer's top-level cardinality bound (ReviewDispatchPayloadSchema
+      // findings max) the same way the per-run bound is enforced in
+      // partitionRunSubmissions: keep the first MAX_CONSOLIDATED_FINDINGS,
+      // surface the dropped remainder as a consolidated_findings_overflow
+      // warning, and derive verdict and advisories from the kept set so the
+      // payload is finalize-shaped by count as well as by entry. The
+      // warning is appended here — after the initializer above — because
+      // the dropped count is only knowable after deduplication.
+      const allConsolidatedFindings = deduplicateFindings(validatedSuccessRuns)
+      const droppedConsolidatedFindings = Math.max(0, allConsolidatedFindings.length - MAX_CONSOLIDATED_FINDINGS)
+      const consolidatedFindings =
+        droppedConsolidatedFindings > 0
+          ? allConsolidatedFindings.slice(0, MAX_CONSOLIDATED_FINDINGS)
+          : allConsolidatedFindings
+      if (droppedConsolidatedFindings > 0) {
+        warnings.push({
+          type: "consolidated_findings_overflow",
+          kept_findings: consolidatedFindings.length,
+          dropped_findings: droppedConsolidatedFindings,
+        })
+      }
 
       // Compute verdict.
       const { reason: verdictReason } = computeVerdict(consolidatedFindings)
@@ -4055,8 +4326,10 @@ export function createConsolidateDispatchTool(
       // Derive the workflow kind for kind-native verdict projection (FR-001).
       const kind = workflowKind(sessionMetadata.command)
 
-      // Build run entries matching DispatchRunSchema.
-      const dispatchRuns = runs.map((run) => ({
+      // Build run entries matching DispatchRunSchema. Maps over validatedRuns
+      // so success runs carry only schema-valid findings (non-success runs
+      // are the untouched originals; their findings never enter the payload).
+      const dispatchRuns = validatedRuns.map((run) => ({
         run_id: run.run_id,
         agent: run.agent,
         source: run.source as (typeof SOURCE_VALUES)[number],
@@ -5615,7 +5888,9 @@ function createDispatchReviewRunsTool(
       "Aggregate evidence-acquisition, prompt-building, and agent-dispatching into a single deterministic tool call. " +
       "Replaces sequential calls to acquire_sibling_evidence, build_review_prompts, and dispatch_agent_run. " +
       "When per_run_timeout_ms is omitted, each run's timeout is derived from the work being dispatched " +
-      "(review-matrix base window, prompt size, plan tier, and parallelism), bounded by 1,800,000 ms.",
+      "(review-matrix base window, prompt size, plan tier, and parallelism), bounded by 1,800,000 ms. " +
+      "Capture the correlation_id this tool reports (in the one-line summary and machine-readable metadata) " +
+      "and pass it as correlation_id on every subsequent consolidate_dispatch call in the same workflow.",
     args: DispatchReviewRunsInputSchema.shape,
     async execute(
       args,

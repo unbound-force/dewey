@@ -680,10 +680,23 @@ sections instead of embedding their text.
    `budget_usd`; omit `per_run_timeout_ms` so each run derives
    its window from the matrix limit and the dispatched work,
    with explicit values still winning). Pass the spec
-   artifacts as `review_context`. Then call
+   artifacts as `review_context`. The tool returns a one-line
+   counts summary — `dispatch_review_runs: <status>
+   (correlation_id <id>) — <completed> completed, <failed>
+   failed, <skipped> skipped, <findings> findings, <proposals>
+   proposals`. Capture the `correlation_id` reported in that
+   one-line summary and pass it as `correlation_id` on every
+   subsequent consolidation call for this dispatch. Step 4
+   and Step 6 are separate dispatches with separate
+   `correlation_id` values — each dispatch's ID threads only
+   to its own consolidation calls. Forward it unconditionally,
+   never conditioned on in-process session-map state; the
+   machine-readable tool metadata carries the same ID as a
+   secondary channel for harnesses that surface it. Then call
    `consolidate_dispatch` exactly once per finalization
    attempt with provenance: branch, 40-character head
-   SHA, and `workflow_id: "uf.review-council"`.
+   SHA, `workflow_id: "uf.review-council"`, and the captured
+   `correlation_id` from this dispatch.
 
    The dispatch selects the diff delivery mode per the
    cited council protocol: inline at or below 1500 diff
@@ -765,7 +778,10 @@ sections instead of embedding their text.
   included reviewer (not just failing or
   content-affected ones), reusing a single
   sibling-evidence acquisition across the iteration.
-  Keep the iteration counter. Each re-run verdict is
+  Each re-dispatch reports a fresh `correlation_id` in
+  its one-line counts summary — capture it and pass it
+  on every `consolidate_dispatch` call for that
+  re-dispatch. Keep the iteration counter. Each re-run verdict is
   processed through these same rules -- the gate
   re-presents on every REQUEST CHANGES verdict. Cap at
   3 iterations: if REQUEST CHANGES persists to a fourth
@@ -986,11 +1002,42 @@ its Local Tool Detection phase to discover additional
    procedure -- the delegation names the reference and does
    not restate the procedure. The classification, resolved
    reference, and any recorded reason are written to the
-   checkpoint data and success envelope, so every delegation
-   is auditable without reconstructing prompts. Swarm-path
+   checkpoint data and success envelope, so every delegation is
+   auditable without reconstructing prompts. Swarm-path
    `[P]` delegations carry the same classification through
    the spawn tool's `task_classification` parameter (see
    parallel execution below).
+
+**Model-selection parameters for delegated calls**
+(model-matrix-delegation UF-FR-001): pass `pack` on an
+`uf_delegate_command` implement delegation whenever the task
+clearly names a convention pack -- a Go task passes `pack:
+"go"`, a TypeScript task `pack: "typescript"`,
+spec-authoring work `pack: "meta-prompt"`. A task with no
+clearly named pack omits the parameter: the classifier
+cascade (MM-FR-005) derives the selection. The selection
+parameters are independent of the classification contract
+above -- they govern which model the child session runs on,
+not skill enforcement. Parameter contract and precedence
+order (MM-FR-003):
+   - `model`: explicit provider/model identity (with optional
+     `variant`); wins the chain outright, skipping matrix
+     resolution and host introspection.
+   - `profile`: matrix capability name; resolves the
+     profile's model and pack through `.uf/model-matrix.yaml`
+     when configured.
+   - `pack`: UF convention pack name; double duty -- resolves
+     the mapped profile's model AND renders the tool-authored
+     directive instructing the child to load
+     `.opencode/uf/packs/<pack>.md` before writing.
+   - Precedence: explicit `model` > `profile` > `pack` >
+     agent pin > task-kind default > classifier cascade >
+     host model.
+
+   Never reconstruct, inline, or paraphrase pack content in a
+   delegation prompt -- the pack directive is tool-rendered
+   by `uf_delegate_command` from a fixed template; the
+   orchestrator only ever names the pack.
 
 **Build/test fix loop**: a failing check at a blocking
 gate is implement work the agent owns, not a human
@@ -1541,11 +1588,26 @@ text.
       dispatched work, with explicit values still winning).
       Pass the
       soft-gate results as `pre_flight_results` (verdict,
-      causality classifications, baseline method). Then
+      causality classifications, baseline method). The
+      tool returns a one-line counts summary —
+      `dispatch_review_runs: <status> (correlation_id <id>)
+      — <completed> completed, <failed> failed, <skipped>
+      skipped, <findings> findings, <proposals> proposals`.
+      Capture the `correlation_id` reported in that
+      one-line summary and pass it as `correlation_id` on
+      every subsequent consolidation call for this
+      dispatch. Step 4 and Step 6 are separate dispatches
+      with separate `correlation_id` values, and each
+      dispatch's ID threads only to its own consolidation
+      calls. Forward it unconditionally, never conditioned
+      on in-process session-map state; the machine-readable
+      tool metadata carries the same ID as a secondary
+      channel for harnesses that surface it. Then
       call `consolidate_dispatch` exactly once per
       finalization attempt with provenance: branch,
-      40-character head SHA, and
-      `workflow_id: "uf.review-council"`.
+      40-character head SHA,
+      `workflow_id: "uf.review-council"`, and the
+      captured `correlation_id` from this dispatch.
 
    The dispatch selects the diff delivery mode per the
    cited council protocol: inline at or below 1500 diff
@@ -1598,7 +1660,11 @@ text.
      ones), reusing a single sibling-evidence
      acquisition across the iteration, and again
      passing fresh `pre_flight_results` from a re-run
-     of the soft gate. Keep the iteration counter.
+     of the soft gate. Each re-dispatch reports a fresh
+     `correlation_id` in its one-line counts summary —
+     capture it and pass it on every
+     `consolidate_dispatch` call for that re-dispatch.
+     Keep the iteration counter.
   c. If the verdict is APPROVE or APPROVE WITH
      ADVISORIES: proceed to Step 7 (Retrospective).
 

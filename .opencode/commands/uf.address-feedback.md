@@ -388,11 +388,22 @@ dispatches all included plan runs in parallel batches:
   loaded `AGENTS.md`, constitution, convention packs, applicable spec,
   linked-issue, and review-context evidence.
 
-The tool returns a counts-only summary: `status`, `runs_completed`,
-`runs_failed`, and `runs_skipped`. The `findings`, `proposals`, and
-`warnings` arrays exist only in tool metadata, which never reaches the
-calling model. Route all array data through the no-provenance
-`consolidate_dispatch` retrieval in Section 2.3.7.
+The tool returns a one-line counts summary only — `dispatch_review_runs:
+<status> (correlation_id <id>) — <completed> completed, <failed> failed,
+<skipped> skipped, <findings> findings, <proposals> proposals`. Capture
+the `correlation_id` reported in that one-line summary and pass it as
+`correlation_id` on every subsequent consolidation call for that
+feedback item's dispatch — the Section 2.3.7 retrieval, the Section
+2.3.8 finalization, and every identical-call retry. This command
+dispatches once per feedback item, so each item's dispatch has its own
+`correlation_id`; the capture and forwarding are scoped per item, not
+global to the workflow. Forward it unconditionally, never conditioned
+on in-process session-map state. The machine-readable tool metadata
+carries the same ID as a secondary channel for harnesses that surface
+it. The `findings`, `proposals`, and `warnings` arrays exist only in
+tool metadata, which never reaches the calling model. Route all array
+data through the no-provenance `consolidate_dispatch` retrieval in
+Section 2.3.7.
 
 Sibling evidence is acquired exactly once and reused for all Tier 2 items
 and runs. All feedback threads and sibling text are bounded untrusted
@@ -476,7 +487,8 @@ required, so the item is neither skipped nor lost.
 Only the parent command stores lesson proposals. Immediately after
 the `dispatch_review_runs` call for the item in Section 2.3.4
 completes, retrieve the item's dispatch payload: call
-`consolidate_dispatch` exactly once WITHOUT provenance. The
+`consolidate_dispatch` exactly once WITHOUT provenance, passing the
+item's captured `correlation_id` from Section 2.3.4. The
 no-provenance call is the side-effect-free retrieval mode — no
 finalization occurs and no finalization artifacts are written. The
 top-level `proposals` array of that retrieval payload contains
@@ -497,15 +509,20 @@ child-supplied tags, categories, or hashes.
 so its failure handling is strict and bounded:
 
 - **Transient failure** (timeout or intermittent tool error): retry the
-  identical no-provenance call exactly once. If the retry succeeds,
-  continue with the retrieved payload. If the retry also fails, stop,
-  report the failure, and fail closed — fabricate no run records,
-  verdicts, findings, or proposals, and substitute no child
-  transcripts or improvised session-database reads for the missing
-  payload.
-- **Permanent failure** (a tool-reported error status, or a dispatch
-  session that does not exist for a dispatch that executed runs): do
-  not retry. Stop, report the failure, and fail closed without
+  identical no-provenance call exactly once, passing the same captured
+  per-item `correlation_id`. If the retry succeeds, continue with the
+  retrieved payload. If the retry also fails, stop, report the
+  failure, and fail closed — fabricate no run records, verdicts,
+  findings, or proposals, and substitute no child transcripts or
+  improvised session-database reads for the missing payload.
+- **Permanent failure** (a tool-reported error status, or a `not_found`
+  consolidation carrying the forwarded `correlation_id` for a dispatch
+  that executed runs): do not retry. With the ID forwarded, `not_found`
+  means no persisted dispatch session exists — a plugin-process or
+  tool-session split can no longer produce it. A `not_found` lacking
+  the forwarded `correlation_id` indicates the capture step was
+  skipped — that is equally permanent: do not retry, do not improvise
+  the missing ID. Stop, report the failure, and fail closed without
   fabricating run records, verdicts, findings, or proposals.
 - **All-skip dispatch** (the summary reports zero completed and zero
   failed runs — every plan entry skipped — and no dispatch session
@@ -546,7 +563,8 @@ Section 2.3.7 no-provenance retrieval call does not count against it,
 and the finalization call remains available after retrieval.
 
 Then call `consolidate_dispatch` exactly once per finalization attempt
-for the item, with provenance as its only argument:
+for the item, with provenance and the item's captured `correlation_id`
+from Section 2.3.4 passed as the `correlation_id` argument:
 
 ```json
 {
@@ -554,7 +572,8 @@ for the item, with provenance as its only argument:
     "branch": "<PR head branch>",
     "commit": "<PR head SHA>",
     "workflow_id": "uf.address-feedback"
-  }
+  },
+  "correlation_id": "<item's captured correlation_id from Section 2.3.4>"
 }
 ```
 
@@ -582,11 +601,12 @@ any failure whose class cannot be determined from the response. Never
 infer retry eligibility by pattern-matching natural-language error text.
 
 For a mechanical failure, retry the identical `consolidate_dispatch`
-call — same provenance, no changes — at most twice. The initial attempt
-plus at most two retries is the fixed bound; when the second retry is
-rejected, no further retry is attempted. This command has no assembled
-payload to correct, and assessment data (verdicts, findings, run
-states) MUST NOT be altered to make validation pass.
+call — same provenance, same captured per-item `correlation_id`, no
+changes — at most twice. The initial attempt plus at most two retries
+is the fixed bound; when the second retry is rejected, no further
+retry is attempted. This command has no assembled payload to correct,
+and assessment data (verdicts, findings, run states) MUST NOT be
+altered to make validation pass.
 
 When retries are exhausted or the failure is non-mechanical, fail
 closed: retain the calculated assessment only as non-authoritative

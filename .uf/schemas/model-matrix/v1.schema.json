@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/unbound-force/unbound-force/schemas/model-matrix/v1.schema.json",
+  "title": "Model Matrix Version 1",
+  "description": "Closed contract for capability-driven content-agent model selection (uf_delegate_command). The tracked file carries structure only; per-developer identities arrive via the gitignored .uf/model-matrix.override.yaml (whitelist: profiles.*.model, profiles.*.variant, classifier.llm.*). Cross-reference rules (packs/defaults/agents values must be declared profiles) and the tracked-role population rule (tracked classifier.llm must be structure-only) are loader-level runtime checks beyond plain JSON Schema expressiveness; the runtime Zod surface enforces them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "profiles"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/capabilityName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/profile"
+      }
+    },
+    "packs": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/packName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/capabilityName"
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plan": {
+          "$ref": "#/$defs/capabilityName"
+        },
+        "tasks": {
+          "$ref": "#/$defs/capabilityName"
+        },
+        "implement": {
+          "$ref": "#/$defs/capabilityName"
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/agentPinName"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/capabilityName"
+      }
+    },
+    "classifier": {
+      "$ref": "#/$defs/classifier"
+    }
+  },
+  "$defs": {
+    "capabilityName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "packName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "agentPinName": {
+      "type": "string",
+      "pattern": "^(?!divisor-)[a-z][a-z0-9-]{0,63}$"
+    },
+    "classifierAgentName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "profileModel": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._@-]*(?:/[A-Za-z0-9][A-Za-z0-9._@-]*)*$"
+    },
+    "profileVariant": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/profileModel"
+        },
+        "variant": {
+          "$ref": "#/$defs/profileVariant"
+        }
+      }
+    },
+    "classifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "agent": {
+          "$ref": "#/$defs/classifierAgentName"
+        },
+        "agent_timeout_ms": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 1800000
+        },
+        "llm": {
+          "$ref": "#/$defs/classifierLlm"
+        },
+        "confidence_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "classifierLlm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "apiKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "request_timeout_ms": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 180000
+        }
+      }
+    }
+  }
+}

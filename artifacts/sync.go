@@ -97,9 +97,12 @@ func loadPlan(planPath string) (*Plan, string, error) {
 
 // planWrite is one planned file to materialize in the sync worktree.
 type planWrite struct {
-	path    string
-	sha256  string
-	sources []string
+	path     string
+	sha256   string
+	sources  []string
+	kind     string
+	tag      string
+	identity string
 }
 
 // plannedWrites derives the write set from the plan: every artifact plus every
@@ -109,7 +112,7 @@ type planWrite struct {
 func plannedWrites(plan *Plan, resolutions map[string]string) ([]planWrite, error) {
 	var writes []planWrite
 	for _, art := range plan.Artifacts {
-		writes = append(writes, planWrite{path: art.Path, sha256: art.SHA256, sources: art.Sources})
+		writes = append(writes, planWrite{path: art.Path, sha256: art.SHA256, sources: art.Sources, kind: art.Kind, tag: art.Tag, identity: art.Identity})
 	}
 	for _, conf := range plan.Conflicts {
 		sha, ok := resolutions[conf.Path]
@@ -125,7 +128,8 @@ func plannedWrites(plan *Plan, resolutions map[string]string) ([]planWrite, erro
 		if sources == nil {
 			return nil, fmt.Errorf("resolution for %s names sha256 %s, which is not a variant of the conflict", conf.Path, sha)
 		}
-		writes = append(writes, planWrite{path: conf.Path, sha256: sha, sources: sources})
+		kind, tag := deriveKindTag(conf.Path, conf.Identity, plan.Repo.ArtifactRoots)
+		writes = append(writes, planWrite{path: conf.Path, sha256: sha, sources: sources, kind: kind, tag: tag, identity: conf.Identity})
 	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].path < writes[j].path })
 	return writes, nil
@@ -360,4 +364,142 @@ func stagePlannedFiles(worktree string, filesWritten []string, gitignoreFixAppli
 		}
 	}
 	return nil
+}
+
+// deriveKindTag recovers the kind and tag for a resolved conflict path. The
+// plan JSON's conflict entries carry path and identity but not the enumeration
+// time kind/tag, so sync re-derives them from the plan's recorded artifact
+// roots using the same rules the enumerators applied: learnings roots give the
+// first hyphen segment of the identity as tag, compiled roots use the identity
+// stem itself, the standard knowledge root uses the first path segment, and
+// custom store roots use the store directory basename.
+func deriveKindTag(path, identity string, roots []string) (kind, tag string) {
+	for _, root := range roots {
+		if !strings.HasPrefix(path, root) {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(root, "/learnings/"):
+			return KindLearning, strings.SplitN(identity, "-", 2)[0]
+		case strings.HasSuffix(root, "/compiled/"):
+			return KindCompiled, identity
+		case strings.HasSuffix(root, "/knowledge/"):
+			rel := strings.TrimPrefix(path, root)
+			if seg := strings.SplitN(rel, "/", 2)[0]; seg != "" {
+				return KindKnowledge, seg
+			}
+			return KindKnowledge, identity
+		default:
+			return KindKnowledge, filepath.Base(strings.TrimSuffix(root, "/"))
+		}
+	}
+	return KindKnowledge, identity
+}
+
+// renderCommitMessage renders the deterministic Conventional Commit message
+// for the chore commit (design D7 step 7): subject line with the artifact
+// count, per-kind counts, the sorted tag list, the non-destructive note, and
+// the Approved-by and Plan-sha256 trailers binding the commit to the consumed
+// plan content. The approver is control-character-stripped so a newline cannot
+// forge additional trailers.
+func renderCommitMessage(writes []planWrite, approvedBy, planSHA256 string) string {
+	kindCounts := map[string]int{}
+	tagSet := map[string]bool{}
+	for _, w := range writes {
+		kindCounts[w.kind]++
+		if w.tag != "" {
+			tagSet[w.tag] = true
+		}
+	}
+	kinds := make([]string, 0, len(kindCounts))
+	for k := range kindCounts {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	tags := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "chore(dewey): publish %d knowledge artifacts\n\n", len(writes))
+	for _, k := range kinds {
+		noun := "artifacts"
+		if kindCounts[k] == 1 {
+			noun = "artifact"
+		}
+		fmt.Fprintf(&b, "- %d %s %s\n", kindCounts[k], k, noun)
+	}
+	fmt.Fprintf(&b, "\nTags: %s\n", strings.Join(tags, ", "))
+	b.WriteString("\nNon-destructive: adds knowledge artifacts only; no source changes.\n\n")
+	fmt.Fprintf(&b, "Approved-by: %s\n", stripControl(approvedBy))
+	fmt.Fprintf(&b, "Plan-sha256: %s\n", planSHA256)
+	return b.String()
+}
+
+// renderPRBody renders the tool-rendered PR-body fragment (design DE-003):
+// tag-grouped itemized listing with identity, kind, and sha256 per artifact,
+// per-kind counts, the non-destructive note, the optional gitignore-fix note,
+// and the approver. Rendered strings are control-character-stripped and
+// markdown-escaped; the command layer relays the fragment verbatim.
+func renderPRBody(writes []planWrite, gitignoreFixApplied bool, approvedBy string) string {
+	kindCounts := map[string]int{}
+	tagWrites := map[string][]planWrite{}
+	tagSet := map[string]bool{}
+	for _, w := range writes {
+		kindCounts[w.kind]++
+		tag := w.tag
+		if tag == "" {
+			tag = "(none)"
+		}
+		tagSet[tag] = true
+		tagWrites[tag] = append(tagWrites[tag], w)
+	}
+	kinds := make([]string, 0, len(kindCounts))
+	for k := range kindCounts {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	counts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		counts = append(counts, fmt.Sprintf("%d %s", kindCounts[k], k))
+	}
+	tags := make([]string, 0, len(tagSet))
+	for t := range tagSet {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+
+	var b strings.Builder
+	b.WriteString("## Published knowledge artifacts\n\n")
+	fmt.Fprintf(&b, "%d artifacts across %d tags (%s).\n\n", len(writes), len(tags), strings.Join(counts, ", "))
+	for _, tag := range tags {
+		fmt.Fprintf(&b, "### tag: %s\n", renderString(tag))
+		for _, w := range tagWrites[tag] {
+			fmt.Fprintf(&b, "- %s (identity: %s, %s, sha256: %s)\n", renderString(w.path), renderString(w.identity), w.kind, w.sha256)
+		}
+		b.WriteString("\n")
+	}
+	if gitignoreFixApplied {
+		b.WriteString("## Gitignore fix\n\n")
+		b.WriteString("The bare `dewey` pattern was replaced with the anchored ignore block so runtime state stays ignored after merge.\n\n")
+	}
+	b.WriteString("## Notes\n\n")
+	b.WriteString("- Non-destructive: adds knowledge artifacts only; no source changes.\n")
+	fmt.Fprintf(&b, "- Approved by %s.\n", renderString(approvedBy))
+	return b.String()
+}
+
+// commitPlanned commits the staged set in the sync worktree with the rendered
+// message and returns the new commit's sha256.
+func commitPlanned(worktree, message string) (string, error) {
+	if _, err := run(worktree, "commit", "-m", message); err != nil {
+		return "", fmt.Errorf("git commit: %w", err)
+	}
+	out, err := run(worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve commit: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

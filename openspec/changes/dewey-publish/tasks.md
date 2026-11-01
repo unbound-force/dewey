@@ -34,7 +34,7 @@
 
 - [x] 4.1 In `cli.go`, add `newArtifactsCmd()` with `plan` and `sync` subcommands following the `newSourceCmd()` group precedent: `plan --json` (and default human rendering), `sync --plan <file> --approve [--approved-by <id>] [--resolutions <file>]`; register `--vault` per-command on `plan` and `sync` — `--vault` is not a persistent group flag (per-command registration per codebase precedent); resolve configured knowledge-store paths via `curate` in the CLI layer and pass them into the core as parameters; register on the root command; no changes to any existing command
 - [x] 4.2 Add CLI tests in `cli_test.go`: `dewey artifacts plan|sync` registration, help text, flag surface (including `--vault`, `--approve`, `--approved-by`), and end-to-end invocation against a fixture repo
-- [ ] 4.3 Verify the pre-existing CLI test suite passes unmodified (additive surface per the spec's Additive CLI Surface requirement)
+- [x] 4.3 Verify the pre-existing CLI test suite passes unmodified (additive surface per the spec's Additive CLI Surface requirement)
 
 ## 5. Slash Command
 

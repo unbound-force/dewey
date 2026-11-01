@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/unbound-force/dewey/v3/artifacts"
 	"github.com/unbound-force/dewey/v3/client"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
@@ -4121,5 +4123,267 @@ func TestRootCmd_Help_IncludesDoctorSubcommand(t *testing.T) {
 	got := buf.String()
 	if !strings.Contains(got, "doctor") {
 		t.Errorf("help output missing subcommand 'doctor'")
+	}
+}
+
+// newArtifactsCLIRepo builds a hermetic git fixture for the artifacts CLI
+// end-to-end test: a working repository with repo-local config, a bare
+// origin, an initial base commit pushed with -u, and origin/HEAD set so the
+// plan's base-ref resolution chain resolves.
+func newArtifactsCLIRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "work")
+	origin := filepath.Join(dir, "origin.git")
+	hooks := filepath.Join(dir, "empty-hooks")
+	for _, d := range []string{root, hooks} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("fixture: create directory %s: %v", d, err)
+		}
+	}
+
+	git := func(args ...string) {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", root}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-b", "main")
+	git("config", "user.email", "fixture@example.invalid")
+	git("config", "user.name", "Fixture Tester")
+	git("config", "commit.gpgsign", "false")
+	git("config", "core.autocrlf", "false")
+	git("config", "core.hooksPath", hooks)
+	git("init", "--bare", "-b", "main", origin)
+	git("remote", "add", "origin", origin)
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("fixture base\n"), 0o644); err != nil {
+		t.Fatalf("fixture: write README: %v", err)
+	}
+	git("add", "--", "README.md")
+	git("commit", "-m", "fixture: initial base commit")
+	git("push", "-u", "origin", "main")
+	git("remote", "set-head", "origin", "-a")
+
+	return root
+}
+
+// captureCLIStdout runs f with os.Stdout redirected into a pipe and returns
+// everything f wrote directly plus f's error. The artifacts commands relay
+// their payloads via fmt.Println to real stdout, which cmd.SetOut cannot
+// intercept.
+func captureCLIStdout(t *testing.T, f func() error) (string, error) {
+	t.Helper()
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	runErr := f()
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	return buf.String(), runErr
+}
+
+// TestArtifactsCmd_Registration verifies the artifacts command group is
+// registered on the root command with plan and sync subcommands.
+func TestArtifactsCmd_Registration(t *testing.T) {
+	cmd := newRootCmd()
+
+	artifactsCmd, _, err := cmd.Find([]string{"artifacts"})
+	if err != nil {
+		t.Fatalf("find artifacts: %v", err)
+	}
+	if artifactsCmd.Name() != "artifacts" {
+		t.Fatalf("found command %q, want artifacts", artifactsCmd.Name())
+	}
+	for _, sub := range []string{"plan", "sync"} {
+		subCmd, _, err := artifactsCmd.Find([]string{sub})
+		if err != nil || subCmd.Name() != sub {
+			t.Errorf("artifacts missing subcommand %q (err=%v)", sub, err)
+		}
+	}
+}
+
+// TestArtifactsCmd_Help verifies the artifacts group help lists its
+// subcommands and describes the publish flow.
+func TestArtifactsCmd_Help(t *testing.T) {
+	cmd := newRootCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"artifacts", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute(artifacts --help) failed: %v", err)
+	}
+
+	got := buf.String()
+	for _, want := range []string{"knowledge artifacts", "plan", "sync"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("artifacts help missing %q", want)
+		}
+	}
+}
+
+// TestArtifactsPlanCmd_HasFlags verifies the plan subcommand flag surface.
+func TestArtifactsPlanCmd_HasFlags(t *testing.T) {
+	cmd := newArtifactsPlanCmd()
+
+	for _, name := range []string{"json", "vault"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("artifacts plan missing flag --%s", name)
+		}
+	}
+}
+
+// TestArtifactsSyncCmd_HasFlags verifies the sync subcommand flag surface.
+func TestArtifactsSyncCmd_HasFlags(t *testing.T) {
+	cmd := newArtifactsSyncCmd()
+
+	for _, name := range []string{"plan", "approve", "approved-by", "resolutions", "vault"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("artifacts sync missing flag --%s", name)
+		}
+	}
+}
+
+// TestArtifactsSyncCmd_RequiresPlanFlag verifies sync refuses to run without
+// the required --plan flag.
+func TestArtifactsSyncCmd_RequiresPlanFlag(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"artifacts", "sync"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Error("sync without --plan should fail")
+	}
+}
+
+// TestArtifactsPlanSync_EndToEnd drives `dewey artifacts plan` and
+// `dewey artifacts sync` against a hermetic fixture repository: the plan is
+// written to a 0600 temp file with the rendered summary relayed verbatim,
+// --json emits the same canonical payload as the file, sync refuses without
+// --approve, and the approved sync relays the sync result JSON with the chore
+// branch, commit, files written, and approver recorded.
+func TestArtifactsPlanSync_EndToEnd(t *testing.T) {
+	repo := newArtifactsCLIRepo(t)
+
+	// Strand a learning in the working tree.
+	artifactRel := filepath.Join(".uf", "dewey", "learnings", "auth-20260101T000000-tester.md")
+	if err := os.MkdirAll(filepath.Join(repo, filepath.Dir(artifactRel)), 0o755); err != nil {
+		t.Fatalf("mkdir learnings: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, artifactRel), []byte("# learning\n\ntier:: draft\n\nUse parameterized queries.\n"), 0o644); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+
+	// Plan: default human mode relays the plan file path and the summary.
+	planCmd := newRootCmd()
+	planCmd.SetArgs([]string{"artifacts", "plan", "--vault", repo})
+	out, err := captureCLIStdout(t, planCmd.Execute)
+	if err != nil {
+		t.Fatalf("artifacts plan: %v", err)
+	}
+	const marker = "plan written to "
+	idx := strings.Index(out, marker)
+	if idx < 0 {
+		t.Fatalf("plan output missing %q: %q", marker, out)
+	}
+	line := out[idx+len(marker):]
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
+	planPath := strings.TrimSpace(line)
+	if planPath == "" {
+		t.Fatalf("plan output has empty plan path: %q", out)
+	}
+	t.Cleanup(func() { _ = os.Remove(planPath) })
+
+	info, err := os.Stat(planPath)
+	if err != nil {
+		t.Fatalf("stat plan file: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("plan file mode = %o, want 0600", perm)
+	}
+	if !strings.Contains(out, "learnings") {
+		t.Errorf("plan output missing rendered summary (learnings): %q", out)
+	}
+
+	// Plan --json emits the same canonical payload as the plan file.
+	jsonCmd := newRootCmd()
+	jsonCmd.SetArgs([]string{"artifacts", "plan", "--json", "--vault", repo})
+	jsonOut, err := captureCLIStdout(t, jsonCmd.Execute)
+	if err != nil {
+		t.Fatalf("artifacts plan --json: %v", err)
+	}
+	var planPayload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonOut)), &planPayload); err != nil {
+		t.Fatalf("plan --json not valid JSON: %v\n%s", err, jsonOut)
+	}
+	payload, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("read plan file: %v", err)
+	}
+	if strings.TrimSpace(jsonOut) != string(payload) {
+		t.Error("plan --json output differs from the plan file payload")
+	}
+
+	// Sync refuses to run without --approve (no worktree or branch is
+	// created on refusal).
+	denyCmd := newRootCmd()
+	denyCmd.SetArgs([]string{"artifacts", "sync", "--plan", planPath, "--vault", repo})
+	if _, err := captureCLIStdout(t, denyCmd.Execute); err == nil {
+		t.Fatal("sync without --approve should fail")
+	}
+
+	// Approved sync relays the sync result JSON.
+	syncCmd := newRootCmd()
+	syncCmd.SetArgs([]string{"artifacts", "sync", "--plan", planPath, "--approve", "--approved-by", "CLI Tester", "--vault", repo})
+	syncOut, err := captureCLIStdout(t, syncCmd.Execute)
+	if err != nil {
+		t.Fatalf("artifacts sync: %v\n%s", err, syncOut)
+	}
+	var result artifacts.SyncResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(syncOut)), &result); err != nil {
+		t.Fatalf("sync output not valid JSON: %v\n%s", err, syncOut)
+	}
+	if !strings.HasPrefix(result.Branch, "chore/dewey-artifacts-") {
+		t.Errorf("sync branch = %q, want chore/dewey-artifacts- prefix", result.Branch)
+	}
+	if result.Commit == "" {
+		t.Error("sync commit empty")
+	}
+	if result.ApprovedBy != "CLI Tester" {
+		t.Errorf("sync approved_by = %q, want %q", result.ApprovedBy, "CLI Tester")
+	}
+	if result.NothingToPublish {
+		t.Error("sync nothing_to_publish = true, want false")
+	}
+	found := false
+	for _, p := range result.FilesWritten {
+		if p == artifactRel {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("sync files_written missing %s: %v", artifactRel, result.FilesWritten)
+	}
+	if result.Worktree != "" {
+		wt := result.Worktree
+		t.Cleanup(func() {
+			_ = os.RemoveAll(wt)
+			_ = exec.Command("git", "-C", repo, "worktree", "prune").Run()
+		})
 	}
 }

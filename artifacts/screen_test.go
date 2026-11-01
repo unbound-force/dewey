@@ -155,3 +155,66 @@ func TestScreenContent_FindingsSortedDeterministically(t *testing.T) {
 		}
 	}
 }
+
+func TestScreenContent_CredentialPatternTable(t *testing.T) {
+	cases := []struct {
+		name    string
+		line    string
+		wantPat string
+		wantSev string
+	}{
+		{"private key block", "-----BEGIN RSA PRIVATE KEY-----", "private-key-block", SeverityCritical},
+		{"connection string", "postgres://user:supersecret@db.internal:5432/prod", "credential-connection-string", SeverityCritical},
+		{"openai key prefix", "key: sk-" + strings.Repeat("a", 20), "openai-key-prefix", SeverityHigh},
+		{"github pat prefix", "token ghp_" + strings.Repeat("a", 36), "github-pat-prefix", SeverityHigh},
+		{"slack bot token", "slack xoxb-" + strings.Repeat("a", 12), "slack-bot-token", SeverityHigh},
+		{"aws access key id", "aws AKIA" + strings.Repeat("Z", 16), "aws-access-key-id", SeverityHigh},
+	}
+	for _, c := range cases {
+		content := "# learning\n\n" + c.line + "\n"
+		findings := screenContent(content)
+		var match *Finding
+		for i := range findings {
+			if findings[i].Scanner == ScannerCredential && findings[i].Pattern == c.wantPat {
+				if match != nil {
+					t.Fatalf("%s: duplicate %s finding", c.name, c.wantPat)
+				}
+				match = &findings[i]
+			}
+		}
+		if match == nil {
+			t.Errorf("%s: no %s finding for %q", c.name, c.wantPat, c.line)
+			continue
+		}
+		if match.Severity != c.wantSev {
+			t.Errorf("%s: severity = %q, want %q", c.name, match.Severity, c.wantSev)
+		}
+		if match.Line != 3 {
+			t.Errorf("%s: line = %d, want 3", c.name, match.Line)
+		}
+		if match.Message == "" {
+			t.Errorf("%s: empty message", c.name)
+		}
+		if !blocksPublish(*match) {
+			t.Errorf("%s: finding must block publish", c.name)
+		}
+	}
+}
+
+func TestScreenContent_CredentialNearMisses(t *testing.T) {
+	contents := []string{
+		"see https://example.com/docs for details\n",
+		"-----BEGIN PUBLIC KEY-----\n",
+		"short ghp_" + strings.Repeat("a", 35) + "\n",
+		"short sk-" + strings.Repeat("a", 15) + "\n",
+		"short xoxb-" + strings.Repeat("a", 9) + "\n",
+		"short AKIA" + strings.Repeat("Z", 15) + "\n",
+	}
+	for _, content := range contents {
+		for _, f := range screenContent(content) {
+			if f.Scanner == ScannerCredential {
+				t.Errorf("near-miss %q produced credential finding %+v", content, f)
+			}
+		}
+	}
+}

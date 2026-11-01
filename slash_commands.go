@@ -263,11 +263,14 @@ published until a human approves the plan.
 
 ### 1. Resolve and Fetch the Publish Remote
 
-Identify the publish remote — the remote the chore branch will be
-pushed to, typically ` + "`origin`" + `. Fetch it with the ` + "`git_fetch`" + `
-tool if available, otherwise with a raw ` + "`git fetch <remote>`" + `
-command. Then run ` + "`git remote set-head <publish-remote> --auto`" + `
-so the plan resolves against the remote's current default branch.
+Identify the publish remote — the remote the chore PR targets: ` + "`upstream`" + `
+when that remote is configured, else ` + "`origin`" + `. (The push remote — where the
+chore branch is pushed — is ` + "`origin`" + ` in fork layouts, else the publish
+remote; the plan JSON's repo.publish_remote and repo.push_remote record
+both.) Fetch the publish remote with the ` + "`git_fetch`" + ` tool if available,
+otherwise with a raw ` + "`git fetch <publish-remote>`" + ` command. Then run
+` + "`git remote set-head <publish-remote> --auto`" + ` so the plan resolves against
+the remote's current default branch.
 
 ### 2. Build the Plan
 
@@ -312,13 +315,15 @@ the worktree path, and the tool-rendered PR body.
 
 ### 6. Push
 
-Push the chore branch to the publish remote with the ` + "`git_push`" + `
+Push the chore branch to the push remote (the plan JSON's repo.push_remote:
+` + "`origin`" + ` in fork layouts, else the publish remote) with the ` + "`git_push`" + `
 tool if available, otherwise with a raw
-` + "`git push <remote> <branch>`" + ` command.
+` + "`git push <push-remote> <branch>`" + ` command.
 
 ### 7. Create the PR
 
-Create the pull request against the publish remote with the
+Create the pull request against the publish remote's default branch (the
+plan's base ref) with the
 ` + "`uf_finale_create_pr`" + ` tool if available, otherwise with
 ` + "`gh pr create`" + `. Relay the tool-rendered PR body from the sync
 result verbatim — never regenerate it.
@@ -329,8 +334,8 @@ After the PR is created, remove the sync worktree with
 ` + "`git worktree remove <worktree>`" + `; the sync result JSON carries
 the path. Leave the chore branch for the PR. Note for the human: once
 the PR merges, the published artifacts are committed on the default
-branch — pull locally and the working-tree copies reconcile; restart
-any interrupted session afterward.
+branch — pull locally and the working-tree copies reconcile; restart the
+Dewey MCP server afterward (learnings are re-ingested at serve startup).
 </protect>
 `,
 }

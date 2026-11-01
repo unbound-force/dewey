@@ -4174,7 +4174,9 @@ func newArtifactsCLIRepo(t *testing.T) string {
 // captureCLIStdout runs f with os.Stdout redirected into a pipe and returns
 // everything f wrote directly plus f's error. The artifacts commands relay
 // their payloads via fmt.Println to real stdout, which cmd.SetOut cannot
-// intercept.
+// intercept. The pipe is drained in a goroutine while f runs so captures
+// larger than the pipe buffer cannot deadlock, and os.Stdout is restored via
+// defer so a t.Fatalf inside f cannot leak the redirection.
 func captureCLIStdout(t *testing.T, f func() error) (string, error) {
 	t.Helper()
 
@@ -4184,16 +4186,19 @@ func captureCLIStdout(t *testing.T, f func() error) (string, error) {
 		t.Fatalf("os.Pipe: %v", err)
 	}
 	os.Stdout = w
+	defer func() { os.Stdout = old }()
+
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		_, _ = buf.ReadFrom(r)
+		close(done)
+	}()
 
 	runErr := f()
 
 	_ = w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(r); err != nil {
-		t.Fatalf("read pipe: %v", err)
-	}
+	<-done
 	return buf.String(), runErr
 }
 
@@ -4607,8 +4612,8 @@ func TestResolveArtifactsContext_NotARepo(t *testing.T) {
 	if err == nil {
 		t.Fatalf("resolveArtifactsContext(%q) succeeded, want failure (not a git repo)", vault)
 	}
-	if !strings.Contains(err.Error(), "resolve git repository root") {
-		t.Errorf("error = %q, want it to contain %q", err.Error(), "resolve git repository root")
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "not a git repository")
 	}
 }
 

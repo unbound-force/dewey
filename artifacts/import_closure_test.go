@@ -19,6 +19,9 @@ import (
 // (cli.go) may import curate to resolve knowledge-store paths; that seam
 // lives outside this package.
 func TestImportClosure_ExcludesRuntimePackages(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping module-graph walk in short mode")
+	}
 	out, err := exec.Command("go", "list", "-deps", ".").Output()
 	if err != nil {
 		t.Fatalf("go list -deps .: %v", err)

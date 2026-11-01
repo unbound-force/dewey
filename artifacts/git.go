@@ -75,6 +75,7 @@ var (
 func run(repo string, args ...string) ([]byte, error) {
 	cmd := exec.Command(gitBinary, args...)
 	cmd.Dir = repo
+	cmd.Env = scrubGitEnv()
 	out, err := cmd.Output()
 	if err != nil {
 		ge := &gitError{args: args, dir: repo, cause: err, exitCode: -1}
@@ -197,6 +198,48 @@ func resolveRepoRoot(vaultPath string) (string, error) {
 		return "", fmt.Errorf("resolve repository root from %s: git rev-parse --show-toplevel printed no root", start)
 	}
 	return root, nil
+}
+
+// ResolveRepoRoot is the exported seam over resolveRepoRoot for command
+// layers that need the same fail-closed repository resolution the sweep uses
+// (not-a-repository classification included) without re-implementing the
+// raw subprocess call.
+func ResolveRepoRoot(vaultPath string) (string, error) {
+	return resolveRepoRoot(vaultPath)
+}
+
+// gitEnvOverrides are the environment variables that silently redirect git's
+// core repository geometry — which object store, index, and work tree a
+// command operates on. The sweep scrubs them so a caller nested inside
+// another git operation (a hook, a worktree script) cannot accidentally
+// redirect every sweep subprocess at a repository other than the one resolved
+// from the vault path.
+var gitEnvOverrides = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_NAMESPACE",
+}
+
+// scrubGitEnv returns the current environment minus the git geometry
+// overrides.
+func scrubGitEnv() []string {
+	drop := make(map[string]bool, len(gitEnvOverrides))
+	for _, name := range gitEnvOverrides {
+		drop[name] = true
+	}
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, kv := range env {
+		if name, _, _ := strings.Cut(kv, "="); drop[name] {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return filtered
 }
 
 // remoteNames lists the names of the repository's configured git remotes,

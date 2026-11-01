@@ -72,25 +72,19 @@ func BuildPlan(repoRoot, vaultRoot string, storePaths []string) (*Plan, error) {
 		repo.StashRefs = map[string]string{}
 	}
 
-	gi, giWarnings, err := probeGitignore(repoRoot, roots)
-	if err != nil {
-		return nil, err
-	}
-
 	plan := &Plan{
 		SchemaVersion: PlanSchemaVersion,
 		Repo:          repo,
-		Gitignore:     gi,
 		Artifacts:     []Artifact{},
 		Conflicts:     []Conflict{},
 		Blocked:       []BlockedArtifact{},
 	}
 
 	cands := append(append(wt, st...), cm...)
-	contents := make(map[string]string, len(cands))
-	for _, c := range cands {
-		contents[c.SHA256] = string(c.Content)
-	}
+	// contents retains candidate bytes only for conflicted paths — the only
+	// contents renderSummary's bounded conflict diffs read — so artifacts are
+	// not duplicated into a second map.
+	contents := make(map[string]string)
 
 	for _, g := range groupCandidatesByPath(cands) {
 		findingsBySHA := make(map[string][]Finding)
@@ -124,11 +118,23 @@ func BuildPlan(repoRoot, vaultRoot string, storePaths []string) (*Plan, error) {
 		if !ok {
 			continue
 		}
+		for _, c := range g.cands {
+			contents[c.SHA256] = string(c.Content)
+		}
 		for i := range conf.Variants {
 			conf.Variants[i].Findings = findingsBySHA[conf.Variants[i].SHA256]
 		}
 		plan.Conflicts = append(plan.Conflicts, conf)
 	}
+
+	// The gitignore probe runs after the sweep so the spec's stage order —
+	// enumerate, screen, then probe — is the code's order too; the probe only
+	// reads the .gitignore posture and never gates artifact enumeration.
+	gi, giWarnings, err := probeGitignore(repoRoot, roots)
+	if err != nil {
+		return nil, err
+	}
+	plan.Gitignore = gi
 
 	warnings := append(append(append(wtWarnings, stWarnings...), cmWarnings...), giWarnings...)
 	sort.Strings(warnings)

@@ -105,13 +105,20 @@ type planWrite struct {
 	identity string
 }
 
-// plannedWrites derives the write set from the plan: every artifact plus every
-// conflict resolved through the path-keyed resolutions map. A conflict without
-// a resolution, or a resolution naming a sha that is not one of the conflict's
-// variants, fails closed.
+// plannedWrites derives the write set from the plan: every new artifact plus
+// every conflict resolved through the path-keyed resolutions map. Unchanged
+// artifacts — entries whose content sha256 already matches the base tree the
+// chore branch is cut from — are excluded: the worktree is checked out at the
+// base SHA, so staging them adds nothing to `git diff --cached` and the exact
+// staged-set verification would fail. A conflict without a resolution, or a
+// resolution naming a sha that is not one of the conflict's variants or
+// naming a blocked variant, fails closed.
 func plannedWrites(plan *Plan, resolutions map[string]string) ([]planWrite, error) {
 	var writes []planWrite
 	for _, art := range plan.Artifacts {
+		if art.Status == StatusUnchanged {
+			continue
+		}
 		writes = append(writes, planWrite{path: art.Path, sha256: art.SHA256, sources: art.Sources, kind: art.Kind, tag: art.Tag, identity: art.Identity})
 	}
 	for _, conf := range plan.Conflicts {
@@ -122,6 +129,9 @@ func plannedWrites(plan *Plan, resolutions map[string]string) ([]planWrite, erro
 		var sources []string
 		for _, v := range conf.Variants {
 			if v.SHA256 == sha {
+				if shaBlocked(v.Findings) {
+					return nil, fmt.Errorf("resolution for %s names blocked variant %s — choose a clean variant", conf.Path, sha)
+				}
 				sources = v.Sources
 			}
 		}
@@ -301,11 +311,16 @@ func applyGitignoreFix(worktree string, fix *GitignoreFix) (bool, error) {
 	}
 	lines := strings.Split(string(raw), "\n")
 	existing := make(map[string]bool, len(lines))
+	anchorFound := false
 	for i, line := range lines {
 		if line == fix.Anchor.From {
 			lines[i] = fix.Anchor.To
+			anchorFound = true
 		}
 		existing[line] = true
+	}
+	if !anchorFound {
+		return false, fmt.Errorf("gitignore fix: anchor line %q not found in %s — re-run plan", fix.Anchor.From, fix.File)
 	}
 	for _, extra := range fix.Reignore {
 		if !existing[extra] {
@@ -400,8 +415,8 @@ func deriveKindTag(path, identity string, roots []string) (kind, tag string) {
 // for the chore commit (design D7 step 7): subject line with the artifact
 // count, per-kind counts, the sorted tag list, the non-destructive note, and
 // the Approved-by and Plan-sha256 trailers binding the commit to the consumed
-// plan content. The approver is control-character-stripped so a newline cannot
-// forge additional trailers.
+// plan content. The approver, kinds, and tags are control-character-stripped
+// so a newline in any plan-sourced string cannot forge additional trailers.
 func renderCommitMessage(writes []planWrite, approvedBy, planSHA256 string) string {
 	kindCounts := map[string]int{}
 	tagSet := map[string]bool{}
@@ -429,9 +444,9 @@ func renderCommitMessage(writes []planWrite, approvedBy, planSHA256 string) stri
 		if kindCounts[k] == 1 {
 			noun = "artifact"
 		}
-		fmt.Fprintf(&b, "- %d %s %s\n", kindCounts[k], k, noun)
+		fmt.Fprintf(&b, "- %d %s %s\n", kindCounts[k], stripControl(k), noun)
 	}
-	fmt.Fprintf(&b, "\nTags: %s\n", strings.Join(tags, ", "))
+	fmt.Fprintf(&b, "\nTags: %s\n", stripControl(strings.Join(tags, ", ")))
 	b.WriteString("\nNon-destructive: adds knowledge artifacts only; no source changes.\n\n")
 	fmt.Fprintf(&b, "Approved-by: %s\n", stripControl(approvedBy))
 	fmt.Fprintf(&b, "Plan-sha256: %s\n", planSHA256)
@@ -703,8 +718,13 @@ func validatePlan(plan *Plan, sanctioned []string) error {
 		if fix.Anchor.From != "dewey" || fix.Anchor.To != "/dewey" {
 			return fmt.Errorf("gitignore fix anchor is not the bounded dewey-to-/dewey shape")
 		}
-		if len(fix.Reignore) == 0 {
-			return fmt.Errorf("gitignore fix carries no runtime-state re-ignores")
+		if len(fix.Reignore) != len(reignoreLines) {
+			return fmt.Errorf("gitignore fix re-ignore block does not match the runtime-state set — re-run plan")
+		}
+		for i, extra := range fix.Reignore {
+			if extra != reignoreLines[i] {
+				return fmt.Errorf("gitignore fix re-ignore block does not match the runtime-state set — re-run plan")
+			}
 		}
 	}
 	return nil
@@ -832,6 +852,7 @@ func validateResolutions(plan *Plan, resolutions map[string]string) error {
 		if conf == nil {
 			return fmt.Errorf("resolution names unknown conflict path %s", path)
 		}
+		matched := false
 		for _, v := range conf.Variants {
 			if v.SHA256 != sha {
 				continue
@@ -839,9 +860,12 @@ func validateResolutions(plan *Plan, resolutions map[string]string) error {
 			if shaBlocked(v.Findings) {
 				return fmt.Errorf("resolution for %s names blocked variant %s — choose a clean variant", path, sha)
 			}
-			return nil
+			matched = true
+			break
 		}
-		return fmt.Errorf("resolution for %s names sha256 %s, which is not a variant of the conflict", path, sha)
+		if !matched {
+			return fmt.Errorf("resolution for %s names sha256 %s, which is not a variant of the conflict", path, sha)
+		}
 	}
 	return nil
 }

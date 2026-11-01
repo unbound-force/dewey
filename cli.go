@@ -2452,7 +2452,7 @@ Examples:
 			dbPath := filepath.Join(deweyDir, "graph.db")
 			s, err := store.New(dbPath)
 			if err != nil {
-				return fmt.Errorf("open store: %w", err)
+				return promoteStoreOpenError(deweyDir, err)
 			}
 			defer func() { _ = s.Close() }()
 
@@ -2489,6 +2489,32 @@ Examples:
 		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
 
 	return cmd
+}
+
+// promoteStoreOpenError wraps a store.New failure from the promote command
+// with lock-holder diagnostics (mcp-internal-store-access task 4.1, design
+// D7). store.New creates and holds dewey.lock next to graph.db, so on
+// failure that lock file is probed best-effort via detectLockHolder: when
+// another Dewey process holds it, the returned error wraps the underlying
+// failure, identifies the recorded holder, and points to the dewey_promote
+// MCP tool as the supported write path while a server is running. When no
+// holder can be identified (lock file absent, unheld, or unreadable), it
+// degrades gracefully to the plain wrapped error.
+func promoteStoreOpenError(deweyDir string, err error) error {
+	holder := detectLockHolder(filepath.Join(deweyDir, "dewey.lock"))
+	if holder == "" {
+		// No holder identified (absent, unheld, or unreadable lock file):
+		// degrade to the plain error rather than guessing at a cause.
+		return fmt.Errorf("open store: %w", err)
+	}
+	holderDesc := fmt.Sprintf("another Dewey process (%s) appears to be holding the database lock", holder)
+	if !strings.HasPrefix(holder, "PID ") {
+		// Old-format lock with no recorded PID: detectLockHolder's fallback
+		// ("lock held (unknown process)") is already a standalone clause, so
+		// use it verbatim rather than nesting it inside parentheses.
+		holderDesc = holder
+	}
+	return fmt.Errorf("open store: %w; %s. While the dewey server is running, use the dewey_promote MCP tool to promote pages, or stop the server first", err, holderDesc)
 }
 
 // newArtifactsCmd creates the `dewey artifacts` command group.

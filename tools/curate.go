@@ -68,7 +68,7 @@ func NewCurate(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPat
 // missing stores, or concurrent operation conflicts.
 func (c *Curate) Curate(ctx context.Context, req *mcp.CallToolRequest, input types.CurateInput) (*mcp.CallToolResult, any, error) {
 	if c.store == nil {
-		return errorResult("curate requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
+		return errorResult(persistentStorageError("curate").Error()), nil, nil
 	}
 
 	// Non-blocking mutual exclusion: if indexing is in progress,

@@ -340,5 +340,5 @@ type LintInput struct {
 // PromoteInput is the input for the dewey_promote MCP tool.
 type PromoteInput struct {
 	// Page is the page name to promote from draft to validated.
-	Page string `json:"page" jsonschema:"Page name to promote from draft to validated tier (e.g., 'learning/authentication-20260502T143022-alice')."`
+	Page string `json:"page" jsonschema:"Page name to promote from draft to validated tier (e.g., 'learning/authentication-20260502T143022-alice'). A bare name without '/' is resolved against compiled/ then learning/."`
 }

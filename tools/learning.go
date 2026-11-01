@@ -192,7 +192,7 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		return errorResult("information parameter is required and must not be empty"), nil, nil
 	}
 	if l.store == nil {
-		return errorResult("store_learning requires persistent storage. Configure --vault with a .uf/dewey/ directory."), nil, nil
+		return errorResult(persistentStorageError("store_learning").Error()), nil, nil
 	}
 
 	// Validate category if provided — must be one of the allowed values.

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
+	"github.com/spf13/pflag"
 	"github.com/unbound-force/dewey/v3/artifacts"
 	"github.com/unbound-force/dewey/v3/client"
 	"github.com/unbound-force/dewey/v3/source"
@@ -4236,7 +4237,8 @@ func TestArtifactsCmd_Help(t *testing.T) {
 	}
 }
 
-// TestArtifactsPlanCmd_HasFlags verifies the plan subcommand flag surface.
+// TestArtifactsPlanCmd_HasFlags verifies the plan subcommand registers
+// exactly the documented flag surface (input-schema parity with design D5).
 func TestArtifactsPlanCmd_HasFlags(t *testing.T) {
 	cmd := newArtifactsPlanCmd()
 
@@ -4245,9 +4247,17 @@ func TestArtifactsPlanCmd_HasFlags(t *testing.T) {
 			t.Errorf("artifacts plan missing flag --%s", name)
 		}
 	}
+	var planFlagNames []string
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		planFlagNames = append(planFlagNames, f.Name)
+	})
+	if got, want := len(planFlagNames), 2; got != want {
+		t.Errorf("artifacts plan registers %d flags %v, want exactly %d (json, vault)", got, planFlagNames, want)
+	}
 }
 
-// TestArtifactsSyncCmd_HasFlags verifies the sync subcommand flag surface.
+// TestArtifactsSyncCmd_HasFlags verifies the sync subcommand registers
+// exactly the documented flag surface (input-schema parity with design D6).
 func TestArtifactsSyncCmd_HasFlags(t *testing.T) {
 	cmd := newArtifactsSyncCmd()
 
@@ -4255,6 +4265,13 @@ func TestArtifactsSyncCmd_HasFlags(t *testing.T) {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("artifacts sync missing flag --%s", name)
 		}
+	}
+	var syncFlagNames []string
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		syncFlagNames = append(syncFlagNames, f.Name)
+	})
+	if got, want := len(syncFlagNames), 5; got != want {
+		t.Errorf("artifacts sync registers %d flags %v, want exactly %d (plan, approve, approved-by, resolutions, vault)", got, syncFlagNames, want)
 	}
 }
 

@@ -2536,6 +2536,12 @@ func resolveArtifactsContext(vaultPath string) (repoRoot, vaultRoot string, stor
 	if err != nil {
 		return "", "", nil, fmt.Errorf("resolve vault path %s: %w", vault, err)
 	}
+	// git resolves symlinks in its output; resolve them here too so store
+	// paths computed relative to the repository root stay inside it when the
+	// vault path traverses a symlink (common on macOS temporary directories).
+	if resolved, resolveErr := filepath.EvalSymlinks(vaultAbs); resolveErr == nil {
+		vaultAbs = resolved
+	}
 
 	out, err := exec.Command("git", "-C", vaultAbs, "rev-parse", "--show-toplevel").Output()
 	if err != nil {

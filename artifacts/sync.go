@@ -524,6 +524,10 @@ func RunSync(repoRoot, vaultRoot string, storePaths []string, planPath, resoluti
 	if err := validateApprovedBy(approvedBy); err != nil {
 		return nil, err
 	}
+	approvedBy, err := resolveApprover(repoRoot, approvedBy)
+	if err != nil {
+		return nil, err
+	}
 
 	repoRoot = filepath.Clean(repoRoot)
 	vaultRoot = filepath.Clean(vaultRoot)
@@ -602,6 +606,23 @@ func RunSync(repoRoot, vaultRoot string, storePaths []string, planPath, resoluti
 		ApprovedBy:          approvedBy,
 		PlanSHA256:          planSHA256,
 	}, nil
+}
+
+// resolveApprover returns the approval identity: an explicit --approved-by
+// value, falling back to the repository's git config user.name. An empty
+// resolved identity fails closed — the audit trail requires a named approver.
+func resolveApprover(repoRoot, approvedBy string) (string, error) {
+	if approvedBy != "" {
+		return approvedBy, nil
+	}
+	out, err := run(repoRoot, "config", "user.name")
+	if err != nil {
+		return "", fmt.Errorf("no approver identity — pass --approved-by or set git config user.name")
+	}
+	if name := strings.TrimSpace(string(out)); name != "" {
+		return name, nil
+	}
+	return "", fmt.Errorf("no approver identity — pass --approved-by or set git config user.name")
 }
 
 // validateApprovedBy rejects approver identities carrying control characters:

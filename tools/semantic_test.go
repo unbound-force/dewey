@@ -1687,3 +1687,40 @@ func TestSemanticSearchFiltered_NoTierReturnsAllIncludingCurated(t *testing.T) {
 		t.Errorf("expected 1 draft result, got %d", tiers["draft"])
 	}
 }
+
+// reasonEmbedder decorates mockEmbedder with the optional
+// embed.UnavailableReasoner capability.
+type reasonEmbedder struct {
+	*mockEmbedder
+	reason string
+}
+
+func (r *reasonEmbedder) UnavailableReason() string { return r.reason }
+
+// TestSemanticSearch_ProviderReasonSurfaced verifies that an unavailable
+// gateway provider's reason reaches the MCP error without Ollama-only
+// wording (FR-015, SC-004).
+func TestSemanticSearch_ProviderReasonSurfaced(t *testing.T) {
+	tool := NewSemantic(&reasonEmbedder{
+		mockEmbedder: newMockEmbedder(false),
+		reason:       "openai-compatible embedding endpoint is unreachable; check the endpoint and that the gateway is running",
+	}, nil)
+
+	result, _, err := tool.SemanticSearch(context.Background(), nil, types.SemanticSearchInput{Query: "auth"})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected an error result")
+	}
+	text := resultText(result)
+	if !strings.Contains(text, "Semantic search unavailable") {
+		t.Errorf("error should keep the actionable prefix, got %q", text)
+	}
+	if !strings.Contains(text, "openai-compatible embedding endpoint is unreachable") {
+		t.Errorf("error should carry the provider reason, got %q", text)
+	}
+	if strings.Contains(text, "Ollama") {
+		t.Errorf("error must not assume Ollama, got %q", text)
+	}
+}

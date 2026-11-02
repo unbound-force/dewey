@@ -1,7 +1,8 @@
 // Package embed provides interfaces and implementations for generating
 // vector embeddings from text content. Implementations include OllamaEmbedder
-// (local inference via Ollama HTTP API) and VertexEmbedder (Google Vertex AI
-// prediction API with application-default credentials).
+// (local inference via Ollama HTTP API), VertexEmbedder (Google Vertex AI
+// prediction API with application-default credentials), and
+// OpenAICompatibleEmbedder (any OpenAI v1 wire-compatible gateway).
 package embed
 
 import (
@@ -61,6 +62,16 @@ type Embedder interface {
 
 	// ModelID returns the model identifier used for embeddings.
 	ModelID() string
+}
+
+// UnavailableReasoner is an optional capability implemented by
+// embedders that can explain why they are unavailable. It is a separate
+// interface so the Embedder contract stays unchanged (FR-008, FR-014,
+// research.md R3).
+type UnavailableReasoner interface {
+	// UnavailableReason returns a credential-free, actionable reason when
+	// the provider is unavailable, or "" when it is available.
+	UnavailableReason() string
 }
 
 // OllamaEmbedder implements Embedder using Ollama's HTTP API.

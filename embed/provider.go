@@ -5,16 +5,16 @@ import "fmt"
 // ProviderConfig holds the configuration for an embedding provider.
 // Each provider type uses a subset of these fields.
 type ProviderConfig struct {
-	// Provider selects the embedding backend: "ollama" or "vertex".
-	// Defaults to "ollama" if empty.
+	// Provider selects the embedding backend: "ollama", "vertex", or
+	// "openai-compatible". Defaults to "ollama" if empty.
 	Provider string
 
 	// Model is the model identifier (e.g., "granite-embedding:30m",
-	// "text-embedding-005").
+	// "text-embedding-005", "openrouter/amazon/titan-embed-text-v2").
 	Model string
 
 	// Endpoint is the base URL for the provider API.
-	// Required for ollama. Ignored for vertex.
+	// Required for ollama and openai-compatible. Ignored for vertex.
 	Endpoint string
 
 	// Project is the GCP project ID. Required for vertex only.
@@ -46,7 +46,9 @@ func NewEmbedderFromConfig(cfg ProviderConfig) (Embedder, error) {
 			return nil, fmt.Errorf("vertex embedding provider requires region")
 		}
 		return NewVertexEmbedder(cfg.Project, cfg.Region, cfg.Model)
+	case "openai-compatible":
+		return NewOpenAICompatibleEmbedder(cfg.Endpoint, cfg.Model)
 	default:
-		return nil, fmt.Errorf("unknown embedding provider: %q (supported: ollama, vertex)", cfg.Provider)
+		return nil, fmt.Errorf("unknown embedding provider: %q (supported: ollama, vertex, openai-compatible)", cfg.Provider)
 	}
 }

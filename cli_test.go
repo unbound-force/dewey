@@ -25,6 +25,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/unbound-force/dewey/v3/artifacts"
 	"github.com/unbound-force/dewey/v3/client"
+	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -4785,4 +4786,205 @@ func TestPromoteStoreOpenError_UnheldLockFile(t *testing.T) {
 	if !errors.Is(got, underlying) {
 		t.Errorf("errors.Is(got, underlying) = false, want the underlying store.New error wrapped")
 	}
+}
+
+// --- OpenAI-compatible doctor tests (spec 017, T035) ---
+
+func newGatewayDoctorVault(t *testing.T, configYAML string) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "")
+	t.Setenv("DEWEY_GENERATION_MODEL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	return tmpDir
+}
+
+func TestDoctorCmd_EmbeddingGatewayConfigured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	configYAML := "embedding:\n  provider: openai-compatible\n  model: stub-model\n  endpoint: " + srv.URL + "/v1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "Embedding Layer") {
+		t.Errorf("doctor should include Embedding Layer, got:\n%s", output)
+	}
+	if !strings.Contains(output, "stub-model") {
+		t.Errorf("doctor should show the gateway model, got:\n%s", output)
+	}
+	if !strings.Contains(output, "openai-compatible") {
+		t.Errorf("doctor should name the provider on the credential path, got:\n%s", output)
+	}
+	if !strings.Contains(output, "ready") {
+		t.Errorf("doctor should report the probe as ready, got:\n%s", output)
+	}
+}
+
+func TestDoctorCmd_EmbeddingGatewayIncomplete(t *testing.T) {
+	configYAML := "embedding:\n  provider: openai-compatible\n  model: stub-model\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "incomplete") {
+		t.Errorf("doctor should report incomplete gateway config, got:\n%s", output)
+	}
+	if !strings.Contains(output, "embedding.endpoint") {
+		t.Errorf("doctor should name the missing field, got:\n%s", output)
+	}
+}
+
+func TestDoctorCmd_EmbeddingGatewayUnknownProviderListsAll(t *testing.T) {
+	configYAML := "embedding:\n  provider: badprovider\n  model: stub-model\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "unknown provider") {
+		t.Errorf("doctor should report unknown provider, got:\n%s", output)
+	}
+	for _, provider := range []string{"ollama", "vertex", "openai-compatible"} {
+		if !strings.Contains(output, provider) {
+			t.Errorf("doctor unknown-provider message should list %q, got:\n%s", provider, output)
+		}
+	}
+}
+
+func TestDoctorCmd_GatewayCleartextCredentialWarning(t *testing.T) {
+	// No model so the factory fails before any probe: the credential
+	// warning must still be emitted deterministically.
+	configYAML := "embedding:\n  provider: openai-compatible\n  endpoint: http://192.0.2.1:8080/v1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+	t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-doctor-secret")
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "would transit http://") {
+		t.Errorf("doctor should warn about cleartext credentials, got:\n%s", output)
+	}
+	if strings.Contains(output, "sk-doctor-secret") {
+		t.Errorf("doctor output must not contain the key, got:\n%s", output)
+	}
+}
+
+func TestDoctorCmd_GatewayAPIKeyFieldIgnored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	configYAML := "embedding:\n  provider: openai-compatible\n  model: stub-model\n  endpoint: " + srv.URL + "/v1\n  api_key: super-secret-value\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "api_key in config.yaml is ignored") {
+		t.Errorf("doctor should warn about the ignored api_key field, got:\n%s", output)
+	}
+	if strings.Contains(output, "super-secret-value") {
+		t.Errorf("doctor output must not echo the ignored key value, got:\n%s", output)
+	}
+}
+
+func TestCreateIndexEmbedder_GatewayUnavailableWarnsWithoutPullHint(t *testing.T) {
+	configYAML := "embedding:\n  provider: openai-compatible\n  model: stub-model\n  endpoint: http://127.0.0.1:1/v1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	embedder, err := createIndexEmbedder(false, deweyDir)
+	if err != nil {
+		t.Fatalf("createIndexEmbedder should degrade, got error: %v", err)
+	}
+	if embedder != nil {
+		t.Fatal("expected nil embedder (keyword-only mode)")
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "openai-compatible") {
+		t.Errorf("warning should name the provider, got: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "unreachable") {
+		t.Errorf("warning should carry the reason, got: %q", logOutput)
+	}
+	if strings.Contains(logOutput, "ollama pull") {
+		t.Errorf("gateway warning must not suggest ollama pull, got: %q", logOutput)
+	}
+}
+
+// degradationEmbedder is a stub embedder carrying an unavailable reason.
+type degradationEmbedder struct{ reason string }
+
+func (degradationEmbedder) Embed(context.Context, string) ([]float32, error) { return nil, nil }
+func (degradationEmbedder) EmbedBatch(context.Context, []string) ([][]float32, error) {
+	return nil, nil
+}
+func (degradationEmbedder) Available() bool             { return false }
+func (degradationEmbedder) ModelID() string             { return "stub-model" }
+func (d degradationEmbedder) UnavailableReason() string { return d.reason }
+
+func fieldsToMap(fields []any) map[string]any {
+	m := make(map[string]any, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		key, _ := fields[i].(string)
+		m[key] = fields[i+1]
+	}
+	return m
+}
+
+func TestEmbeddingDegradationFields(t *testing.T) {
+	t.Run("ollama keeps the pull hint", func(t *testing.T) {
+		fields := fieldsToMap(embeddingDegradationFields(
+			embed.ProviderConfig{Provider: "ollama", Model: "granite-embedding:30m", Endpoint: "http://localhost:11434"},
+			degradationEmbedder{},
+		))
+		if fields["pull"] != "ollama pull granite-embedding:30m" {
+			t.Fatalf("ollama pull hint missing: %v", fields)
+		}
+		if fields["provider"] != "ollama" {
+			t.Fatalf("provider missing: %v", fields)
+		}
+	})
+
+	t.Run("gateway omits the pull hint and carries the reason", func(t *testing.T) {
+		fields := fieldsToMap(embeddingDegradationFields(
+			embed.ProviderConfig{Provider: "openai-compatible", Model: "stub-model", Endpoint: "https://gateway.example/v1"},
+			degradationEmbedder{reason: "openai-compatible embedding endpoint is unreachable"},
+		))
+		if _, ok := fields["pull"]; ok {
+			t.Fatalf("gateway must not include a pull hint: %v", fields)
+		}
+		if fields["provider"] != "openai-compatible" {
+			t.Fatalf("provider missing: %v", fields)
+		}
+		if fields["reason"] != "openai-compatible embedding endpoint is unreachable" {
+			t.Fatalf("reason missing: %v", fields)
+		}
+	})
 }

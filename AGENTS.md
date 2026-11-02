@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 50 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, learning, and curate categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, pluggable LLM providers (Ollama, Vertex AI), and trust tiers.
+Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 50 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, learning, and curate categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, pluggable LLM providers (Ollama, Vertex AI, any OpenAI-compatible gateway), and trust tiers.
 
 - **Language**: Go 1.25+
 - **Module**: `github.com/unbound-force/dewey/v3`
@@ -78,7 +78,7 @@ proceeding with out-of-phase changes.
 
 - **CI Parity Gate**: Before marking any implementation task complete or declaring a PR ready, agents MUST replicate the CI checks locally. Read `.github/workflows/` to identify the exact commands CI runs, then execute those same commands. Any failure is a blocking error — a task is not complete until all CI-equivalent checks pass locally. Do not rely on a memorized list of commands; always derive them from the workflow files, which are the source of truth.
 - **No CGO**: All dependencies MUST be pure Go. The constitution prohibits CGO unless no pure-Go alternative exists.
-- **Local-Only Processing**: No data leaves the developer's machine by default. Embedding generation uses Ollama locally. Cloud providers (Vertex AI) are opt-in via `config.yaml`.
+- **Local-Only Processing**: No data leaves the developer's machine by default. Embedding generation uses Ollama locally. Cloud providers (Vertex AI) and OpenAI-compatible gateways (OpenRouter, ENMaas, LiteLLM, vLLM, self-hosted) are opt-in via `config.yaml`; gateway credentials are environment-only.
 - **Backward Compatibility**: All 37 inherited graphthulhu MCP tools MUST produce identical results after any change.
 
 ## Council Governance Protocol
@@ -272,7 +272,7 @@ go test -race -count=1 -coverprofile=coverage.out ./...
 go vet ./...
 
 # Gaze quality report (local)
-gaze report ./... --coverprofile=coverage.out --max-crapload=48 --max-gaze-crapload=18 --min-contract-coverage=70
+gaze crap --format=json --coverprofile=coverage.out --max-crapload=48 --max-gaze-crapload=45 ./...
 ```
 
 Always run tests with `-race -count=1`. CI enforces this.
@@ -332,11 +332,12 @@ vault/               # Obsidian vault backend (file parsing, indexing, watcher, 
 vault/parse_export.go # Exported parsing and persistence functions (ParseDocument, PersistBlocks, PersistLinks, GenerateEmbeddings)
 tools/               # MCP tool implementations (navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic, compile, lint, promote, curate)
 types/               # Shared types (PageEntity, BlockEntity, tool inputs, semantic search types)
-llm/                 # LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, NoopSynthesizer for tests)
+llm/                 # LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, OpenAICompatibleSynthesizer, NoopSynthesizer for tests)
+openaicompat/        # Shared OpenAI-compatible transport (endpoint, auth, retry, errors, client, availability)
 parser/              # Content parser (wikilinks, tags, properties)
 graph/               # In-memory graph construction + algorithms
 store/               # SQLite persistence layer (pages, blocks, links, embeddings, sources)
-embed/               # Embedding generation (Ollama + Vertex AI clients, provider factory, config, chunker)
+embed/               # Embedding generation (Ollama, Vertex AI, and OpenAI-compatible clients; provider factory, config, chunker, openai_compatible.go)
 source/              # Pluggable content sources (disk, GitHub, web crawl, code, manager)
 chunker/             # Language-aware source code parsing (Chunker interface, Go implementation, registry)
 curate/              # Knowledge store configuration parsing + curation pipeline (config, extraction, quality analysis)
@@ -356,7 +357,7 @@ artifacts/           # Knowledge-artifact publishing: plan/sync sweep, screening
 - **Content sanitization**: The `sanitize` package scans indexed content for adversarial injection patterns, structural anomalies (invisible Unicode, data URIs, suspicious HTML), content hash drift, and size anomalies. Configured per-source via `sanitize_mode` (`warn`/`strict`/`off`) and `trust_tier` in `sources.yaml`. Findings are merged into page properties and surfaced by `dewey doctor` and `dewey lint`.
 - **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
 - **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart). Only triggered when the embedding provider is `ollama`.
-- **Pluggable providers**: Both `Embedder` and `Synthesizer` interfaces support multiple backends (ollama, vertex). Configured via `config.yaml` `embedding` and `synthesis` sections. Factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()` centralize construction. Backward compatible — existing configs and env vars continue to work.
+- **Pluggable providers**: Both `Embedder` and `Synthesizer` interfaces support multiple backends (ollama, vertex, openai-compatible). Configured via `config.yaml` `embedding` and `synthesis` sections. Factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()` centralize construction. The `openai-compatible` provider speaks the OpenAI v1 wire protocol through the shared `openaicompat/` transport (normalization, environment-only credentials, 429 retry, redacted errors, cached `/models` probe). Backward compatible — existing configs and env vars continue to work.
 - **Vertex AI rate limiting**: Both `VertexEmbedder` and `VertexSynthesizer` retry on HTTP 429 with exponential backoff (base 1s, max 60s, up to 5 attempts). Respects the `Retry-After` header when present. Context cancellation is honored between retries. Retries are logged at warn level via `charmbracelet/log`.
 
 ### Provider Configuration
@@ -365,7 +366,7 @@ Embedding and synthesis backends are configurable in `.uf/dewey/config.yaml`:
 
 ```yaml
 embedding:
-  provider: ollama  # or: vertex
+  provider: ollama  # or: vertex, openai-compatible
   model: granite-embedding:30m
   endpoint: http://localhost:11434
   max_chunk_chars: 12288  # optional: override chunk size limit
@@ -376,6 +377,22 @@ synthesis:
   project: my-gcp-project
   region: us-east5
 ```
+
+OpenAI-compatible gateways use `provider: openai-compatible` with `model` (sent verbatim) and `endpoint` (the API base URL). There is no Ollama fallback for gateway endpoints:
+
+```yaml
+embedding:
+  provider: openai-compatible
+  model: openrouter/amazon/titan-embed-text-v2
+  endpoint: https://openrouter.ai/api/v1
+
+synthesis:
+  provider: openai-compatible
+  model: enmaas/rits/zai-org/glm-5-3
+  endpoint: https://gateway.example/v1
+```
+
+Gateway credentials are environment-only and never read from `config.yaml`: `DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY`, then `DEWEY_API_KEY`, then `OPENROUTER_API_KEY` only when the endpoint host is exactly `openrouter.ai`. An empty value counts as unset and no key is sent when none resolves. An `api_key` field in `config.yaml` is ignored and warned about at startup and in `dewey doctor`, which also warns when a resolved key would transit `http://` to a non-loopback host. Endpoint precedence keeps the documented asymmetry: embedding is env-first, synthesis is config-first; `OLLAMA_HOST` and the localhost default never apply to gateways.
 
 Vertex providers use `golang.org/x/oauth2/google` application-default credentials. If no provider is specified, defaults to Ollama. The `region` field accepts any GCP region (e.g., `us-east5`, `us-central1`) or `global` to route requests to the nearest available region.
 
@@ -594,6 +611,7 @@ specs/
   013-knowledge-compile/       # Knowledge compilation, temporal intelligence, linting, trust tiers (Complete)
   015-curated-knowledge-stores/ # File-backed learnings, curation pipeline, knowledge stores, curated tier (In Progress)
   016-pluggable-providers/       # Pluggable embedding/synthesis providers (Ollama, Vertex AI), store_compiled, global config (Complete)
+  017-openai-compatible-providers/ # OpenAI-compatible embedding and synthesis gateways, environment-only credentials (In Progress)
 ```
 
 ## Active Technologies
@@ -619,9 +637,12 @@ specs/
 - Go 1.25 (per `go.mod`) + `modernc.org/sqlite` v1.47.0 (pure-Go SQLite), `github.com/k3a/html2text` v1.4.0 (HTML-to-text for web crawl), `github.com/modelcontextprotocol/go-sdk` v1.2.0 (existing MCP SDK), `github.com/spf13/cobra` (CLI framework), `github.com/charmbracelet/log` (structured logging) (001-core-implementation)
 - Go 1.25 (per `go.mod`) + `gopkg.in/yaml.v3` (knowledge store config parsing), `github.com/unbound-force/dewey/v3/llm` (LLM synthesis for curation), `github.com/unbound-force/dewey/v3/curate` (new package — config parsing + curation pipeline), `github.com/spf13/cobra` (CLI — `dewey curate` command), `github.com/modelcontextprotocol/go-sdk` (MCP SDK — `curate` tool) (015-curated-knowledge-stores)
 - N/A (no schema changes — `curated` is a new value in the existing `tier TEXT` column. File-backed learnings use filesystem, not new tables) (015-curated-knowledge-stores)
+- Go 1.25 (per `go.mod`) + stdlib `net/http`, `encoding/json`, `net/url`, `math/rand/v2`, `sync`, `time` (OpenAI-compatible transport; no vendor SDK), `github.com/charmbracelet/log` (logging) (017-openai-compatible-providers)
+- N/A (no schema changes — vectors and completions flow through existing storage and tool paths) (017-openai-compatible-providers)
 - Go 1.25 (per `go.mod`) + stdlib git plumbing via `os/exec` (worktrees, stashes, commit surgery), `github.com/unbound-force/dewey/v3/sanitize` (credential screening), `github.com/spf13/cobra` (CLI — `dewey artifacts plan|sync` commands) (dewey-publish)
 
 ## Recent Changes
+- 017-openai-compatible-providers: Added `openaicompat/` shared transport, `OpenAICompatibleEmbedder`, `OpenAICompatibleSynthesizer`, environment-only API-key chain (`DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY` → `DEWEY_API_KEY` → `OPENROUTER_API_KEY` on the exact `openrouter.ai` host), 429 retry parity with Vertex, cached `/models` probe, provider-aware doctor/startup/index warnings, and `UnavailableReasoner` capability interfaces on both providers
 - mcp-internal-store-access (OpenSpec): MCP read tools (get_page, get_page_blocks_tree, get_block, list_pages, search, find_by_tag) now serve a unified live view of vault files and persistent store pages via vault read bridge (RLock snapshot → live store read-through, vault precedence, no caching); promote resolves bare names against compiled/ then learning/ and distinguishes lookup errors from absence; CLI promote reports lock-holder PID/command; shared persistent-storage error with lock hint across tools (dewey #90, #91)
 - dewey-publish (OpenSpec): Added `artifacts` package (plan/sync sweep of `.uf/dewey/{learnings,compiled,knowledge}` from working tree, stashes, unpushed commits; credential screening; bounded gitignore fix), `dewey artifacts plan|sync` CLI commands, `/dewey-publish` slash command (non-destructive, mandatory human approval gate)
 - 016-pluggable-providers: Added Vertex AI embedding and synthesis providers, `store_compiled` MCP tool, global config fallback (`~/.config/dewey/config.yaml`), factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()`, `golang.org/x/oauth2/google` dependency

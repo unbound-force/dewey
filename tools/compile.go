@@ -249,7 +249,7 @@ func (c *Compile) compileIncremental(ctx context.Context, identities []string, s
 func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, totalLearnings int, start time.Time) (*mcp.CallToolResult, any, error) {
 	// If no synthesizer is available, return clusters with prompts.
 	if c.synth == nil || !c.synth.Available() {
-		return c.returnPromptMode(clusters, totalLearnings, start)
+		return c.returnPromptMode(clusters, totalLearnings, start, synthesisUnavailableReason(c.synth))
 	}
 
 	// Synthesizer available: generate articles.
@@ -325,7 +325,7 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 // returnPromptMode returns clusters with synthesis prompts when no
 // synthesizer is available. The calling agent can use these prompts
 // to perform synthesis externally (D4: prompt-based delegation).
-func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start time.Time) (*mcp.CallToolResult, any, error) {
+func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start time.Time, reason string) (*mcp.CallToolResult, any, error) {
 	var clusterResults []map[string]any
 	for _, cl := range clusters {
 		var learningResults []map[string]any
@@ -349,12 +349,16 @@ func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start
 
 	elapsed := time.Since(start)
 	result := map[string]any{
-		"status":          "prompts_ready",
-		"clusters":        clusterResults,
-		"total_learnings": totalLearnings,
-		"total_clusters":  len(clusters),
-		"elapsed_ms":      elapsed.Milliseconds(),
-		"message":         fmt.Sprintf("Clustered %d learnings into %d topics. Synthesis prompts ready for agent execution.", totalLearnings, len(clusters)),
+		"status":             "prompts_ready",
+		"clusters":           clusterResults,
+		"total_learnings":    totalLearnings,
+		"total_clusters":     len(clusters),
+		"elapsed_ms":         elapsed.Milliseconds(),
+		"unavailable_reason": reason,
+		"message": fmt.Sprintf(
+			"Clustered %d learnings into %d topics. Synthesis prompts ready for agent execution. Synthesis unavailable: %s.",
+			totalLearnings, len(clusters), reason,
+		),
 	}
 	res, err := jsonTextResult(result)
 	return res, nil, err

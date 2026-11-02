@@ -115,7 +115,7 @@ func (c *Curate) Curate(ctx context.Context, req *mcp.CallToolRequest, input typ
 
 	// If no synthesizer, return prompts for all stores.
 	if c.synth == nil || !c.synth.Available() {
-		return c.returnPromptMode(ctx, pipeline, stores)
+		return c.returnPromptMode(ctx, pipeline, stores, synthesisUnavailableReason(c.synth))
 	}
 
 	// Run curation for each store.
@@ -166,7 +166,7 @@ func (c *Curate) Curate(ctx context.Context, req *mcp.CallToolRequest, input typ
 // returnPromptMode returns extraction prompts for all stores when no
 // synthesizer is available (MCP mode). The calling agent can use these
 // prompts to perform synthesis externally.
-func (c *Curate) returnPromptMode(ctx context.Context, pipeline *curate.Pipeline, stores []curate.StoreConfig) (*mcp.CallToolResult, any, error) {
+func (c *Curate) returnPromptMode(ctx context.Context, pipeline *curate.Pipeline, stores []curate.StoreConfig, reason string) (*mcp.CallToolResult, any, error) {
 	var storePrompts []map[string]any
 
 	for _, cfg := range stores {
@@ -212,9 +212,13 @@ func (c *Curate) returnPromptMode(ctx context.Context, pipeline *curate.Pipeline
 	}
 
 	response := map[string]any{
-		"status":  "prompt_ready",
-		"stores":  storePrompts,
-		"message": fmt.Sprintf("Extraction prompts ready for %d store(s). Call with synthesized results to complete curation.", len(storePrompts)),
+		"status":             "prompt_ready",
+		"stores":             storePrompts,
+		"unavailable_reason": reason,
+		"message": fmt.Sprintf(
+			"Extraction prompts ready for %d store(s). Call with synthesized results to complete curation. Synthesis unavailable: %s.",
+			len(storePrompts), reason,
+		),
 	}
 
 	res, err := jsonTextResult(response)

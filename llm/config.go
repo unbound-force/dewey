@@ -57,10 +57,26 @@ type configFile struct {
 		Endpoint string `yaml:"endpoint"`
 		Project  string `yaml:"project"`
 		Region   string `yaml:"region"`
+		// APIKey is parsed only to warn that it is ignored: keys are
+		// environment-only (FR-006, FR-024). It never reaches ProviderConfig.
+		APIKey string `yaml:"api_key"`
 	} `yaml:"synthesis"`
 
 	// Legacy field for backward compatibility.
 	CompileModel string `yaml:"compile_model"`
+}
+
+// HasAPIKeyField reports whether a synthesis.api_key field appears in the
+// per-vault or global config.yaml. The field is ignored by design
+// (FR-006); startup and dewey doctor warn about it (FR-024).
+func HasAPIKeyField(deweyDir string) bool {
+	if cfg := readConfigFile(deweyDir); cfg != nil && cfg.Synthesis.APIKey != "" {
+		return true
+	}
+	if cfg := readConfigFile(globalConfigDir()); cfg != nil && cfg.Synthesis.APIKey != "" {
+		return true
+	}
+	return false
 }
 
 // readConfigFile attempts to parse a config.yaml at the given directory.
@@ -98,13 +114,13 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 
 	// Check per-vault synthesis section.
 	if cfg != nil && (cfg.Synthesis.Provider != "" || cfg.Synthesis.Model != "") {
-		return ProviderConfig{
+		return resolveGatewaySynthesisConfig(ProviderConfig{
 			Provider: cfg.Synthesis.Provider,
 			Model:    cfg.Synthesis.Model,
 			Endpoint: cfg.Synthesis.Endpoint,
 			Project:  cfg.Synthesis.Project,
 			Region:   cfg.Synthesis.Region,
-		}
+		})
 	}
 
 	// Check per-vault legacy compile_model.
@@ -119,16 +135,27 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 	// Check global config.
 	globalCfg := readConfigFile(globalConfigDir())
 	if globalCfg != nil && (globalCfg.Synthesis.Provider != "" || globalCfg.Synthesis.Model != "") {
-		return ProviderConfig{
+		return resolveGatewaySynthesisConfig(ProviderConfig{
 			Provider: globalCfg.Synthesis.Provider,
 			Model:    globalCfg.Synthesis.Model,
 			Endpoint: globalCfg.Synthesis.Endpoint,
 			Project:  globalCfg.Synthesis.Project,
 			Region:   globalCfg.Synthesis.Region,
-		}
+		})
 	}
 
 	return synthConfigFromEnv()
+}
+
+// resolveGatewaySynthesisConfig applies the openai-compatible endpoint
+// fallback: when config.yaml leaves synthesis.endpoint empty, the
+// DEWEY_SYNTHESIS_ENDPOINT environment variable is consulted. For a
+// gateway, OLLAMA_HOST and the localhost default never apply (FR-022).
+func resolveGatewaySynthesisConfig(cfg ProviderConfig) ProviderConfig {
+	if cfg.Provider == "openai-compatible" && strings.TrimSpace(cfg.Endpoint) == "" {
+		cfg.Endpoint = os.Getenv("DEWEY_SYNTHESIS_ENDPOINT")
+	}
+	return cfg
 }
 
 // synthConfigFromEnv builds a synthesis config from environment variables.

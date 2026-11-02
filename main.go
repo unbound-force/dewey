@@ -28,6 +28,7 @@ import (
 	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/ignore"
 	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/openaicompat"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/vault"
@@ -644,19 +645,21 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		}
 
 		if !ollamaUnavailable {
+			if embCfg.Provider == "openai-compatible" {
+				logGatewayCredentialWarnings(openaicompat.CapabilityEmbedding, embCfg.Endpoint, embed.HasAPIKeyField(deweyDir))
+			}
+
 			e, err := embed.NewEmbedderFromConfig(embCfg)
 			if err != nil {
 				return nil, nil, nil, nil, fmt.Errorf("embedding provider error: %w", err)
 			}
 			if !e.Available() {
-				// Graceful degradation: keyword-only mode when model is missing.
-				// Matches the OllamaUnavailable path above — warn and continue
-				// without embeddings instead of hard-exiting (design decision D3).
+				// Graceful degradation: keyword-only mode when the model is
+				// unavailable. Matches the OllamaUnavailable path above — warn
+				// and continue without embeddings instead of hard-exiting (D3).
+				// The ollama pull hint is Ollama-only (FR-024).
 				logger.Warn("embedding model not available, continuing without embeddings",
-					"model", embCfg.Model,
-					"endpoint", embCfg.Endpoint,
-					"pull", fmt.Sprintf("ollama pull %s", embCfg.Model),
-					"note", "semantic search is unavailable")
+					embeddingDegradationFields(embCfg, e)...)
 			} else {
 				embedder = e
 				logger.Info("embedding model available", "provider", embCfg.Provider, "model", embCfg.Model)

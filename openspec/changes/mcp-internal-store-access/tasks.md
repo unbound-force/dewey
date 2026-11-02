@@ -15,7 +15,7 @@
 ## 3. Promote — #91 MCP path
 
 - [x] 3.1 In `tools/promote.go`, separate the error paths: `GetPage` returning `(nil, nil)` reports `Page '<name>' not found`; a non-nil error surfaces `failed to look up page '<name>': <err>` (spec: Promote Locates Internal Store Pages, store-failure scenario).
-- [x] 3.2 In `tools/promote.go`, implement name resolution for the [NEEDS CLARIFICATION] shorthand: when the exact name misses and the input contains no `/`, try `compiled/{name}` then `learning/{name}` (spec: Shorthand resolution). If the clarification is declined, drop this task and the corresponding spec SHOULD instead.
+- [x] 3.2 In `tools/promote.go`, implement name resolution for the no-slash shorthand: when the exact name misses and the input contains no `/`, try `compiled/{name}` then `learning/{name}` (spec: Shorthand resolution).
 - [x] 3.3 Add regression tests in `tools/promote_test.go` covering: promote of a `compiled/*` page, promote of a `learning/*` page, shorthand resolution (or its removal), store-error surfacing, non-draft rejection, and nil-store error — all with `:memory:` stores (spec: Promote Locates Internal Store Pages).
 
 ## 4. CLI diagnostics and hardening

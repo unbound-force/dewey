@@ -203,3 +203,9 @@ violations were found; no source changes were needed for this verification.
   check guards page-level writes (create/append/prepend/delete/rename);
   block-level writes into a vault page that shadows nothing remain governed
   by the in-memory `readOnly` flag alone.
+- **`query_properties` remains vault-file-only.** `FindByProperty` scans the
+  in-memory index and does not merge store pages — unlike `list_pages`, whose
+  `has_property` filter is store-aware. The divergence is session-age
+  dependent (a hydrated property page becomes visible after a restart) and
+  is deliberately deferred as the follow-up task 6.1 in tasks.md (design.md
+  Non-Goals); found during the review council (guard/curator findings).

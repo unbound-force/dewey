@@ -30,3 +30,7 @@
 - [x] 5.3 [P] Constitution alignment verification: confirm each proposal principle still holds in the implemented code — no-store parity for all 37 inherited tools (II), provenance on store-backed results and actionable promote/lock errors (III), deterministic no-sleep tests (IV), all changes behind `backend.Backend` (I). Record the check in the change's completion notes.
 - [x] 5.4 [P] Documentation validation gate: update `README.md` (read tools now include internal store pages live; promote name resolution), GoDoc comments for all new exported symbols (`SearchBlocksByContent`, vault read helpers), and `AGENTS.md` if conventions change. No further code changes after this point.
 - [x] 5.5 [P] Website documentation sync: create the `unbound-force/website` issue per AGENTS.md (`gh issue create --repo unbound-force/website`, title `docs: sync dewey MCP store access documentation`) documenting the changed MCP tool behavior (get_page/list_pages/search/find_by_tag now return internal store pages; promote resolution and error messages) and the affected `content/docs/` pages — filed as unbound-force/website#361
+
+## 6. Deferred follow-up
+
+- [ ] 6.1 Extend `query_properties` / `FindByProperty` with the store-page merge, following the same pattern as the tag merge (design.md Non-Goals). Until then, property queries see vault file pages only — `list_pages` with `has_property` is the store-aware alternative. Recorded during review council (guard and curator findings).

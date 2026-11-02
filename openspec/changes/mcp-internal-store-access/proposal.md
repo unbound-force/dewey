@@ -100,10 +100,13 @@ here. The resulting PR closes #90 and #91.
 
 ### New Capabilities
 
-- `unified-content-serve`: MCP read tools serve a unified, live view
-  of vault files and internal store pages (learnings, compiled
-  articles, external-source and knowledge-store pages), and promote
-  locates internal store pages reliably.
+- `unified-content-serve`: the MCP read tools `get_page`,
+  `get_page_blocks_tree`, `get_block`, `list_pages`, `search`, and
+  `find_by_tag` serve a unified, live view of vault files and internal
+  store pages (learnings, compiled articles, external-source and
+  knowledge-store pages), and promote locates internal store pages
+  reliably. `query_properties` is not part of the merge in this change
+  (deferred as the follow-up task noted in tasks.md).
 
 ### Modified Capabilities
 

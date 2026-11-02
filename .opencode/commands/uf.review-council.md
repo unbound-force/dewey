@@ -364,6 +364,13 @@ successful run findings by normalized file plus root cause. Retain every
 contributing run id, agent, model, variant, source, and sequence. Then
 apply the existing cross-persona root-cause grouping and compound
 severity rules from `severity.md`. Independent root causes stay separate.
+These transformations are presentation-only: they govern presenting the
+review comment and the terminal report ONLY, and never merge, filter,
+re-order, or otherwise alter the findings, contributing run ids,
+verdicts, run counts, or advisories in finalization data. The finalized
+payload's findings remain exactly as `consolidate_dispatch` returned
+them, because the finalizer enforces exact correspondence between run
+findings and consolidated findings.
 
 Any blocking successful run yields `REQUEST CHANGES`. Otherwise any
 advisory yields `APPROVE WITH ADVISORIES`; otherwise yield `APPROVE`.

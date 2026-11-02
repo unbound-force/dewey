@@ -19,6 +19,7 @@ import {
   failedResult,
   resolveHostModel,
   sanitizeInvocationError,
+  StructuralHostModelError,
   validateTimeout,
   type ExecutorDependencies,
   type InvocationProvenance,
@@ -2992,8 +2993,10 @@ export function shouldReclassifyToSuccess(
  *
  * model and tier are mutually exclusive and carry the dispatch_agent_run
  * semantics: model is a direct provider/model-id bypass, tier resolves
- * through the review matrix, and an advisor-source run whose tier profile
- * has no model inherits the host session model.
+ * through the review matrix, a host-source run resolves the parent session
+ * model without consulting the matrix (the tier ?? "standard" default is
+ * unreachable for host entries, RD-FR-037), and an advisor-source run whose
+ * tier profile has no model inherits the host session model.
  */
 export interface ExecuteDispatchRunOptions {
   /** Manifest-declared divisor-* review agent to execute. */
@@ -3025,9 +3028,29 @@ export interface ExecuteDispatchRunOptions {
   readonly manifestMode?: boolean
   /** Run source from the dispatch plan. Defaults to "explicit". */
   readonly source?: Source
-  /** Direct provider/model-id bypass. Mutually exclusive with tier. */
+  /**
+   * Direct provider/model-id bypass. Mutually exclusive with tier. Takes
+   * precedence over source-based resolution: a source "host" entry carrying
+   * a model executes the direct bypass unchanged (design D3). Absent for a
+   * host-source entry, host-model resolution runs instead and its failures
+   * classify per RD-FR-038 — structural causes surface non-retryable
+   * host_model_structural with the remediation preserved, transient
+   * failures keep retryable host_model_unavailable — and retryable on
+   * those pre-execution early exits means caller re-invocation only.
+   */
   readonly model?: string
-  /** Review matrix profile tier. Mutually exclusive with model. */
+  /**
+   * Review matrix profile tier. Mutually exclusive with model. Unreachable
+   * for host-source entries: the planner emits them with null tier ("use the
+   * active host model"), and the core resolves the parent session model
+   * instead of defaulting to the standard profile (RD-FR-037). An advisor
+   * run whose tier profile has no model inherits the host session model
+   * through the same classified resolution (RD-FR-038): structural causes
+   * surface non-retryable host_model_structural with the remediation
+   * preserved, transient failures keep retryable host_model_unavailable,
+   * and retryable on those pre-execution early exits means caller
+   * re-invocation only.
+   */
   readonly tier?: Tier
   /** Direct-model runtime variant. */
   readonly variant?: string
@@ -3147,19 +3170,30 @@ export interface ExecuteDispatchRunOutcome {
  * parent session.
  *
  * Responsibilities, in order: load review policies and validate the agent
- * against the reviewer manifest; resolve the model (direct bypass, review
- * matrix tier, or host-model inheritance for advisor runs); execute the
+ * against the reviewer manifest; resolve the model (direct bypass, host-model
+ * resolution for host-source entries — which never consult the matrix, so the
+ * tier default is unreachable for them — review matrix tier, or host-model
+ * inheritance for advisor runs); execute the
  * child session via the shared executeAgentSession executor; harvest
  * submitted findings and lesson proposals; apply the RD-FR-026
  * post-submission reclassification; and persist the run file to the
  * dispatch session directory atomically (best effort for
  * dispatch_agent_run — the outcome's `persisted` flag records whether
  * the write reached disk). Every step is behavior-identical
- * to the pre-extraction dispatchAgentRun body. Pre-execution failures
+ * to the pre-extraction dispatchAgentRun body except the host-resolution
+ * failure classification (RD-FR-038). Pre-execution failures
  * (policy_load_failed, unknown_agent, tier_model_unavailable,
- * host_model_unavailable, cancelled) return an outcome whose runData is
- * null and whose result carries the same error codes the tool has always
- * surfaced; no run file is written for them.
+ * host_model_structural, host_model_unavailable, cancelled) return an
+ * outcome whose runData is null; no run file is written for them.
+ * Host-resolution failures split by cause: structural failures — the
+ * parent message is not an assistant message, carries no model identity,
+ * or carries an invalid variant — surface host_model_structural with
+ * retryable false and the remediation preserved in the message; transient
+ * lookup failures keep retryable host_model_unavailable. On these
+ * pre-execution early exits retryable means caller re-invocation only —
+ * no run file exists for redispatch_failed_runs (DR-FR-002) to target,
+ * and a session whose included plan entry early-exited consolidates
+ * fail-closed ("included plan entry has no run").
  *
  * @param options Resolved run inputs: agent, prompt, model resolution, sequence, correlation id.
  * @param context Calling tool context used for the cancellation signal and host model resolution.
@@ -3210,7 +3244,7 @@ export async function executeDispatchRun(
     ))
   }
 
-  // Resolve model: tier-based via review matrix or direct bypass.
+  // Resolve model: direct bypass, host-source resolution, or tier-based via review matrix.
   let selectedModel: ModelIdentity
   let selectedVariant: string | undefined
   let requestedModelLabel: string | null
@@ -3221,6 +3255,30 @@ export async function executeDispatchRun(
     selectedModel = directModelIdentity(options.model)
     selectedVariant = options.variant
     requestedModelLabel = options.model
+  } else if (source === "host") {
+    // Host-source resolution (RD-FR-037, design D1 of host-fallback-provenance,
+    // issue #901): planner host-fallback entries carry null model and null tier
+    // — "use the active host model" — so matrix profiles MUST NOT be consulted
+    // and the tier ?? "standard" default below stays unreachable for host
+    // entries. Mirrors the advisor branch (#693): shared resolveHostModel
+    // lookup, host-run provenance via hostResolvedParent, and early exits
+    // classified per RD-FR-038 (structural / transient / cancelled) on
+    // failure.
+    try {
+      const hostResult = await resolveHostModel(
+        { client: deps.client, sessionID: context.sessionID, messageID: context.messageID, directory: deps.directory },
+        context.abort,
+      )
+      selectedModel = hostResult.identity
+      selectedVariant = hostResult.variant
+      requestedModelLabel = null
+      hostResolvedParent = {
+        model: `${hostResult.identity.providerID}/${hostResult.identity.modelID}`,
+        variant: hostResult.variant ?? null,
+      }
+    } catch (error: unknown) {
+      return earlyExit(hostResolutionFailureResult(error, context.abort.aborted, earlyProvenance()))
+    }
   } else {
     // Tier-based resolution via review matrix.
     const tier = options.tier ?? "standard"
@@ -3241,15 +3299,7 @@ export async function executeDispatchRun(
             variant: hostResult.variant ?? null,
           }
         } catch (error: unknown) {
-          if (context.abort.aborted) {
-            return earlyExit(failedResult(earlyProvenance(tier), "cancelled", "dispatch cancelled", false))
-          }
-          return earlyExit(failedResult(
-            earlyProvenance(tier),
-            "host_model_unavailable",
-            sanitizeInvocationError(errorText(error)),
-            true,
-          ))
+          return earlyExit(hostResolutionFailureResult(error, context.abort.aborted, earlyProvenance(tier)))
         }
       } else {
         return earlyExit(failedResult(
@@ -3410,6 +3460,44 @@ export async function executeDispatchRun(
     correlation_id: options.correlationId,
     run_id: runId,
   }
+}
+
+/**
+ * Classify a resolveHostModel() failure into the pre-execution early-exit
+ * result (RD-FR-038, design D1 of split-host-resolution-failure-classes).
+ * One shared mapping keeps the host-source branch (RD-FR-037) and the
+ * advisor fallback (#693) symmetric by construction: an abort signal keeps
+ * the cancelled code and takes precedence over classification;
+ * StructuralHostModelError causes — the parent message is not an assistant
+ * message, carries no model identity, or carries an invalid variant —
+ * surface the non-retryable host_model_structural class with the
+ * remediation preserved in the uf_delegate_command message shape; every
+ * other failure keeps the retryable host_model_unavailable class.
+ * failedResult() applies the single sanitizeInvocationError() pass, so
+ * raw message text is passed here.
+ *
+ * @param error The failure resolveHostModel() threw.
+ * @param aborted Whether the calling context's abort signal fired.
+ * @param provenance Branch-specific provenance (host: no tier; advisor: the tier label).
+ * @returns The classified failed result for the early exit.
+ */
+function hostResolutionFailureResult(
+  error: unknown,
+  aborted: boolean,
+  provenance: InvocationProvenance,
+): InvokeAgentResult {
+  if (aborted) {
+    return failedResult(provenance, "cancelled", "dispatch cancelled", false)
+  }
+  if (error instanceof StructuralHostModelError) {
+    return failedResult(
+      provenance,
+      "host_model_structural",
+      `${error.message}. Remediation: ${error.remediation}; retrying will not fix this.`,
+      false,
+    )
+  }
+  return failedResult(provenance, "host_model_unavailable", errorText(error), true)
 }
 
 /**

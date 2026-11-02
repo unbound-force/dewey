@@ -6,7 +6,7 @@ import (
 )
 
 // schemaVersion is the current schema version. Incremented when the schema changes.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // migrate applies database schema migrations. On first run, it creates all
 // tables. On subsequent runs, it checks the schema_version metadata and
@@ -58,6 +58,7 @@ func (s *Store) migrate() error {
 	// Each migration runs in a transaction for atomicity.
 	migrations := map[int]func() error{
 		1: s.migrateV1toV2,
+		2: s.migrateV2toV3,
 	}
 
 	for v := currentVersion; v < schemaVersion; v++ {
@@ -126,6 +127,34 @@ func (s *Store) migrateV1toV2() error {
 	return tx.Commit()
 }
 
+// migrateV2toV3 adds the case-insensitive lookup indexes that back the
+// promote resolver's COLLATE NOCASE queries: page-name lookups
+// (idx_pages_name_nocase) and source_id/source_doc_id lookups
+// (idx_pages_source_doc_nocase). The migration is index-only and additive —
+// no table shapes or row data change — so a failed migration is safely
+// retryable after the transaction rolls back.
+func (s *Store) migrateV2toV3() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pages_name_nocase ON pages(name COLLATE NOCASE)`); err != nil {
+		return fmt.Errorf("create name nocase index: %w", err)
+	}
+
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pages_source_doc_nocase ON pages(source_id COLLATE NOCASE, source_doc_id COLLATE NOCASE)`); err != nil {
+		return fmt.Errorf("create source-doc nocase index: %w", err)
+	}
+
+	if _, err := tx.Exec(`UPDATE metadata SET value = '3' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 // isDuplicateColumnError returns true if the error indicates an attempt to
 // add a column that already exists. modernc.org/sqlite does not support
 // ADD COLUMN IF NOT EXISTS, so we detect this error for idempotency.
@@ -158,6 +187,8 @@ func (s *Store) createSchema() error {
 			UNIQUE(source_id, source_doc_id)
 		);
 		CREATE INDEX IF NOT EXISTS idx_pages_tier ON pages(tier);
+		CREATE INDEX IF NOT EXISTS idx_pages_name_nocase ON pages(name COLLATE NOCASE);
+		CREATE INDEX IF NOT EXISTS idx_pages_source_doc_nocase ON pages(source_id COLLATE NOCASE, source_doc_id COLLATE NOCASE);
 
 		-- Blocks table
 		CREATE TABLE IF NOT EXISTS blocks (

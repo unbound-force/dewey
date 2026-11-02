@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Defaults for the OpenAI-compatible synthesis provider. These mirror the
@@ -100,7 +101,7 @@ type openAIChatError struct {
 // are required. A non-positive timeout falls back to 300 seconds and a
 // non-positive maxTokens falls back to 16000.
 func NewOpenAICompatibleSynthesizer(endpoint, model, apiKey string, timeout time.Duration, maxTokens int) (*OpenAICompatibleSynthesizer, error) {
-	u, err := validateOpenAIEndpoint(endpoint)
+	u, err := ValidateSynthesisEndpoint(endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +109,7 @@ func NewOpenAICompatibleSynthesizer(endpoint, model, apiKey string, timeout time
 		return nil, fmt.Errorf("openai-compatible synthesizer requires model")
 	}
 	if apiKey == "" {
-		return nil, fmt.Errorf("openai-compatible synthesizer requires an API key (set DEWEY_SYNTHESIS_API_KEY or synthesis.api_key)")
+		return nil, fmt.Errorf("openai-compatible synthesizer requires an API key (set DEWEY_SYNTHESIS_API_KEY or synthesis.api_key; the per-vault .uf/dewey/config.yaml is git-tracked — keep secrets in the env var or the global ~/.config/dewey/config.yaml)")
 	}
 	if timeout <= 0 {
 		timeout = openAISynthTimeout
@@ -116,7 +117,7 @@ func NewOpenAICompatibleSynthesizer(endpoint, model, apiKey string, timeout time
 	if maxTokens <= 0 {
 		maxTokens = openAISynthMaxTokens
 	}
-	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+	if u.Scheme == "http" && !IsLoopbackHost(u.Hostname()) {
 		logger.Warn("openai-compatible synthesis endpoint is not HTTPS; the API key and prompt will be sent in cleartext",
 			"host", u.Hostname())
 	}
@@ -139,11 +140,13 @@ func NewOpenAICompatibleSynthesizer(endpoint, model, apiKey string, timeout time
 	}, nil
 }
 
-// validateOpenAIEndpoint parses and validates the configured endpoint. It
+// ValidateSynthesisEndpoint parses and validates a synthesis endpoint. It
 // requires an absolute http(s) URL with a host and rejects userinfo, query
 // strings, and fragments so credentials cannot be smuggled into the URL and
-// the chat path can be appended safely.
-func validateOpenAIEndpoint(endpoint string) (*url.URL, error) {
+// the chat path can be appended safely. It is exported so the doctor CLI
+// reports the same endpoint policy as the provider constructor (PR 145
+// review amendment).
+func ValidateSynthesisEndpoint(endpoint string) (*url.URL, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("openai-compatible synthesizer requires endpoint")
 	}
@@ -157,8 +160,9 @@ func validateOpenAIEndpoint(endpoint string) (*url.URL, error) {
 	return u, nil
 }
 
-// isLoopbackHost reports whether host names the local machine.
-func isLoopbackHost(host string) bool {
+// IsLoopbackHost reports whether host names the local machine. It is
+// exported for the doctor CLI's plaintext-TLS warning.
+func IsLoopbackHost(host string) bool {
 	switch host {
 	case "localhost", "127.0.0.1", "::1":
 		return true
@@ -287,7 +291,23 @@ func readLimitedBody(r io.Reader) ([]byte, error) {
 // truncateBody redacts the API key and bounds a response body excerpt so it
 // is safe to include in an error.
 func (o *OpenAICompatibleSynthesizer) truncateBody(body []byte) string {
+	// Redact the full body before any bounding: slicing first would let a
+	// key occurrence straddling the cut survive as a fragment.
 	text := o.redact(string(body))
+	// Bound the redacted text in bytes before converting to runes: a large
+	// response would otherwise allocate roughly four bytes per input byte.
+	if len(text) > 2048 {
+		text = text[:2048]
+		// The byte cap can land inside a multi-byte rune; back off to the
+		// last complete rune so the excerpt never ends mid-rune.
+		for len(text) > 0 {
+			r, size := utf8.DecodeLastRuneInString(text)
+			if r != utf8.RuneError || size != 1 {
+				break
+			}
+			text = text[:len(text)-1]
+		}
+	}
 	if runes := []rune(text); len(runes) > 512 {
 		text = string(runes[:512]) + "... (truncated)"
 	}
@@ -318,9 +338,9 @@ func (o *OpenAICompatibleSynthesizer) ModelID() string {
 }
 
 // UnavailableReason reports why the synthesizer is unavailable, or "" when
-// it is available. Construction validates endpoint, model, and API key, so
-// every synthesizer built by NewOpenAICompatibleSynthesizer is configured;
-// only a zero-value synthesizer reports a reason.
+// it is fully configured. It mirrors the credential-free diagnostics of
+// the shared openaicompat transport and the embed provider's reasoner,
+// satisfying the UnavailableReasoner capability interface.
 func (o *OpenAICompatibleSynthesizer) UnavailableReason() string {
 	if o.endpoint == "" || o.model == "" || o.apiKey == "" {
 		return "synthesizer is not fully configured"

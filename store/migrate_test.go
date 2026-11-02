@@ -3,7 +3,6 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"strings"
 	"testing"
 )
 
@@ -397,53 +396,6 @@ func TestMigrateV1toV2_PreservesExistingData(t *testing.T) {
 	}
 }
 
-// --- UpdatePageTier Tests ---
-
-func TestUpdatePageTier_Success(t *testing.T) {
-	s := newTestStore(t)
-
-	p := &Page{
-		Name:         "learning/auth-1",
-		OriginalName: "learning/auth-1",
-		SourceID:     "learning",
-		SourceDocID:  "auth-1",
-		Tier:         "draft",
-		CreatedAt:    1000,
-		UpdatedAt:    1000,
-	}
-	if err := s.InsertPage(p); err != nil {
-		t.Fatalf("InsertPage: %v", err)
-	}
-
-	if err := s.UpdatePageTier("learning/auth-1", "validated"); err != nil {
-		t.Fatalf("UpdatePageTier: %v", err)
-	}
-
-	got, err := s.GetPage("learning/auth-1")
-	if err != nil {
-		t.Fatalf("GetPage: %v", err)
-	}
-	if got.Tier != "validated" {
-		t.Errorf("Tier = %q, want %q", got.Tier, "validated")
-	}
-	// UpdatedAt should be refreshed.
-	if got.UpdatedAt <= 1000 {
-		t.Error("UpdatedAt should be refreshed after tier update")
-	}
-}
-
-func TestUpdatePageTier_NotFound(t *testing.T) {
-	s := newTestStore(t)
-
-	err := s.UpdatePageTier("nonexistent-page", "validated")
-	if err == nil {
-		t.Fatal("UpdatePageTier should return error for nonexistent page")
-	}
-	if !strings.Contains(err.Error(), "page not found") {
-		t.Errorf("error = %q, want to contain 'page not found'", err.Error())
-	}
-}
-
 // --- ListLearningPages Tests ---
 
 func TestListLearningPages_Empty(t *testing.T) {
@@ -819,5 +771,90 @@ func TestListPagesBySource_IncludesTierAndCategory(t *testing.T) {
 	}
 	if pages[0].Category != "reference" {
 		t.Errorf("Category = %q, want %q", pages[0].Category, "reference")
+	}
+}
+
+// TestMigrateV2toV3_AddsCaseInsensitiveIndexes verifies the v2→v3
+// migration creates the NOCASE indexes backing promote name resolution
+// (idx_pages_name_nocase, idx_pages_source_doc_nocase), preserves existing
+// data, bumps the schema version, and is safe to run twice (CREATE INDEX
+// IF NOT EXISTS).
+func TestMigrateV2toV3_AddsCaseInsensitiveIndexes(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	// Minimal v2 schema: pages with tier/category columns but without the
+	// NOCASE indexes introduced in v3.
+	v2Schema := `
+		CREATE TABLE IF NOT EXISTS pages (
+			name TEXT PRIMARY KEY,
+			original_name TEXT NOT NULL,
+			source_id TEXT NOT NULL,
+			source_doc_id TEXT,
+			properties TEXT,
+			content_hash TEXT,
+			is_journal INTEGER DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			tier TEXT DEFAULT 'authored',
+			category TEXT,
+			UNIQUE(source_id, source_doc_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_pages_tier ON pages(tier);
+		CREATE TABLE IF NOT EXISTS metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+	`
+	if _, err := db.Exec(v2Schema); err != nil {
+		t.Fatalf("create v2 schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO metadata (key, value) VALUES ('schema_version', '2')`); err != nil {
+		t.Fatalf("set v2 version: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO pages (name, original_name, source_id, source_doc_id, created_at, updated_at)
+		VALUES ('compiled/auth', 'compiled/auth', 'compiled', 'auth', 1000, 1000)
+	`); err != nil {
+		t.Fatalf("insert page: %v", err)
+	}
+
+	s := &Store{db: db, path: ":memory:"}
+	if err := s.migrateV2toV3(); err != nil {
+		t.Fatalf("migrateV2toV3: %v", err)
+	}
+
+	// Schema version updated to 3.
+	version, err := s.GetMeta("schema_version")
+	if err != nil {
+		t.Fatalf("GetMeta(schema_version): %v", err)
+	}
+	if version != "3" {
+		t.Errorf("schema_version = %q, want %q", version, "3")
+	}
+
+	// Both NOCASE indexes exist after migration.
+	for _, index := range []string{"idx_pages_name_nocase", "idx_pages_source_doc_nocase"} {
+		var name string
+		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, index).Scan(&name); err != nil || name != index {
+			t.Errorf("index %s missing after migration: %v", index, err)
+		}
+	}
+
+	// Existing data survives the index-only migration.
+	page, err := s.GetPage("compiled/auth")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage after migration: %v (page=%v)", err, page)
+	}
+
+	// The migration is idempotent.
+	if err := s.migrateV2toV3(); err != nil {
+		t.Fatalf("migrateV2toV3 twice: %v", err)
 	}
 }

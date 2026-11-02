@@ -253,22 +253,25 @@ func (c *Curate) loadStoreDocCount(cfg curate.StoreConfig) (int, error) {
 	return total, nil
 }
 
-// autoIndexKnowledgeStore reads curated markdown files from a knowledge
-// store directory and persists them into the SQLite store with the source
-// ID "knowledge-{store-name}". This makes curated content immediately
+// IndexKnowledgeStore reads curated markdown files from a knowledge store
+// directory and persists them into the SQLite store with the source ID
+// "knowledge-{store-name}". This makes curated content immediately
 // searchable via semantic_search and other MCP tools (FR-027, FR-028).
 //
+// It is the single implementation shared by the curate MCP tool
+// (Curate.autoIndexKnowledgeStore) and background curation (main.go).
 // Design decision: Follows the same PersistBlocks/GenerateEmbeddings
 // pipeline as store_learning and reIngestLearnings for consistency.
 // Pages are upserted — if a page already exists (from a previous curation),
-// its blocks and embeddings are replaced.
-func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
-	storePath := curate.ResolveStorePath(cfg, c.vaultPath)
+// its blocks and embeddings are replaced. A human-validated tier is never
+// demoted on re-index.
+func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int, logger *log.Logger) int {
+	storePath := curate.ResolveStorePath(cfg, vaultPath)
 	sourceID := knowledgeSourceID(cfg.Name)
 
 	entries, err := os.ReadDir(storePath)
 	if err != nil {
-		curateLogger.Warn("failed to read knowledge store for auto-indexing",
+		logger.Warn("failed to read knowledge store for auto-indexing",
 			"store", cfg.Name, "path", storePath, "err", err)
 		return 0
 	}
@@ -286,7 +289,7 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 		filePath := filepath.Join(storePath, entry.Name())
 		content, err := os.ReadFile(filePath)
 		if err != nil {
-			curateLogger.Warn("failed to read knowledge file for indexing",
+			logger.Warn("failed to read knowledge file for indexing",
 				"path", filePath, "err", err)
 			continue
 		}
@@ -300,9 +303,9 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 		pageName := fmt.Sprintf("knowledge/%s/%s", cfg.Name, baseName)
 
 		// Check if page already exists and content hasn't changed.
-		existing, err := c.store.GetPage(pageName)
+		existing, err := s.GetPage(pageName)
 		if err != nil {
-			curateLogger.Warn("failed to check existing page",
+			logger.Warn("failed to check existing page",
 				"page", pageName, "err", err)
 			continue
 		}
@@ -313,8 +316,8 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 				continue
 			}
 			// Content changed — delete old blocks and re-index.
-			if err := c.store.DeleteBlocksByPage(pageName); err != nil {
-				curateLogger.Warn("failed to delete old blocks",
+			if err := s.DeleteBlocksByPage(pageName); err != nil {
+				logger.Warn("failed to delete old blocks",
 					"page", pageName, "err", err)
 			}
 			// Update existing page. Preserve a human-validated tier; a
@@ -324,8 +327,8 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 				existing.Tier = "curated"
 			}
 			existing.SourceID = sourceID
-			if err := c.store.UpdatePage(existing); err != nil {
-				curateLogger.Warn("failed to update page",
+			if err := s.UpdatePage(existing); err != nil {
+				logger.Warn("failed to update page",
 					"page", pageName, "err", err)
 				continue
 			}
@@ -339,8 +342,8 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 				ContentHash:  contentHash,
 				Tier:         "curated",
 			}
-			if err := c.store.InsertPage(page); err != nil {
-				curateLogger.Warn("failed to insert knowledge page",
+			if err := s.InsertPage(page); err != nil {
+				logger.Warn("failed to insert knowledge page",
 					"page", pageName, "err", err)
 				continue
 			}
@@ -351,25 +354,32 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 		_, blocks := vault.ParseDocument(docID, string(content))
 
 		// Persist blocks.
-		if err := vault.PersistBlocks(c.store, pageName, blocks, sql.NullString{}, 0); err != nil {
-			curateLogger.Warn("failed to persist knowledge blocks",
+		if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
+			logger.Warn("failed to persist knowledge blocks",
 				"page", pageName, "err", err)
 			continue
 		}
 
 		// Generate embeddings if available.
-		if c.embedder != nil && c.embedder.Available() {
-			maxChars := c.maxChunkChars
+		if embedder != nil && embedder.Available() {
+			maxChars := maxChunkChars
 			if maxChars <= 0 {
 				maxChars = embed.DefaultMaxChunkChars
 			}
-			vault.GenerateEmbeddings(c.store, c.embedder, pageName, blocks, nil, maxChars)
+			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil, maxChars)
 		}
 
 		indexed++
 	}
 
 	return indexed
+}
+
+// autoIndexKnowledgeStore indexes a knowledge store's curated files into the
+// persistent store, delegating to the shared IndexKnowledgeStore
+// implementation that background curation (main.go) also uses.
+func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
+	return IndexKnowledgeStore(c.store, c.embedder, cfg, c.vaultPath, c.maxChunkChars, curateLogger)
 }
 
 // knowledgeSourceID returns the source ID for a knowledge store.

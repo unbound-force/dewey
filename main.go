@@ -31,6 +31,7 @@ import (
 	"github.com/unbound-force/dewey/v3/openaicompat"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
+	"github.com/unbound-force/dewey/v3/tools"
 	"github.com/unbound-force/dewey/v3/vault"
 	"gopkg.in/yaml.v3"
 )
@@ -287,7 +288,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 	// compile/curate tools and background curation. When no model is
 	// configured, or the provider cannot be constructed, the tools keep
 	// their prompt-mode fallback.
-	sharedSynth := buildSharedSynthesizer(srvOpts)
+	sharedSynth := buildSharedSynthesizer(vaultPath)
 	if sharedSynth != nil {
 		srvOpts = append(srvOpts, WithSynthesizer(sharedSynth))
 	}
@@ -795,20 +796,11 @@ func indexVault(vc *vault.Client) error {
 }
 
 // buildSharedSynthesizer constructs the synthesis provider shared by the MCP
-// compile/curate tools and background curation. It resolves the vault path
-// from the assembled server options, reads the synthesis configuration, and
-// returns nil when no model is configured or construction fails. The caller
+// compile/curate tools and background curation. It reads the synthesis
+// configuration from the resolved vault path and returns nil when the path
+// is empty, no model is configured, or construction fails. The caller
 // appends WithSynthesizer when the result is non-nil.
-func buildSharedSynthesizer(srvOpts []serverOption) llm.Synthesizer {
-	vaultPath := ""
-	for _, opt := range srvOpts {
-		var tmpCfg serverConfig
-		opt(&tmpCfg)
-		if tmpCfg.vaultPath != "" {
-			vaultPath = tmpCfg.vaultPath
-			break
-		}
-	}
+func buildSharedSynthesizer(vaultPath string) llm.Synthesizer {
 	if vaultPath == "" {
 		return nil
 	}
@@ -962,7 +954,7 @@ func backgroundCurateStore(
 				// (FR-027, FR-028). Re-acquire mutex for indexing since we
 				// released it after curation.
 				if indexMu.TryLock() {
-					indexed := autoIndexKnowledgeStore(s, embedder, storeCfg, vaultPath, maxChunkChars)
+					indexed := tools.IndexKnowledgeStore(s, embedder, storeCfg, vaultPath, maxChunkChars, logger)
 					indexMu.Unlock()
 					logger.Info("background curation complete",
 						"store", storeCfg.Name, "files_created", filesCreated, "indexed", indexed)
@@ -976,120 +968,6 @@ func backgroundCurateStore(
 			}
 		}
 	}
-}
-
-// autoIndexKnowledgeStore reads curated markdown files from a knowledge
-// store directory and persists them into the SQLite store with the source
-// ID "knowledge-{store-name}". This makes curated content immediately
-// searchable via semantic_search and other MCP tools (FR-027, FR-028).
-//
-// Design decision: Extracted as a standalone function for use by both the
-// MCP tool (tools/curate.go) and background curation (main.go). Follows
-// the same PersistBlocks/GenerateEmbeddings pipeline as store_learning.
-func autoIndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int) int {
-	storePath := curate.ResolveStorePath(cfg, vaultPath)
-	sourceID := "knowledge-" + cfg.Name
-
-	entries, err := os.ReadDir(storePath)
-	if err != nil {
-		logger.Warn("failed to read knowledge store for auto-indexing",
-			"store", cfg.Name, "path", storePath, "err", err)
-		return 0
-	}
-
-	indexed := 0
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
-			continue
-		}
-		// Skip index and state files.
-		if entry.Name() == "_index.md" || strings.HasPrefix(entry.Name(), ".") {
-			continue
-		}
-
-		filePath := filepath.Join(storePath, entry.Name())
-		content, err := os.ReadFile(filePath)
-		if err != nil {
-			logger.Warn("failed to read knowledge file for indexing",
-				"path", filePath, "err", err)
-			continue
-		}
-
-		// Compute content hash for deduplication.
-		hash := sha256.Sum256(content)
-		contentHash := fmt.Sprintf("%x", hash[:8])
-
-		// Page name follows the pattern: knowledge/{store-name}/{filename-without-ext}
-		baseName := strings.TrimSuffix(entry.Name(), ".md")
-		pageName := fmt.Sprintf("knowledge/%s/%s", cfg.Name, baseName)
-
-		// Check if page already exists and content hasn't changed.
-		existing, err := s.GetPage(pageName)
-		if err != nil {
-			logger.Warn("failed to check existing page",
-				"page", pageName, "err", err)
-			continue
-		}
-
-		if existing != nil {
-			if existing.ContentHash == contentHash {
-				// Content unchanged — skip re-indexing.
-				continue
-			}
-			// Content changed — delete old blocks and re-index.
-			if err := s.DeleteBlocksByPage(pageName); err != nil {
-				logger.Warn("failed to delete old blocks",
-					"page", pageName, "err", err)
-			}
-			// Update existing page.
-			existing.ContentHash = contentHash
-			existing.Tier = "curated"
-			existing.SourceID = sourceID
-			if err := s.UpdatePage(existing); err != nil {
-				logger.Warn("failed to update page",
-					"page", pageName, "err", err)
-				continue
-			}
-		} else {
-			// Insert new page.
-			page := &store.Page{
-				Name:         pageName,
-				OriginalName: baseName,
-				SourceID:     sourceID,
-				SourceDocID:  entry.Name(),
-				ContentHash:  contentHash,
-				Tier:         "curated",
-			}
-			if err := s.InsertPage(page); err != nil {
-				logger.Warn("failed to insert knowledge page",
-					"page", pageName, "err", err)
-				continue
-			}
-		}
-
-		// Parse the document into blocks.
-		docID := fmt.Sprintf("%s-%s", sourceID, baseName)
-		_, blocks := vault.ParseDocument(docID, string(content))
-
-		// Persist blocks.
-		if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {
-			logger.Warn("failed to persist knowledge blocks",
-				"page", pageName, "err", err)
-			continue
-		}
-
-		// Generate embeddings if available.
-		if embedder != nil && embedder.Available() {
-			if maxChunkChars <= 0 {
-				maxChunkChars = embed.DefaultMaxChunkChars
-			}
-			vault.GenerateEmbeddings(s, embedder, pageName, blocks, nil, maxChunkChars)
-		}
-
-		indexed++
-	}
-
-	return indexed
 }
 
 // learningFrontmatter holds the parsed YAML frontmatter fields from a

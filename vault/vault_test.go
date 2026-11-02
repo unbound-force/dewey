@@ -756,7 +756,12 @@ func TestFindBlocksByTag_StoreLearningPages(t *testing.T) {
 	}
 }
 
-func TestFindBlocksByTag_StoreListError(t *testing.T) {
+func TestFindBlocksByTag_StorePagesListError(t *testing.T) {
+	// The store-side tag search lists ALL store pages (storePagesTagResults,
+	// generalized from the learning-only fallback in
+	// mcp-internal-store-access): a store failure must surface through the
+	// "list store pages for tag search" wrap, never be masked as an empty
+	// result.
 	dir := t.TempDir()
 	s, err := store.New(":memory:")
 	if err != nil {
@@ -772,6 +777,9 @@ func TestFindBlocksByTag_StoreListError(t *testing.T) {
 	_, err = c.FindBlocksByTag(context.Background(), "any", false)
 	if err == nil {
 		t.Fatal("expected store query error, got nil")
+	}
+	if !strings.Contains(err.Error(), "list store pages for tag search") {
+		t.Errorf("error = %q, want wrap text containing %q", err.Error(), "list store pages for tag search")
 	}
 }
 
@@ -3273,6 +3281,93 @@ func TestWriteGuard_StoreBackedPagesRejected(t *testing.T) {
 	// over-reject).
 	if _, err := c.AppendBlockInPage(ctx, "readme", "still writable"); err != nil {
 		t.Errorf("AppendBlockInPage on vault page: %v", err)
+	}
+}
+
+func TestWriteGuard_StoreErrorSurfaces(t *testing.T) {
+	// A store failure during the write-guard lookup must surface as an
+	// error, never be masked as not-found (design D6 honest-error
+	// philosophy, the same guarantee the read fallbacks carry via
+	// TestGetBlock_StoreErrorSurfaces): swallowing the lookup error would
+	// send a page-level write down its create-if-missing branch and
+	// silently create a shadow vault file exactly when the store is
+	// failing.
+	c, s := newStoreBackedClient(t, map[string]string{
+		"readme.md": "# Vault\n\nLocal page.\n",
+	})
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// CreatePage is the shadow-file risk: the guard must surface the store
+	// error, not fall through to create-if-missing.
+	if _, err := c.CreatePage(ctx, "fresh-page", nil, nil); err == nil {
+		t.Fatal("CreatePage: expected store error after store close, got nil (guard swallowed the lookup failure)")
+	}
+	if _, err := os.Stat(filepath.Join(c.vaultPath, "fresh-page.md")); !os.IsNotExist(err) {
+		t.Errorf("shadow vault file for fresh-page exists (stat err = %v), want not-exist", err)
+	}
+
+	// The other guarded page-level writes surface the store error too.
+	if _, err := c.AppendBlockInPage(ctx, "fresh-page", "shadow content"); err == nil {
+		t.Error("AppendBlockInPage: expected store error after store close, got nil")
+	}
+	if err := c.DeletePage(ctx, "fresh-page"); err == nil {
+		t.Error("DeletePage: expected store error after store close, got nil")
+	}
+}
+
+func TestWriteGuard_StaleDiskLocalRowBlocksCreate(t *testing.T) {
+	// The write guard's store lookup matches rows of ANY source, while the
+	// enumeration merges exclude disk-local mirror rows (design D3). A
+	// stale disk-local row — its vault file deleted between index runs,
+	// leaving no in-memory entry and no file — therefore makes CreatePage
+	// report "page already exists" for a name list_pages never shows. This
+	// pins the guard's fail-closed breadth: the stale row keeps the write
+	// off the create-if-missing branch until the next index run purges it
+	// (the recovery path for the documented guard/enumeration asymmetry).
+	c, s := newStoreBackedClient(t, map[string]string{
+		"readme.md": "# Vault\n\nLocal page.\n",
+	})
+
+	// A disk-local mirror row whose vault file no longer exists.
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "ghost", OriginalName: "ghost", SourceID: "disk-local", SourceDocID: "ghost.md"},
+		&store.Block{UUID: "ghost-mirror", PageName: "ghost", Content: "# Ghost (stale mirror)", Position: 0},
+	)
+
+	ctx := context.Background()
+
+	// The enumeration merges exclude disk-local rows: "ghost" never shows
+	// in list_pages.
+	pages, err := c.GetAllPages(ctx)
+	if err != nil {
+		t.Fatalf("GetAllPages: %v", err)
+	}
+	for i := range pages {
+		if pages[i].Name == "ghost" {
+			t.Errorf("ghost surfaced in GetAllPages: %+v", pages[i])
+		}
+	}
+
+	// Yet the write guard resolves the stale row and keeps every
+	// page-level write off the create-if-missing branch.
+	if _, err := c.CreatePage(ctx, "ghost", nil, nil); err == nil || err.Error() != "page already exists: ghost" {
+		t.Errorf("CreatePage error = %v, want %q", err, "page already exists: ghost")
+	}
+	wantReadOnly := `page "ghost" is read-only (source: disk-local)`
+	if _, err := c.AppendBlockInPage(ctx, "ghost", "shadow content"); err == nil || err.Error() != wantReadOnly {
+		t.Errorf("AppendBlockInPage error = %v, want %q", err, wantReadOnly)
+	}
+	if err := c.DeletePage(ctx, "ghost"); err == nil || err.Error() != wantReadOnly {
+		t.Errorf("DeletePage error = %v, want %q", err, wantReadOnly)
+	}
+
+	// No shadow vault file may appear for the stale-row name.
+	if _, err := os.Stat(filepath.Join(c.vaultPath, "ghost.md")); !os.IsNotExist(err) {
+		t.Errorf("shadow vault file for ghost exists (stat err = %v), want not-exist", err)
 	}
 }
 

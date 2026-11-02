@@ -115,7 +115,7 @@ func TestResolveAPIKey_Precedence(t *testing.T) {
 	}
 }
 
-func TestAuthReasons(t *testing.T) {
+func TestAuthReasons_EnvVarNaming(t *testing.T) {
 	embedding := AuthRequiredReason(CapabilityEmbedding)
 	if !strings.Contains(embedding, "DEWEY_EMBEDDING_API_KEY") || !strings.Contains(embedding, "DEWEY_API_KEY") {
 		t.Fatalf("embedding auth reason must name both variables: %q", embedding)
@@ -135,7 +135,7 @@ func TestAuthReasons(t *testing.T) {
 	}
 }
 
-func TestCapabilityFields(t *testing.T) {
+func TestCapabilityFields_Names(t *testing.T) {
 	if got := CapabilityEmbedding.endpointField(); got != "embedding.endpoint" {
 		t.Fatalf("got %q", got)
 	}

@@ -1473,7 +1473,12 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	embedModel := embCfg.Model
 
 	switch embCfg.Provider {
-	case "ollama", "":
+	case "ollama", "", "vertex":
+		// Vertex shares the Ollama diagnostics to preserve the
+		// pre-017 doctor behavior exactly (FR-017). The known gap —
+		// the embedding layer treating Vertex as Ollama — stays out of
+		// scope here and is tracked by the follow-up issue filed in
+		// task T047.
 		section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
 
 		// Ollama state check via ensureOllama (autoStart=false for doctor —
@@ -1515,12 +1520,12 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		}
 
 	case "openai-compatible":
-		section(fmt.Sprintf("Embedding Layer (%s via %s)", displayGatewayValue(embedModel), displayGatewayValue(embedEndpoint)))
+		section(fmt.Sprintf("Embedding Layer (%s via %s)", displayGatewayValue(embedModel), displayGatewayValue(openaicompat.DisplayURL(embedEndpoint))))
 		embedder, err := embed.NewEmbedderFromConfig(embCfg)
 		if err != nil {
 			c.printCheck(w, "FAIL", "config", fmt.Sprintf("incomplete: %s", err))
 		} else {
-			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", embCfg.Provider, embedEndpoint, embedModel))
+			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", embCfg.Provider, openaicompat.DisplayURL(embedEndpoint), embedModel))
 			if embedder.Available() {
 				c.printCheck(w, "PASS", "provider", "ready")
 			} else {
@@ -1606,12 +1611,12 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		}
 
 	case "openai-compatible":
-		section(fmt.Sprintf("Synthesis Layer (%s via %s)", displayGatewayValue(synthCfg.Model), displayGatewayValue(synthCfg.Endpoint)))
+		section(fmt.Sprintf("Synthesis Layer (%s via %s)", displayGatewayValue(synthCfg.Model), displayGatewayValue(openaicompat.DisplayURL(synthCfg.Endpoint))))
 		synth, err := llm.NewSynthesizerFromConfig(synthCfg)
 		if err != nil {
 			c.printCheck(w, "FAIL", "config", fmt.Sprintf("incomplete: %s", err))
 		} else {
-			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", synthCfg.Provider, synthCfg.Endpoint, synthCfg.Model))
+			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", synthCfg.Provider, openaicompat.DisplayURL(synthCfg.Endpoint), synthCfg.Model))
 			if synth.Available() {
 				c.printCheck(w, "PASS", "provider", "ready")
 			} else {
@@ -2761,10 +2766,8 @@ func displayGatewayValue(value string) string {
 // embedderUnavailableReason returns the provider's credential-free reason
 // when it implements embed.UnavailableReasoner, or a generic fallback.
 func embedderUnavailableReason(e embed.Embedder) string {
-	if reasoner, ok := e.(embed.UnavailableReasoner); ok {
-		if reason := reasoner.UnavailableReason(); reason != "" {
-			return reason
-		}
+	if reason := embed.UnavailableReasonOf(e); reason != "" {
+		return reason
 	}
 	return "unavailable"
 }
@@ -2772,10 +2775,8 @@ func embedderUnavailableReason(e embed.Embedder) string {
 // synthesizerUnavailableReason returns the synthesis provider's
 // credential-free reason when it implements llm.UnavailableReasoner.
 func synthesizerUnavailableReason(s llm.Synthesizer) string {
-	if reasoner, ok := s.(llm.UnavailableReasoner); ok {
-		if reason := reasoner.UnavailableReason(); reason != "" {
-			return reason
-		}
+	if reason := llm.UnavailableReasonOf(s); reason != "" {
+		return reason
 	}
 	return "unavailable"
 }
@@ -2815,14 +2816,12 @@ func logGatewayCredentialWarnings(capability openaicompat.Capability, endpoint s
 // Ollama, and the provider's reason is included when it implements
 // embed.UnavailableReasoner (FR-015, FR-024).
 func embeddingDegradationFields(cfg embed.ProviderConfig, embedder embed.Embedder) []any {
-	fields := []any{"provider", cfg.Provider, "model", cfg.Model, "endpoint", cfg.Endpoint}
+	fields := []any{"provider", cfg.Provider, "model", cfg.Model, "endpoint", openaicompat.DisplayURL(cfg.Endpoint)}
 	if cfg.Provider == "ollama" || cfg.Provider == "" {
 		fields = append(fields, "pull", fmt.Sprintf("ollama pull %s", cfg.Model))
 	}
-	if reasoner, ok := embedder.(embed.UnavailableReasoner); ok {
-		if reason := reasoner.UnavailableReason(); reason != "" {
-			fields = append(fields, "reason", reason)
-		}
+	if reason := embed.UnavailableReasonOf(embedder); reason != "" {
+		fields = append(fields, "reason", reason)
 	}
 	return append(fields, "note", "semantic search is unavailable")
 }

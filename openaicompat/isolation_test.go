@@ -36,7 +36,7 @@ func (r *authRecorder) snapshot() (auth, path string) {
 // provider and a synthesis provider configured against two different
 // gateways each send their own capability-scoped key and never the other's
 // (FR-007).
-func TestSeparateGatewaysKeepCredentialsIsolated(t *testing.T) {
+func TestSeparateGatewaysKeepCredentialsIsolated_PerCapability(t *testing.T) {
 	var embeddingAuth, synthesisAuth authRecorder
 
 	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

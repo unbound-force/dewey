@@ -69,6 +69,12 @@ type configFile struct {
 // HasAPIKeyField reports whether a synthesis.api_key field appears in the
 // per-vault or global config.yaml. The field is ignored by design
 // (FR-006); startup and dewey doctor warn about it (FR-024).
+//
+// This same-schema probe is deliberately mirrored in
+// embed.HasAPIKeyField rather than shared through a common package:
+// spec 016's configuration-independence decision keeps llm and embed
+// decoupled, and each function reads a different YAML section. The
+// duplicated config read is the accepted interim trade-off.
 func HasAPIKeyField(deweyDir string) bool {
 	if cfg := readConfigFile(deweyDir); cfg != nil && cfg.Synthesis.APIKey != "" {
 		return true

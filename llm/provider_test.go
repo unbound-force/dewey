@@ -475,3 +475,70 @@ func TestReadSynthesisConfig_GatewayDoesNotUseOllamaFallbacks(t *testing.T) {
 		t.Fatalf("gateway endpoint must not fall back to OLLAMA_HOST or localhost: %q", cfg.Endpoint)
 	}
 }
+
+// TestReadSynthesisConfig_GatewayGlobalConfigEnvFallback exercises the
+// global-config branch of resolveGatewaySynthesisConfig: a gateway
+// provider declared only in the global config.yaml still gets the
+// DEWEY_SYNTHESIS_ENDPOINT fallback (code review L-15).
+func TestReadSynthesisConfig_GatewayGlobalConfigEnvFallback(t *testing.T) {
+	vaultDir := t.TempDir()
+
+	globalDir := filepath.Join(t.TempDir(), "dewey")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	globalYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(globalDir))
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
+
+	cfg := ReadSynthesisConfig(vaultDir)
+	if cfg.Provider != "openai-compatible" {
+		t.Fatalf("Provider = %q, want openai-compatible (from global)", cfg.Provider)
+	}
+	if cfg.Endpoint != "http://env-host:9090/v1" {
+		t.Fatalf("global gateway endpoint should fall back to DEWEY_SYNTHESIS_ENDPOINT: %q", cfg.Endpoint)
+	}
+}
+
+// TestHasAPIKeyField_VaultAndGlobal covers both config sources for the
+// ignored-key warning probe (FR-024), including the per-vault and global
+// branches (code review HIGH-2, L-15).
+func TestHasAPIKeyField_VaultAndGlobal(t *testing.T) {
+	vaultDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if HasAPIKeyField(vaultDir) {
+		t.Fatal("no config anywhere: want false")
+	}
+
+	vaultYAML := `synthesis:
+  api_key: vault-secret
+`
+	if err := os.WriteFile(filepath.Join(vaultDir, "config.yaml"), []byte(vaultYAML), 0644); err != nil {
+		t.Fatalf("write vault config: %v", err)
+	}
+	if !HasAPIKeyField(vaultDir) {
+		t.Fatal("vault api_key: want true")
+	}
+
+	emptyVault := t.TempDir()
+	globalDir := filepath.Join(t.TempDir(), "dewey")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	globalYAML := `synthesis:
+  api_key: global-secret
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(globalDir))
+	if !HasAPIKeyField(emptyVault) {
+		t.Fatal("global api_key with empty vault: want true")
+	}
+}

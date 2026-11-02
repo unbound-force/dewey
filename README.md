@@ -657,7 +657,7 @@ Set `project` and `region` in your config to match your GCP setup. Use a regiona
 - `endpoint` has no Ollama fallback: `OLLAMA_HOST` and the localhost default do not apply, so a missing gateway endpoint is a configuration error naming `embedding.endpoint` or `synthesis.endpoint`.
 - Endpoint precedence stays per code path: embedding is env-first (`DEWEY_EMBEDDING_ENDPOINT` over `config.yaml`); synthesis is config-first (`config.yaml` over `DEWEY_SYNTHESIS_ENDPOINT`).
 - Availability is a cached (30-second) authenticated `GET /models` probe with a one-second timeout. While it reports unavailable, semantic tools return the provider's reason and keyword/graph tools keep working.
-- HTTP 429 responses retry with `Retry-After` or exponential backoff with jitter, matching Vertex (base 1 second, cap 60 seconds, up to 5 attempts).
+- HTTP 429 responses retry with `Retry-After` or exponential backoff with jitter, matching Vertex (base 1 second, cap 60 seconds, one initial attempt plus at most five retries).
 
 Credentials are environment-only — never put them in `config.yaml`:
 

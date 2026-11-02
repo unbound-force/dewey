@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-02
 
-**Status**: Draft
+**Status**: Complete
 
 **Issue**: [#141](https://github.com/unbound-force/dewey/issues/141)
 

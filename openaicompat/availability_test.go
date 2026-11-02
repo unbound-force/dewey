@@ -180,7 +180,9 @@ func TestAvailable_ConcurrentWithRequests(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			_, _ = client.PostJSON(context.Background(), PathEmbeddings, map[string]any{})
+			if _, err := client.PostJSON(context.Background(), PathEmbeddings, map[string]any{}); err != nil {
+				t.Errorf("request leg failed: %v", err)
+			}
 		}()
 	}
 	wg.Wait()

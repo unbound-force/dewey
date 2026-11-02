@@ -84,7 +84,7 @@ func TestClient_RequestShape(t *testing.T) {
 		}
 		client.waitFn = func(context.Context, time.Duration) error { return nil }
 
-		if client.HasAPIKey() {
+		if client.apiKey != "" {
 			t.Fatal("expected no key")
 		}
 		if _, err := client.PostJSON(context.Background(), PathEmbeddings, map[string]any{}); err != nil {
@@ -225,16 +225,16 @@ func TestClient_CapabilityTimeouts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if embedding.Timeout() != 30*time.Second {
-		t.Fatalf("embedding timeout: got %v, want 30s", embedding.Timeout())
+	if embedding.httpClient.Timeout != 30*time.Second {
+		t.Fatalf("embedding timeout: got %v, want 30s", embedding.httpClient.Timeout)
 	}
 
 	synthesis, err := NewClient(Config{Capability: CapabilitySynthesis, Endpoint: "https://gateway.example/v1"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	if synthesis.Timeout() != 300*time.Second {
-		t.Fatalf("synthesis timeout: got %v, want 300s", synthesis.Timeout())
+	if synthesis.httpClient.Timeout != 300*time.Second {
+		t.Fatalf("synthesis timeout: got %v, want 300s", synthesis.httpClient.Timeout)
 	}
 }
 

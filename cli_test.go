@@ -4988,3 +4988,90 @@ func TestEmbeddingDegradationFields(t *testing.T) {
 		}
 	})
 }
+
+// --- OpenAI-compatible synthesis doctor tests (spec 017 T035, code
+// review HIGH-2: the synthesis gateway branch must mirror the embedding
+// gateway coverage) ---
+
+func TestDoctorCmd_SynthesisGatewayConfigured(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	configYAML := "synthesis:\n  provider: openai-compatible\n  model: stub-model\n  endpoint: " + srv.URL + "/v1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "Synthesis Layer") {
+		t.Errorf("doctor should include Synthesis Layer, got:\n%s", output)
+	}
+	if !strings.Contains(output, "stub-model") {
+		t.Errorf("doctor should show the synthesis gateway model, got:\n%s", output)
+	}
+	if !strings.Contains(output, "openai-compatible") {
+		t.Errorf("doctor should name the synthesis provider, got:\n%s", output)
+	}
+	if !strings.Contains(output, "ready") {
+		t.Errorf("doctor should report the synthesis probe as ready, got:\n%s", output)
+	}
+}
+
+func TestDoctorCmd_SynthesisGatewayIncomplete(t *testing.T) {
+	configYAML := "synthesis:\n  provider: openai-compatible\n  model: stub-model\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "incomplete") {
+		t.Errorf("doctor should report incomplete synthesis gateway config, got:\n%s", output)
+	}
+	if !strings.Contains(output, "synthesis.endpoint") {
+		t.Errorf("doctor should name the missing synthesis field, got:\n%s", output)
+	}
+}
+
+func TestDoctorCmd_SynthesisGatewayUnavailableReason(t *testing.T) {
+	configYAML := "synthesis:\n  provider: openai-compatible\n  model: stub-model\n  endpoint: http://127.0.0.1:1/v1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "Synthesis Layer") {
+		t.Errorf("doctor should include Synthesis Layer, got:\n%s", output)
+	}
+	if !strings.Contains(output, "unreachable") {
+		t.Errorf("doctor should carry the synthesis unavailable reason, got:\n%s", output)
+	}
+	if strings.Contains(output, "ollama pull") {
+		t.Errorf("synthesis gateway warning must not suggest ollama pull, got:\n%s", output)
+	}
+}
+
+func TestDoctorCmd_SynthesisGatewayAPIKeyFieldIgnored(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+
+	configYAML := "synthesis:\n  provider: openai-compatible\n  model: stub-model\n  endpoint: " + srv.URL + "/v1\n  api_key: super-secret-value\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	output := buf.String()
+
+	if !strings.Contains(output, "api_key in config.yaml is ignored") {
+		t.Errorf("doctor should warn about the ignored synthesis api_key field, got:\n%s", output)
+	}
+	if strings.Contains(output, "super-secret-value") {
+		t.Errorf("doctor output must not echo the ignored key value, got:\n%s", output)
+	}
+}

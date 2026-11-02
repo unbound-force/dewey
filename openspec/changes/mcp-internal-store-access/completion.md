@@ -177,3 +177,29 @@ name the lock holder with PID and command, and point at the supported write path
 test synchronizes with `sync.WaitGroup` under `-race`, with determinism coming
 from the live read-through design rather than timing (IV). No principle
 violations were found; no source changes were needed for this verification.
+
+## Known Limitations Recorded During Review
+
+- **HydrateStorePage is covered on its happy path only.** The external-page
+  hydration (`vault_store.go` `hydrateStorePage`) is exercised end-to-end by
+  `TestReload_PreservesStoreBackedPages` and the same-session restore tests,
+  but its partial-failure branches (block-load error after the page row is
+  read, malformed property JSON) have no fault-injection coverage: injecting
+  those failures requires reaching the store's internal `db` handle
+  (`store.Store` exposes no failure-injection seam) or standing up a
+  corrupted on-disk database. Untested by omission, not by oversight; the
+  failure mode surfaces as an error return from `LoadExternalPages`, not as
+  silent corruption.
+- **Hydrated pages keep in-memory precedence for mid-session re-stores.**
+  The freshness guarantee is scoped to pages first stored during the current
+  session (store-only pages). A page hydrated into `c.pages` at startup
+  serves the hydrated copy after a mid-session `store_compiled` re-store
+  until the next reload — the invalidation wiring this would need is exactly
+  what design D2 rejects (one missed mutation path reintroduces the
+  staleness bug). Spec, proposal, and design docs state this scope
+  explicitly; the same-session restore tests (`*SameSessionRestoreIsNeverStale`)
+  pin the covered half.
+- **Write-guard coverage is page-level.** The synchronous store existence
+  check guards page-level writes (create/append/prepend/delete/rename);
+  block-level writes into a vault page that shadows nothing remain governed
+  by the in-memory `readOnly` flag alone.

@@ -138,8 +138,13 @@ would require invalidation for every in-process store mutation —
 `store_learning` creates pages, `index`/`reindex`/`curate` bulk-write
 via `vault.IndexDocuments`, background curation writes
 knowledge-store pages. Missing one path reintroduces exactly the
-staleness bug this change fixes. Live lookups make staleness
-impossible by construction and keep write paths untouched. The cost
+staleness bug this change fixes. Live lookups keep every read of a
+store-only page current by construction — no code path can serve a cached
+copy — and keep write paths untouched. Known limitation: a page hydrated
+into `c.pages` at startup keeps in-memory precedence, so a mid-session
+re-store of that page (e.g. `compiled/*` same-tag re-store) serves the
+hydrated copy until the next reload; only store-only pages get
+always-current semantics. The cost
 is one indexed SQLite query per miss (`pages.name` is the primary
 lookup; `blocks.uuid` is indexed) and one extra table scan for
 `GetAllPages` — negligible at observed store sizes (~1.3k pages,
@@ -196,9 +201,12 @@ collide, resolved in the vault's favor.
 **Decision.** Add `store.Store.SearchBlocksByContent(query string,
 limit int) ([]Block, error)` — a case-insensitive `LIKE` containment
 match on `blocks.content`, parameterized, capped by `limit`, joining
-page names. `FullTextSearch` merges those hits (skipping hits whose
-page is already covered by the in-memory index results) and respects
-the caller's limit.
+page names. `FullTextSearch` merges those hits (skipping hits whose page
+name is present in the in-memory index, regardless of whether that page
+surfaced among the current query's results — a membership check against
+the full index rather than the result set, so a limit-truncated in-memory
+result cannot duplicate a page the store also returns) and respects the
+caller's limit.
 
 **Rationale.** The store has no full-text index; `LIKE` over
 `blocks.content` is the same brute-force class as the vault's

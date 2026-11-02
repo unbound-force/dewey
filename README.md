@@ -28,7 +28,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 50 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
-Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
+Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
 
 ### Navigate
 

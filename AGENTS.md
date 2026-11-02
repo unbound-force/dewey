@@ -215,12 +215,29 @@ The issue should include:
 - Which website pages are affected (reference `content/docs/` paths when known)
 - What specifically needs updating (new section, changed example, removed content)
 
-Use `gh issue create --repo unbound-force/website` to create the issue. The issue title should follow the format: `docs: sync dewey <feature> documentation`.
+Use `gh issue create --repo unbound-force/website --label docs` to create the issue. The issue title should follow the format: `docs: sync dewey <feature> documentation`. The `docs` label keeps sync issues consistent with their siblings (e.g., website#41, #113, #335).
 
 Exempt from this requirement:
 - Internal refactors with no user-facing changes
 - Test-only changes
 - Spec artifact updates (these live in the dewey repo, not the website)
+
+### Learnings Direct-Commit Practice
+
+Learnings written to `.uf/dewey/learnings/` (by `store_learning`, review-dispatch
+proposal storage, or `dewey compile` runs) are deliberately stageable — they are
+non-rebuildable knowledge artifacts, and gitignoring them would risk silent data
+loss when `graph.db` is deleted without a backup remote (dewey-publish design).
+Direct-committing them in feature PRs is the accepted practice:
+
+- Keep `.uf/dewey/learnings/` OUT of `.gitignore`.
+- Before committing, screen the files for credentials/secrets (the gitleaks
+  MegaLinter job scans `.uf/` as a backstop, but do not rely on it alone).
+- Prefer `dewey artifacts plan` to review what would be published, and use
+  `dewey artifacts sync` when publishing stranded artifacts deliberately —
+  it adds credential screening and audit trailers behind a human gate.
+- Never force publication through the staging sweep: if a learning is not
+  ready to be public, leave it uncommitted.
 
 ### Spec Commit Gate
 

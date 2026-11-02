@@ -37,11 +37,15 @@ vault file pages.
 ### Requirement: Freshness of Store Reads
 
 Store fallback reads MUST query the store at read time rather than
-serving a mid-session cached copy, so that pages stored or re-stored
-during the current server session are returned with their latest
-committed content.
+serving a mid-session cached copy, so that pages first stored during the
+current server session (store-only pages, absent from the in-memory file
+index) are returned with their latest committed content. Known
+limitation: a page hydrated into the in-memory index at startup keeps
+in-memory precedence per the vault-precedence requirement, so a
+mid-session re-store of a hydrated page serves the hydrated copy until
+the next reload.
 
-#### Scenario: Re-stored page is never stale
+#### Scenario: Same-session store-only re-store is never stale
 
 - **GIVEN** a running `dewey serve` where `compiled/gateway` was
   stored earlier in the same session and has since been read at least

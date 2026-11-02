@@ -64,8 +64,12 @@ here. The resulting PR closes #90 and #91.
    store-side block search; `FindBlocksByTag` generalizes its
    existing learning-only store fallback to all store-only pages.
    Lookups are live (no mid-session caching of store reads), so pages
-   stored or re-stored during a session are visible immediately and
-   stale copies are impossible.
+   first stored during a session are visible immediately with their
+   latest committed content. Known limitation: a page hydrated into the
+   in-memory index at startup keeps in-memory precedence, so a mid-session
+   re-store of that page serves the hydrated copy until the next reload
+   (scoped to `compiled/*` re-stores; invalidation wiring is rejected in
+   design D2).
 
 2. **`reload` keeps store pages.** The `reload` MCP tool re-runs the
    external-page load after re-reading vault files instead of
@@ -135,7 +139,11 @@ here. The resulting PR closes #90 and #91.
   pages take precedence on name collision; store-only pages are
   surfaced with their store provenance (tier, source, properties).
 - Write guards are preserved: store-sourced pages remain read-only to
-  vault write tools (existing `readOnly` flag semantics).
+  vault write tools. The in-memory `readOnly` flag covers hydrated pages,
+  and page-level write tools additionally resolve the guard from the store
+  itself (a synchronous existence check before the create-if-missing
+  branch), so store-backed pages served by the live read-through cannot be
+  shadowed by a silently created vault file.
 - MCP `promote` remains the supported write path while a server is
   running; the CLI lock behavior is unchanged.
 

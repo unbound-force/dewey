@@ -1015,11 +1015,13 @@ func TestServerIntegration_StoreBackedPagesSameSession(t *testing.T) {
 	}
 
 	// --- Enumeration filters apply over the merged set (spec: Unified
-	// Page Enumeration — namespace and tag filters over the merged set) ---
+	// Page Enumeration — namespace, property, and tag filters over the
+	// merged set) ---
 
 	storeAccessAssertListPagesNamespace(t, nav, ctx)
 	learningTool := tools.NewLearning(nil, s, vaultDir, 0)
 	storeAccessAssertListPagesTagFilter(t, nav, learningTool, ctx)
+	storeAccessAssertListPagesPropertyFilter(t, nav, ctx)
 }
 
 // storeAccessAssertGetPage asserts get_page returns the just-stored compiled
@@ -1166,6 +1168,39 @@ func storeAccessAssertListPagesTagFilter(t *testing.T, nav *tools.Navigate, lear
 		if summary, _ := pages[0].(map[string]any); summary["name"] != pageName {
 			t.Errorf("list_pages(hasTag=gateway-deploy): page = %v, want %q", summary["name"], pageName)
 		}
+	}
+}
+
+// storeAccessAssertListPagesPropertyFilter asserts the list_pages
+// has_property filter applies over the merged vault+store set: the
+// store-backed compiled pages (hydrated properties.topic) are returned,
+// while the property-less vault file page and the learning page (whose
+// properties carry `tag`, not `topic`) are excluded. Asserting exclusion as
+// well as inclusion makes the test fail under a filter-before-merge reorder,
+// not just a property-hydration break (spec: Unified Page Enumeration —
+// property filter over the merged set; query_properties is store-blind by
+// design, so this filter is the only property surface over the merged set).
+func storeAccessAssertListPagesPropertyFilter(t *testing.T, nav *tools.Navigate, ctx context.Context) {
+	t.Helper()
+	res, _, err := nav.ListPages(ctx, nil, types.ListPagesInput{HasProperty: "topic"})
+	text := storeAccessOK(t, "list_pages(hasProperty=topic)", res, err)
+
+	var pages []any
+	storeAccessJSON(t, "list_pages(hasProperty=topic)", text, &pages)
+
+	// Compiled pages list under their OriginalName (the tag): gateway and
+	// auth-patterns (see storeAccessAssertListPages).
+	counts := make(map[string]int)
+	for _, p := range pages {
+		summary, _ := p.(map[string]any)
+		name, _ := summary["name"].(string)
+		counts[name]++
+	}
+	if counts["gateway"] != 1 || counts["auth-patterns"] != 1 {
+		t.Errorf("list_pages(hasProperty=topic) = %v, want the store-backed compiled pages gateway and auth-patterns", counts)
+	}
+	if len(pages) != 2 {
+		t.Errorf("list_pages(hasProperty=topic) returned %d pages, want 2 (the property-less vault file \"readme\" and the learning page, whose properties carry `tag` but not `topic`, must not match)", len(pages))
 	}
 }
 

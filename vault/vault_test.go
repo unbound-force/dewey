@@ -2704,7 +2704,15 @@ func TestGetPage_NoStoreParity(t *testing.T) {
 	}
 }
 
-func TestGetPage_RestoreIsNeverStale(t *testing.T) {
+// TestGetPage_SameSessionRestoreIsNeverStale pins the freshness guarantee
+// for the covered path only: pages FIRST stored during the session. The
+// live read-through never caches those pages into c.pages, so a same-session
+// re-store is always served fresh. The startup-hydration path — a
+// pre-session page hydrated into c.pages by LoadExternalPages and then
+// re-stored mid-session — deliberately serves the hydrated copy until the
+// next reload; that residual is a recorded known limitation (design D2
+// rejects invalidation wiring), not a behavior this test asserts.
+func TestGetPage_SameSessionRestoreIsNeverStale(t *testing.T) {
 	c, s := newStoreBackedClient(t, nil)
 
 	pageName := "compiled/gateway"
@@ -2740,9 +2748,10 @@ func TestGetPage_RestoreIsNeverStale(t *testing.T) {
 		t.Fatalf("v1 blocks = %+v, want # Gateway v1", blocks)
 	}
 
-	// Re-store as v2 in the same session. The live lookup must return v2 —
-	// no mid-session cache can serve the stale v1 (spec: Freshness of Store
-	// Reads).
+	// Re-store as v2 in the same session. The page was FIRST stored this
+	// session (never hydrated into c.pages), so the live lookup must return
+	// v2 — no mid-session cache can serve the stale v1 (spec: Freshness of
+	// Store Reads, scoped to pages first stored during the session).
 	storeCompiled("# Gateway v2")
 
 	blocks, err = c.GetPageBlocksTree(ctx, pageName)
@@ -2750,7 +2759,40 @@ func TestGetPage_RestoreIsNeverStale(t *testing.T) {
 		t.Fatalf("GetPageBlocksTree v2: %v", err)
 	}
 	if len(blocks) != 1 || blocks[0].Content != "# Gateway v2" {
-		t.Fatalf("v2 blocks = %+v, want # Gateway v2 (never stale)", blocks)
+		t.Fatalf("v2 blocks = %+v, want # Gateway v2 (same-session restore is never stale)", blocks)
+	}
+}
+
+func TestGetPage_FallbackFoldsCase(t *testing.T) {
+	// The in-memory tier keys pages case-insensitively and the post-restart
+	// hydration re-keys store pages lowercased, so the live store fallback
+	// must fold case in SQL (GetPageFoldCase) — otherwise a wrong-case
+	// get_page would miss same-session store-only pages (learning identities
+	// carry an uppercase "T" in their timestamps) while reaching them again
+	// after a restart: tier-dependent case semantics.
+	c, s := newStoreBackedClient(t, nil)
+	pageName := "learning/auth-20261101T235959-alice"
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: pageName, OriginalName: "auth", SourceID: "learning"},
+		&store.Block{UUID: "case-root", PageName: pageName, Content: "parameterized SQL", Position: 0},
+	)
+
+	ctx := context.Background()
+
+	page, err := c.GetPage(ctx, "learning/auth-20261101t235959-alice")
+	if err != nil {
+		t.Fatalf("GetPage wrong-case: %v", err)
+	}
+	if page == nil {
+		t.Fatal("GetPage wrong-case = nil, want the store-backed page (case-insensitive fallback)")
+	}
+
+	blocks, err := c.GetPageBlocksTree(ctx, "LEARNING/AUTH-20261101T235959-ALICE")
+	if err != nil {
+		t.Fatalf("GetPageBlocksTree wrong-case: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Content != "parameterized SQL" {
+		t.Fatalf("GetPageBlocksTree wrong-case blocks = %+v, want 1 block with the stored content", blocks)
 	}
 }
 
@@ -3031,7 +3073,14 @@ func TestGetBlock_NoStoreParity(t *testing.T) {
 	}
 }
 
-func TestGetBlock_RestoreIsNeverStale(t *testing.T) {
+// TestGetBlock_SameSessionRestoreIsNeverStale pins the block-level
+// freshness guarantee for the covered path only: blocks of pages FIRST
+// stored during the session (the live read-through never caches them).
+// Blocks of pages hydrated at startup follow the page-level precedence —
+// a mid-session re-store serves the hydrated copy until the next reload;
+// that residual is a recorded known limitation (design D2 rejects
+// invalidation wiring), not a behavior this test asserts.
+func TestGetBlock_SameSessionRestoreIsNeverStale(t *testing.T) {
 	c, s := newStoreBackedClient(t, nil)
 
 	uuid := "gw-body"
@@ -3068,9 +3117,11 @@ func TestGetBlock_RestoreIsNeverStale(t *testing.T) {
 		t.Fatalf("v1 block = %+v, want content # Gateway v1", got)
 	}
 
-	// Re-store as v2 in the same session. The live lookup must return v2 —
-	// no mid-session cache can serve the stale v1 (spec: Freshness of Store
-	// Reads).
+	// Re-store as v2 in the same session. The page was FIRST stored this
+	// session (never hydrated into the block index), so the live lookup must
+	// return v2 — no mid-session cache can serve the stale v1 (spec:
+	// Freshness of Store Reads, scoped to pages first stored during the
+	// session).
 	storeCompiled("# Gateway v2")
 
 	got, err = c.GetBlock(ctx, uuid)
@@ -3078,7 +3129,7 @@ func TestGetBlock_RestoreIsNeverStale(t *testing.T) {
 		t.Fatalf("GetBlock v2: %v", err)
 	}
 	if got == nil || got.Content != "# Gateway v2" {
-		t.Fatalf("v2 block = %+v, want content # Gateway v2 (never stale)", got)
+		t.Fatalf("v2 block = %+v, want content # Gateway v2 (same-session restore is never stale)", got)
 	}
 }
 
@@ -3094,6 +3145,69 @@ func TestGetBlock_StoreErrorSurfaces(t *testing.T) {
 
 	if _, err := c.GetBlock(ctx, "learning-block-1"); err == nil {
 		t.Error("GetBlock: expected store query error after store close, got nil")
+	}
+}
+
+func TestWriteGuard_StoreBackedPagesRejected(t *testing.T) {
+	// Write guard for store-backed pages (mcp-internal-store-access): the
+	// live read-through serves store pages WITHOUT caching them into
+	// c.pages, so the in-memory readOnly guard cannot see them. Without the
+	// store-backed guard, a page-level write would take its create-if-missing
+	// branch and silently create a shadow vault file that masks the store
+	// page on every subsequent read. Every page-level write tool must reject
+	// with the same read-only error the post-restart (hydrated) path returns,
+	// making the guard session-age independent.
+	c, s := newStoreBackedClient(t, map[string]string{
+		"readme.md": "# Vault\n\nLocal page.\n",
+	})
+	pageName := "compiled/gateway"
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: pageName, OriginalName: "gateway", SourceID: "compiled"},
+		&store.Block{UUID: "guard-root", PageName: pageName, Content: "# Gateway", Position: 0},
+	)
+
+	ctx := context.Background()
+
+	// Precondition: the page is served by the live fallback (never hydrated
+	// into c.pages).
+	page, err := c.GetPage(ctx, pageName)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("test precondition: store-backed page must be served by the live fallback")
+	}
+
+	wantErr := `page "compiled/gateway" is read-only (source: compiled)`
+
+	if _, err := c.AppendBlockInPage(ctx, pageName, "shadow content"); err == nil || err.Error() != wantErr {
+		t.Errorf("AppendBlockInPage error = %v, want %q", err, wantErr)
+	}
+	if _, err := c.PrependBlockInPage(ctx, pageName, "shadow content"); err == nil || err.Error() != wantErr {
+		t.Errorf("PrependBlockInPage error = %v, want %q", err, wantErr)
+	}
+	if err := c.DeletePage(ctx, pageName); err == nil || err.Error() != wantErr {
+		t.Errorf("DeletePage error = %v, want %q", err, wantErr)
+	}
+	if err := c.RenamePage(ctx, pageName, "renamed"); err == nil || err.Error() != wantErr {
+		t.Errorf("RenamePage error = %v, want %q", err, wantErr)
+	}
+
+	// CreatePage on a store-backed name reports existence, exactly as the
+	// post-restart (hydrated) path does.
+	if _, err := c.CreatePage(ctx, pageName, nil, nil); err == nil || err.Error() != "page already exists: compiled/gateway" {
+		t.Errorf("CreatePage error = %v, want %q", err, "page already exists: compiled/gateway")
+	}
+
+	// No shadow vault file may exist for the store-backed page.
+	if _, err := os.Stat(filepath.Join(c.vaultPath, "compiled", "gateway.md")); !os.IsNotExist(err) {
+		t.Errorf("shadow vault file for store-backed page exists (stat err = %v), want not-exist", err)
+	}
+
+	// Sanity: writes to ordinary vault pages still work (the guard must not
+	// over-reject).
+	if _, err := c.AppendBlockInPage(ctx, "readme", "still writable"); err != nil {
+		t.Errorf("AppendBlockInPage on vault page: %v", err)
 	}
 }
 
@@ -3390,7 +3504,7 @@ func TestFullTextSearch_DedupesMirroredPages(t *testing.T) {
 	// same-named page from another source plus a store-only page. The mirrored
 	// rows must never surface twice (vault-file precedence, design D3), while
 	// the store-only page — and each of its matching blocks — still appears
-	// (per-block semantics, identical to a restart + LoadExternalPages).
+	// (per-block semantics for pages the in-memory index does not cover).
 	c, s := newStoreBackedClient(t, map[string]string{
 		"notes/topic.md": "# Topic\n\nvault file content with mirror-phrase\n",
 	})
@@ -3434,6 +3548,57 @@ func TestFullTextSearch_DedupesMirroredPages(t *testing.T) {
 	}
 	if len(hits) != 3 {
 		t.Errorf("total hits = %d, want 3 (1 vault + 2 store-only blocks)", len(hits))
+	}
+}
+
+func TestFullTextSearch_MirroredSubstringOnlyMatchDoesNotSurface(t *testing.T) {
+	// Membership-based merge regression test (design D3/D4; spec: Unified
+	// Full-Text Search): a store row for a page that IS present in the
+	// vault's in-memory index must never surface as a substring match the
+	// token-based index would not return. "deploying" contains "deploy" only
+	// as a substring, so the in-memory index finds no hit for "deploy" —
+	// under the former results-based dedupe the mirrored store row would
+	// leak through the merge and silently widen the inherited `search`
+	// semantics (Constitution II parity). The same substring on a store-only
+	// page (absent from the index) must still surface via the merge.
+	c, s := newStoreBackedClient(t, map[string]string{
+		"notes/release.md": "# Release\n\nwe are deploying the service\n",
+	})
+	c.BuildBacklinks()
+
+	// Disk-local mirror row of the vault file: same page name, store-side
+	// block content with the substring-only match.
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "notes/release", OriginalName: "notes/release", SourceID: "disk-local", SourceDocID: "notes/release.md"},
+		&store.Block{UUID: "release-mirror", PageName: "notes/release", Content: "mirror deploying the service row", Position: 0},
+	)
+	// Store-only page (the same-session store_compiled shape).
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "compiled/relnotes", OriginalName: "relnotes", SourceID: "compiled"},
+		&store.Block{UUID: "relnotes-only", PageName: "compiled/relnotes", Content: "compiled deploying the service row", Position: 0},
+	)
+
+	hits, err := c.FullTextSearch(context.Background(), "deploy", 10)
+	if err != nil {
+		t.Fatalf("FullTextSearch: %v", err)
+	}
+
+	var mirrorHits, storeOnlyHits int
+	for _, h := range hits {
+		switch h.PageName {
+		case "notes/release":
+			mirrorHits++
+		case "compiled/relnotes":
+			storeOnlyHits++
+		default:
+			t.Errorf("unexpected hit for page %q: %+v", h.PageName, h)
+		}
+	}
+	if mirrorHits != 0 {
+		t.Errorf("hits for mirrored notes/release = %d, want 0 (membership-based dedupe must suppress substring-only mirror rows)", mirrorHits)
+	}
+	if storeOnlyHits != 1 {
+		t.Errorf("hits for store-only compiled/relnotes = %d, want 1 (store-only pages still surface via the merge)", storeOnlyHits)
 	}
 }
 
@@ -3698,6 +3863,14 @@ func searchHitKeySet(hits []backend.SearchHit) map[string]bool {
 // rebuilt the store-backed entries (spec: Reload Preserves Store-Backed
 // Pages).
 func TestReload_PreservesStoreBackedPages(t *testing.T) {
+	// Intentional coupling to vault.Client internals (TC-008 deviation,
+	// scoped and accepted): the assertions below read c.pages,
+	// storePage.sourceID, and the readOnly flag directly because public
+	// reads cannot distinguish a re-hydrated entry from a live-fallback hit
+	// — both serve identical content. Internal state is the only observable
+	// surface for "Reload re-hydrates store pages". These assertions will
+	// break on internal refactors without any behavior change; that is the
+	// accepted cost of pinning this guarantee.
 	c, s := newStoreBackedClient(t, map[string]string{
 		"readme.md": "# Vault\n\nLocal page.\n",
 	})

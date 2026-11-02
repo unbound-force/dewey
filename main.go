@@ -824,7 +824,14 @@ func backgroundCuration(
 
 	// Create synthesizer for background curation from config.
 	// If no provider is configured or unavailable, skip background curation.
-	synthCfg := llm.ReadSynthesisConfig(filepath.Join(vaultPath, deweyWorkspaceDir))
+	deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
+	synthCfg := llm.ReadSynthesisConfig(deweyDir)
+	if synthCfg.Provider == "openai-compatible" {
+		// FR-024: the synthesis startup construction site warns about
+		// cleartext credentials and ignored config.yaml keys, mirroring
+		// the embedding path in createIndexEmbedder.
+		logGatewayCredentialWarnings(openaicompat.CapabilitySynthesis, synthCfg.Endpoint, llm.HasAPIKeyField(deweyDir))
+	}
 	if synthCfg.Model == "" {
 		logger.Info("background curation skipped — no synthesis model configured")
 		return

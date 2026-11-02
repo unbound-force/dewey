@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeBaseURL(t *testing.T) {
+func TestNormalizeBaseURL_Validation(t *testing.T) {
 	tests := []struct {
 		name    string
 		raw     string
@@ -47,7 +47,7 @@ func TestNormalizeBaseURL(t *testing.T) {
 	}
 }
 
-func TestOperationURL(t *testing.T) {
+func TestOperationURL_SingleOperationPath(t *testing.T) {
 	tests := []struct {
 		name      string
 		base      string
@@ -72,7 +72,7 @@ func TestOperationURL(t *testing.T) {
 	}
 }
 
-func TestEndpointHost(t *testing.T) {
+func TestEndpointHost_OpenRouterHostGate(t *testing.T) {
 	tests := []struct {
 		endpoint string
 		want     string
@@ -93,7 +93,7 @@ func TestEndpointHost(t *testing.T) {
 	}
 }
 
-func TestIsLoopbackHost(t *testing.T) {
+func TestIsLoopbackHost_LocalAddresses(t *testing.T) {
 	tests := []struct {
 		host string
 		want bool
@@ -117,7 +117,7 @@ func TestIsLoopbackHost(t *testing.T) {
 	}
 }
 
-func TestInsecureEndpointForCredential(t *testing.T) {
+func TestInsecureEndpointForCredential_CleartextKey(t *testing.T) {
 	tests := []struct {
 		name     string
 		endpoint string
@@ -139,5 +139,22 @@ func TestInsecureEndpointForCredential(t *testing.T) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNormalizeBaseURL_UserinfoNotEchoed pins the credential-hygiene rule
+// for validation errors: rejecting an endpoint with embedded userinfo
+// must not echo the userinfo back through the error text (code review
+// M-1).
+func TestNormalizeBaseURL_UserinfoNotEchoed(t *testing.T) {
+	_, err := NormalizeBaseURL("https://user:pass@gateway.example/v1", "embedding.endpoint")
+	if err == nil {
+		t.Fatal("expected error for embedded credentials")
+	}
+	if strings.Contains(err.Error(), "user:pass") {
+		t.Fatalf("error must not echo embedded credentials: %q", err)
+	}
+	if !strings.Contains(err.Error(), "https://gateway.example/v1") {
+		t.Fatalf("error should name the sanitized endpoint: %q", err)
 	}
 }

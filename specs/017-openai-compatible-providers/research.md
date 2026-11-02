@@ -166,6 +166,15 @@ implementation shape.
     specification and can duplicate non-idempotent work).
   - Unbounded retries (rejected: FR-012 caps the budget).
   - Sleeping without a context select (rejected: FR-013).
+- **Known divergence**: `openaicompat.RetryDelay` is a third
+  implementation of this policy alongside `vertexRetryDelay`
+  (embed/vertex.go) and `vertexSynthRetryDelay` (llm/vertex.go). The
+  duplication is intentional: the Vertex implementations cap the
+  delay before applying jitter (so a jittered delay can exceed sixty
+  seconds), while `RetryDelay` caps after jitter, and delegating
+  either implementation to the other would change observable Vertex
+  behavior (backward compatibility). Consolidating the three into one
+  shared helper is left as follow-up work.
 
 ## R8: Error hygiene and credential safety
 

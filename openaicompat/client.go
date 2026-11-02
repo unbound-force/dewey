@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,9 +40,6 @@ type Config struct {
 	Capability Capability
 	// Endpoint is the configured API base URL (FR-010).
 	Endpoint string
-	// Timeout overrides the capability default when non-zero. It exists
-	// for tests; production callers leave it zero.
-	Timeout time.Duration
 }
 
 // Client is the shared OpenAI-compatible transport for one provider
@@ -78,10 +74,7 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, err
 	}
 
-	timeout := cfg.Timeout
-	if timeout <= 0 {
-		timeout = cfg.Capability.defaultTimeout()
-	}
+	timeout := cfg.Capability.defaultTimeout()
 
 	return &Client{
 		capability:  cfg.Capability,
@@ -92,23 +85,6 @@ func NewClient(cfg Config) (*Client, error) {
 		waitFn:      Wait,
 	}, nil
 }
-
-// Capability returns the capability this client serves.
-func (c *Client) Capability() Capability { return c.capability }
-
-// BaseURL returns the normalized base URL (no trailing slash).
-func (c *Client) BaseURL() string { return c.baseURL }
-
-// EndpointField returns the configuration field name used in validation
-// errors ("embedding.endpoint" or "synthesis.endpoint").
-func (c *Client) EndpointField() string { return c.capability.endpointField() }
-
-// HasAPIKey reports whether an environment key resolved. The key value
-// itself is never exposed.
-func (c *Client) HasAPIKey() bool { return c.apiKey != "" }
-
-// Timeout returns the configured HTTP client timeout (FR-025).
-func (c *Client) Timeout() time.Duration { return c.httpClient.Timeout }
 
 // PostJSON marshals payload, POSTs it to one operation path under the
 // base URL, and returns the raw 2xx response body. Non-2xx responses
@@ -149,16 +125,24 @@ func (c *Client) postWithRetry(ctx context.Context, target string, body []byte) 
 	return nil, fmt.Errorf("openai-compatible %s retry loop exited unexpectedly", c.capability)
 }
 
+// authReason returns the shared 401/403 reason for this client's
+// capability: when no key resolved it names the expected environment
+// variables (SC-007); when a key resolved it asks the user to verify the
+// key. The probe path and the request path share it so both stay
+// actionable (FR-008).
+func (c *Client) authReason(status int) string {
+	if c.apiKey == "" {
+		return AuthRequiredReason(c.capability)
+	}
+	return VerifyKeyReason(c.capability, status)
+}
+
 // statusError builds the error for a non-429, non-2xx response. A 401 or
-// 403 uses the FR-008 authentication or verify-key message so both the
-// probe path and the request path stay actionable.
+// 403 uses authReason, which already names the environment variables or
+// embeds the status, so the status is not appended twice.
 func (c *Client) statusError(status int, body []byte) error {
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		reason := VerifyKeyReason(c.capability, status)
-		if c.apiKey == "" {
-			reason = AuthRequiredReason(c.capability)
-		}
-		return fmt.Errorf("%s (HTTP %d): %s", reason, status, Excerpt(body, c.apiKey))
+		return fmt.Errorf("%s: %s", c.authReason(status), Excerpt(body, c.apiKey))
 	}
 	return FormatError(c.capability, status, body, c.apiKey)
 }
@@ -187,13 +171,4 @@ func (c *Client) doRequest(ctx context.Context, target string, body []byte) (int
 		return 0, nil, "", fmt.Errorf("openai-compatible %s read response: %w", c.capability, err)
 	}
 	return resp.StatusCode, respBody, resp.Header.Get("Retry-After"), nil
-}
-
-// Redact removes every occurrence of the resolved key from s. Providers
-// use it when building their own error text.
-func (c *Client) Redact(s string) string {
-	if c.apiKey == "" {
-		return s
-	}
-	return strings.ReplaceAll(s, c.apiKey, redactionToken)
 }

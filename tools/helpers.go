@@ -52,10 +52,8 @@ func jsonRawTextResult(raw json.RawMessage) (*mcp.CallToolResult, error) {
 // Ollama (FR-015, SC-004).
 func embeddingUnavailableMessage(e embed.Embedder) string {
 	if e != nil {
-		if reasoner, ok := e.(embed.UnavailableReasoner); ok {
-			if reason := reasoner.UnavailableReason(); reason != "" {
-				return "Semantic search unavailable: " + reason + "."
-			}
+		if reason := embed.UnavailableReasonOf(e); reason != "" {
+			return "Semantic search unavailable: " + reason + "."
 		}
 	}
 	return "Semantic search unavailable: embedding model not loaded. Ensure the embedding provider is running with the configured model."
@@ -68,10 +66,8 @@ func synthesisUnavailableReason(s llm.Synthesizer) string {
 	if s == nil {
 		return "synthesis provider is not configured"
 	}
-	if reasoner, ok := s.(llm.UnavailableReasoner); ok {
-		if reason := reasoner.UnavailableReason(); reason != "" {
-			return reason
-		}
+	if reason := llm.UnavailableReasonOf(s); reason != "" {
+		return reason
 	}
 	return "synthesis model is not available"
 }

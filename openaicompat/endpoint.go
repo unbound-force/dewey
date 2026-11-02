@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -45,10 +46,16 @@ func NormalizeBaseURL(raw, field string) (string, error) {
 
 	parsed, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("invalid %s: %w", field, err)
+		// url.Error text embeds the raw URL, which may carry embedded
+		// credentials; keep the inner reason and show a sanitized form.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			return "", fmt.Errorf("invalid %s %s: %w", field, DisplayURL(trimmed), urlErr.Err)
+		}
+		return "", fmt.Errorf("invalid %s %s: malformed URL", field, DisplayURL(trimmed))
 	}
 	if err := validateEndpointURL(parsed); err != nil {
-		return "", fmt.Errorf("invalid %s %q: %w", field, raw, err)
+		return "", fmt.Errorf("invalid %s %s: %w", field, DisplayURL(raw), err)
 	}
 
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
@@ -71,6 +78,30 @@ func validateEndpointURL(u *url.URL) error {
 		return fmt.Errorf("embedded credentials are not supported")
 	}
 	return nil
+}
+
+// DisplayURL returns a credential-free display form of a configured
+// endpoint: the scheme, host, and path with any userinfo, query string,
+// and fragment stripped. Validation errors render this form instead of
+// the raw value so an endpoint with embedded credentials is never echoed
+// through error text, logs, or doctor output (FR-019, FR-020).
+func DisplayURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "(empty endpoint)"
+	}
+	if !strings.Contains(trimmed, "://") {
+		trimmed = "http://" + trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "(unparseable endpoint)"
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
 }
 
 // OperationURL joins a normalized base URL with exactly one operation

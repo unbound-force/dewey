@@ -52,6 +52,14 @@ func (c *Client) UnavailableReason() string {
 // one-second probe timeout. The response body is drained (bounded) and
 // closed even though only the status is used.
 func (c *Client) probe() (bool, string) {
+	// A fresh context (not the caller's) is deliberate: the probe runs
+	// while holding the client's write mutex, and the one-second cap
+	// bounds both the mutex hold and the serialization concurrent
+	// callers see. Dropping caller cancellation means a canceled caller
+	// cannot abort an in-flight probe or leave the cache half-written;
+	// the accepted trade-off is that Available and UnavailableReason
+	// ignore caller cancellation for at most one second (research.md
+	// R3).
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
@@ -74,10 +82,7 @@ func (c *Client) probe() (bool, string) {
 		return true, ""
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		if c.apiKey == "" {
-			return false, AuthRequiredReason(c.capability)
-		}
-		return false, VerifyKeyReason(c.capability, resp.StatusCode)
+		return false, c.authReason(resp.StatusCode)
 	}
 	return false, fmt.Sprintf("openai-compatible %s endpoint returned HTTP %d", c.capability, resp.StatusCode)
 }

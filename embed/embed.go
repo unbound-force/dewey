@@ -74,6 +74,17 @@ type UnavailableReasoner interface {
 	UnavailableReason() string
 }
 
+// UnavailableReasonOf returns e's unavailable reason when e implements
+// UnavailableReasoner and reports one, and "" otherwise. Callers share
+// this single extraction of the optional capability instead of
+// duplicating the type assertion at every call site (FR-015).
+func UnavailableReasonOf(e Embedder) string {
+	if reasoner, ok := e.(UnavailableReasoner); ok {
+		return reasoner.UnavailableReason()
+	}
+	return ""
+}
+
 // OllamaEmbedder implements Embedder using Ollama's HTTP API.
 // It calls POST /api/embed for embedding generation and GET /api/tags
 // for model availability checks.

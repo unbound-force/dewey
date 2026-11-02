@@ -4,11 +4,8 @@ import (
 	"context"
 	"math"
 	"math/rand/v2"
-	"os"
 	"strconv"
 	"time"
-
-	"github.com/charmbracelet/log"
 )
 
 const (
@@ -23,14 +20,6 @@ const (
 	// exponential delay.
 	jitterFraction = 0.25
 )
-
-// retryLogger reports retry attempts. It never carries credential
-// material or request bodies.
-var retryLogger = log.NewWithOptions(os.Stderr, log.Options{
-	Prefix:          "dewey/openaicompat",
-	ReportTimestamp: true,
-	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
-})
 
 // RetryDelay computes the delay before the next retry. A positive
 // integer-seconds Retry-After value is honored and capped at MaxDelay.
@@ -67,6 +56,13 @@ func parseRetryAfter(value string) (time.Duration, bool) {
 	seconds, err := strconv.Atoi(value)
 	if err != nil || seconds <= 0 {
 		return 0, false
+	}
+	// Clamp before converting: a huge Retry-After (for example
+	// 10000000000) overflows time.Duration when multiplied by
+	// time.Second and wraps negative, which would bypass the MaxDelay
+	// clamp below and produce immediate retries.
+	if maxSeconds := int(MaxDelay / time.Second); seconds > maxSeconds {
+		seconds = maxSeconds
 	}
 	delay := time.Duration(seconds) * time.Second
 	if delay > MaxDelay {

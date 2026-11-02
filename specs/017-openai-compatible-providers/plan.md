@@ -71,7 +71,7 @@ design.*
 | Principle | Gate | Verdict | Evidence |
 |-----------|------|---------|----------|
 | I. Composability First | Dewey remains usable without any remote provider; Ollama stays the default; keyword and graph tools never depend on a gateway | PASS | Provider is opt-in through `config.yaml`; the existing `Available()` degradation path is reused; `openai-compatible` is one factory case among three |
-| II. Autonomous Collaboration | No new runtime coupling; no MCP tool contract change | PASS | No MCP tool is added or changed; structured responses are unchanged; `Embedder` and `Synthesizer` interfaces are unchanged |
+| II. Autonomous Collaboration | No new runtime coupling; no MCP tool contract change | PASS | No MCP tool is added or changed; the structured responses of `compile` and `curate` gain an `unavailable_reason` field on the degradation path while their success shapes stay unchanged; `Embedder` and `Synthesizer` interfaces are unchanged |
 | III. Observable Quality | Provider state stays auditable; failures name the exact field or environment variable | PASS | Cached `/models` probe, actionable unavailable reason, provider-aware doctor and startup logs, and zero credential material |
 | IV. Testability | Every package testable in isolation; contract behavior covered; CRAP and coverage ratchets respected | PASS | `httptest` stub gateways only; table-driven contract tests; small functions keep CRAP under the CI gate |
 | Local-Only Processing | No remote contact unless explicitly configured | PASS | A gateway client is built only for `provider: openai-compatible`; there is no default endpoint and no discovery |

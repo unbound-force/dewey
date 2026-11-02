@@ -82,6 +82,17 @@ type UnavailableReasoner interface {
 	UnavailableReason() string
 }
 
+// UnavailableReasonOf returns s's unavailable reason when s implements
+// UnavailableReasoner and reports one, and "" otherwise. Callers share
+// this single extraction of the optional capability instead of
+// duplicating the type assertion at every call site (FR-015).
+func UnavailableReasonOf(s Synthesizer) string {
+	if reasoner, ok := s.(UnavailableReasoner); ok {
+		return reasoner.UnavailableReason()
+	}
+	return ""
+}
+
 // OllamaSynthesizer implements Synthesizer using Ollama's HTTP API.
 // Calls POST /api/generate for text generation.
 //

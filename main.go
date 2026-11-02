@@ -283,6 +283,15 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 	// so the index/reindex MCP tools and health tool can use them.
 	srvOpts = append(srvOpts, WithIndexMutex(indexMu), WithIndexReady(indexReady))
 
+	// Build the synthesis provider once and share it between the MCP
+	// compile/curate tools and background curation. When no model is
+	// configured, or the provider cannot be constructed, the tools keep
+	// their prompt-mode fallback.
+	sharedSynth := buildSharedSynthesizer(srvOpts)
+	if sharedSynth != nil {
+		srvOpts = append(srvOpts, WithSynthesizer(sharedSynth))
+	}
+
 	srv, toolCount := newServer(b, readOnly, srvOpts...)
 
 	// Set up signal handling for graceful shutdown (SIGINT, SIGTERM).
@@ -364,7 +373,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 					}
 				}
 				if curationStore != nil {
-					go backgroundCuration(ctx, indexMu, indexReady, stores, curationStore, curationEmbedder, curationVaultPath, curationMaxChunkChars)
+					go backgroundCuration(ctx, indexMu, indexReady, stores, curationStore, curationEmbedder, curationVaultPath, curationMaxChunkChars, sharedSynth)
 				} else {
 					logger.Debug("background curation skipped — no persistent store")
 				}
@@ -785,6 +794,46 @@ func indexVault(vc *vault.Client) error {
 	return nil
 }
 
+// buildSharedSynthesizer constructs the synthesis provider shared by the MCP
+// compile/curate tools and background curation. It resolves the vault path
+// from the assembled server options, reads the synthesis configuration, and
+// returns nil when no model is configured or construction fails. The caller
+// appends WithSynthesizer when the result is non-nil.
+func buildSharedSynthesizer(srvOpts []serverOption) llm.Synthesizer {
+	vaultPath := ""
+	for _, opt := range srvOpts {
+		var tmpCfg serverConfig
+		opt(&tmpCfg)
+		if tmpCfg.vaultPath != "" {
+			vaultPath = tmpCfg.vaultPath
+			break
+		}
+	}
+	if vaultPath == "" {
+		return nil
+	}
+
+	synthCfg := llm.ReadSynthesisConfig(filepath.Join(vaultPath, deweyWorkspaceDir))
+	if synthCfg.Model == "" {
+		if synthCfg.Provider != "" {
+			logger.Warn("synthesis provider is set but synthesis.model is empty; compile/curate will use prompt mode",
+				"provider", synthCfg.Provider)
+		}
+		return nil
+	}
+
+	synth, err := llm.NewSynthesizerFromConfig(synthCfg)
+	if err != nil {
+		logger.Warn("synthesis provider unavailable; compile/curate will use prompt mode",
+			"provider", synthCfg.Provider, "err", err)
+		return nil
+	}
+
+	logger.Info("synthesis provider configured for MCP tools",
+		"provider", synthCfg.Provider, "model", synthCfg.Model)
+	return synth
+}
+
 // backgroundCuration runs continuous curation for configured knowledge stores.
 // It waits for background indexing to complete (indexReady), then runs
 // incremental curation for each store at its configured interval.
@@ -793,8 +842,8 @@ func indexVault(vc *vault.Client) error {
 //   - Uses TryLock on the shared indexMu to avoid blocking MCP tools.
 //     If the mutex is held (indexing or another curation in progress),
 //     the cycle is skipped and retried at the next interval (FR-020).
-//   - Creates an OllamaSynthesizer for LLM extraction. If Ollama is
-//     unavailable, logs a warning and returns — no curation without LLM.
+//   - Uses the synthesizer built at server startup. If it is nil or
+//     unavailable, logs and returns — no curation without LLM.
 //   - Errors during curation are logged but never crash the goroutine.
 //     The goroutine continues polling until context cancellation (FR-021).
 //   - Respects context cancellation for clean shutdown (FR-017).
@@ -807,6 +856,7 @@ func backgroundCuration(
 	embedder embed.Embedder,
 	vaultPath string,
 	maxChunkChars int,
+	synth llm.Synthesizer,
 ) {
 	logger.Info("background curation starting", "stores", len(stores))
 
@@ -822,33 +872,19 @@ func backgroundCuration(
 		}
 	}
 
-	// Create synthesizer for background curation from config.
-	// If no provider is configured or unavailable, skip background curation.
-	deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
-	synthCfg := llm.ReadSynthesisConfig(deweyDir)
-	if synthCfg.Provider == "openai-compatible" {
-		// FR-024: the synthesis startup construction site warns about
-		// cleartext credentials and ignored config.yaml keys, mirroring
-		// the embedding path in createIndexEmbedder.
-		logGatewayCredentialWarnings(openaicompat.CapabilitySynthesis, synthCfg.Endpoint, llm.HasAPIKeyField(deweyDir))
-	}
-	if synthCfg.Model == "" {
+	// Reuse the synthesizer built at server startup. If no provider is
+	// configured or it is unavailable, skip background curation.
+	if synth == nil {
 		logger.Info("background curation skipped — no synthesis model configured")
-		return
-	}
-
-	synth, synthErr := llm.NewSynthesizerFromConfig(synthCfg)
-	if synthErr != nil {
-		logger.Warn("background curation skipped — synthesis provider error", "err", synthErr)
 		return
 	}
 	if !synth.Available() {
 		logger.Info("background curation skipped — synthesis model not available",
-			"provider", synthCfg.Provider, "model", synthCfg.Model)
+			"model", synth.ModelID())
 		return
 	}
 
-	logger.Info("background curation ready", "provider", synthCfg.Provider, "model", synthCfg.Model)
+	logger.Info("background curation ready", "model", synth.ModelID())
 
 	// Create per-store tickers with configurable intervals (FR-018).
 	// Each store runs on its own schedule.
@@ -1166,9 +1202,12 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 		hash := sha256.Sum256([]byte(body))
 		contentHash := fmt.Sprintf("%x", hash[:8])
 
-		tier := fm.Tier
-		if tier == "" {
-			tier = "draft"
+		// A learning file is an untrusted artifact: never let it grant its own
+		// trust tier. Promotion happens only through the review gate.
+		tier := "draft"
+		if fm.Tier != "" && fm.Tier != "draft" {
+			logger.Warn("ignoring non-draft tier from learning file",
+				"identity", fm.Identity, "tier", fm.Tier)
 		}
 
 		page := &store.Page{

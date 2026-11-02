@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -705,5 +706,34 @@ func TestParseExtractionResponse_ConfidenceValidation(t *testing.T) {
 		if files[0].Confidence != tt.wantConf {
 			t.Errorf("confidence %q → %q, want %q", tt.confidence, files[0].Confidence, tt.wantConf)
 		}
+	}
+}
+
+func TestParseExtractionResponse_RejectsUnsafeTags(t *testing.T) {
+	for _, tag := range []string{"../../etc/passwd", "evil/../x", "tag\ninjected: yes", "."} {
+		response := `[{"tag":` + strconv.Quote(tag) + `,"category":"context","confidence":"high","content":"x"}]`
+		files, err := ParseExtractionResponse(response)
+		if err != nil {
+			t.Fatalf("ParseExtractionResponse(%q): %v", tag, err)
+		}
+		if len(files) != 0 {
+			t.Errorf("tag %q accepted, want rejected", tag)
+		}
+	}
+}
+
+func TestWriteKnowledgeFile_RejectsUnsafeTag(t *testing.T) {
+	dir := t.TempDir()
+	_, err := WriteKnowledgeFile(KnowledgeFile{
+		Tag:        "../../escape",
+		Category:   "decision",
+		Confidence: "high",
+		Content:    "x",
+	}, dir, 1)
+	if err == nil {
+		t.Fatal("expected error for unsafe tag")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "..", "escape-1.md")); !os.IsNotExist(statErr) {
+		t.Errorf("unsafe tag created a file outside the store")
 	}
 }

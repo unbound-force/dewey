@@ -111,7 +111,38 @@ add a network call to server startup.
 - **GIVEN** no synthesis model configured
 - **WHEN** the server starts
 - **THEN** the synthesizer passed to the tools MUST be nil
-- **AND** `compile`/`curate` MUST behave exactly as before
+- **AND** `compile`/`curate` MUST return their prompt-mode payloads
+
+#### Scenario: Partial compilation reports failures
+
+- **GIVEN** a synthesizer that succeeds for one topic and fails for another
+- **WHEN** `compile` is called
+- **THEN** the result MUST have `status: "partial"`, an `IsError` result,
+  and a `failed` array naming each failed topic
+- **AND** successful topics MUST be written and indexed
+- **AND** a failed topic's existing article and tier MUST be retained
+
+#### Scenario: Total compilation failure changes nothing
+
+- **GIVEN** a synthesizer that fails for every topic
+- **WHEN** `compile` is called
+- **THEN** the result MUST have `status: "failed"` and `IsError`
+- **AND** no existing compiled page or file MUST be deleted or replaced
+
+#### Scenario: Provenance and tier preservation
+
+- **GIVEN** a compiled article with tier `validated`
+- **WHEN** the article is recompiled
+- **THEN** its tier MUST remain `validated`
+- **AND** the article frontmatter, page properties, and result MUST
+  record the synthesizing model as `compiled_by`
+
+#### Scenario: Partial curation reports failures
+
+- **GIVEN** multiple configured stores and one store's curation fails
+- **WHEN** `curate` is called
+- **THEN** the result MUST have `status: "partial"` and `IsError`
+- **AND** MUST include each store's result and error
 
 ### Requirement: Prompt-Mode Fallback Compatibility
 
@@ -145,6 +176,13 @@ calling agents can synthesize and call `store_compiled`.
 - **THEN** the result MUST contain `status: "prompt_ready"` and each
   store's `extraction_prompt`
 - **AND** no curated file MUST be written
+
+#### Scenario: Prompt mode preserves artifacts
+
+- **GIVEN** existing compiled articles and a server with no synthesizer
+- **WHEN** `compile` is called
+- **THEN** it MUST return `prompts_ready`
+- **AND** MUST NOT delete existing compiled pages or files
 
 ### Requirement: Compile and Index Mutual Exclusion
 
@@ -222,6 +260,14 @@ validation error. Duplicate names MUST be deduplicated.
 - **WHEN** `promote` is called with all three in `pages`
 - **THEN** all three MUST become `validated`
 - **AND** the result MUST list each promoted page and the total
+
+#### Scenario: Batch write failure
+
+- **GIVEN** a batch that passes validation
+- **WHEN** the tier update fails partway through
+- **THEN** the transaction MUST roll back
+- **AND** no page's tier MUST change
+- **AND** the result MUST report the failure
 
 #### Scenario: Batch with an invalid page
 
@@ -304,9 +350,11 @@ the supported providers including `openai-compatible`.
 ### Requirement: Backward Compatibility
 
 The change MUST NOT alter the contract or output of the 37 inherited
-graphthulhu MCP tools, MUST NOT add module dependencies or CGO, MUST
-NOT change the database schema, and MUST NOT change existing CLI
-`compile`/`curate` behavior.
+graphthulhu MCP tools, MUST NOT add module dependencies or CGO, and MUST
+NOT change the database schema. Existing CLI `compile`/`curate` success
+paths and payloads MUST remain compatible; the shared handlers gain the
+same non-destructive prompt mode and partial/failed reporting described
+above.
 
 #### Scenario: Inherited tools unchanged
 

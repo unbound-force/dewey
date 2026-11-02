@@ -338,7 +338,12 @@ type LintInput struct {
 // --- Promote tool inputs ---
 
 // PromoteInput is the input for the dewey_promote MCP tool.
+// Provide either Page for a single promotion or Pages for a batch, not both.
 type PromoteInput struct {
-	// Page is the page name to promote from draft to validated.
-	Page string `json:"page" jsonschema:"Page name to promote from draft to validated tier (e.g., 'learning/authentication-20260502T143022-alice'). A bare name without '/' is resolved against compiled/ then learning/."`
+	// Page is a single page name to promote from draft to validated.
+	Page string `json:"page,omitempty" jsonschema:"Page name to promote from draft to validated tier. Accepts a full name, a bare tag resolved against learning/ and compiled/, or a case-insensitive match. Provide either page or pages, not both."`
+
+	// Pages is a batch of page names to promote. All pages are validated
+	// before any tier changes; if one fails, none are promoted.
+	Pages []string `json:"pages,omitempty" jsonschema:"Batch of page names to promote. All pages are validated before any tier changes; if one fails, none are promoted. Provide either page or pages, not both."`
 }

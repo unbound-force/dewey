@@ -1,9 +1,12 @@
 package llm
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/unbound-force/dewey/v3/embed"
 	"gopkg.in/yaml.v3"
@@ -48,41 +51,54 @@ func globalConfigDir() string {
 	return filepath.Join(home, ".config", "dewey")
 }
 
+// synthesisTimeout decodes synthesis.timeout from either a duration string
+// (for example "300s") or an integer number of seconds. Supporting both avoids
+// the yaml.v3 footgun where `timeout: 300` fails to unmarshal (which would
+// discard the entire config file).
+type synthesisTimeout time.Duration
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (t *synthesisTimeout) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		if value.Tag == "!!int" {
+			secs, err := strconv.Atoi(value.Value)
+			if err != nil {
+				return fmt.Errorf("invalid synthesis.timeout %q: %w", value.Value, err)
+			}
+			if secs < 0 {
+				return fmt.Errorf("synthesis.timeout must not be negative")
+			}
+			*t = synthesisTimeout(time.Duration(secs) * time.Second)
+			return nil
+		}
+		d, err := time.ParseDuration(value.Value)
+		if err != nil {
+			return fmt.Errorf("invalid synthesis.timeout %q: %w", value.Value, err)
+		}
+		*t = synthesisTimeout(d)
+		return nil
+	default:
+		return fmt.Errorf("synthesis.timeout must be a duration string or integer seconds")
+	}
+}
+
 // configFile represents the structure of config.yaml
 // relevant to synthesis configuration.
 type configFile struct {
 	Synthesis struct {
-		Provider string `yaml:"provider"`
-		Model    string `yaml:"model"`
-		Endpoint string `yaml:"endpoint"`
-		Project  string `yaml:"project"`
-		Region   string `yaml:"region"`
-		// APIKey is parsed only to warn that it is ignored: keys are
-		// environment-only (FR-006, FR-024). It never reaches ProviderConfig.
-		APIKey string `yaml:"api_key"`
+		Provider  string           `yaml:"provider"`
+		Model     string           `yaml:"model"`
+		Endpoint  string           `yaml:"endpoint"`
+		Project   string           `yaml:"project"`
+		Region    string           `yaml:"region"`
+		APIKey    string           `yaml:"api_key"`
+		Timeout   synthesisTimeout `yaml:"timeout"`
+		MaxTokens int              `yaml:"max_tokens"`
 	} `yaml:"synthesis"`
 
 	// Legacy field for backward compatibility.
 	CompileModel string `yaml:"compile_model"`
-}
-
-// HasAPIKeyField reports whether a synthesis.api_key field appears in the
-// per-vault or global config.yaml. The field is ignored by design
-// (FR-006); startup and dewey doctor warn about it (FR-024).
-//
-// This same-schema probe is deliberately mirrored in
-// embed.HasAPIKeyField rather than shared through a common package:
-// spec 016's configuration-independence decision keeps llm and embed
-// decoupled, and each function reads a different YAML section. The
-// duplicated config read is the accepted interim trade-off.
-func HasAPIKeyField(deweyDir string) bool {
-	if cfg := readConfigFile(deweyDir); cfg != nil && cfg.Synthesis.APIKey != "" {
-		return true
-	}
-	if cfg := readConfigFile(globalConfigDir()); cfg != nil && cfg.Synthesis.APIKey != "" {
-		return true
-	}
-	return false
 }
 
 // readConfigFile attempts to parse a config.yaml at the given directory.
@@ -120,13 +136,16 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 
 	// Check per-vault synthesis section.
 	if cfg != nil && (cfg.Synthesis.Provider != "" || cfg.Synthesis.Model != "") {
-		return resolveGatewaySynthesisConfig(ProviderConfig{
-			Provider: cfg.Synthesis.Provider,
-			Model:    cfg.Synthesis.Model,
-			Endpoint: cfg.Synthesis.Endpoint,
-			Project:  cfg.Synthesis.Project,
-			Region:   cfg.Synthesis.Region,
-		})
+		return ProviderConfig{
+			Provider:  cfg.Synthesis.Provider,
+			Model:     cfg.Synthesis.Model,
+			Endpoint:  cfg.Synthesis.Endpoint,
+			Project:   cfg.Synthesis.Project,
+			Region:    cfg.Synthesis.Region,
+			APIKey:    cfg.Synthesis.APIKey,
+			Timeout:   time.Duration(cfg.Synthesis.Timeout),
+			MaxTokens: cfg.Synthesis.MaxTokens,
+		}
 	}
 
 	// Check per-vault legacy compile_model.
@@ -141,27 +160,19 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 	// Check global config.
 	globalCfg := readConfigFile(globalConfigDir())
 	if globalCfg != nil && (globalCfg.Synthesis.Provider != "" || globalCfg.Synthesis.Model != "") {
-		return resolveGatewaySynthesisConfig(ProviderConfig{
-			Provider: globalCfg.Synthesis.Provider,
-			Model:    globalCfg.Synthesis.Model,
-			Endpoint: globalCfg.Synthesis.Endpoint,
-			Project:  globalCfg.Synthesis.Project,
-			Region:   globalCfg.Synthesis.Region,
-		})
+		return ProviderConfig{
+			Provider:  globalCfg.Synthesis.Provider,
+			Model:     globalCfg.Synthesis.Model,
+			Endpoint:  globalCfg.Synthesis.Endpoint,
+			Project:   globalCfg.Synthesis.Project,
+			Region:    globalCfg.Synthesis.Region,
+			APIKey:    globalCfg.Synthesis.APIKey,
+			Timeout:   time.Duration(globalCfg.Synthesis.Timeout),
+			MaxTokens: globalCfg.Synthesis.MaxTokens,
+		}
 	}
 
 	return synthConfigFromEnv()
-}
-
-// resolveGatewaySynthesisConfig applies the openai-compatible endpoint
-// fallback: when config.yaml leaves synthesis.endpoint empty, the
-// DEWEY_SYNTHESIS_ENDPOINT environment variable is consulted. For a
-// gateway, OLLAMA_HOST and the localhost default never apply (FR-022).
-func resolveGatewaySynthesisConfig(cfg ProviderConfig) ProviderConfig {
-	if cfg.Provider == "openai-compatible" && strings.TrimSpace(cfg.Endpoint) == "" {
-		cfg.Endpoint = os.Getenv("DEWEY_SYNTHESIS_ENDPOINT")
-	}
-	return cfg
 }
 
 // synthConfigFromEnv builds a synthesis config from environment variables.

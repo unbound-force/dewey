@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -281,6 +282,167 @@ func (s *Store) getPageWhere(where, name string) (*Page, error) {
 	p.Tier = tier.String
 	p.Category = category.String
 	return p, nil
+}
+
+// FindPage resolves a page name using a deterministic ladder so callers can
+// promote compiled articles and learnings by bare tag as well as by full page
+// name. The resolution order is:
+//
+//  1. exact name match;
+//  2. case-insensitive name match;
+//  3. for bare names, the compiled/{name} and learning/{name} namespaces,
+//     plus any knowledge/{store}/{name} page;
+//  4. source_id/source_doc_id match (for "namespace/doc-id" input, that pair;
+//     for bare input, the compiled and learning sources).
+//
+// The first tier with exactly one match wins. More than one match in a tier
+// returns an ambiguity error listing the candidates. A missing page returns
+// (nil, nil), matching GetPage. Store query failures are returned with
+// context.
+func (s *Store) FindPage(name string) (*Page, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("page name is required")
+	}
+
+	// Tier 1: exact match.
+	page, err := s.GetPage(name)
+	if err != nil || page != nil {
+		return page, err
+	}
+
+	// Tier 2: case-insensitive exact match.
+	pages, err := s.findPages(`WHERE name = ? COLLATE NOCASE`, name)
+	if err != nil {
+		return nil, err
+	}
+	if len(pages) == 1 {
+		return pages[0], nil
+	}
+	if len(pages) > 1 {
+		return nil, ambiguousPageError(name, pages)
+	}
+
+	// Tier 3: namespace candidates for bare names.
+	if !strings.Contains(name, "/") {
+		page, err := s.findNamespacePage(name)
+		if err != nil || page != nil {
+			return page, err
+		}
+	}
+
+	// Tier 4: source_id/source_doc_id match.
+	return s.findSourceDocPage(name)
+}
+
+// findNamespacePage resolves a bare name against the compiled/ and learning/
+// namespaces and any knowledge/{store}/{name} suffix.
+func (s *Store) findNamespacePage(name string) (*Page, error) {
+	var candidates []*Page
+	for _, ns := range []string{"compiled", "learning"} {
+		found, err := s.findPages(`WHERE name = ? COLLATE NOCASE`, ns+"/"+name)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, found...)
+	}
+	knowledge, err := s.findPages(`WHERE lower(name) LIKE 'knowledge/%'`)
+	if err != nil {
+		return nil, err
+	}
+	candidates = dedupePages(append(candidates, filterPagesBySuffix(knowledge, name)...))
+
+	switch len(candidates) {
+	case 0:
+		return nil, nil
+	case 1:
+		return candidates[0], nil
+	default:
+		return nil, ambiguousPageError(name, candidates)
+	}
+}
+
+// findSourceDocPage resolves a name via source_id/source_doc_id metadata.
+func (s *Store) findSourceDocPage(name string) (*Page, error) {
+	var candidates []*Page
+	var err error
+	if source, doc, ok := strings.Cut(name, "/"); ok {
+		candidates, err = s.findPages(
+			`WHERE source_id = ? COLLATE NOCASE AND source_doc_id = ? COLLATE NOCASE`, source, doc)
+	} else {
+		candidates, err = s.findPages(
+			`WHERE source_doc_id = ? COLLATE NOCASE AND source_id IN ('compiled', 'learning')`, name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	candidates = dedupePages(candidates)
+	switch len(candidates) {
+	case 0:
+		return nil, nil
+	case 1:
+		return candidates[0], nil
+	default:
+		return nil, ambiguousPageError(name, candidates)
+	}
+}
+
+// findPages runs a page query with the given WHERE clause and arguments.
+// The clause is always an internal constant; user input is passed as a
+// parameter.
+func (s *Store) findPages(where string, args ...any) ([]*Page, error) {
+	rows, err := s.db.Query(`
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
+		FROM pages `+where, args...)
+	if err != nil {
+		return nil, fmt.Errorf("find pages: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanPages(rows)
+}
+
+// filterPagesBySuffix keeps pages whose name ends with "/<suffix>",
+// case-insensitively. It is used for knowledge/{store}/{name} resolution
+// instead of a SQL LIKE pattern so that "%" and "_" in the requested name
+// are treated literally.
+func filterPagesBySuffix(pages []*Page, suffix string) []*Page {
+	needle := "/" + strings.ToLower(suffix)
+	out := make([]*Page, 0, len(pages))
+	for _, p := range pages {
+		if strings.HasSuffix(strings.ToLower(p.Name), needle) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// dedupePages removes duplicate page names while preserving order.
+func dedupePages(pages []*Page) []*Page {
+	if len(pages) < 2 {
+		return pages
+	}
+	seen := make(map[string]struct{}, len(pages))
+	out := make([]*Page, 0, len(pages))
+	for _, p := range pages {
+		if _, ok := seen[p.Name]; ok {
+			continue
+		}
+		seen[p.Name] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// ambiguousPageError builds an error naming the candidate pages in sorted
+// order so repeated calls are deterministic.
+func ambiguousPageError(name string, pages []*Page) error {
+	names := make([]string, 0, len(pages))
+	for _, p := range pages {
+		names = append(names, p.Name)
+	}
+	sort.Strings(names)
+	return fmt.Errorf("page name %q is ambiguous; matches: %s", name, strings.Join(names, ", "))
 }
 
 // ListPages returns all pages in the store, ordered alphabetically by name.
@@ -907,6 +1069,9 @@ func (s *Store) PagesWithoutEmbeddings() ([]*Page, error) {
 // UpdatePageTier updates a page's tier column and refreshes the updated_at
 // timestamp. Returns an error if the page doesn't exist or the update fails.
 // Used by the promote MCP tool to transition pages from draft to validated (FR-023).
+// UpdatePageTier updates a page's tier unconditionally. Callers promoting
+// agent-generated content should use PromotePageTier/PromotePagesTiers, which
+// enforce the draft → validated transition atomically.
 func (s *Store) UpdatePageTier(name, tier string) error {
 	now := time.Now().UnixMilli()
 	result, err := s.db.Exec(`
@@ -923,6 +1088,55 @@ func (s *Store) UpdatePageTier(name, tier string) error {
 	}
 	if rows == 0 {
 		return fmt.Errorf("page not found: %s", name)
+	}
+	return nil
+}
+
+// PromotePageTier atomically transitions a page from draft to validated.
+//
+// The conditional UPDATE closes the read-then-write window at the promotion
+// trust boundary: if the page was deleted or re-tiered between resolution and
+// promotion, no row changes and an error is returned. Callers must still
+// resolve the page first so they can report which name was requested.
+func (s *Store) PromotePageTier(name string) error {
+	return s.PromotePagesTiers([]string{name})
+}
+
+// PromotePagesTiers atomically transitions every named page from draft to
+// validated in a single transaction. If any page is missing or no longer a
+// draft, the transaction rolls back and no page is changed. This gives batch
+// promotion an all-or-nothing guarantee at the trust boundary.
+func (s *Store) PromotePagesTiers(names []string) error {
+	if len(names) == 0 {
+		return fmt.Errorf("no pages to promote")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin promote transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UnixMilli()
+	for _, name := range names {
+		result, err := tx.Exec(`
+			UPDATE pages SET tier = 'validated', updated_at = ? WHERE name = ? AND tier = 'draft'`,
+			now, name,
+		)
+		if err != nil {
+			return fmt.Errorf("promote page tier %q: %w", name, err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("check promote result for %q: %w", name, err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("page %q is no longer a draft; it may have been retiered or removed", name)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit promote transaction: %w", err)
 	}
 	return nil
 }

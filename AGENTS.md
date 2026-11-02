@@ -303,7 +303,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey add` | Append a block to a named Logseq page |
 | `dewey compile` | Synthesize stored learnings into compiled knowledge articles |
 | `dewey lint` | Scan the knowledge base for quality issues (stale decisions, embedding gaps, contradictions, knowledge store quality) |
-| `dewey promote` | Promote a page from `draft` tier to `validated` |
+| `dewey promote` | Promote one or more pages from `draft` to `validated` (batch is all-or-nothing; bare tags resolve against `learning/` and `compiled/`) |
 | `dewey curate` | Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores |
 | `dewey artifacts` | Plan and publish stranded knowledge artifacts to git behind a human gate |
 
@@ -358,6 +358,7 @@ artifacts/           # Knowledge-artifact publishing: plan/sync sweep, screening
 - **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
 - **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart). Only triggered when the embedding provider is `ollama`.
 - **Pluggable providers**: Both `Embedder` and `Synthesizer` interfaces support multiple backends (ollama, vertex, openai-compatible). Configured via `config.yaml` `embedding` and `synthesis` sections. Factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()` centralize construction. The `openai-compatible` provider speaks the OpenAI v1 wire protocol through the shared `openaicompat/` transport (normalization, environment-only credentials, 429 retry, redacted errors, cached `/models` probe). Backward compatible — existing configs and env vars continue to work.
+- **Server-side synthesis**: `executeServe` builds one synthesizer and passes it through `WithSynthesizer` to `compile` and `curate` (and background curation). Compile shares the pipeline index mutex with indexing and curation. `/dewey-distill` drives lint → inventory → scope gate → compile/curate → review gate → batch promote entirely through MCP tools, because the running server owns the store lock.
 - **Vertex AI rate limiting**: Both `VertexEmbedder` and `VertexSynthesizer` retry on HTTP 429 with exponential backoff (base 1s, max 60s, up to 5 attempts). Respects the `Retry-After` header when present. Context cancellation is honored between retries. Retries are logged at warn level via `charmbracelet/log`.
 
 ### Provider Configuration
@@ -392,7 +393,20 @@ synthesis:
   endpoint: https://gateway.example/v1
 ```
 
-Gateway credentials are environment-only and never read from `config.yaml`: `DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY`, then `DEWEY_API_KEY`, then `OPENROUTER_API_KEY` only when the endpoint host is exactly `openrouter.ai`. An empty value counts as unset and no key is sent when none resolves. An `api_key` field in `config.yaml` is ignored and warned about at startup and in `dewey doctor`, which also warns when a resolved key would transit `http://` to a non-loopback host. Endpoint precedence keeps the documented asymmetry: embedding is env-first, synthesis is config-first; `OLLAMA_HOST` and the localhost default never apply to gateways.
+Embedding gateway credentials are environment-only and never read from `config.yaml`: `DEWEY_EMBEDDING_API_KEY`, then `DEWEY_API_KEY`, then `OPENROUTER_API_KEY` only when the endpoint host is exactly `openrouter.ai`. An empty value counts as unset and no key is sent when none resolves. An `api_key` field under `embedding:` in `config.yaml` is ignored and warned about at startup and in `dewey doctor`, which also warns when a resolved key would transit `http://` to a non-loopback host. Endpoint precedence keeps the documented asymmetry: embedding is env-first, synthesis is config-first; `OLLAMA_HOST` and the localhost default never apply to gateways.
+
+An OpenAI-compatible provider (for example enmaas) performs synthesis server-side in the running MCP server:
+
+```yaml
+synthesis:
+  provider: openai-compatible
+  endpoint: https://api.enmaas.devshift.net/v1
+  model: rits/zai-org/glm-5-3
+  timeout: 300s       # optional
+  max_tokens: 16000   # optional
+```
+
+The synthesis API key resolves from `DEWEY_SYNTHESIS_API_KEY` first, then `synthesis.api_key`. It is never logged or committed; provider error bodies are scrubbed of the key. `dewey serve` builds the synthesizer once at startup and passes it to the `compile` and `curate` MCP tools (and background curation). HTTP 429 retries use the Vertex backoff policy, and `finish_reason: "length"` is reported as a truncation error. When no provider is configured or construction fails, both tools keep the prompt-mode fallback.
 
 Vertex providers use `golang.org/x/oauth2/google` application-default credentials. If no provider is specified, defaults to Ollama. The `region` field accepts any GCP region (e.g., `us-east5`, `us-central1`) or `global` to route requests to the nearest available region.
 
@@ -410,7 +424,7 @@ When `OLLAMA_HOST` is set without a URL scheme (e.g., `0.0.0.0:11434`), `http://
 3. `OLLAMA_HOST` env var (ecosystem-standard fallback)
 4. `http://localhost:11434` (default)
 
-Note: Unlike embedding (where the env var overrides config.yaml), the synthesis path gives `config.yaml` highest precedence. Env vars are consulted only when `config.yaml` does not specify a `synthesis` section. This asymmetry exists because `ReadSynthesisConfig()` checks config file values first and returns early, while the env var fallback chain (`ResolveSynthesisEndpoint()`) is only consulted for the legacy `compile_model` path and the env-only fallback.
+Note: Unlike embedding (where the env var overrides config.yaml), the synthesis path gives `config.yaml` highest precedence for provider/model/endpoint. Env vars are consulted only when `config.yaml` does not specify a `synthesis` section. This asymmetry exists because `ReadSynthesisConfig()` checks config file values first and returns early, while the env var fallback chain (`ResolveSynthesisEndpoint()`) is only consulted for the legacy `compile_model` path and the env-only fallback. The OpenAI-compatible **API key** is the exception: `DEWEY_SYNTHESIS_API_KEY` overrides `synthesis.api_key`.
 
 When `OLLAMA_HOST` or `DEWEY_SYNTHESIS_ENDPOINT` is set without a URL scheme (e.g., `0.0.0.0:11434`), `http://` is prepended automatically.
 
@@ -640,10 +654,12 @@ specs/
 - Go 1.25 (per `go.mod`) + stdlib `net/http`, `encoding/json`, `net/url`, `math/rand/v2`, `sync`, `time` (OpenAI-compatible transport; no vendor SDK), `github.com/charmbracelet/log` (logging) (017-openai-compatible-providers)
 - N/A (no schema changes — vectors and completions flow through existing storage and tool paths) (017-openai-compatible-providers)
 - Go 1.25 (per `go.mod`) + stdlib git plumbing via `os/exec` (worktrees, stashes, commit surgery), `github.com/unbound-force/dewey/v3/sanitize` (credential screening), `github.com/spf13/cobra` (CLI — `dewey artifacts plan|sync` commands) (dewey-publish)
+- Go 1.25 (per `go.mod`) + `net/http` (OpenAI-compatible chat completions), `github.com/modelcontextprotocol/go-sdk` (MCP tools), `github.com/unbound-force/dewey/v3/llm` (provider factory), `modernc.org/sqlite` (page resolution), `github.com/spf13/cobra` (CLI — multi-page `dewey promote`) (dewey-distill)
 
 ## Recent Changes
 - 017-openai-compatible-providers: Added `openaicompat/` shared transport, `OpenAICompatibleEmbedder`, `OpenAICompatibleSynthesizer`, environment-only API-key chain (`DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY` → `DEWEY_API_KEY` → `OPENROUTER_API_KEY` on the exact `openrouter.ai` host), 429 retry parity with Vertex, cached `/models` probe, provider-aware doctor/startup/index warnings, and `UnavailableReasoner` capability interfaces on both providers
 - mcp-internal-store-access (OpenSpec): MCP read tools (get_page, get_page_blocks_tree, get_block, list_pages, search, find_by_tag) now serve a unified live view of vault files and persistent store pages via vault read bridge (RLock snapshot → live store read-through, vault precedence, no caching); promote resolves bare names against compiled/ then learning/ and distinguishes lookup errors from absence; CLI promote reports lock-holder PID/command; shared persistent-storage error with lock hint across tools (dewey #90, #91)
+- dewey-distill (OpenSpec): Added the `openai-compatible` synthesis provider (`synthesis.api_key`/`DEWEY_SYNTHESIS_API_KEY`, configurable timeout and max tokens, 429 retry, truncation detection), server-side `compile`/`curate` wiring via `WithSynthesizer`, shared index mutex for compile, batch `promote` with namespace-aware page resolution (`store.FindPage`, subsumes #91), `/dewey-distill` slash command, and doctor diagnostics for the new provider
 - dewey-publish (OpenSpec): Added `artifacts` package (plan/sync sweep of `.uf/dewey/{learnings,compiled,knowledge}` from working tree, stashes, unpushed commits; credential screening; bounded gitignore fix), `dewey artifacts plan|sync` CLI commands, `/dewey-publish` slash command (non-destructive, mandatory human approval gate)
 - 016-pluggable-providers: Added Vertex AI embedding and synthesis providers, `store_compiled` MCP tool, global config fallback (`~/.config/dewey/config.yaml`), factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()`, `golang.org/x/oauth2/google` dependency
 - learning-identity-collision-fix (OpenSpec): Changed learning identity format from `{tag}-{sequence}` to `{tag}-{YYYYMMDDTHHMMSS}-{author}` with three-tier author resolution (`DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`), sub-second collision avoidance via `O_CREATE|O_EXCL` with suffix fallback, removed `NextLearningSequence` from store, backward-compatible re-ingestion of old-format files

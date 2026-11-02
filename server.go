@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/backend"
 	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/tools"
 	"github.com/unbound-force/dewey/v3/vault"
@@ -22,6 +23,7 @@ type serverConfig struct {
 	vaultPath     string
 	indexReady    *atomic.Bool
 	indexMutex    *sync.Mutex
+	synth         llm.Synthesizer
 	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
@@ -55,6 +57,13 @@ func WithIndexReady(ready *atomic.Bool) serverOption {
 // and the index/reindex MCP tools to prevent concurrent indexing operations.
 func WithIndexMutex(mu *sync.Mutex) serverOption {
 	return func(c *serverConfig) { c.indexMutex = mu }
+}
+
+// WithSynthesizer sets the synthesis provider for compile and curate. When
+// nil (the default), those tools return prompt-mode payloads for the calling
+// agent to complete.
+func WithSynthesizer(s llm.Synthesizer) serverOption {
+	return func(c *serverConfig) { c.synth = s }
 }
 
 // WithMaxChunkChars sets the maximum character count per embedding chunk.
@@ -124,16 +133,15 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 		toolCount += registerIndexingTools(srv, indexing)
 
 		// Knowledge compilation tools (013-knowledge-compile, T032/T033).
-		// MCP path: pass nil synthesizer — the compile tool returns clusters
-		// with synthesis prompts, and the calling agent performs synthesis.
-		// This avoids requiring a local LLM for MCP server operation.
-		compile := tools.NewCompile(cfg.store, cfg.embedder, nil, cfg.vaultPath, cfg.maxChunkChars)
+		// The synthesizer is supplied by executeServe when a provider is
+		// configured; nil keeps the prompt-mode fallback.
+		compile := tools.NewCompile(cfg.store, cfg.embedder, cfg.synth, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars)
 		toolCount += registerCompileTools(srv, compile)
 
 		// Knowledge curation tools (015-curated-knowledge-stores, T022).
-		// MCP path: pass nil synthesizer — the curate tool returns extraction
-		// prompts, and the calling agent performs synthesis externally.
-		curateTool := tools.NewCurate(cfg.store, cfg.embedder, nil, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars)
+		// The synthesizer is supplied by executeServe when a provider is
+		// configured; nil keeps the prompt-mode fallback.
+		curateTool := tools.NewCurate(cfg.store, cfg.embedder, cfg.synth, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars)
 		toolCount += registerCurateTools(srv, curateTool)
 
 		lint := tools.NewLint(cfg.store, cfg.embedder, cfg.vaultPath, cfg.maxChunkChars)
@@ -520,7 +528,7 @@ func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
 func registerPromoteTools(srv *mcp.Server, promote *tools.Promote) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "promote",
-		Description: "Promote a draft learning or compiled article to validated status after human review. Accepts a full name (compiled/... or learning/...) or a bare name, resolved against compiled/ then learning/.",
+		Description: "Promote draft learnings or compiled articles to validated status after human review. Accepts page for one page or pages for a batch; bare tags resolve against learning/, compiled/, and knowledge/*. Batch promotion is all-or-nothing.",
 	}, promote.Promote)
 
 	return 1

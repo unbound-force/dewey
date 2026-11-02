@@ -1,20 +1,19 @@
 // Package llm provides interfaces and implementations for generating
 // natural language text from structured prompts. Implementations include
-// OllamaSynthesizer (local inference via Ollama HTTP API) and
+// OllamaSynthesizer (local inference via Ollama HTTP API),
 // VertexSynthesizer (Google Vertex AI rawPredict API with Anthropic
-// Messages format).
+// Messages format), and OpenAICompatibleSynthesizer (any provider exposing
+// the OpenAI chat-completions contract). Use NewSynthesizerFromConfig to
+// select one from configuration.
 //
 // Design decision: Separate from embed.Embedder because embedding and
 // synthesis use different API endpoints, different models, and have
 // different error modes. Single Responsibility Principle.
 //
-// This package imports openaicompat (a Dewey leaf) for the
-// OpenAI-compatible provider. That knowingly extends the
-// specs/013-knowledge-compile leaf-dependency invariant, as already done
-// by spec 016's provider-config consolidation; the divergence is
-// recorded in specs/017 research.md R13. Otherwise only stdlib,
-// charmbracelet/log, golang.org/x/oauth2, embed (for the shared Ollama
-// default endpoint), and gopkg.in/yaml.v3 are imported.
+// This package is a leaf dependency — it MUST NOT import any other Dewey
+// packages except embed (for the default Ollama endpoint). Only stdlib,
+// charmbracelet/log, golang.org/x/oauth2, and
+// gopkg.in/yaml.v3 are allowed.
 package llm
 
 import (

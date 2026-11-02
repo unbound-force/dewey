@@ -55,7 +55,7 @@ type Cluster struct {
 // generate articles. When nil, it returns clusters with synthesis prompts
 // as structured output for the calling agent to perform synthesis (D4).
 type Compile struct {
-	mu            sync.Mutex
+	mu            *sync.Mutex
 	store         *store.Store
 	embedder      embed.Embedder
 	synth         llm.Synthesizer
@@ -70,10 +70,15 @@ type Compile struct {
 //   - nil synthesizer: returns clusters + prompts without LLM synthesis
 //
 // vaultPath is the vault root directory (not the .uf/dewey/ workspace).
+// mu is the pipeline-wide index mutex shared with indexing and curation; pass
+// nil to create a private mutex (used by CLI invocations and isolated tests).
 // The maxChunkChars parameter controls the maximum character length per
 // embedding chunk; pass 0 to use embed.DefaultMaxChunkChars.
-func NewCompile(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPath string, maxChunkChars int) *Compile {
-	return &Compile{store: s, embedder: e, synth: synth, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
+func NewCompile(s *store.Store, e embed.Embedder, synth llm.Synthesizer, vaultPath string, mu *sync.Mutex, maxChunkChars int) *Compile {
+	if mu == nil {
+		mu = &sync.Mutex{}
+	}
+	return &Compile{mu: mu, store: s, embedder: e, synth: synth, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
 }
 
 // effectiveMaxChunkChars returns the configured max chunk chars, falling back
@@ -110,10 +115,11 @@ func (c *Compile) Compile(ctx context.Context, req *mcp.CallToolRequest, input t
 		return errorResult(persistentStorageError("compile").Error()), nil, nil
 	}
 
-	// Non-blocking mutual exclusion: if another compile is running,
-	// return immediately with an error rather than queuing.
+	// Non-blocking mutual exclusion on the pipeline-wide index mutex: if an
+	// index, curation, or another compile is running, return immediately
+	// rather than queuing.
 	if !c.mu.TryLock() {
-		return errorResult("compilation already in progress"), nil, nil
+		return errorResult("compilation already in progress (indexing or curation holds the index lock)"), nil, nil
 	}
 	defer c.mu.Unlock()
 
@@ -136,8 +142,14 @@ func (c *Compile) compileAll(ctx context.Context, start time.Time) (*mcp.CallToo
 		return errorResult(fmt.Sprintf("failed to list learnings: %v", err)), nil, nil
 	}
 
-	// Handle empty learnings case: produce an empty _index.md.
+	// Handle empty learnings case. In prompt mode there is nothing to
+	// synthesize, so leave existing compiled artifacts untouched. Only a real
+	// synthesizer may clear and replace compiled output.
 	if len(pages) == 0 {
+		if c.synth == nil || !c.synth.Available() {
+			return c.returnPromptMode(nil, 0, start)
+		}
+		c.clearCompiled()
 		if err := c.writeEmptyIndex(); err != nil {
 			return errorResult(fmt.Sprintf("failed to write empty index: %v", err)), nil, nil
 		}
@@ -162,17 +174,10 @@ func (c *Compile) compileAll(ctx context.Context, start time.Time) (*mcp.CallToo
 	// Cluster learnings by tag.
 	clusters := clusterLearnings(entries)
 
-	// Full rebuild: delete existing compiled articles from store and filesystem.
-	if _, err := c.store.DeletePagesBySource("compiled"); err != nil {
-		compileLogger.Warn("failed to delete existing compiled pages", "err", err)
-	}
-	compiledDir := c.compiledDir()
-	if err := os.RemoveAll(compiledDir); err != nil && !os.IsNotExist(err) {
-		compileLogger.Warn("failed to remove compiled directory", "err", err)
-	}
-
-	// Process clusters: synthesize and write articles.
-	return c.processClusters(ctx, clusters, len(entries), start)
+	// Process clusters: synthesize and write articles. Existing articles are
+	// only replaced after synthesis succeeds, so a provider failure never
+	// destroys published knowledge.
+	return c.processClusters(ctx, clusters, len(entries), start, true)
 }
 
 // compileIncremental re-compiles only the tags affected by the specified
@@ -223,89 +228,61 @@ func (c *Compile) compileIncremental(ctx context.Context, identities []string, s
 		}
 	}
 
-	// Delete existing compiled pages for affected tags only.
-	for _, cl := range clusters {
-		pageName := "compiled/" + cl.DominantTag
-		if err := c.store.DeletePage(pageName); err != nil {
-			// Page may not exist yet — not an error.
-			compileLogger.Debug("no existing compiled page to delete", "page", pageName)
-		}
-		// Remove the file if it exists.
-		articlePath := filepath.Join(c.compiledDir(), cl.DominantTag+".md")
-		_ = os.Remove(articlePath)
-	}
-
 	// Count total learnings across affected clusters for the summary.
 	totalLearnings := 0
 	for _, cl := range clusters {
 		totalLearnings += len(cl.Learnings)
 	}
 
-	return c.processClusters(ctx, clusters, totalLearnings, start)
+	return c.processClusters(ctx, clusters, totalLearnings, start, false)
+}
+
+// synthesizedCluster is a successfully synthesized article awaiting
+// persistence.
+type synthesizedCluster struct {
+	cluster Cluster
+	article string
+	tier    string
+	model   string
 }
 
 // processClusters handles the shared logic for both full and incremental
-// compilation: synthesize articles, write to filesystem, persist in store.
-func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, totalLearnings int, start time.Time) (*mcp.CallToolResult, any, error) {
-	// If no synthesizer is available, return clusters with prompts.
+// compilation: synthesize articles, replace them atomically per topic, and
+// persist the successful ones. A full rebuild additionally removes topics
+// that no longer have learnings, while leaving articles for failed topics in
+// place. When every cluster fails, nothing is changed.
+func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, totalLearnings int, start time.Time, full bool) (*mcp.CallToolResult, any, error) {
+	// Prompt mode never mutates existing compiled artifacts.
 	if c.synth == nil || !c.synth.Available() {
-		return c.returnPromptMode(clusters, totalLearnings, start, synthesisUnavailableReason(c.synth))
+		return c.returnPromptMode(clusters, totalLearnings, start)
 	}
 
-	// Synthesizer available: generate articles.
 	compiledDir := c.compiledDir()
 	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
 		return errorResult(fmt.Sprintf("failed to create compiled directory: %v", err)), nil, nil
 	}
 
-	var articles []map[string]any
-	for _, cl := range clusters {
-		prompt := buildSynthesisPrompt(cl)
-		compileLogger.Info("synthesizing article", "topic", cl.Topic, "learnings", len(cl.Learnings))
-
-		synthesized, err := c.synth.Synthesize(ctx, prompt)
-		if err != nil {
-			compileLogger.Warn("synthesis failed, skipping cluster", "topic", cl.Topic, "err", err)
-			continue
-		}
-
-		// Build the compiled article markdown.
-		article := buildCompiledArticle(cl, synthesized)
-
-		// Write to filesystem.
-		articlePath := filepath.Join(compiledDir, cl.DominantTag+".md")
-		if err := os.WriteFile(articlePath, []byte(article), 0o644); err != nil {
-			compileLogger.Warn("failed to write article", "path", articlePath, "err", err)
-			continue
-		}
-
-		// Persist in store with source_id="compiled" and tier="draft".
-		if err := c.persistCompiledArticle(cl, article); err != nil {
-			compileLogger.Warn("failed to persist compiled article", "topic", cl.Topic, "err", err)
-		}
-
-		// Collect source identities for the response.
-		var sources []string
-		for _, l := range cl.Learnings {
-			sources = append(sources, l.Identity)
-		}
-
-		articles = append(articles, map[string]any{
-			"path":           articlePath,
-			"topic":          cl.Topic,
-			"sources":        sources,
-			"learning_count": len(cl.Learnings),
-		})
+	produced, failures := c.synthesizeClusters(ctx, clusters, c.synth.ModelID())
+	if len(produced) == 0 && len(failures) > 0 {
+		return compileFailureResult(totalLearnings, failures)
 	}
 
-	// Generate _index.md.
-	if err := c.writeIndex(clusters); err != nil {
+	if full {
+		c.removeStaleTopics(compiledDir, clusters)
+	}
+
+	articles, replaceFailures := c.replaceArticles(compiledDir, produced)
+	failures = append(failures, replaceFailures...)
+
+	if err := c.writeIndex(); err != nil {
 		compileLogger.Warn("failed to write index", "err", err)
+		failures = append(failures, map[string]string{"topic": "_index", "error": err.Error()})
 	}
 
 	elapsed := time.Since(start)
 	compileLogger.Info("compile complete",
 		"articles", len(articles),
+		"failed", len(failures),
 		"learnings", totalLearnings,
 		"elapsed", elapsed.Round(time.Millisecond),
 	)
@@ -318,15 +295,184 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 		"total_articles":  len(articles),
 		"message":         fmt.Sprintf("Compiled %d learnings into %d articles.", totalLearnings, len(articles)),
 	}
+	if len(failures) > 0 {
+		result["status"] = "partial"
+		result["failed"] = failures
+		result["total_failed"] = len(failures)
+		result["message"] = fmt.Sprintf("Compiled %d learnings into %d articles; %d topic(s) failed.", totalLearnings, len(articles), len(failures))
+	}
 	res, err := jsonTextResult(result)
-	return res, nil, err
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(failures) > 0 {
+		res.IsError = true
+	}
+	return res, nil, nil
+}
+
+// synthesizeClusters runs the provider for every cluster and returns the
+// successful articles plus per-topic failures. A validated tier is preserved
+// across recompiles, and the synthesizing model is recorded.
+func (c *Compile) synthesizeClusters(ctx context.Context, clusters []Cluster, model string) ([]synthesizedCluster, []map[string]string) {
+	produced := make([]synthesizedCluster, 0, len(clusters))
+	failures := make([]map[string]string, 0)
+	for _, cl := range clusters {
+		compileLogger.Info("synthesizing article", "topic", cl.Topic, "learnings", len(cl.Learnings))
+		synthesized, err := c.synth.Synthesize(ctx, buildSynthesisPrompt(cl))
+		if err != nil {
+			compileLogger.Warn("synthesis failed", "topic", cl.Topic, "err", err)
+			failures = append(failures, map[string]string{"topic": cl.DominantTag, "error": err.Error()})
+			continue
+		}
+
+		tier := "draft"
+		if existing, findErr := c.store.GetPage("compiled/" + cl.DominantTag); findErr == nil && existing != nil && existing.Tier == "validated" {
+			tier = "validated"
+		}
+		produced = append(produced, synthesizedCluster{
+			cluster: cl,
+			article: buildCompiledArticle(cl, synthesized, tier, model),
+			tier:    tier,
+			model:   model,
+		})
+	}
+	return produced, failures
+}
+
+// removeStaleTopics deletes compiled articles for topics that no longer have
+// learnings. Failed topics are in clusters and therefore retained.
+func (c *Compile) removeStaleTopics(compiledDir string, clusters []Cluster) {
+	currentTopics := make(map[string]struct{}, len(clusters))
+	for _, cl := range clusters {
+		currentTopics[cl.DominantTag] = struct{}{}
+	}
+
+	existingPages, err := c.store.ListPagesBySource("compiled")
+	if err != nil {
+		compileLogger.Warn("failed to list compiled pages for stale cleanup", "err", err)
+		return
+	}
+	for _, p := range existingPages {
+		tag := p.SourceDocID
+		if tag == "" {
+			tag = strings.TrimPrefix(p.Name, "compiled/")
+		}
+		if _, ok := currentTopics[tag]; ok {
+			continue
+		}
+		if !isValidTag(tag) {
+			compileLogger.Warn("skipping stale compiled page with unsafe tag", "page", p.Name, "tag", tag)
+			continue
+		}
+		stalePath := filepath.Join(compiledDir, tag+".md")
+		if !pathWithin(compiledDir, stalePath) {
+			compileLogger.Warn("skipping stale compiled path outside the compiled directory", "path", stalePath)
+			continue
+		}
+		if err := c.store.DeletePage(p.Name); err != nil {
+			compileLogger.Debug("failed to delete stale compiled page", "page", p.Name, "err", err)
+		}
+		_ = os.Remove(stalePath)
+	}
+}
+
+// replaceArticles stages each article, persists the page and blocks, then
+// renames the staged file over the previous article. A failure at any step
+// leaves the previous page and file intact.
+func (c *Compile) replaceArticles(compiledDir string, produced []synthesizedCluster) ([]map[string]any, []map[string]string) {
+	articles := make([]map[string]any, 0, len(produced))
+	failures := make([]map[string]string, 0)
+
+	for _, sc := range produced {
+		tag := sc.cluster.DominantTag
+		if !isValidTag(tag) {
+			failures = append(failures, map[string]string{"topic": tag, "error": "invalid tag: only letters, digits, '-' and '_' are allowed"})
+			continue
+		}
+		articlePath := filepath.Join(compiledDir, tag+".md")
+		if !pathWithin(compiledDir, articlePath) {
+			failures = append(failures, map[string]string{"topic": tag, "error": "refusing to write outside the compiled directory"})
+			continue
+		}
+
+		if err := c.writeArticle(articlePath, sc); err != nil {
+			compileLogger.Warn("failed to write article", "topic", tag, "err", err)
+			failures = append(failures, map[string]string{"topic": tag, "error": err.Error()})
+			continue
+		}
+
+		var sources []string
+		for _, l := range sc.cluster.Learnings {
+			sources = append(sources, l.Identity)
+		}
+		articles = append(articles, map[string]any{
+			"path":           articlePath,
+			"topic":          sc.cluster.Topic,
+			"sources":        sources,
+			"learning_count": len(sc.cluster.Learnings),
+			"tier":           sc.tier,
+			"compiled_by":    sc.model,
+		})
+	}
+	return articles, failures
+}
+
+// writeArticle stages an article beside its destination, persists the page
+// and blocks, then atomically renames the staged file into place.
+func (c *Compile) writeArticle(articlePath string, sc synthesizedCluster) error {
+	tmpPath := filepath.Join(filepath.Dir(articlePath), "."+filepath.Base(articlePath)+".tmp")
+	if err := os.WriteFile(tmpPath, []byte(sc.article), 0o644); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := c.persistCompiledArticle(sc.cluster, sc.article, sc.tier, sc.model); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, articlePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+// compileFailureResult renders the total-failure result, which leaves all
+// existing artifacts untouched.
+func compileFailureResult(totalLearnings int, failures []map[string]string) (*mcp.CallToolResult, any, error) {
+	payload := map[string]any{
+		"status":          "failed",
+		"failed":          failures,
+		"articles":        []any{},
+		"total_learnings": totalLearnings,
+		"total_articles":  0,
+		"total_failed":    len(failures),
+		"message":         "synthesis failed for every topic; existing compiled articles were left unchanged.",
+	}
+	res, err := jsonTextResult(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	res.IsError = true
+	return res, nil, nil
+}
+
+// clearCompiled removes all compiled pages and article files. Used only when
+// there are no learnings left to compile.
+func (c *Compile) clearCompiled() {
+	if _, err := c.store.DeletePagesBySource("compiled"); err != nil {
+		compileLogger.Warn("failed to delete existing compiled pages", "err", err)
+	}
+	if err := os.RemoveAll(c.compiledDir()); err != nil && !os.IsNotExist(err) {
+		compileLogger.Warn("failed to remove compiled directory", "err", err)
+	}
 }
 
 // returnPromptMode returns clusters with synthesis prompts when no
 // synthesizer is available. The calling agent can use these prompts
 // to perform synthesis externally (D4: prompt-based delegation).
-func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start time.Time, reason string) (*mcp.CallToolResult, any, error) {
-	var clusterResults []map[string]any
+func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start time.Time) (*mcp.CallToolResult, any, error) {
+	clusterResults := make([]map[string]any, 0, len(clusters))
 	for _, cl := range clusters {
 		var learningResults []map[string]any
 		for _, l := range cl.Learnings {
@@ -349,16 +495,12 @@ func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start
 
 	elapsed := time.Since(start)
 	result := map[string]any{
-		"status":             "prompts_ready",
-		"clusters":           clusterResults,
-		"total_learnings":    totalLearnings,
-		"total_clusters":     len(clusters),
-		"elapsed_ms":         elapsed.Milliseconds(),
-		"unavailable_reason": reason,
-		"message": fmt.Sprintf(
-			"Clustered %d learnings into %d topics. Synthesis prompts ready for agent execution. Synthesis unavailable: %s.",
-			totalLearnings, len(clusters), reason,
-		),
+		"status":          "prompts_ready",
+		"clusters":        clusterResults,
+		"total_learnings": totalLearnings,
+		"total_clusters":  len(clusters),
+		"elapsed_ms":      elapsed.Milliseconds(),
+		"message":         fmt.Sprintf("Clustered %d learnings into %d topics. Synthesis prompts ready for agent execution.", totalLearnings, len(clusters)),
 	}
 	res, err := jsonTextResult(result)
 	return res, nil, err
@@ -484,7 +626,7 @@ func buildSynthesisPrompt(cl Cluster) string {
 	var sb strings.Builder
 
 	sb.WriteString("You are compiling learnings into a knowledge article.\n\n")
-	sb.WriteString(fmt.Sprintf("Topic: %s\n\n", cl.Topic))
+	fmt.Fprintf(&sb, "Topic: %s\n\n", cl.Topic)
 
 	// Add category-aware instructions.
 	sb.WriteString(categoryInstructions(cl))
@@ -497,10 +639,10 @@ func buildSynthesisPrompt(cl Cluster) string {
 		if cat == "" {
 			cat = "context"
 		}
-		sb.WriteString(fmt.Sprintf("### Learning %d: %s\n", i+1, l.Identity))
-		sb.WriteString(fmt.Sprintf("- **Category**: %s\n", cat))
-		sb.WriteString(fmt.Sprintf("- **Date**: %s\n", l.CreatedAt.UTC().Format("2006-01-02")))
-		sb.WriteString(fmt.Sprintf("- **Content**: %s\n\n", l.Content))
+		fmt.Fprintf(&sb, "### Learning %d: %s\n", i+1, l.Identity)
+		fmt.Fprintf(&sb, "- **Category**: %s\n", cat)
+		fmt.Fprintf(&sb, "- **Date**: %s\n", l.CreatedAt.UTC().Format("2006-01-02"))
+		fmt.Fprintf(&sb, "- **Content**: %s\n\n", l.Content)
 	}
 
 	sb.WriteString("## Instructions\n\n")
@@ -556,22 +698,28 @@ func categoryInstructions(cl Cluster) string {
 // buildCompiledArticle creates the full markdown content for a compiled
 // article, including frontmatter, the synthesized current-state section,
 // and a history table.
-func buildCompiledArticle(cl Cluster, synthesized string) string {
+func buildCompiledArticle(cl Cluster, synthesized, tier, model string) string {
+	if tier == "" {
+		tier = "draft"
+	}
 	var sb strings.Builder
 
 	// Frontmatter.
 	sb.WriteString("---\n")
-	sb.WriteString("tier: draft\n")
-	sb.WriteString(fmt.Sprintf("compiled_at: %s\n", time.Now().UTC().Format(time.RFC3339)))
+	fmt.Fprintf(&sb, "tier: %s\n", tier)
+	fmt.Fprintf(&sb, "compiled_at: %s\n", time.Now().UTC().Format(time.RFC3339))
+	if model != "" {
+		fmt.Fprintf(&sb, "compiled_by: %s\n", model)
+	}
 	sb.WriteString("sources:\n")
 	for _, l := range cl.Learnings {
-		sb.WriteString(fmt.Sprintf("  - %s\n", l.Identity))
+		fmt.Fprintf(&sb, "  - %s\n", l.Identity)
 	}
-	sb.WriteString(fmt.Sprintf("topic: %s\n", cl.DominantTag))
+	fmt.Fprintf(&sb, "topic: %s\n", cl.DominantTag)
 	sb.WriteString("---\n\n")
 
 	// Title.
-	sb.WriteString(fmt.Sprintf("# %s\n\n", cl.Topic))
+	fmt.Fprintf(&sb, "# %s\n\n", cl.Topic)
 
 	// Synthesized current state.
 	sb.WriteString(strings.TrimSpace(synthesized))
@@ -595,21 +743,25 @@ func buildCompiledArticle(cl Cluster, synthesized string) string {
 		}
 		// Remove newlines from summary for table formatting.
 		summary = strings.ReplaceAll(summary, "\n", " ")
-		sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n",
+		fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n",
 			l.Identity,
 			l.CreatedAt.UTC().Format("2006-01-02"),
 			cat,
 			summary,
-		))
+		)
 	}
 
 	return sb.String()
 }
 
 // persistCompiledArticle stores a compiled article as a page in the store
-// with source_id="compiled" and tier="draft". Also persists blocks and
+// with source_id="compiled" and the supplied tier (draft, or validated when
+// the previous article was already approved). Also persists blocks and
 // generates embeddings.
-func (c *Compile) persistCompiledArticle(cl Cluster, articleContent string) error {
+func (c *Compile) persistCompiledArticle(cl Cluster, articleContent, tier, model string) error {
+	if tier == "" {
+		tier = "draft"
+	}
 	pageName := "compiled/" + cl.DominantTag
 
 	// Build sources list for properties.
@@ -621,7 +773,10 @@ func (c *Compile) persistCompiledArticle(cl Cluster, articleContent string) erro
 		"topic":       cl.DominantTag,
 		"compiled_at": time.Now().UTC().Format(time.RFC3339),
 		"sources":     sources,
-		"tier":        "draft",
+		"tier":        tier,
+	}
+	if model != "" {
+		propsMap["compiled_by"] = model
 	}
 	propsJSON, err := json.Marshal(propsMap)
 	if err != nil {
@@ -634,10 +789,23 @@ func (c *Compile) persistCompiledArticle(cl Cluster, articleContent string) erro
 		SourceID:     "compiled",
 		SourceDocID:  cl.DominantTag,
 		Properties:   string(propsJSON),
-		Tier:         "draft",
+		Tier:         tier,
 	}
-	if err := c.store.InsertPage(page); err != nil {
+	existing, err := c.store.GetPage(pageName)
+	if err != nil {
+		return fmt.Errorf("look up existing compiled page: %w", err)
+	}
+	if existing != nil {
+		if err := c.store.UpdatePage(page); err != nil {
+			return fmt.Errorf("update compiled page: %w", err)
+		}
+	} else if err := c.store.InsertPage(page); err != nil {
 		return fmt.Errorf("insert compiled page: %w", err)
+	}
+
+	// Replace blocks for the page (UpdatePage leaves the old blocks in place).
+	if err := c.store.DeleteBlocksByPage(pageName); err != nil {
+		return fmt.Errorf("clear compiled blocks: %w", err)
 	}
 
 	// Parse and persist blocks.
@@ -654,26 +822,58 @@ func (c *Compile) persistCompiledArticle(cl Cluster, articleContent string) erro
 	return nil
 }
 
-// writeIndex generates the _index.md file listing all compiled articles.
-func (c *Compile) writeIndex(clusters []Cluster) error {
+// writeIndex generates _index.md from the compiled pages currently in the
+// store. Deriving it from the store (rather than from the clusters produced by
+// this run) keeps the index correct for incremental compiles and for topics
+// whose synthesis failed but whose previous article was retained.
+func (c *Compile) writeIndex() error {
 	compiledDir := c.compiledDir()
 	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
 		return fmt.Errorf("create compiled directory: %w", err)
 	}
 
+	pages, err := c.store.ListPagesBySource("compiled")
+	if err != nil {
+		return fmt.Errorf("list compiled pages: %w", err)
+	}
+
 	var sb strings.Builder
 	sb.WriteString("# Compiled Knowledge Index\n\n")
-	sb.WriteString(fmt.Sprintf("*Generated: %s*\n\n", time.Now().UTC().Format(time.RFC3339)))
+	fmt.Fprintf(&sb, "*Generated: %s*\n\n", time.Now().UTC().Format(time.RFC3339))
 
 	sb.WriteString("| Topic | Articles | Sources |\n")
 	sb.WriteString("|-------|----------|--------|\n")
-	for _, cl := range clusters {
-		sb.WriteString(fmt.Sprintf("| [%s](%s.md) | 1 | %d learnings |\n",
-			cl.Topic, cl.DominantTag, len(cl.Learnings)))
+	for _, p := range pages {
+		if !isValidTag(p.SourceDocID) {
+			continue
+		}
+		topic := p.OriginalName
+		if topic == "" {
+			topic = p.SourceDocID
+		}
+		sourceCount := 0
+		var props map[string]any
+		if err := json.Unmarshal([]byte(p.Properties), &props); err == nil {
+			if sources, ok := props["sources"].([]any); ok {
+				sourceCount = len(sources)
+			}
+		}
+		fmt.Fprintf(&sb, "| [%s](%s.md) | 1 | %d learnings |\n",
+			topic, p.SourceDocID, sourceCount)
 	}
 
 	indexPath := filepath.Join(compiledDir, "_index.md")
 	return os.WriteFile(indexPath, []byte(sb.String()), 0o644)
+}
+
+// pathWithin reports whether target resolves inside base (lexically). It is a
+// defense-in-depth check for filenames derived from tags.
+func pathWithin(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 // writeEmptyIndex generates an _index.md file indicating no learnings
@@ -734,10 +934,23 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		}
 	}
 
+	// Never overwrite human-validated content with agent-generated text.
+	pageName := "compiled/" + input.Tag
+	tier := "draft"
+	existing, err := c.store.GetPage(pageName)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to look up existing compiled page: %v", err)), nil, nil
+	}
+	if existing != nil && existing.Tier == "validated" {
+		return errorResult(fmt.Sprintf(
+			"compiled page '%s' is validated; refusing to overwrite reviewed content. Use a new tag or re-open review before storing.",
+			pageName)), nil, nil
+	}
+
 	// Build frontmatter.
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	sb.WriteString("tier: draft\n")
+	fmt.Fprintf(&sb, "tier: %s\n", tier)
 	fmt.Fprintf(&sb, "compiled_at: %s\n", time.Now().UTC().Format(time.RFC3339))
 	if input.Model != "" {
 		fmt.Fprintf(&sb, "compiled_by: %s\n", input.Model)
@@ -761,16 +974,16 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		return errorResult(fmt.Sprintf("failed to create compiled directory: %v", err)), nil, nil
 	}
 	articlePath := filepath.Join(compiledDir, input.Tag+".md")
-	if err := os.WriteFile(articlePath, []byte(articleContent), 0o644); err != nil {
+	tmpPath := filepath.Join(compiledDir, "."+input.Tag+".md.tmp")
+	if err := os.WriteFile(tmpPath, []byte(articleContent), 0o644); err != nil {
 		return errorResult(fmt.Sprintf("failed to write compiled article: %v", err)), nil, nil
 	}
 
 	// Persist in store.
-	pageName := "compiled/" + input.Tag
 	propsMap := map[string]any{
 		"topic":       input.Tag,
 		"compiled_at": time.Now().UTC().Format(time.RFC3339),
-		"tier":        "draft",
+		"tier":        tier,
 	}
 	if input.Model != "" {
 		propsMap["compiled_by"] = input.Model
@@ -783,25 +996,40 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		return errorResult(fmt.Sprintf("failed to marshal properties: %v", err)), nil, nil
 	}
 
-	// Delete existing compiled page for this tag if present.
-	_ = c.store.DeletePage(pageName)
-
 	page := &store.Page{
 		Name:         pageName,
 		OriginalName: input.Tag,
 		SourceID:     "compiled",
 		SourceDocID:  input.Tag,
 		Properties:   string(propsJSON),
-		Tier:         "draft",
+		Tier:         tier,
 	}
-	if err := c.store.InsertPage(page); err != nil {
+	if existing != nil {
+		if err := c.store.UpdatePage(page); err != nil {
+			_ = os.Remove(tmpPath)
+			return errorResult(fmt.Sprintf("failed to update compiled page: %v", err)), nil, nil
+		}
+	} else if err := c.store.InsertPage(page); err != nil {
+		_ = os.Remove(tmpPath)
 		return errorResult(fmt.Sprintf("failed to insert compiled page: %v", err)), nil, nil
 	}
 
-	// Parse and persist blocks.
+	// Replace blocks before publishing the file so a block failure leaves the
+	// previous file in place.
+	if err := c.store.DeleteBlocksByPage(pageName); err != nil {
+		_ = os.Remove(tmpPath)
+		return errorResult(fmt.Sprintf("failed to replace compiled blocks: %v", err)), nil, nil
+	}
 	_, blocks := vault.ParseDocument(input.Tag, articleContent)
 	if err := vault.PersistBlocks(c.store, pageName, blocks, sql.NullString{}, 0); err != nil {
-		compileLogger.Warn("failed to persist compiled blocks", "tag", input.Tag, "err", err)
+		_ = os.Remove(tmpPath)
+		return errorResult(fmt.Sprintf("failed to persist compiled blocks: %v", err)), nil, nil
+	}
+
+	// Publish the article only after the store write succeeds.
+	if err := os.Rename(tmpPath, articlePath); err != nil {
+		_ = os.Remove(tmpPath)
+		return errorResult(fmt.Sprintf("failed to publish compiled article: %v", err)), nil, nil
 	}
 
 	// Generate embeddings if available.
@@ -817,6 +1045,7 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		"page":    pageName,
 		"path":    articlePath,
 		"sources": sources,
+		"tier":    tier,
 	}
 	if input.Model != "" {
 		result["compiled_by"] = input.Model
@@ -829,7 +1058,12 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 // containsNewline returns true if s contains any newline (\n, \r) or null byte
 // characters. Used to prevent YAML frontmatter injection via interpolated values.
 func containsNewline(s string) bool {
-	return strings.ContainsAny(s, "\n\r\x00")
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 {
+			return true
+		}
+	}
+	return false
 }
 
 // isValidTag checks that a tag contains only alphanumeric characters,

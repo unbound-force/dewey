@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
-	"math/rand/v2"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -224,26 +221,7 @@ func (v *VertexSynthesizer) doRequestWithRetry(ctx context.Context, url string, 
 // goroutines retry simultaneously. Only integer-seconds Retry-After format
 // is supported; HTTP-date format falls back to exponential backoff.
 func vertexSynthRetryDelay(attempt int, retryAfter string) time.Duration {
-	if retryAfter != "" {
-		if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
-			d := time.Duration(secs) * time.Second
-			if d > vertexSynthMaxDelay {
-				d = vertexSynthMaxDelay
-			}
-			return d
-		}
-	}
-	d := time.Duration(float64(vertexSynthBaseDelay) * math.Pow(2, float64(attempt)))
-	if d > vertexSynthMaxDelay {
-		d = vertexSynthMaxDelay
-	}
-	// Add ±25% jitter to desynchronize concurrent retries.
-	jitter := time.Duration(rand.Int64N(int64(d)/2)) - d/4
-	d += jitter
-	if d < 0 {
-		d = 0
-	}
-	return d
+	return synthRetryDelay(attempt, retryAfter, vertexSynthBaseDelay, vertexSynthMaxDelay)
 }
 
 // Available reports whether Vertex AI credentials are configured.

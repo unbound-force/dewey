@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -66,7 +67,7 @@ func storeLearningDirect(t *testing.T, s *store.Store, tag string, seq int, cate
 
 // TestCompile_NilStore verifies that a nil store returns an error result.
 func TestCompile_NilStore(t *testing.T) {
-	c := NewCompile(nil, nil, nil, t.TempDir(), 0)
+	c := NewCompile(nil, nil, nil, t.TempDir(), nil, 0)
 
 	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
 	if err != nil {
@@ -88,7 +89,7 @@ func TestCompile_NilStore(t *testing.T) {
 // is written, so no orphaned, unindexed file is left behind.
 func TestStoreCompiled_NilStore(t *testing.T) {
 	tmpDir := t.TempDir()
-	c := NewCompile(nil, nil, nil, tmpDir, 0)
+	c := NewCompile(nil, nil, nil, tmpDir, nil, 0)
 
 	result, _, err := c.StoreCompiled(context.Background(), nil, types.StoreCompiledInput{
 		Tag:     "auth",
@@ -118,7 +119,10 @@ func TestStoreCompiled_NilStore(t *testing.T) {
 func TestCompile_NoLearnings(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
-	c := NewCompile(s, nil, nil, tmpDir, 0)
+	// An available synthesizer performs the destructive empty rebuild; prompt
+	// mode is covered by TestCompile_PromptModeWithNoLearningsKeepsArtifacts.
+	synth := &llm.NoopSynthesizer{Avail: true, Model: "m"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
 	if err != nil {
@@ -284,7 +288,7 @@ func TestCompile_ArticleWrittenToFS(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	// Store learnings.
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
@@ -349,7 +353,7 @@ func TestCompile_ArticlePersistedInStore(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "deploy", 1, "pattern", "Blue-green deployment", baseTime)
@@ -397,7 +401,7 @@ func TestCompile_IndexGenerated(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Auth content", baseTime)
@@ -440,7 +444,7 @@ func TestCompile_IndexGenerated(t *testing.T) {
 func TestCompile_SynthesizerUnavailable(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
-	c := NewCompile(s, nil, nil, tmpDir, 0) // nil synthesizer
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0) // nil synthesizer
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
@@ -506,7 +510,7 @@ func TestCompile_SynthesizerNotAvailable(t *testing.T) {
 		Avail:    false, // Not available
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
@@ -530,7 +534,7 @@ func TestCompile_SynthesizerNotAvailable(t *testing.T) {
 func TestCompile_ConcurrentCallRejected(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
-	c := NewCompile(s, nil, nil, tmpDir, 0)
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
 
 	// Acquire the lock manually to simulate a running compilation.
 	c.mu.Lock()
@@ -562,7 +566,7 @@ func TestCompileIncremental_SingleTag(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Auth content 1", baseTime)
@@ -630,7 +634,7 @@ func TestCompile_FullRebuildDeletesOld(t *testing.T) {
 		Avail:    true,
 		Model:    "test-model",
 	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Auth content", baseTime)
@@ -810,7 +814,7 @@ func TestCompile_CompiledArticleFormat(t *testing.T) {
 		},
 	}
 
-	article := buildCompiledArticle(cl, "## Current State\n\nUse Option B.")
+	article := buildCompiledArticle(cl, "## Current State\n\nUse Option B.", "", "")
 
 	// Verify frontmatter structure.
 	if !strings.HasPrefix(article, "---\n") {
@@ -902,7 +906,7 @@ func TestCompile_CompiledArticleHistorySummaryUnicodeBoundaries(t *testing.T) {
 				},
 			}
 
-			article := buildCompiledArticle(cluster, "## Current State\n\nCompiled content.")
+			article := buildCompiledArticle(cluster, "## Current State\n\nCompiled content.", "", "")
 			if !utf8.ValidString(article) {
 				t.Error("compiled article is not valid UTF-8")
 			}
@@ -922,14 +926,12 @@ func TestCompile_CompiledArticleHistorySummaryUnicodeBoundaries(t *testing.T) {
 	}
 }
 
-// --- StoreCompiled tests ---
-
 func TestStoreCompiled_Basic(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
 	vaultPath := t.TempDir()
-	c := NewCompile(s, nil, nil, vaultPath, 0)
+	c := NewCompile(s, nil, nil, vaultPath, nil, 0)
 
 	input := types.StoreCompiledInput{
 		Tag:     "authentication",
@@ -1010,7 +1012,7 @@ func TestStoreCompiled_ResponseBody(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir(), 0)
+	c := NewCompile(s, nil, nil, t.TempDir(), nil, 0)
 	input := types.StoreCompiledInput{
 		Tag:     "auth",
 		Content: "Test article.",
@@ -1080,7 +1082,7 @@ func TestStoreCompiled_MissingTag(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir(), 0)
+	c := NewCompile(s, nil, nil, t.TempDir(), nil, 0)
 	input := types.StoreCompiledInput{
 		Content: "some content",
 	}
@@ -1102,7 +1104,7 @@ func TestStoreCompiled_MissingContent(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir(), 0)
+	c := NewCompile(s, nil, nil, t.TempDir(), nil, 0)
 	input := types.StoreCompiledInput{
 		Tag: "auth",
 	}
@@ -1125,7 +1127,7 @@ func TestStoreCompiled_NoModelProvenance(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	vaultPath := t.TempDir()
-	c := NewCompile(s, nil, nil, vaultPath, 0)
+	c := NewCompile(s, nil, nil, vaultPath, nil, 0)
 
 	input := types.StoreCompiledInput{
 		Tag:     "auth",
@@ -1155,7 +1157,7 @@ func TestStoreCompiled_PathTraversalRejected(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
-	c := NewCompile(s, nil, nil, t.TempDir(), 0)
+	c := NewCompile(s, nil, nil, t.TempDir(), nil, 0)
 
 	badTags := []string{"../etc/passwd", "auth/evil", "tag\x00bad", "a.b", "tag with spaces"}
 	for _, tag := range badTags {
@@ -1182,7 +1184,7 @@ func TestStoreCompiled_OverwriteExisting(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	vaultPath := t.TempDir()
-	c := NewCompile(s, nil, nil, vaultPath, 0)
+	c := NewCompile(s, nil, nil, vaultPath, nil, 0)
 
 	// Store first version.
 	input1 := types.StoreCompiledInput{
@@ -1224,53 +1226,485 @@ func TestStoreCompiled_OverwriteExisting(t *testing.T) {
 	}
 }
 
-// reasonSynthesizer decorates llm.NoopSynthesizer with the optional
-// llm.UnavailableReasoner capability.
-type reasonSynthesizer struct {
-	llm.NoopSynthesizer
-	reason string
-}
-
-func (r *reasonSynthesizer) UnavailableReason() string { return r.reason }
-
-// TestCompile_SynthesisUnavailableReasonReported verifies that prompt mode
-// reports the gateway's unavailable reason while keeping every prompt
-// (FR-015).
-func TestCompile_SynthesisUnavailableReasonReported(t *testing.T) {
+// TestCompile_UsesSharedIndexMutex verifies that compile honors the caller's
+// pipeline-wide index mutex, not a private lock. This keeps compile from
+// racing a background index or another curation.
+func TestCompile_UsesSharedIndexMutex(t *testing.T) {
 	s := newTestStore(t)
-	tmpDir := t.TempDir()
-	reason := "openai-compatible synthesis endpoint is unreachable; check the endpoint and that the gateway is running"
-	synth := &reasonSynthesizer{
-		NoopSynthesizer: llm.NoopSynthesizer{Avail: false},
-		reason:          reason,
-	}
-	c := NewCompile(s, nil, synth, tmpDir, 0)
+	indexMu := &sync.Mutex{}
+	c := NewCompile(s, nil, nil, t.TempDir(), indexMu, 0)
 
-	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
-	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
-	storeLearningDirect(t, s, "auth", 2, "decision", "Switch to Option B", baseTime.Add(24*time.Hour))
+	// Simulate background indexing holding the shared mutex.
+	indexMu.Lock()
+	defer indexMu.Unlock()
 
 	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
 	if err != nil {
 		t.Fatalf("Compile error: %v", err)
 	}
-	if result.IsError {
-		t.Fatalf("Compile returned error: %s", resultText(result))
+	if !result.IsError {
+		t.Fatal("expected error result while the shared index mutex is held")
+	}
+	if !strings.Contains(resultText(result), "already in progress") {
+		t.Errorf("error message = %q, should mention 'already in progress'", resultText(result))
+	}
+}
+
+// TestCompile_PromptModeDoesNotDelete verifies that prompt mode never removes
+// existing compiled articles.
+func TestCompile_PromptModeDoesNotDelete(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	existingPath := filepath.Join(compiledDir, "auth.md")
+	if err := os.WriteFile(existingPath, []byte("existing article"), 0o644); err != nil {
+		t.Fatalf("write existing article: %v", err)
+	}
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/auth", OriginalName: "auth", SourceID: "compiled",
+		SourceDocID: "auth", Tier: "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
 	}
 
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", time.Now())
+
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected prompt mode success, got: %s", resultText(result))
+	}
 	parsed := parseCompileResult(t, resultText(result))
 	if parsed["status"] != "prompts_ready" {
 		t.Errorf("status = %v, want prompts_ready", parsed["status"])
 	}
-	if parsed["unavailable_reason"] != reason {
-		t.Errorf("unavailable_reason = %v, want %q", parsed["unavailable_reason"], reason)
+	if _, err := os.Stat(existingPath); err != nil {
+		t.Errorf("prompt mode deleted the existing article: %v", err)
 	}
-	clusters, ok := parsed["clusters"].([]any)
-	if !ok || len(clusters) == 0 {
-		t.Fatalf("prompts must be preserved, got clusters=%v", parsed["clusters"])
+	if page, _ := s.GetPage("compiled/auth"); page == nil {
+		t.Error("prompt mode deleted the existing compiled page")
 	}
-	message, _ := parsed["message"].(string)
-	if !strings.Contains(message, reason) {
-		t.Errorf("message should carry the reason, got %q", message)
+}
+
+// TestCompile_TotalSynthesisFailureKeepsArtifacts verifies that a provider
+// outage does not wipe existing compiled knowledge and reports failure.
+func TestCompile_TotalSynthesisFailureKeepsArtifacts(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	existingPath := filepath.Join(compiledDir, "auth.md")
+	if err := os.WriteFile(existingPath, []byte("existing article"), 0o644); err != nil {
+		t.Fatalf("write existing article: %v", err)
+	}
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/auth", OriginalName: "auth", SourceID: "compiled",
+		SourceDocID: "auth", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", time.Now())
+
+	synth := &llm.NoopSynthesizer{Err: fmt.Errorf("401 unauthorized"), Avail: true, Model: "fake"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when every synthesis fails")
+	}
+	parsed := parseCompileResult(t, resultText(result))
+	if parsed["status"] != "failed" {
+		t.Errorf("status = %v, want failed", parsed["status"])
+	}
+	if _, err := os.Stat(existingPath); err != nil {
+		t.Errorf("existing article was removed on total failure: %v", err)
+	}
+	page, _ := s.GetPage("compiled/auth")
+	if page == nil || page.Tier != "validated" {
+		t.Errorf("existing page/tier changed on total failure: %+v", page)
+	}
+}
+
+// TestCompile_PreservesValidatedTierAndRecordsProvenance verifies that a
+// recompile keeps a human-approved tier and records the synthesizing model.
+func TestCompile_PreservesValidatedTierAndRecordsProvenance(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/auth", OriginalName: "auth", SourceID: "compiled",
+		SourceDocID: "auth", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", time.Now())
+
+	synth := &llm.NoopSynthesizer{Response: "## Current State\n\nUse Option A.", Avail: true, Model: "model-x"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got: %s", resultText(result))
+	}
+
+	page, err := s.GetPage("compiled/auth")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage: %v (page=%v)", err, page)
+	}
+	if page.Tier != "validated" {
+		t.Errorf("tier = %q, want validated (preserved)", page.Tier)
+	}
+	if !strings.Contains(page.Properties, `"compiled_by":"model-x"`) {
+		t.Errorf("properties missing compiled_by: %s", page.Properties)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md"))
+	if err != nil {
+		t.Fatalf("read article: %v", err)
+	}
+	if !strings.Contains(string(data), "tier: validated") {
+		t.Errorf("frontmatter did not preserve validated tier:\n%s", data)
+	}
+	if !strings.Contains(string(data), "compiled_by: model-x") {
+		t.Errorf("frontmatter missing compiled_by:\n%s", data)
+	}
+}
+
+// scriptedSynth returns success or failure based on the prompt content.
+type scriptedSynth struct {
+	failOn string
+	model  string
+}
+
+func (s *scriptedSynth) Synthesize(_ context.Context, prompt string) (string, error) {
+	if strings.Contains(prompt, s.failOn) {
+		return "", fmt.Errorf("provider rejected %s", s.failOn)
+	}
+	return "## Current State\n\nGenerated content.", nil
+}
+func (s *scriptedSynth) Available() bool { return true }
+func (s *scriptedSynth) ModelID() string { return s.model }
+
+// TestCompile_PartialFailureKeepsFailedTopic verifies that a per-topic failure
+// reports status partial, keeps the failed topic's existing artifact, and
+// writes the successful ones.
+func TestCompile_PartialFailureKeepsFailedTopic(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Pre-seed a validated deploy article that must survive.
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/deploy", OriginalName: "Deploy", SourceID: "compiled",
+		SourceDocID: "deploy", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage(deploy): %v", err)
+	}
+	deployPath := filepath.Join(compiledDir, "deploy.md")
+	if err := os.WriteFile(deployPath, []byte("previous deploy article"), 0o644); err != nil {
+		t.Fatalf("write deploy article: %v", err)
+	}
+
+	now := time.Now()
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A for authentication", now)
+	storeLearningDirect(t, s, "deploy", 1, "decision", "Deploy on Fridays", now)
+
+	synth := &scriptedSynth{failOn: "Deploy", model: "model-x"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError for partial compilation")
+	}
+	parsed := parseCompileResult(t, resultText(result))
+	if parsed["status"] != "partial" {
+		t.Errorf("status = %v, want partial", parsed["status"])
+	}
+	failed, ok := parsed["failed"].([]any)
+	if !ok || len(failed) != 1 {
+		t.Fatalf("failed = %v, want one entry", parsed["failed"])
+	}
+	failedEntry, _ := failed[0].(map[string]any)
+	if failedEntry["topic"] != "deploy" {
+		t.Errorf("failed topic = %v, want deploy", failedEntry["topic"])
+	}
+	if msg, _ := failedEntry["error"].(string); strings.TrimSpace(msg) == "" {
+		t.Errorf("failed entry missing error: %v", failedEntry)
+	}
+
+	// Successful topic written.
+	if _, err := os.Stat(filepath.Join(compiledDir, "auth.md")); err != nil {
+		t.Errorf("auth article missing: %v", err)
+	}
+	// Failed topic retained unchanged.
+	data, err := os.ReadFile(deployPath)
+	if err != nil {
+		t.Fatalf("deploy article removed: %v", err)
+	}
+	if string(data) != "previous deploy article" {
+		t.Errorf("deploy article changed on partial failure: %q", data)
+	}
+	page, _ := s.GetPage("compiled/deploy")
+	if page == nil || page.Tier != "validated" {
+		t.Errorf("deploy page/tier changed: %+v", page)
+	}
+}
+
+// TestCompile_WriteFailureKeepsExistingPage verifies that a staging-file
+// failure does not delete the previously published page or article.
+func TestCompile_WriteFailureKeepsExistingPage(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(filepath.Join(compiledDir, ".auth.md.tmp"), 0o755); err != nil {
+		t.Fatalf("mkdir blocking tmp path: %v", err)
+	}
+
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/auth", OriginalName: "Auth", SourceID: "compiled",
+		SourceDocID: "auth", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	oldPath := filepath.Join(compiledDir, "auth.md")
+	if err := os.WriteFile(oldPath, []byte("previous article"), 0o644); err != nil {
+		t.Fatalf("write old article: %v", err)
+	}
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", time.Now())
+
+	synth := &llm.NoopSynthesizer{Response: "## Current State\n\nNew.", Avail: true, Model: "m"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected IsError when staging the article fails")
+	}
+
+	data, err := os.ReadFile(oldPath)
+	if err != nil || string(data) != "previous article" {
+		t.Errorf("previous article not preserved: data=%q err=%v", data, err)
+	}
+	page, _ := s.GetPage("compiled/auth")
+	if page == nil || page.Tier != "validated" {
+		t.Errorf("previous page/tier not preserved: %+v", page)
+	}
+}
+
+// TestCompile_RejectsUnsafeTag verifies that a learning tag containing path
+// separators never produces an article outside the compiled directory.
+func TestCompile_RejectsUnsafeTag(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+
+	// Insert a learning whose properties carry a traversal tag.
+	if err := s.InsertPage(&store.Page{
+		Name:        "learning/evil",
+		SourceID:    "learning",
+		SourceDocID: "learning-evil",
+		Properties:  `{"tag":"../../pwned"}`,
+		Tier:        "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if err := s.InsertBlock(&store.Block{UUID: "b-evil", PageName: "learning/evil", Content: "content", Position: 0}); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	synth := &llm.NoopSynthesizer{Response: "## Current State\n\nX.", Avail: true, Model: "m"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for unsafe tag")
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "pwned.md")); !os.IsNotExist(err) {
+		t.Errorf("unsafe tag wrote outside compiled dir (stat err = %v)", err)
+	}
+}
+
+// TestCompile_FullRebuildRemovesStaleTopics verifies that a full rebuild drops
+// compiled articles whose tag no longer has any learnings.
+func TestCompile_FullRebuildRemovesStaleTopics(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/old", OriginalName: "Old", SourceID: "compiled",
+		SourceDocID: "old", Tier: "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	oldPath := filepath.Join(compiledDir, "old.md")
+	if err := os.WriteFile(oldPath, []byte("old article"), 0o644); err != nil {
+		t.Fatalf("write old article: %v", err)
+	}
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", time.Now())
+
+	synth := &llm.NoopSynthesizer{Response: "## Current State\n\nA.", Avail: true, Model: "m"}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+	if _, _, err := c.Compile(context.Background(), nil, types.CompileInput{}); err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+
+	if page, _ := s.GetPage("compiled/old"); page != nil {
+		t.Errorf("stale compiled page still present: %+v", page)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Errorf("stale article still present (stat err = %v)", err)
+	}
+}
+
+// TestCompile_PromptModeWithNoLearningsKeepsArtifacts verifies that a full
+// compile with no learnings and no synthesizer does not clear compiled output.
+func TestCompile_PromptModeWithNoLearningsKeepsArtifacts(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir compiled: %v", err)
+	}
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/auth", OriginalName: "auth", SourceID: "compiled",
+		SourceDocID: "auth", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	articlePath := filepath.Join(compiledDir, "auth.md")
+	if err := os.WriteFile(articlePath, []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write article: %v", err)
+	}
+
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %s", resultText(result))
+	}
+	parsed := parseCompileResult(t, resultText(result))
+	if parsed["status"] != "prompts_ready" {
+		t.Errorf("status = %v, want prompts_ready", parsed["status"])
+	}
+	data, err := os.ReadFile(articlePath)
+	if err != nil {
+		t.Fatalf("article removed: %v", err)
+	}
+	if string(data) != "keep me" {
+		t.Errorf("article changed: %q", data)
+	}
+	page, _ := s.GetPage("compiled/auth")
+	if page == nil || page.Tier != "validated" {
+		t.Errorf("page/tier changed: %+v", page)
+	}
+}
+
+// TestCompile_SharedMutexHeldWritesNothing verifies that refusing a compile
+// while the shared index lock is held leaves pages and files untouched.
+func TestCompile_SharedMutexHeldWritesNothing(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir compiled: %v", err)
+	}
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", time.Now())
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/auth", OriginalName: "auth", SourceID: "compiled",
+		SourceDocID: "auth", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	articlePath := filepath.Join(compiledDir, "auth.md")
+	if err := os.WriteFile(articlePath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write article: %v", err)
+	}
+
+	mu := &sync.Mutex{}
+	c := NewCompile(s, nil, &llm.NoopSynthesizer{Response: "new", Avail: true, Model: "m"}, tmpDir, mu, 0)
+	mu.Lock()
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	mu.Unlock()
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected refusal while shared mutex held")
+	}
+	data, err := os.ReadFile(articlePath)
+	if err != nil {
+		t.Fatalf("article removed: %v", err)
+	}
+	if string(data) != "old" {
+		t.Errorf("article changed: %q", data)
+	}
+	page, _ := s.GetPage("compiled/auth")
+	if page == nil || page.Tier != "validated" {
+		t.Errorf("page/tier changed: %+v", page)
+	}
+}
+
+// TestStoreCompiled_RefusesValidatedOverwrite verifies that agent-generated
+// content cannot silently replace a human-validated article.
+func TestStoreCompiled_RefusesValidatedOverwrite(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
+
+	first := types.StoreCompiledInput{Tag: "gateway", Content: "First version.", Sources: []string{"gateway-1"}, Model: "model-a"}
+	if res, _, err := c.StoreCompiled(context.Background(), nil, first); err != nil || res.IsError {
+		t.Fatalf("first StoreCompiled: err=%v result=%v", err, res)
+	}
+	if err := s.PromotePageTier("compiled/gateway"); err != nil {
+		t.Fatalf("PromotePageTier: %v", err)
+	}
+
+	second := types.StoreCompiledInput{Tag: "gateway", Content: "Second version.", Sources: []string{"gateway-2"}, Model: "model-b"}
+	res, _, err := c.StoreCompiled(context.Background(), nil, second)
+	if err != nil {
+		t.Fatalf("second StoreCompiled: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected refusal for validated page, got: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "validated") {
+		t.Errorf("result = %q, want validated-overwrite refusal", resultText(res))
+	}
+
+	page, err := s.GetPage("compiled/gateway")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page.Tier != "validated" {
+		t.Errorf("tier = %q, want validated", page.Tier)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "gateway.md"))
+	if err != nil {
+		t.Fatalf("read article: %v", err)
+	}
+	if !strings.Contains(string(data), "First version.") {
+		t.Errorf("validated article was overwritten: %q", data)
 	}
 }

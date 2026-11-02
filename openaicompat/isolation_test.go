@@ -60,7 +60,7 @@ func TestSeparateGatewaysKeepCredentialsIsolated_PerCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOpenAICompatibleEmbedder: %v", err)
 	}
-	synthesizer, err := llm.NewOpenAICompatibleSynthesizer(synthesisServer.URL+"/v1", "synthesis-model")
+	synthesizer, err := llm.NewOpenAICompatibleSynthesizer(synthesisServer.URL+"/v1", "synthesis-model", llm.ResolveSynthesisAPIKey(""), 0, 0)
 	if err != nil {
 		t.Fatalf("NewOpenAICompatibleSynthesizer: %v", err)
 	}

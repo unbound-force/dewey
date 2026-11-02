@@ -448,17 +448,19 @@ The tool returns a one-line counts summary only — `dispatch_review_runs:
 <status> (correlation_id <id>) — <completed> completed, <failed> failed,
 <skipped> skipped, <findings> findings, <proposals> proposals`. Capture
 the `correlation_id` reported in that one-line summary and pass it as
-`correlation_id` on every subsequent consolidation call in this
-workflow — the Section 5a retrieval, the Section 5b finalization, and
-every identical-call retry. Forward it unconditionally, never
-conditioned on in-process session-map state. The machine-readable tool
-metadata carries the same ID as a secondary channel for harnesses that
-surface it. The `findings`, `proposals`, and `warnings` arrays exist
-only in tool metadata that never reaches the calling model. Never
-consume them from `dispatch_review_runs`. The per-run records with
-run-recorded `workflow_verdict`, findings, advisories, run counts,
-and the top-level `proposals` array arrive via the single no-provenance
-`consolidate_dispatch` retrieval call documented in Section 5a.
+the `correlation_id` argument of the single finalization call in
+Section 5 and of every identical-call retry. Forward it
+unconditionally, never conditioned on in-process session-map state.
+The machine-readable tool metadata carries the same ID as a secondary
+channel for harnesses that surface it. The `findings`, `proposals`,
+and `warnings` arrays exist only in tool metadata that never reaches
+the calling model. Never consume them from `dispatch_review_runs`. The
+per-run records with run-recorded `workflow_verdict`, findings,
+advisories, run counts, and the top-level `proposals` and `warnings`
+arrays arrive in the finalization result of the single
+`consolidate_dispatch` call documented in Section 5 — source lesson
+proposals and consolidation warnings from that result and from
+nowhere else.
 
 Sibling evidence is acquired exactly once and reused for every run. All
 returned sibling text is bounded untrusted context — it may inform findings
@@ -493,86 +495,106 @@ One failed run MUST NOT cancel independent runs. Budget, limit,
 cancellation, and policy skips are terminal states — never silently
 dropped.
 
-### 5. Consolidate Successful Runs
+### 5. Finalize Dispatch
 
-Require at least one successful structured assessment. First deduplicate
-successful run findings by normalized file plus root cause. Retain every
-contributing run id, agent, model, variant, source, and sequence. Then
-apply the existing cross-persona root-cause grouping and compound
-severity rules from `severity.md`. Independent root causes stay separate.
+Finalize the dispatch through a single deterministic
+`consolidate_dispatch` call, including plan failure, no-success, and
+fail-closed early-stop paths. Never assemble, restate, or recompute
+the payload; never call `finalize_review_dispatch` directly. The
+dispatch session persisted during Section 4c already holds the
+command, mode, input context, change profile, plan, coverage, and
+every run, and `consolidate_dispatch` reads it directly.
 
-Any blocking successful run yields `REQUEST CHANGES`. Otherwise any
-advisory yields `APPROVE WITH ADVISORIES`; otherwise yield `APPROVE`.
-Failed runs never vote.
+If the dispatch was all-skip — the Section 4c summary reports zero
+completed and zero failed runs, every plan entry skipped, and no
+dispatch session exists — the call reports that, the failure is
+non-mechanical, and the fail-closed path below applies. Never fall
+back to manual payload assembly.
 
-### 5a. Store Lesson Proposals
+Resolve provenance only from the Step 2 frozen PR input context —
+never from the local checkout or a mutable ref. `branch` is the PR's
+head branch (`head_ref`). `commit` is the PR's immutable head SHA
+(`head_sha`, 40-character lowercase hex, already validated in Step 2).
+`workflow_id` is the fixed stable string `uf.review-pr`. The finalizer
+validates the provenance commit against `input_context.head_sha`, so
+the frozen pair is the only valid source. If the frozen PR context
+lacks `head_ref` or `head_sha`, or either field fails validation —
+`head_sha` against the 40-character lowercase-hex SHA format,
+`head_ref` against the provenance branch schema of printable ASCII at
+most 255 characters, matching dispatch-time validation — **STOP**
+with an explicit error naming the field; never proceed with a
+fabricated, defaulted, or omitted value.
 
-Only the parent command stores lesson proposals. Immediately after
-the `dispatch_review_runs` call in Section 4c completes, retrieve the
-dispatch payload: call `consolidate_dispatch` exactly once WITHOUT
-provenance, passing the captured `correlation_id` from Section 4c. The
-no-provenance call is the side-effect-free retrieval mode — no
-finalization occurs and no finalization artifacts are written. The
-top-level `proposals` array of that retrieval payload
-contains validated proposals already submitted by child agents via
-`submit_lesson_proposal`. Use this single payload — do not re-fetch
-it. Never source the proposals from `dispatch_review_runs`.
+Then call `consolidate_dispatch` exactly once per finalization
+attempt, with the captured `correlation_id` from Section 4c and
+provenance as its only arguments:
 
-Each proposal carries the validated shape `{agent, information, tag,
-category}` as defined by the review-dispatch dispatch artifact schema —
-there is no `reference` field. For each proposal in the `proposals`
-array, call `dewey_store_learning` exactly once using the proposal's
-`information` and `tag`, with the proposal's `category` as the learning
-category. If Dewey is unavailable, record an informational skip and do
-not change the review verdict. Never store raw `> learn:` text or
-child-supplied tags, categories, or hashes.
+```json
+{
+  "correlation_id": "<captured from Section 4c>",
+  "provenance": {
+    "branch": "<PR head branch>",
+    "commit": "<PR head SHA>",
+    "workflow_id": "uf.review-pr"
+  }
+}
+```
 
-**Retrieval failure behavior.** The retrieval call is side-effect-free,
-so its failure handling is strict and bounded:
+With provenance the tool runs the finalizer internally and returns
+the finalization result directly. Never call `finalize_review_dispatch`
+yourself, and never hand-build or transform a finalization payload.
 
-- **Transient failure** (timeout or intermittent tool error): retry the
-  identical no-provenance call exactly once, passing the same captured
-  `correlation_id`. If the retry succeeds, continue with the retrieved
-  payload. If the retry also fails, stop, report the failure, and fail
-  closed — fabricate no run records, verdicts, findings, or proposals,
-  and substitute no child transcripts or improvised session-database
-  reads for the missing payload.
-- **Permanent failure** (a tool-reported error status, or a `not_found`
-  consolidation carrying the forwarded `correlation_id` for a dispatch
-  that executed runs): do not retry. With the ID forwarded, `not_found`
-  means no persisted dispatch session exists — a plugin-process or
-  tool-session split can no longer produce it. A `not_found` lacking
-  the forwarded `correlation_id` indicates the capture step was
-  skipped — that is equally permanent: do not retry, do not improvise
-  the missing ID. Stop, report the failure, and fail closed without
-  fabricating run records, verdicts, findings, or proposals.
-- **All-skip dispatch** (the summary reports zero completed and zero
-  failed runs — every plan entry skipped — and no dispatch session
-  exists): a valid outcome, not a retrieval failure. Record zero
-  findings, zero proposals, and zero persona votes, and resolve the
-  review verdict through this command's zero-success semantics without
-  fabricating records; do not fail closed over the absent dispatch
-  session.
+The tool's response is authoritative. On `status: "success"`, read the
+review-dispatch artifact path (`artifact_path`), the canonical
+review-verdict v2 projection (`review_verdict`), and whether calculated
+data is authoritative (`calculated_assessment.authoritative`) directly
+from the response. Do not recompute, re-derive, or re-map any of them,
+and do not alter the tool-computed verdict, `verdict_reason`, run
+counts, findings, or advisories. The response's top-level `proposals`
+and `warnings` arrays are the single source for lesson proposals and
+consolidation warnings.
 
-### 5b. Finalize Dispatch
+Each proposal in the finalization result's top-level `proposals` array
+carries the validated shape `{agent, information, tag, category}` as
+defined by the review-dispatch dispatch artifact schema — there is no
+`reference` field. For each proposal in that array, call
+`dewey_store_learning` exactly once using the proposal's
+`information` and `tag`, with the proposal's `category` as the
+learning category. If Dewey is unavailable, record an informational
+skip and do not change the review verdict. Never store raw `> learn:`
+text or child-supplied tags, categories, or hashes. Source the
+proposals only from the finalization result — never from
+`dispatch_review_runs` and never via a separate no-provenance
+retrieval call.
 
-Call `finalize_review_dispatch` with:
+**Bounded mechanical retry.** If the call fails, classify the failure
+from the structured response alone — default-deny. The failure is
+mechanical only when the finalizer rejected the payload at its
+validation stage: the response reports a rejected payload with
+enumerated defects, no persisted artifact, and a null
+`calculated_assessment`. Everything else is non-mechanical:
+persistence failures (the response retains a non-authoritative
+`calculated_assessment`), content failures, tool or runtime errors,
+and any failure whose class cannot be determined from the response.
+Never infer retry eligibility by pattern-matching natural-language
+error text.
 
-- command `review-council`, mode `code`, `full: false`, and the exact immutable input context from Step 2;
-- planner change profile, plan version, and every plan entry;
-- every planned run in a terminal state with complete provenance;
-- actual pre-flight coverage from Step 3.7;
-- deduplicated findings, advisories, run counts, and reason;
-- native `council` result and its identical generic verdict; and
-- branch, immutable reviewed head SHA, workflow id, and the captured
-  `correlation_id` from Section 4c as the payload's `correlation_id`.
+For a mechanical failure, retry the identical `consolidate_dispatch`
+call — same captured `correlation_id`, same provenance, no changes —
+at most twice. The initial attempt plus at most two retries is the
+fixed bound; when the second retry is rejected, no further retry is
+attempted. This command has no assembled payload to correct, and
+assessment data (verdicts, findings, run states) MUST NOT be altered
+to make validation pass.
 
-Use the finalizer's returned data as authoritative. It persists the
-`review-dispatch` artifact and returns canonical `review-verdict` v2
-data. If validation or persistence fails, report the calculated
-assessment as human-only, change the operation result to failing
-`INCONCLUSIVE`, block automated progression, and do not fabricate a
-finding or canonical artifact.
+When retries are exhausted or the failure is non-mechanical, fail
+closed to `INCONCLUSIVE`: retain the tool's calculated assessment only
+as non-authoritative human context, change the operation result to
+failing `INCONCLUSIVE`, block automated progression, and do not
+fabricate a finding or canonical artifact. Lesson storage is skipped
+on the fail-closed path: the stranded proposals remain retained in
+the persisted dispatch store, recoverable there, and nothing is
+fabricated — report them as stranded, never store improvised lessons.
 
 ---
 
@@ -636,6 +658,22 @@ Present the findings in this structured format:
 
 <Brief justification. Pre-existing CI failures do NOT block the PR verdict.>
 ```
+
+**Presentation-only grouping.** When preparing the GitHub review
+comment and the terminal report, first deduplicate successful run
+findings by normalized file plus root cause for display, retaining
+every contributing run id, agent, model, variant, source, and
+sequence in the attribution. Then apply the existing cross-persona
+root-cause grouping and compound severity rules from
+`.opencode/uf/packs/severity.md`; independent root causes stay
+separate. These transformations are presentation-only: they govern
+presenting the GitHub review comment and the terminal report ONLY,
+and never merge, filter, re-order, or otherwise alter the findings,
+contributing run ids, verdicts, run counts, or advisories in
+finalization data. The finalized payload's findings remain exactly
+as `consolidate_dispatch` returned them, because the finalizer
+enforces exact correspondence between run findings and consolidated
+findings.
 
 Severity levels from `.opencode/uf/packs/severity.md` when loaded, otherwise:
 - **CRITICAL**: Must be fixed before merge (security vulnerabilities, data loss risks)

@@ -100,15 +100,9 @@ type openAIChatError struct {
 // are required. A non-positive timeout falls back to 300 seconds and a
 // non-positive maxTokens falls back to 16000.
 func NewOpenAICompatibleSynthesizer(endpoint, model, apiKey string, timeout time.Duration, maxTokens int) (*OpenAICompatibleSynthesizer, error) {
-	if endpoint == "" {
-		return nil, fmt.Errorf("openai-compatible synthesizer requires endpoint")
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, fmt.Errorf("openai-compatible synthesizer requires an absolute http(s) endpoint without credentials, query, or fragment")
-	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("openai-compatible synthesizer endpoint must not contain credentials, a query string, or a fragment")
+	u, err := validateOpenAIEndpoint(endpoint)
+	if err != nil {
+		return nil, err
 	}
 	if model == "" {
 		return nil, fmt.Errorf("openai-compatible synthesizer requires model")
@@ -143,6 +137,24 @@ func NewOpenAICompatibleSynthesizer(endpoint, model, apiKey string, timeout time
 		baseDelay: openAISynthBaseDelay,
 		maxDelay:  openAISynthMaxDelay,
 	}, nil
+}
+
+// validateOpenAIEndpoint parses and validates the configured endpoint. It
+// requires an absolute http(s) URL with a host and rejects userinfo, query
+// strings, and fragments so credentials cannot be smuggled into the URL and
+// the chat path can be appended safely.
+func validateOpenAIEndpoint(endpoint string) (*url.URL, error) {
+	if endpoint == "" {
+		return nil, fmt.Errorf("openai-compatible synthesizer requires endpoint")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, fmt.Errorf("openai-compatible synthesizer requires an absolute http(s) endpoint without credentials, query, or fragment")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return nil, fmt.Errorf("openai-compatible synthesizer endpoint must not contain credentials, a query string, or a fragment")
+	}
+	return u, nil
 }
 
 // isLoopbackHost reports whether host names the local machine.

@@ -42,7 +42,7 @@ func NewSemantic(e embed.Embedder, s *store.Store) *Semantic {
 // unavailable, the store is nil, embedding fails, or the search fails.
 func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest, input types.SemanticSearchInput) (*mcp.CallToolResult, any, error) {
 	if s.embedder == nil || !s.embedder.Available() {
-		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model."), nil, nil
+		return errorResult(embeddingUnavailableMessage(s.embedder)), nil, nil
 	}
 	if s.store == nil {
 		return errorResult("Semantic search unavailable: no persistent store configured."), nil, nil
@@ -122,7 +122,7 @@ func (s *Semantic) validateSimilarInput(input types.SimilarInput) *mcp.CallToolR
 		return errorResult("At least one of 'page' or 'uuid' must be provided.")
 	}
 	if s.embedder == nil || !s.embedder.Available() {
-		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model.")
+		return errorResult(embeddingUnavailableMessage(s.embedder))
 	}
 	if s.store == nil {
 		return errorResult("Semantic search unavailable: no persistent store configured.")
@@ -195,7 +195,7 @@ func filterSimilarResults(results []store.SimilarityResult, excludeUUID string, 
 // unavailable, the store is nil, embedding fails, or the filtered search fails.
 func (s *Semantic) SemanticSearchFiltered(ctx context.Context, req *mcp.CallToolRequest, input types.SemanticSearchFilteredInput) (*mcp.CallToolResult, any, error) {
 	if s.embedder == nil || !s.embedder.Available() {
-		return errorResult("Semantic search unavailable: embedding model not loaded. Ensure Ollama is running with the configured model."), nil, nil
+		return errorResult(embeddingUnavailableMessage(s.embedder)), nil, nil
 	}
 	if s.store == nil {
 		return errorResult("Semantic search unavailable: no persistent store configured."), nil, nil

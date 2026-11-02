@@ -76,7 +76,23 @@ type configFile struct {
 		Project       string `yaml:"project"`
 		Region        string `yaml:"region"`
 		MaxChunkChars int    `yaml:"max_chunk_chars"`
+		// APIKey is parsed only to warn that it is ignored: keys are
+		// environment-only (FR-006, FR-024). It never reaches ProviderConfig.
+		APIKey string `yaml:"api_key"`
 	} `yaml:"embedding"`
+}
+
+// HasAPIKeyField reports whether an embedding.api_key field appears in
+// the per-vault or global config.yaml. The field is ignored by design
+// (FR-006); startup and dewey doctor warn about it (FR-024).
+func HasAPIKeyField(deweyDir string) bool {
+	if cfg := readConfigFile(deweyDir); cfg != nil && cfg.Embedding.APIKey != "" {
+		return true
+	}
+	if cfg := readConfigFile(globalConfigDir()); cfg != nil && cfg.Embedding.APIKey != "" {
+		return true
+	}
+	return false
 }
 
 // readConfigFile attempts to parse a config.yaml at the given directory.
@@ -103,8 +119,13 @@ func readConfigFile(dir string) *configFile {
 //  1. DEWEY_EMBEDDING_ENDPOINT env var (app-specific override — always wins)
 //  2. Per-vault config: {deweyDir}/config.yaml embedding.endpoint
 //  3. Global config: ~/.config/dewey/config.yaml embedding.endpoint
-//  4. OLLAMA_HOST env var (ecosystem standard fallback)
-//  5. DefaultOllamaEndpoint constant
+//  4. OLLAMA_HOST env var (Ollama only — ecosystem standard fallback)
+//  5. DefaultOllamaEndpoint constant (Ollama only)
+//
+// For provider "openai-compatible" tiers 4 and 5 do not apply: the
+// endpoint must come from the env var or config.yaml, and an empty
+// gateway endpoint is left empty so the factory reports the missing
+// field (FR-009, FR-022).
 func ReadEmbeddingConfig(deweyDir string) ProviderConfig {
 	// Try per-vault config first, then global.
 	cfg := readConfigFile(deweyDir)
@@ -147,8 +168,9 @@ func ReadEmbeddingConfig(deweyDir string) ProviderConfig {
 
 	// If no endpoint was set by config.yaml or DEWEY_EMBEDDING_ENDPOINT,
 	// fall back to the OLLAMA_HOST env var chain (OLLAMA_HOST > default).
+	// Gateway endpoints have no ecosystem or localhost default (FR-022).
 	// DEWEY_EMBEDDING_ENDPOINT was already checked above, so skip it here.
-	if pc.Endpoint == "" {
+	if pc.Endpoint == "" && pc.Provider != "openai-compatible" {
 		pc.Endpoint = resolveOllamaHostFallback()
 	}
 

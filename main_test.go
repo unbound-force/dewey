@@ -1924,3 +1924,74 @@ func TestBackgroundCuration_ContinuesAfterError(t *testing.T) {
 		t.Fatal("backgroundCurateStore did not exit after context cancellation")
 	}
 }
+
+// --- OpenAI-compatible startup tests (spec 017, T036) ---
+
+// TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode verifies
+// that an unreachable openai-compatible endpoint degrades to keyword mode,
+// logs the provider reason, never suggests ollama pull, and emits both
+// FR-024 credential warnings without leaking the key.
+func TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+
+	configYAML := `embedding:
+  provider: openai-compatible
+  model: stub-model
+  endpoint: http://192.0.2.1:1/v1
+  api_key: super-secret-value
+`
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-startup-secret")
+	t.Setenv("DEWEY_API_KEY", "")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	be, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", false)
+	if err != nil {
+		t.Fatalf("initObsidianBackend should degrade, got error: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if be == nil {
+		t.Fatal("expected non-nil backend in keyword mode")
+	}
+
+	logOutput := logBuf.String()
+	checks := []struct {
+		substr string
+		desc   string
+	}{
+		{"embedding model not available", "degradation warning"},
+		{"openai-compatible", "provider name"},
+		{"unreachable", "provider reason"},
+		{"would transit http://", "cleartext credential warning"},
+		{"api_key in config.yaml is ignored", "ignored api_key warning"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(logOutput, c.substr) {
+			t.Errorf("log should contain %s %q, got: %q", c.desc, c.substr, logOutput)
+		}
+	}
+	if strings.Contains(logOutput, "ollama pull") {
+		t.Errorf("gateway startup must not suggest ollama pull, got: %q", logOutput)
+	}
+	for _, secret := range []string{"sk-startup-secret", "super-secret-value"} {
+		if strings.Contains(logOutput, secret) {
+			t.Errorf("log must not contain credential material %q, got: %q", secret, logOutput)
+		}
+	}
+}

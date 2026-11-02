@@ -237,3 +237,129 @@ func TestReadEmbeddingConfig_VaultOverridesGlobal(t *testing.T) {
 		t.Errorf("Model = %q, want vault-model", cfg.Model)
 	}
 }
+
+// --- OpenAI-compatible provider factory and configuration tests ---
+
+func TestNewEmbedderFromConfig_OpenAICompatible(t *testing.T) {
+	clearEmbeddingKeyEnv(t)
+	cfg := ProviderConfig{
+		Provider: "openai-compatible",
+		Model:    "openrouter/amazon/titan-embed-text-v2",
+		Endpoint: "https://openrouter.ai/api/v1",
+	}
+
+	e, err := NewEmbedderFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("factory construction must succeed with no API key: %v", err)
+	}
+	if _, ok := e.(*OpenAICompatibleEmbedder); !ok {
+		t.Fatalf("expected *OpenAICompatibleEmbedder, got %T", e)
+	}
+	if e.ModelID() != "openrouter/amazon/titan-embed-text-v2" {
+		t.Errorf("ModelID = %q", e.ModelID())
+	}
+}
+
+func TestNewEmbedderFromConfig_OpenAICompatibleMissingFields(t *testing.T) {
+	clearEmbeddingKeyEnv(t)
+
+	_, err := NewEmbedderFromConfig(ProviderConfig{
+		Provider: "openai-compatible",
+		Model:    "model",
+	})
+	if err == nil || !strings.Contains(err.Error(), "embedding.endpoint") {
+		t.Fatalf("missing endpoint must name embedding.endpoint: %v", err)
+	}
+
+	_, err = NewEmbedderFromConfig(ProviderConfig{
+		Provider: "openai-compatible",
+		Endpoint: "https://gateway.example/v1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "embedding.model") {
+		t.Fatalf("missing model must name embedding.model: %v", err)
+	}
+}
+
+func TestNewEmbedderFromConfig_UnknownProviderListsAll(t *testing.T) {
+	_, err := NewEmbedderFromConfig(ProviderConfig{Provider: "unsupported"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, provider := range []string{"ollama", "vertex", "openai-compatible"} {
+		if !strings.Contains(err.Error(), provider) {
+			t.Fatalf("unknown-provider error must list %q: %v", provider, err)
+		}
+	}
+}
+
+func TestReadEmbeddingConfig_GatewayEnvFirst(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `embedding:
+  provider: openai-compatible
+  model: gateway-model
+  endpoint: http://config-host:8080/v1
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "http://env-host:9090/v1")
+	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.Provider != "openai-compatible" {
+		t.Fatalf("Provider = %q", cfg.Provider)
+	}
+	if cfg.Endpoint != "http://env-host:9090/v1" {
+		t.Fatalf("DEWEY_EMBEDDING_ENDPOINT must win for embedding (env-first): %q", cfg.Endpoint)
+	}
+}
+
+func TestReadEmbeddingConfig_GatewayDoesNotUseOllamaFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `embedding:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadEmbeddingConfig(dir)
+	if cfg.Endpoint != "" {
+		t.Fatalf("gateway endpoint must not fall back to OLLAMA_HOST or localhost: %q", cfg.Endpoint)
+	}
+}
+
+func TestReadEmbeddingConfig_GatewayFromGlobalConfig(t *testing.T) {
+	vaultDir := t.TempDir()
+
+	globalDir := filepath.Join(t.TempDir(), "dewey")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	globalYAML := `embedding:
+  provider: openai-compatible
+  model: global-gateway-model
+  endpoint: https://global-gateway.example/v1
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(globalDir))
+
+	cfg := ReadEmbeddingConfig(vaultDir)
+	if cfg.Provider != "openai-compatible" {
+		t.Fatalf("Provider = %q, want openai-compatible (from global)", cfg.Provider)
+	}
+	if cfg.Endpoint != "https://global-gateway.example/v1" {
+		t.Fatalf("Endpoint = %q, want the global gateway endpoint", cfg.Endpoint)
+	}
+}

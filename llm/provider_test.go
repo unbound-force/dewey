@@ -358,3 +358,120 @@ func TestReadSynthesisConfig_ConfigYAMLWinsOverSynthesisEndpoint(t *testing.T) {
 			cfg.Endpoint, "http://config-host:11434")
 	}
 }
+
+// --- OpenAI-compatible provider factory and configuration tests ---
+
+func TestNewSynthesizerFromConfig_OpenAICompatible(t *testing.T) {
+	clearSynthesisKeyEnv(t)
+	cfg := ProviderConfig{
+		Provider: "openai-compatible",
+		Model:    "enmaas/rits/zai-org/glm-5-3",
+		Endpoint: "https://gateway.example/v1",
+	}
+
+	s, err := NewSynthesizerFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("factory construction must succeed with no API key: %v", err)
+	}
+	if _, ok := s.(*OpenAICompatibleSynthesizer); !ok {
+		t.Fatalf("expected *OpenAICompatibleSynthesizer, got %T", s)
+	}
+	if s.ModelID() != "enmaas/rits/zai-org/glm-5-3" {
+		t.Errorf("ModelID = %q", s.ModelID())
+	}
+}
+
+func TestNewSynthesizerFromConfig_OpenAICompatibleMissingFields(t *testing.T) {
+	clearSynthesisKeyEnv(t)
+
+	_, err := NewSynthesizerFromConfig(ProviderConfig{
+		Provider: "openai-compatible",
+		Model:    "model",
+	})
+	if err == nil || !strings.Contains(err.Error(), "synthesis.endpoint") {
+		t.Fatalf("missing endpoint must name synthesis.endpoint: %v", err)
+	}
+
+	_, err = NewSynthesizerFromConfig(ProviderConfig{
+		Provider: "openai-compatible",
+		Endpoint: "https://gateway.example/v1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "synthesis.model") {
+		t.Fatalf("missing model must name synthesis.model: %v", err)
+	}
+}
+
+func TestNewSynthesizerFromConfig_UnknownProviderListsAll(t *testing.T) {
+	_, err := NewSynthesizerFromConfig(ProviderConfig{Provider: "unsupported"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, provider := range []string{"ollama", "vertex", "openai-compatible"} {
+		if !strings.Contains(err.Error(), provider) {
+			t.Fatalf("unknown-provider error must list %q: %v", provider, err)
+		}
+	}
+}
+
+func TestReadSynthesisConfig_GatewayConfigFirst(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+  endpoint: http://config-host:8080/v1
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
+	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Provider != "openai-compatible" {
+		t.Fatalf("Provider = %q", cfg.Provider)
+	}
+	if cfg.Endpoint != "http://config-host:8080/v1" {
+		t.Fatalf("config.yaml must win for synthesis (config-first): %q", cfg.Endpoint)
+	}
+}
+
+func TestReadSynthesisConfig_GatewayEnvEndpointFallback(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Endpoint != "http://env-host:9090/v1" {
+		t.Fatalf("gateway endpoint should fall back to DEWEY_SYNTHESIS_ENDPOINT: %q", cfg.Endpoint)
+	}
+}
+
+func TestReadSynthesisConfig_GatewayDoesNotUseOllamaFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Endpoint != "" {
+		t.Fatalf("gateway endpoint must not fall back to OLLAMA_HOST or localhost: %q", cfg.Endpoint)
+	}
+}

@@ -8,9 +8,13 @@
 // synthesis use different API endpoints, different models, and have
 // different error modes. Single Responsibility Principle.
 //
-// This package is a leaf dependency — it MUST NOT import any other Dewey
-// packages. Only stdlib, charmbracelet/log, golang.org/x/oauth2, and
-// gopkg.in/yaml.v3 are allowed.
+// This package imports openaicompat (a Dewey leaf) for the
+// OpenAI-compatible provider. That knowingly extends the
+// specs/013-knowledge-compile leaf-dependency invariant, as already done
+// by spec 016's provider-config consolidation; the divergence is
+// recorded in specs/017 research.md R13. Otherwise only stdlib,
+// charmbracelet/log, golang.org/x/oauth2, embed (for the shared Ollama
+// default endpoint), and gopkg.in/yaml.v3 are imported.
 package llm
 
 import (
@@ -66,6 +70,16 @@ type Synthesizer interface {
 
 	// ModelID returns the model identifier used for text generation.
 	ModelID() string
+}
+
+// UnavailableReasoner is an optional capability implemented by
+// synthesizers that can explain why they are unavailable. It is a
+// separate interface so the Synthesizer contract stays unchanged
+// (FR-008, FR-014, research.md R3).
+type UnavailableReasoner interface {
+	// UnavailableReason returns a credential-free, actionable reason when
+	// the provider is unavailable, or "" when it is available.
+	UnavailableReason() string
 }
 
 // OllamaSynthesizer implements Synthesizer using Ollama's HTTP API.

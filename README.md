@@ -2,7 +2,7 @@
 
 Knowledge graph MCP server that gives AI full access to your knowledge graph. Supports **Logseq** and **Obsidian** — both with full read-write support. Navigate pages, search blocks, analyze link structure, track decisions, manage flashcards, compile knowledge, curate knowledge stores, and write content — all through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable LLM providers (Ollama, Vertex AI), pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
+Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu) by Max Skridlevsky, extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable LLM providers (Ollama, Vertex AI, and any OpenAI-compatible gateway), pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, and trust tiers for the [Unbound Force](https://github.com/unbound-force) AI agent swarm ecosystem.
 
 Built in Go with the [official MCP Go SDK](https://github.com/modelcontextprotocol/go-sdk).
 
@@ -316,9 +316,10 @@ Ignore runtime state, not knowledge. The machine-local runtime state — `.uf/de
 | `LOGSEQ_API_TOKEN` | (required for Logseq) | Bearer token from Logseq settings |
 | `DEWEY_BACKEND` | `obsidian` | Backend type: `obsidian` (default) or `logseq` |
 | `OBSIDIAN_VAULT_PATH` | — | Path to Obsidian vault root |
-| `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Ollama embedding model name |
-| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Ollama API endpoint |
+| `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Embedding model name |
+| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Embedding API endpoint (required for `openai-compatible`, no Ollama fallback) |
 | `DEWEY_CHUNK_MAX_CHARS` | `12288` | Max chunk characters for embedding (model-dependent) |
+| `DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY` / `DEWEY_API_KEY` | *(none)* | OpenAI-compatible gateway credentials (environment-only) |
 | `DEWEY_AUTHOR` | — | Override author identity for `store_learning` (useful in CI or shared environments) |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub API token for content sources |
 
@@ -374,7 +375,7 @@ dewey status [--vault PATH] [--json]
 
 ### dewey doctor
 
-Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), Ollama availability, embedding model status, synthesis layer configuration (Ollama/Vertex provider, connectivity, model availability), MCP server process, and opencode.json configuration.
+Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), Ollama availability, embedding model status, synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, connectivity, model availability), MCP server process, and opencode.json configuration.
 
 ```bash
 dewey doctor [--vault PATH]
@@ -561,7 +562,7 @@ Dewey respects `.gitignore` files at the root of each source directory. Addition
 
 ## Semantic Search Setup
 
-Semantic search requires an embedding provider. Dewey defaults to [Ollama](https://ollama.ai) running locally, but also supports [Google Vertex AI](#vertex-ai-provider). All keyword-based tools work without an embedding provider — only the 3 semantic search tools (`semantic_search`, `similar`, `semantic_search_filtered`) require one.
+Semantic search requires an embedding provider. Dewey defaults to [Ollama](https://ollama.ai) running locally, but also supports [Google Vertex AI](#vertex-ai-provider) and any [OpenAI-compatible gateway](#openai-compatible-gateway-provider). All keyword-based tools work without an embedding provider — only the 3 semantic search tools (`semantic_search`, `similar`, `semantic_search_filtered`) require one.
 
 ### Ollama (Default)
 
@@ -620,6 +621,20 @@ synthesis:
   region: us-east5
 ```
 
+Any OpenAI-compatible gateway (OpenRouter, ENMaas, LiteLLM, vLLM, or a self-hosted server) can serve either capability:
+
+```yaml
+embedding:
+  provider: openai-compatible
+  model: openrouter/amazon/titan-embed-text-v2
+  endpoint: https://openrouter.ai/api/v1
+
+synthesis:
+  provider: openai-compatible
+  model: enmaas/rits/zai-org/glm-5-3
+  endpoint: https://gateway.example/v1
+```
+
 #### Vertex AI Provider
 
 Vertex AI requires Google Cloud application-default credentials:
@@ -634,6 +649,32 @@ Set `project` and `region` in your config to match your GCP setup. Use a regiona
 
 **Rate limiting**: Vertex AI providers automatically retry on HTTP 429 (Too Many Requests) with exponential backoff and jitter — base delay 1 second, maximum 60 seconds, up to 5 attempts. The `Retry-After` header is respected when present. If retries are exhausted, the error is returned to the caller.
 
+#### OpenAI-Compatible Gateway Provider
+
+`provider: openai-compatible` speaks the OpenAI v1 wire protocol: synthesis via `POST {endpoint}/chat/completions`, embedding via `POST {endpoint}/embeddings`, and a `GET {endpoint}/models` availability probe. The configured `endpoint` is the API base URL (for example `https://gateway.example/v1`); a trailing slash or operation path is normalized away.
+
+- `model` is sent verbatim — slashes and hyphens are not parsed or rewritten.
+- `endpoint` has no Ollama fallback: `OLLAMA_HOST` and the localhost default do not apply, so a missing gateway endpoint is a configuration error naming `embedding.endpoint` or `synthesis.endpoint`.
+- Endpoint precedence stays per code path: embedding is env-first (`DEWEY_EMBEDDING_ENDPOINT` over `config.yaml`); synthesis is config-first (`config.yaml` over `DEWEY_SYNTHESIS_ENDPOINT`).
+- Availability is a cached (30-second) authenticated `GET /models` probe with a one-second timeout. While it reports unavailable, semantic tools return the provider's reason and keyword/graph tools keep working.
+- HTTP 429 responses retry with `Retry-After` or exponential backoff with jitter, matching Vertex (base 1 second, cap 60 seconds, up to 5 attempts).
+
+Credentials are environment-only — never put them in `config.yaml`:
+
+| Variable | Applies to | Position |
+|----------|------------|----------|
+| `DEWEY_EMBEDDING_API_KEY` | embedding | first |
+| `DEWEY_SYNTHESIS_API_KEY` | synthesis | first |
+| `DEWEY_API_KEY` | both | second |
+| `OPENROUTER_API_KEY` | both | third, only when the endpoint host is exactly `openrouter.ai` |
+
+An empty variable counts as unset, and no key is required for an unauthenticated self-hosted gateway (the `Authorization` header is omitted). A key present in `config.yaml` is ignored, and startup plus `dewey doctor` warn about it. Both commands also warn when a resolved key would transit `http://` to a non-loopback host.
+
+```bash
+export DEWEY_SYNTHESIS_API_KEY="<your-key>"
+dewey doctor   # reports gateway configuration and probe status without secrets
+```
+
 #### Global Config
 
 Create `~/.config/dewey/config.yaml` (or `$XDG_CONFIG_HOME/dewey/config.yaml`) to set defaults for all vaults. Per-vault config overrides global.
@@ -645,9 +686,13 @@ Environment variables override config file values for embedding. For synthesis, 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Embedding model (overrides config) |
-| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Embedding API endpoint (overrides config) |
+| `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Embedding API endpoint (overrides config; required for `openai-compatible`) |
 | `DEWEY_CHUNK_MAX_CHARS` | `12288` | Max chunk characters for embedding (overrides config) |
 | `DEWEY_GENERATION_MODEL` | *(none)* | Synthesis model (fallback when no config) |
+| `DEWEY_EMBEDDING_API_KEY` | *(none)* | Gateway embedding key (first in the credential chain) |
+| `DEWEY_SYNTHESIS_API_KEY` | *(none)* | Gateway synthesis key (first in the credential chain) |
+| `DEWEY_API_KEY` | *(none)* | Shared gateway key (second in the credential chain) |
+| `OPENROUTER_API_KEY` | *(none)* | Gateway key used only for the exact `openrouter.ai` host |
 
 ## Knowledge Compilation
 
@@ -777,7 +822,8 @@ types/
   logseq.go          Shared types with custom JSON unmarshaling
   tools.go           Input types for all 50 tools
   semantic.go        Semantic search types
-llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, NoopSynthesizer)
+llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, OpenAICompatibleSynthesizer, NoopSynthesizer)
+openaicompat/        Shared OpenAI-compatible transport (endpoint, auth, retry, errors, client, availability)
 store/
   store.go           SQLite persistence (pages, blocks, links, sources)
   embeddings.go      Vector embedding storage and cosine similarity search
@@ -785,6 +831,7 @@ store/
 embed/
   embed.go           Embedder interface + Ollama implementation
   vertex.go          Vertex AI embedding implementation
+  openai_compatible.go  OpenAI-compatible gateway embedding implementation
   provider.go        Provider factory + config
   chunker.go         Block-to-chunk preparation with heading context
 source/

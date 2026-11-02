@@ -9,16 +9,16 @@ import (
 // ProviderConfig holds the configuration for a synthesis provider.
 // Each provider type uses a subset of these fields.
 type ProviderConfig struct {
-	// Provider selects the synthesis backend: "ollama" or "vertex".
-	// Defaults to "ollama" if empty.
+	// Provider selects the synthesis backend: "ollama", "vertex", or
+	// "openai-compatible". Defaults to "ollama" if empty.
 	Provider string
 
 	// Model is the model identifier (e.g., "llama3.2:3b",
-	// "claude-sonnet-4-6").
+	// "claude-sonnet-4-6", "enmaas/rits/zai-org/glm-5-3").
 	Model string
 
 	// Endpoint is the base URL for the provider API.
-	// Required for ollama. Ignored for vertex.
+	// Required for ollama and openai-compatible. Ignored for vertex.
 	Endpoint string
 
 	// Project is the GCP project ID. Required for vertex only.
@@ -46,7 +46,9 @@ func NewSynthesizerFromConfig(cfg ProviderConfig) (Synthesizer, error) {
 			return nil, fmt.Errorf("vertex synthesis provider requires region")
 		}
 		return NewVertexSynthesizer(cfg.Project, cfg.Region, cfg.Model)
+	case "openai-compatible":
+		return NewOpenAICompatibleSynthesizer(cfg.Endpoint, cfg.Model)
 	default:
-		return nil, fmt.Errorf("unknown synthesis provider: %q (supported: ollama, vertex)", cfg.Provider)
+		return nil, fmt.Errorf("unknown synthesis provider: %q (supported: ollama, vertex, openai-compatible)", cfg.Provider)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/ignore"
 	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/openaicompat"
 	"github.com/unbound-force/dewey/v3/sanitize"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
@@ -1045,19 +1046,21 @@ func createIndexEmbedder(noEmbeddings bool, deweyDirs ...string) (embed.Embedder
 		}
 	}
 
+	if cfg.Provider == "openai-compatible" {
+		logGatewayCredentialWarnings(openaicompat.CapabilityEmbedding, cfg.Endpoint, embed.HasAPIKeyField(deweyDir))
+	}
+
 	embedder, err := embed.NewEmbedderFromConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("embedding provider error: %w", err)
 	}
 	if !embedder.Available() {
-		// Graceful degradation: keyword-only mode when model is missing.
-		// Matches the OllamaUnavailable path above — warn and continue
-		// without embeddings instead of hard-exiting (design decision D3).
+		// Graceful degradation: keyword-only mode when the model is
+		// unavailable. Matches the OllamaUnavailable path above — warn and
+		// continue without embeddings instead of hard-exiting (D3). The
+		// ollama pull hint is Ollama-only (FR-024).
 		logger.Warn("embedding model not available, continuing without embeddings",
-			"model", cfg.Model,
-			"endpoint", cfg.Endpoint,
-			"pull", fmt.Sprintf("ollama pull %s", cfg.Model),
-			"note", "semantic search is unavailable")
+			embeddingDegradationFields(cfg, embedder)...)
 		return nil, nil
 	}
 	logger.Info("embedding model available for indexing", "provider", cfg.Provider, "model", cfg.Model)
@@ -1469,44 +1472,66 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	embedEndpoint := embCfg.Endpoint
 	embedModel := embCfg.Model
 
-	section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
+	switch embCfg.Provider {
+	case "ollama", "":
+		section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
 
-	// Ollama state check via ensureOllama (autoStart=false for doctor —
-	// doctor is diagnostic-only, it should never start subprocesses).
-	ollamaState, _ := ensureOllama(embedEndpoint, false, nil)
-	ollamaReachable := false
-	switch ollamaState {
-	case OllamaExternal:
-		ollamaReachable = true
-		c.printCheck(w, "PASS", "ollama", fmt.Sprintf("running (external) (%s)", embedEndpoint))
-	case OllamaUnavailable:
-		// Distinguish between "not running" (binary exists) and "not installed" (optional).
-		// Per composability principle: Ollama is optional, so absence is PASS, not FAIL.
-		if _, lookErr := exec.LookPath("ollama"); lookErr == nil {
-			c.printCheck(w, "WARN", "ollama", "not running")
-			dp("     Fix: ollama serve\n")
-		} else {
-			c.printCheck(w, "PASS", "ollama", "not installed (optional)")
+		// Ollama state check via ensureOllama (autoStart=false for doctor —
+		// doctor is diagnostic-only, it should never start subprocesses).
+		ollamaState, _ := ensureOllama(embedEndpoint, false, nil)
+		ollamaReachable := false
+		switch ollamaState {
+		case OllamaExternal:
+			ollamaReachable = true
+			c.printCheck(w, "PASS", "ollama", fmt.Sprintf("running (external) (%s)", embedEndpoint))
+		case OllamaUnavailable:
+			// Distinguish between "not running" (binary exists) and "not installed" (optional).
+			// Per composability principle: Ollama is optional, so absence is PASS, not FAIL.
+			if _, lookErr := exec.LookPath("ollama"); lookErr == nil {
+				c.printCheck(w, "WARN", "ollama", "not running")
+				dp("     Fix: ollama serve\n")
+			} else {
+				c.printCheck(w, "PASS", "ollama", "not installed (optional)")
+			}
 		}
-	}
 
-	// Model availability.
-	if ollamaReachable {
-		embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
-		if embedder.Available() {
-			c.printCheck(w, "PASS", "model", fmt.Sprintf("%s ready", embedModel))
+		// Model availability.
+		if ollamaReachable {
+			embedder := embed.NewOllamaEmbedder(embedEndpoint, embedModel)
+			if embedder.Available() {
+				c.printCheck(w, "PASS", "model", fmt.Sprintf("%s ready", embedModel))
+			} else {
+				c.printCheck(w, "FAIL", "model", fmt.Sprintf("%s not available", embedModel))
+				dp("     Fix: ollama pull %s\n", embedModel)
+			}
 		} else {
-			c.printCheck(w, "FAIL", "model", fmt.Sprintf("%s not available", embedModel))
-			dp("     Fix: ollama pull %s\n", embedModel)
+			c.printCheck(w, "WARN", "model", fmt.Sprintf("%s skipped (ollama not reachable)", embedModel))
 		}
-	} else {
-		c.printCheck(w, "WARN", "model", fmt.Sprintf("%s skipped (ollama not reachable)", embedModel))
-	}
 
-	// Legacy model advisory — inform users about the newer R2 model.
-	if isLegacyEmbeddingModel(embedModel) {
-		c.printCheck(w, "INFO", "model", "granite-embedding:30m has a newer replacement (Granite Embedding R2)")
-		dp("     Tip: update embedding.model in config.yaml, then run: dewey reindex\n")
+		// Legacy model advisory — inform users about the newer R2 model.
+		if isLegacyEmbeddingModel(embedModel) {
+			c.printCheck(w, "INFO", "model", "granite-embedding:30m has a newer replacement (Granite Embedding R2)")
+			dp("     Tip: update embedding.model in config.yaml, then run: dewey reindex\n")
+		}
+
+	case "openai-compatible":
+		section(fmt.Sprintf("Embedding Layer (%s via %s)", displayGatewayValue(embedModel), displayGatewayValue(embedEndpoint)))
+		embedder, err := embed.NewEmbedderFromConfig(embCfg)
+		if err != nil {
+			c.printCheck(w, "FAIL", "config", fmt.Sprintf("incomplete: %s", err))
+		} else {
+			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", embCfg.Provider, embedEndpoint, embedModel))
+			if embedder.Available() {
+				c.printCheck(w, "PASS", "provider", "ready")
+			} else {
+				c.printCheck(w, "WARN", "provider", embedderUnavailableReason(embedder))
+			}
+		}
+		printGatewayCredentialChecks(c, w, openaicompat.CapabilityEmbedding, embCfg.Endpoint, embed.HasAPIKeyField(deweyDir))
+
+	default:
+		section(fmt.Sprintf("Embedding Layer (unknown provider: %s)", embCfg.Provider))
+		c.printCheck(w, "FAIL", "provider", fmt.Sprintf("unknown provider %q (supported: ollama, vertex, openai-compatible)", embCfg.Provider))
 	}
 
 	// Embedding count — uses value queried from the already-open store above.
@@ -1514,7 +1539,11 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		c.printCheck(w, "PASS", "embeddings", fmt.Sprintf("%d in database", embeddingCount))
 	} else if embeddingCount == 0 {
 		c.printCheck(w, "WARN", "embeddings", "0 in database")
-		dp("     Fix: dewey reindex (with Ollama running)\n")
+		if embCfg.Provider == "ollama" || embCfg.Provider == "" {
+			dp("     Fix: dewey reindex (with Ollama running)\n")
+		} else {
+			dp("     Fix: dewey reindex\n")
+		}
 	}
 	dp("\n")
 
@@ -1576,9 +1605,24 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			c.printCheck(w, "PASS", "config", fmt.Sprintf("project=%s region=%s", synthCfg.Project, synthCfg.Region))
 		}
 
+	case "openai-compatible":
+		section(fmt.Sprintf("Synthesis Layer (%s via %s)", displayGatewayValue(synthCfg.Model), displayGatewayValue(synthCfg.Endpoint)))
+		synth, err := llm.NewSynthesizerFromConfig(synthCfg)
+		if err != nil {
+			c.printCheck(w, "FAIL", "config", fmt.Sprintf("incomplete: %s", err))
+		} else {
+			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", synthCfg.Provider, synthCfg.Endpoint, synthCfg.Model))
+			if synth.Available() {
+				c.printCheck(w, "PASS", "provider", "ready")
+			} else {
+				c.printCheck(w, "WARN", "provider", synthesizerUnavailableReason(synth))
+			}
+		}
+		printGatewayCredentialChecks(c, w, openaicompat.CapabilitySynthesis, synthCfg.Endpoint, llm.HasAPIKeyField(deweyDir))
+
 	default:
 		section(fmt.Sprintf("Synthesis Layer (unknown provider: %s)", synthCfg.Provider))
-		c.printCheck(w, "FAIL", "provider", fmt.Sprintf("unknown provider %q (supported: ollama, vertex)", synthCfg.Provider))
+		c.printCheck(w, "FAIL", "provider", fmt.Sprintf("unknown provider %q (supported: ollama, vertex, openai-compatible)", synthCfg.Provider))
 	}
 	dp("\n")
 
@@ -2703,4 +2747,82 @@ reported collisions, pass the reviewed resolutions file via --resolutions.`,
 		"Path to vault (default: OBSIDIAN_VAULT_PATH or current directory)")
 
 	return cmd
+}
+
+// displayGatewayValue renders an empty gateway configuration value as
+// "not configured" for diagnostic output.
+func displayGatewayValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "not configured"
+	}
+	return value
+}
+
+// embedderUnavailableReason returns the provider's credential-free reason
+// when it implements embed.UnavailableReasoner, or a generic fallback.
+func embedderUnavailableReason(e embed.Embedder) string {
+	if reasoner, ok := e.(embed.UnavailableReasoner); ok {
+		if reason := reasoner.UnavailableReason(); reason != "" {
+			return reason
+		}
+	}
+	return "unavailable"
+}
+
+// synthesizerUnavailableReason returns the synthesis provider's
+// credential-free reason when it implements llm.UnavailableReasoner.
+func synthesizerUnavailableReason(s llm.Synthesizer) string {
+	if reasoner, ok := s.(llm.UnavailableReasoner); ok {
+		if reason := reasoner.UnavailableReason(); reason != "" {
+			return reason
+		}
+	}
+	return "unavailable"
+}
+
+// gatewayCredentialWarnings returns the FR-024 credential-posture
+// warnings for an openai-compatible provider. It never includes key
+// material: only booleans derived from the resolved key.
+func gatewayCredentialWarnings(capability openaicompat.Capability, endpoint string, apiKeyInConfig bool) []string {
+	var warnings []string
+	if openaicompat.InsecureEndpointForCredential(endpoint, openaicompat.ResolveAPIKey(capability, endpoint)) {
+		warnings = append(warnings, "API key would transit http:// to a non-loopback host; use https")
+	}
+	if apiKeyInConfig {
+		warnings = append(warnings, fmt.Sprintf("%s.api_key in config.yaml is ignored; keys are environment-only", capability))
+	}
+	return warnings
+}
+
+// printGatewayCredentialChecks renders the credential warnings in dewey
+// doctor output.
+func printGatewayCredentialChecks(c *doctorCounter, w io.Writer, capability openaicompat.Capability, endpoint string, apiKeyInConfig bool) {
+	for _, warning := range gatewayCredentialWarnings(capability, endpoint, apiKeyInConfig) {
+		c.printCheck(w, "WARN", "credentials", warning)
+	}
+}
+
+// logGatewayCredentialWarnings logs the credential warnings at startup
+// and index time.
+func logGatewayCredentialWarnings(capability openaicompat.Capability, endpoint string, apiKeyInConfig bool) {
+	for _, warning := range gatewayCredentialWarnings(capability, endpoint, apiKeyInConfig) {
+		logger.Warn("gateway credential warning", "capability", capability, "warning", warning)
+	}
+}
+
+// embeddingDegradationFields builds the structured log fields for a
+// degraded embedding provider. The ollama pull hint appears only for
+// Ollama, and the provider's reason is included when it implements
+// embed.UnavailableReasoner (FR-015, FR-024).
+func embeddingDegradationFields(cfg embed.ProviderConfig, embedder embed.Embedder) []any {
+	fields := []any{"provider", cfg.Provider, "model", cfg.Model, "endpoint", cfg.Endpoint}
+	if cfg.Provider == "ollama" || cfg.Provider == "" {
+		fields = append(fields, "pull", fmt.Sprintf("ollama pull %s", cfg.Model))
+	}
+	if reasoner, ok := embedder.(embed.UnavailableReasoner); ok {
+		if reason := reasoner.UnavailableReason(); reason != "" {
+			fields = append(fields, "reason", reason)
+		}
+	}
+	return append(fields, "note", "semantic search is unavailable")
 }

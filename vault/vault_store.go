@@ -476,7 +476,10 @@ func (vs *VaultStore) generateEmbeddings(pageName string, blocks []types.BlockEn
 // live read-through fallbacks so store-backed pages are retrievable without a
 // server restart (mcp-internal-store-access, Live Retrieval of Internal Store
 // Pages). Results are not cached; every call queries the store fresh (design
-// D2 — live lookups, no mid-session caching of store reads).
+// D2 — live lookups, no mid-session caching of store reads). The lookup folds
+// case in SQL (GetPageFoldCase), matching the in-memory tier's
+// case-insensitive keying so a wrong-case lookup behaves the same at every
+// session age.
 //
 // Returns (nil, nil, false, nil) when no page with the given name exists, and
 // a non-nil error when a store query fails. A nil store behaves as an
@@ -486,7 +489,7 @@ func (vs *VaultStore) GetStorePage(name string) (*types.PageEntity, []types.Bloc
 		return nil, nil, false, nil
 	}
 
-	sp, err := vs.store.GetPage(name)
+	sp, err := vs.store.GetPageFoldCase(name)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("look up store page %q: %w", name, err)
 	}
@@ -528,6 +531,30 @@ func (vs *VaultStore) GetStoreBlock(uuid string) (*types.BlockEntity, bool, erro
 		Content: sb.Content,
 		Page:    &types.PageRef{Name: sb.PageName},
 	}, true, nil
+}
+
+// StorePageMeta reports whether a page with the given name exists in the
+// persistent store and, when it does, its canonical name and source ID. It
+// is the write-guard counterpart to the live read-through: vault write tools
+// resolve read-only state from the same source the reads serve, so a
+// store-backed page absent from the in-memory index cannot be shadowed by a
+// create-if-missing write (mcp-internal-store-access, write guard for
+// store-backed pages). The lookup folds case in SQL, matching GetStorePage
+// and the in-memory tier's keying. Metadata only — no blocks are loaded,
+// keeping the guard one cheap page-row query. A nil store behaves as an
+// always-miss lookup, preserving no-store parity (Constitution II).
+func (vs *VaultStore) StorePageMeta(name string) (found bool, canonicalName, sourceID string, err error) {
+	if vs.store == nil {
+		return false, "", "", nil
+	}
+	sp, err := vs.store.GetPageFoldCase(name)
+	if err != nil {
+		return false, "", "", fmt.Errorf("look up store page %q: %w", name, err)
+	}
+	if sp == nil {
+		return false, "", "", nil
+	}
+	return true, sp.Name, sp.SourceID, nil
 }
 
 // ListStorePages returns the entities of all store pages that are not

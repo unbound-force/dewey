@@ -582,11 +582,16 @@ func (c *Client) GetAllPages(_ context.Context) ([]types.PageEntity, error) {
 // GetPage returns a page by name or ID. Vault file pages (the in-memory
 // index) take precedence; on an in-memory miss with a persistent store
 // configured, the store is queried live and the result is served WITHOUT
-// caching into c.pages, so pages stored during this session
-// (store_compiled, store_learning) are visible immediately and never go
-// stale (mcp-internal-store-access, design D2; spec: Live Retrieval of
-// Internal Store Pages). A miss still returns (nil, nil), matching the
-// pre-fallback contract; only a store failure returns an error.
+// caching into c.pages, so pages first stored during this session
+// (store_compiled, store_learning) are visible immediately with their
+// latest committed content (mcp-internal-store-access, design D2; spec:
+// Live Retrieval of Internal Store Pages). Known limitation: a page
+// hydrated into the in-memory index at startup (LoadExternalPages) keeps
+// in-memory precedence, so re-storing it mid-session (store_compiled's
+// delete-and-reinsert) serves the hydrated copy until the next reload —
+// the freshness guarantee covers pages first stored this session only.
+// A miss still returns (nil, nil), matching the pre-fallback contract;
+// only a store failure returns an error.
 func (c *Client) GetPage(_ context.Context, nameOrID any) (*types.PageEntity, error) {
 	name := fmt.Sprint(nameOrID)
 
@@ -603,6 +608,10 @@ func (c *Client) GetPage(_ context.Context, nameOrID any) (*types.PageEntity, er
 	if c.vaultStore == nil {
 		return nil, nil
 	}
+	// The fallback folds case in SQL (GetPageFoldCase), matching the
+	// in-memory tier's case-insensitive keying and the post-restart
+	// hydration keys, so a wrong-case get_page behaves the same at every
+	// session age.
 	entity, _, found, err := c.vaultStore.GetStorePage(name)
 	if err != nil {
 		return nil, err
@@ -617,10 +626,13 @@ func (c *Client) GetPage(_ context.Context, nameOrID any) (*types.PageEntity, er
 // pages take precedence; on an in-memory miss with a persistent store
 // configured, the store is queried live via the shared GetStorePage
 // conversion and the reconstructed tree is served WITHOUT caching into
-// c.pages (mcp-internal-store-access, design D2), so same-session stores
-// stay visible and re-stores are never stale (spec: Freshness of Store
-// Reads). A miss still returns (nil, nil); only a store failure returns
-// an error.
+// c.pages (mcp-internal-store-access, design D2), so pages first stored
+// during this session are visible immediately with their latest committed
+// content (spec: Freshness of Store Reads). Known limitation: a page
+// hydrated at startup keeps in-memory precedence, so a mid-session
+// re-store is served stale until the next reload — the freshness
+// guarantee covers pages first stored this session only. A miss still
+// returns (nil, nil); only a store failure returns an error.
 func (c *Client) GetPageBlocksTree(_ context.Context, nameOrID any) ([]types.BlockEntity, error) {
 	name := fmt.Sprint(nameOrID)
 
@@ -640,6 +652,8 @@ func (c *Client) GetPageBlocksTree(_ context.Context, nameOrID any) ([]types.Blo
 	if c.vaultStore == nil {
 		return nil, nil
 	}
+	// Case-folds in SQL like the GetPage fallback: the in-memory tier keys
+	// case-insensitively, and so does this store lookup.
 	_, storeBlocks, found, err := c.vaultStore.GetStorePage(name)
 	if err != nil {
 		return nil, err
@@ -653,11 +667,15 @@ func (c *Client) GetPageBlocksTree(_ context.Context, nameOrID any) ([]types.Blo
 // GetBlock returns a block by UUID. Blocks from vault file pages (the
 // in-memory index) take precedence; on an in-memory miss with a persistent
 // store configured, the store is queried live and the result is served
-// WITHOUT caching into the block index, so blocks stored during this
-// session (store_learning, store_compiled) are visible immediately and
-// never go stale (mcp-internal-store-access, design D2; spec: Block
-// Retrieval for Store Pages). A miss still returns (nil, nil), matching the
-// pre-fallback contract; only a store failure returns an error.
+// WITHOUT caching into the block index, so blocks from pages first stored
+// during this session (store_learning, store_compiled) are visible
+// immediately with their latest committed content
+// (mcp-internal-store-access, design D2; spec: Block Retrieval for Store
+// Pages). Known limitation: blocks of pages hydrated at startup follow the
+// page-level precedence — a mid-session re-store is served stale until the
+// next reload; the guarantee covers pages first stored this session only.
+// A miss still returns (nil, nil), matching the pre-fallback contract;
+// only a store failure returns an error.
 func (c *Client) GetBlock(_ context.Context, uuid string, opts ...map[string]any) (*types.BlockEntity, error) {
 	// Snapshot the in-memory hit under the read lock and release before any
 	// store call (design D2 locking discipline — see GetPage).
@@ -686,6 +704,38 @@ func (c *Client) GetBlock(_ context.Context, uuid string, opts ...map[string]any
 		return nil, nil
 	}
 	return storeBlock, nil
+}
+
+// checkStoreBackedWrite enforces the write guard for pages that live in the
+// persistent store but are absent from the in-memory index. The in-memory
+// readOnly guard keys on c.pages membership, but the live read-through
+// (design D2) serves exactly those pages WITHOUT caching them into c.pages —
+// so a page-level write tool would otherwise take its create-if-missing
+// branch and silently create a shadow vault file that masks the store page
+// on every subsequent read. Resolving the guard from the same source the
+// reads serve keeps store-sourced pages read-only to vault write tools at
+// every session age (mcp-internal-store-access, write guard for
+// store-backed pages).
+//
+// It reports whether the named page is store-backed and, when it is, the
+// canonical name and source ID to reject with. The store query runs BEFORE
+// the caller takes c.mu, mirroring the D2 locking discipline that store I/O
+// never runs under c.mu. Pages already present in c.pages are skipped: their
+// readOnly flag is enforced by the in-memory guard inside each write method.
+// The store lookup folds case in SQL, matching the read fallbacks and the
+// in-memory tier's keying.
+func (c *Client) checkStoreBackedWrite(name string) (found bool, canonicalName, sourceID string, err error) {
+	if c.vaultStore == nil {
+		return false, "", "", nil
+	}
+	c.mu.RLock()
+	_, exists := c.pages[strings.ToLower(name)]
+	c.mu.RUnlock()
+	if exists {
+		// The in-memory readOnly guard owns this page.
+		return false, "", "", nil
+	}
+	return c.vaultStore.StorePageMeta(name)
 }
 
 func (c *Client) GetPageLinkedReferences(_ context.Context, nameOrID any) (json.RawMessage, error) {
@@ -736,6 +786,15 @@ func (c *Client) CreatePage(_ context.Context, name string, properties map[strin
 		return nil, fmt.Errorf("invalid page name: too long or contains null bytes")
 	}
 
+	// Store-backed write guard: creating a page whose name is already served
+	// from the persistent store would silently shadow it with a fresh vault
+	// file. Reject exactly as the post-restart (hydrated) path does.
+	if storeBacked, _, _, err := c.checkStoreBackedWrite(name); err != nil {
+		return nil, err
+	} else if storeBacked {
+		return nil, fmt.Errorf("page already exists: %s", name)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -779,6 +838,16 @@ func (c *Client) CreatePage(_ context.Context, name string, properties map[strin
 }
 
 func (c *Client) AppendBlockInPage(_ context.Context, page string, content string) (*types.BlockEntity, error) {
+	// Store-backed write guard: without it this write would take the
+	// create-if-missing branch below and shadow the store page with a vault
+	// file that then wins every subsequent read (design D2 live read-through
+	// never caches store pages into c.pages).
+	if storeBacked, canonical, source, err := c.checkStoreBackedWrite(page); err != nil {
+		return nil, err
+	} else if storeBacked {
+		return nil, fmt.Errorf("page %q is read-only (source: %s)", canonical, source)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -861,6 +930,14 @@ func (c *Client) AppendBlockInPage(_ context.Context, page string, content strin
 }
 
 func (c *Client) PrependBlockInPage(_ context.Context, page string, content string) (*types.BlockEntity, error) {
+	// Store-backed write guard: mirrors AppendBlockInPage — without it the
+	// create-if-missing branch would shadow the store page with a vault file.
+	if storeBacked, canonical, source, err := c.checkStoreBackedWrite(page); err != nil {
+		return nil, err
+	} else if storeBacked {
+		return nil, fmt.Errorf("page %q is read-only (source: %s)", canonical, source)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1150,6 +1227,15 @@ func (c *Client) RemoveBlock(_ context.Context, uuid string) error {
 }
 
 func (c *Client) DeletePage(_ context.Context, name string) error {
+	// Store-backed write guard: reject with the same read-only error the
+	// post-restart (hydrated) path returns, instead of a misleading
+	// "page not found" for a page the reads do serve.
+	if storeBacked, canonical, source, err := c.checkStoreBackedWrite(name); err != nil {
+		return err
+	} else if storeBacked {
+		return fmt.Errorf("page %q is read-only (source: %s)", canonical, source)
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1194,6 +1280,15 @@ func (c *Client) DeletePage(_ context.Context, name string) error {
 func (c *Client) RenamePage(_ context.Context, oldName, newName string) error {
 	if len(newName) > 255 || strings.ContainsAny(newName, "\x00") {
 		return fmt.Errorf("invalid page name: too long or contains null bytes")
+	}
+
+	// Store-backed write guard: reject renaming a page the reads serve from
+	// the store with the same read-only error the post-restart (hydrated)
+	// path returns.
+	if storeBacked, canonical, source, err := c.checkStoreBackedWrite(oldName); err != nil {
+		return err
+	} else if storeBacked {
+		return fmt.Errorf("page %q is read-only (source: %s)", canonical, source)
 	}
 
 	c.mu.Lock()
@@ -1675,7 +1770,7 @@ func storePageHasTag(sourceID string, props map[string]any, tagLower string) boo
 	if frontmatterHasTag(props, tagLower) {
 		return true
 	}
-	return sourceID == "compiled" && valueHasTag(props["topic"], tagLower)
+	return sourceID == store.SourceCompiled && valueHasTag(props["topic"], tagLower)
 }
 
 // frontmatterHasTag reports whether page properties carry tagLower on `tag` or `tags`.
@@ -1861,13 +1956,17 @@ func (c *Client) SearchJournals(_ context.Context, query, from, to string) ([]ba
 // design D4; spec: Unified Full-Text Search). Implements
 // backend.FullTextSearcher.
 //
-// Merge semantics: store hits are appended only for pages with no hit from the
-// in-memory index (case-insensitive page-name dedupe, so vault files win and
-// mirrored rows never surface twice); all matching blocks of such a page are
-// returned, matching the in-memory index's per-block semantics — identical to
-// what a restart plus LoadExternalPages would serve. Nothing is cached into
-// c.pages or the search index (design D2 — live lookups), and the caller's
-// limit bounds the merged set. A nil store returns the in-memory hits exactly
+// Merge semantics: dedupe is membership-based — a store hit surfaces only
+// when its page is absent from the vault's in-memory index (case-insensitive
+// page-name comparison, so vault files win and mirrored rows never surface
+// twice). Scoping the merge to pages the index does not cover preserves the
+// inherited token-based search semantics for every indexed page: a
+// substring-only match on a mirrored page never surfaces, with or without a
+// store configured. When no limit pressure applies, all matching blocks of a
+// surfacing store page are returned; under limit pressure the merge stops at
+// the effective limit, so a store-only page may serve a prefix of its
+// matching blocks. Nothing is cached into c.pages or the search index
+// (design D2 — live lookups). A nil store returns the in-memory hits exactly
 // as before (Constitution II parity).
 func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]backend.SearchHit, error) {
 	if c.searchIndex == nil {
@@ -1880,14 +1979,12 @@ func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]b
 	results := c.searchIndex.Search(query, limit)
 
 	hits := make([]backend.SearchHit, len(results))
-	seen := make(map[string]bool, len(results))
 	for i, r := range results {
 		hits[i] = backend.SearchHit{
 			PageName: r.PageName,
 			UUID:     r.UUID,
 			Content:  r.Content,
 		}
-		seen[strings.ToLower(r.PageName)] = true
 	}
 
 	// An empty or whitespace-only query must return no hits regardless of
@@ -1908,6 +2005,21 @@ func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]b
 	if len(hits) >= limit {
 		return hits, nil // in-memory hits already fill the limit
 	}
+
+	// Membership-based dedupe seed (design D3/D4, spec: Unified Full-Text
+	// Search): snapshot the in-memory page-name set under the read lock —
+	// store I/O never runs under c.mu (design D2). Seeding from page
+	// membership rather than the per-query hit set scopes the store merge to
+	// pages the in-memory index does not cover, so disk-mirrored blocks can
+	// never surface as substring matches the token-based index would not
+	// return — preserving the inherited `search` semantics for the 37
+	// inherited tools (Constitution II parity).
+	c.mu.RLock()
+	seen := make(map[string]bool, len(c.pages))
+	for name := range c.pages {
+		seen[name] = true // c.pages keys are lowercase, matching the merge check
+	}
+	c.mu.RUnlock()
 
 	// Fetch up to the full effective limit rather than just the remaining
 	// slots: rows deduplicated against in-memory hit pages do not consume

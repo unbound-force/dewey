@@ -1587,3 +1587,555 @@ func TestReconstructBlockTree_MultipleChildrenOrdered(t *testing.T) {
 		}
 	}
 }
+
+// --- GetStorePage / GetStoreBlock tests (mcp-internal-store-access task 2.1) ---
+
+// insertStorePageWithBlocks inserts a page row and its flat block rows,
+// giving read-helper tests precise control over the persisted shape.
+func insertStorePageWithBlocks(t *testing.T, s *store.Store, p *store.Page, blocks ...*store.Block) {
+	t.Helper()
+	if err := s.InsertPage(p); err != nil {
+		t.Fatalf("InsertPage(%q): %v", p.Name, err)
+	}
+	for _, b := range blocks {
+		if err := s.InsertBlock(b); err != nil {
+			t.Fatalf("InsertBlock(%q): %v", b.UUID, err)
+		}
+	}
+}
+
+// assertBlockTreeEqual verifies two block trees carry identical UUIDs,
+// contents, and nesting, reporting mismatches with a path-annotated message.
+func assertBlockTreeEqual(t *testing.T, path string, got, want []types.BlockEntity) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: %d blocks, want %d", path, len(got), len(want))
+	}
+	for i := range want {
+		if got[i].UUID != want[i].UUID {
+			t.Errorf("%s[%d].UUID = %q, want %q", path, i, got[i].UUID, want[i].UUID)
+		}
+		if got[i].Content != want[i].Content {
+			t.Errorf("%s[%d].Content = %q, want %q", path, i, got[i].Content, want[i].Content)
+		}
+		assertBlockTreeEqual(t, fmt.Sprintf("%s[%d].Children", path, i), got[i].Children, want[i].Children)
+	}
+}
+
+func TestVaultStore_GetStorePage_Found(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	page := &store.Page{
+		Name:         "github-org/issue-42",
+		OriginalName: "Bug Report",
+		SourceID:     "github-org",
+		SourceDocID:  "issue-42",
+		Properties:   `{"type": "issue", "priority": "high"}`,
+		IsJournal:    true,
+		CreatedAt:    1000,
+		UpdatedAt:    2000,
+	}
+	root := &store.Block{
+		UUID:         "root-42",
+		PageName:     page.Name,
+		Content:      "# Bug Report",
+		HeadingLevel: 1,
+		Position:     0,
+	}
+	child := &store.Block{
+		UUID:         "child-42",
+		PageName:     page.Name,
+		ParentUUID:   sql.NullString{String: "root-42", Valid: true},
+		Content:      "## Steps to Reproduce",
+		HeadingLevel: 2,
+		Position:     0,
+	}
+	insertStorePageWithBlocks(t, s, page, root, child)
+
+	entity, blocks, found, err := vs.GetStorePage("github-org/issue-42")
+	if err != nil {
+		t.Fatalf("GetStorePage: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	if entity == nil {
+		t.Fatal("entity = nil, want non-nil")
+	}
+
+	// Entity fields map from the stored row.
+	if entity.Name != "github-org/issue-42" {
+		t.Errorf("Name = %q, want %q", entity.Name, "github-org/issue-42")
+	}
+	if entity.OriginalName != "Bug Report" {
+		t.Errorf("OriginalName = %q, want %q", entity.OriginalName, "Bug Report")
+	}
+	if !entity.Journal {
+		t.Error("Journal = false, want true")
+	}
+	if entity.CreatedAt != 1000 || entity.UpdatedAt != 2000 {
+		t.Errorf("timestamps = (%d, %d), want (1000, 2000)", entity.CreatedAt, entity.UpdatedAt)
+	}
+	if entity.Properties["type"] != "issue" || entity.Properties["priority"] != "high" {
+		t.Errorf("Properties = %v, want type=issue priority=high", entity.Properties)
+	}
+
+	// Block tree is reconstructed from the flat rows.
+	if len(blocks) != 1 {
+		t.Fatalf("root blocks = %d, want 1", len(blocks))
+	}
+	if blocks[0].UUID != "root-42" || blocks[0].Content != "# Bug Report" {
+		t.Errorf("root block = (%q, %q), want (root-42, # Bug Report)", blocks[0].UUID, blocks[0].Content)
+	}
+	if len(blocks[0].Children) != 1 {
+		t.Fatalf("root children = %d, want 1", len(blocks[0].Children))
+	}
+	if blocks[0].Children[0].UUID != "child-42" || blocks[0].Children[0].Content != "## Steps to Reproduce" {
+		t.Errorf("child block = (%q, %q), want (child-42, ## Steps to Reproduce)",
+			blocks[0].Children[0].UUID, blocks[0].Children[0].Content)
+	}
+}
+
+func TestVaultStore_GetStorePage_NotFound(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Store is non-empty so the miss is a genuine lookup result.
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "other-page", SourceID: "github-org"},
+		&store.Block{UUID: "other-block", PageName: "other-page", Content: "x", Position: 0})
+
+	entity, blocks, found, err := vs.GetStorePage("does/not-exist")
+	if err != nil {
+		t.Fatalf("GetStorePage: %v", err)
+	}
+	if found {
+		t.Error("found = true, want false")
+	}
+	if entity != nil {
+		t.Errorf("entity = %v, want nil", entity)
+	}
+	if blocks != nil {
+		t.Errorf("blocks = %v, want nil", blocks)
+	}
+}
+
+func TestVaultStore_GetStorePage_PageWithoutBlocks(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	insertStorePageWithBlocks(t, s, &store.Page{
+		Name:         "web-crawl/bare",
+		OriginalName: "Bare",
+		SourceID:     "web-crawl",
+		SourceDocID:  "bare",
+	})
+
+	entity, blocks, found, err := vs.GetStorePage("web-crawl/bare")
+	if err != nil {
+		t.Fatalf("GetStorePage: %v", err)
+	}
+	if !found || entity == nil {
+		t.Fatalf("found = %v, entity = %v, want true and non-nil", found, entity)
+	}
+	if entity.Name != "web-crawl/bare" {
+		t.Errorf("Name = %q, want %q", entity.Name, "web-crawl/bare")
+	}
+	if len(blocks) != 0 {
+		t.Errorf("blocks = %d, want 0 for page without blocks", len(blocks))
+	}
+}
+
+func TestVaultStore_GetStorePage_InvalidPropertiesIgnored(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	page := &store.Page{
+		Name:       "github-org/bad-props",
+		SourceID:   "github-org",
+		Properties: `{not valid json`,
+	}
+	insertStorePageWithBlocks(t, s, page,
+		&store.Block{UUID: "bad-props-block", PageName: page.Name, Content: "body", Position: 0})
+
+	entity, _, found, err := vs.GetStorePage("github-org/bad-props")
+	if err != nil {
+		t.Fatalf("GetStorePage: %v", err)
+	}
+	if !found || entity == nil {
+		t.Fatalf("found = %v, entity = %v, want true and non-nil", found, entity)
+	}
+	if entity.Properties != nil {
+		t.Errorf("Properties = %v, want nil for unparseable blob", entity.Properties)
+	}
+}
+
+func TestVaultStore_GetStorePage_NilStore(t *testing.T) {
+	vs := NewVaultStore(nil, t.TempDir(), "disk-local")
+
+	entity, blocks, found, err := vs.GetStorePage("any-page")
+	if err != nil {
+		t.Fatalf("GetStorePage with nil store: %v", err)
+	}
+	if found || entity != nil || blocks != nil {
+		t.Errorf("got (%v, %v, %v), want (nil, nil, false) for nil store", entity, blocks, found)
+	}
+}
+
+func TestVaultStore_GetStorePage_StoreError(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Closing the store makes every query fail deterministically.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	entity, blocks, found, err := vs.GetStorePage("any-page")
+	if err == nil {
+		t.Fatal("expected error from closed store, got nil")
+	}
+	if entity != nil || blocks != nil || found {
+		t.Errorf("got (%v, %v, %v), want (nil, nil, false) on store error", entity, blocks, found)
+	}
+}
+
+func TestVaultStore_GetStorePage_MatchesLoadExternalPagesShape(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	page := &store.Page{
+		Name:         "compiled/gateway",
+		OriginalName: "Compiled Gateway",
+		SourceID:     "compiled",
+		SourceDocID:  "gateway",
+		Properties:   `{"topic": "gateway"}`,
+		CreatedAt:    1111,
+		UpdatedAt:    2222,
+	}
+	root := &store.Block{
+		UUID:         "gw-root",
+		PageName:     page.Name,
+		Content:      "# Gateway",
+		HeadingLevel: 1,
+		Position:     0,
+	}
+	child := &store.Block{
+		UUID:       "gw-child",
+		PageName:   page.Name,
+		ParentUUID: sql.NullString{String: "gw-root", Valid: true},
+		Content:    "Body text",
+		Position:   0,
+	}
+	insertStorePageWithBlocks(t, s, page, root, child)
+
+	// Startup load path (what serves reads today after a restart).
+	vc := New(t.TempDir())
+	if _, err := vs.LoadExternalPages(vc); err != nil {
+		t.Fatalf("LoadExternalPages: %v", err)
+	}
+	vc.mu.RLock()
+	cached, ok := vc.pages["compiled/gateway"]
+	vc.mu.RUnlock()
+	if !ok {
+		t.Fatal("external page not loaded into vault index")
+	}
+
+	// Live lookup path must produce the same shape.
+	entity, blocks, found, err := vs.GetStorePage("compiled/gateway")
+	if err != nil {
+		t.Fatalf("GetStorePage: %v", err)
+	}
+	if !found || entity == nil {
+		t.Fatalf("found = %v, entity = %v, want true and non-nil", found, entity)
+	}
+
+	if entity.Name != cached.entity.Name {
+		t.Errorf("Name = %q, want %q", entity.Name, cached.entity.Name)
+	}
+	if entity.OriginalName != cached.entity.OriginalName {
+		t.Errorf("OriginalName = %q, want %q", entity.OriginalName, cached.entity.OriginalName)
+	}
+	if entity.Journal != cached.entity.Journal {
+		t.Errorf("Journal = %v, want %v", entity.Journal, cached.entity.Journal)
+	}
+	if entity.CreatedAt != cached.entity.CreatedAt || entity.UpdatedAt != cached.entity.UpdatedAt {
+		t.Errorf("timestamps = (%d, %d), want (%d, %d)",
+			entity.CreatedAt, entity.UpdatedAt, cached.entity.CreatedAt, cached.entity.UpdatedAt)
+	}
+	if len(entity.Properties) != len(cached.entity.Properties) ||
+		entity.Properties["topic"] != cached.entity.Properties["topic"] {
+		t.Errorf("Properties = %v, want %v", entity.Properties, cached.entity.Properties)
+	}
+
+	assertBlockTreeEqual(t, "blocks", blocks, cached.blocks)
+}
+
+func TestVaultStore_GetStoreBlock_Found(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Mirrors the store_learning write path: a learning/{identity} page whose
+	// first block UUID is handed back to agents.
+	page := &store.Page{
+		Name:         "learning/auth-20260101T000000-alice",
+		OriginalName: "learning/auth-20260101T000000-alice",
+		SourceID:     "learning",
+		SourceDocID:  "auth-20260101T000000-alice.md",
+		Properties:   `{"tag": "auth"}`,
+	}
+	block := &store.Block{
+		UUID:     "learning-block-1",
+		PageName: page.Name,
+		Content:  "Use parameterized SQL.",
+		Position: 0,
+	}
+	insertStorePageWithBlocks(t, s, page, block)
+
+	got, found, err := vs.GetStoreBlock("learning-block-1")
+	if err != nil {
+		t.Fatalf("GetStoreBlock: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	if got == nil {
+		t.Fatal("block = nil, want non-nil")
+	}
+	if got.UUID != "learning-block-1" {
+		t.Errorf("UUID = %q, want %q", got.UUID, "learning-block-1")
+	}
+	if got.Content != "Use parameterized SQL." {
+		t.Errorf("Content = %q, want %q", got.Content, "Use parameterized SQL.")
+	}
+	if got.Page == nil {
+		t.Fatal("Page reference = nil, want page reference for store block")
+	}
+	if got.Page.Name != "learning/auth-20260101T000000-alice" {
+		t.Errorf("Page.Name = %q, want %q", got.Page.Name, "learning/auth-20260101T000000-alice")
+	}
+}
+
+func TestVaultStore_GetStoreBlock_NotFound(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "github-org/issue-7", SourceID: "github-org"},
+		&store.Block{UUID: "real-block", PageName: "github-org/issue-7", Content: "x", Position: 0})
+
+	got, found, err := vs.GetStoreBlock("missing-uuid")
+	if err != nil {
+		t.Fatalf("GetStoreBlock: %v", err)
+	}
+	if found {
+		t.Error("found = true, want false")
+	}
+	if got != nil {
+		t.Errorf("block = %v, want nil", got)
+	}
+}
+
+func TestVaultStore_GetStoreBlock_NilStore(t *testing.T) {
+	vs := NewVaultStore(nil, t.TempDir(), "disk-local")
+
+	got, found, err := vs.GetStoreBlock("any-uuid")
+	if err != nil {
+		t.Fatalf("GetStoreBlock with nil store: %v", err)
+	}
+	if found || got != nil {
+		t.Errorf("got (%v, %v), want (nil, false) for nil store", got, found)
+	}
+}
+
+func TestVaultStore_GetStoreBlock_StoreError(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Closing the store makes every query fail deterministically.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	got, found, err := vs.GetStoreBlock("any-uuid")
+	if err == nil {
+		t.Fatal("expected error from closed store, got nil")
+	}
+	if got != nil || found {
+		t.Errorf("got (%v, %v), want (nil, false) on store error", got, found)
+	}
+}
+
+// --- ListStorePages tests (mcp-internal-store-access task 2.4) ---
+
+func TestVaultStore_ListStorePages(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// A disk-local mirror row (what the indexing pipeline writes for vault
+	// files) must be excluded — the same predicate LoadExternalPages uses.
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "readme", OriginalName: "readme", SourceID: "disk-local", SourceDocID: "readme.md"},
+	)
+
+	learningPage := "learning/auth-20260101T000000-alice"
+	compiledPage := "compiled/gateway"
+	insertStorePageWithBlocks(t, s,
+		&store.Page{
+			Name:         learningPage,
+			OriginalName: learningPage,
+			SourceID:     "learning",
+			Properties:   `{"tag": "auth"}`,
+			CreatedAt:    1000,
+			UpdatedAt:    2000,
+		},
+	)
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: compiledPage, OriginalName: "gateway", SourceID: "compiled"},
+	)
+
+	entities, err := vs.ListStorePages()
+	if err != nil {
+		t.Fatalf("ListStorePages: %v", err)
+	}
+	if len(entities) != 2 {
+		t.Fatalf("entities = %d, want 2 (disk-local mirror excluded): %+v", len(entities), entities)
+	}
+
+	byName := make(map[string]types.PageEntity, len(entities))
+	for _, e := range entities {
+		byName[e.Name] = e
+	}
+
+	learning, ok := byName[learningPage]
+	if !ok {
+		t.Fatalf("learning page missing: %+v", entities)
+	}
+	if learning.OriginalName != learningPage {
+		t.Errorf("learning OriginalName = %q, want %q", learning.OriginalName, learningPage)
+	}
+	if learning.Properties["tag"] != "auth" {
+		t.Errorf("learning Properties = %v, want tag=auth", learning.Properties)
+	}
+	if learning.CreatedAt != 1000 || learning.UpdatedAt != 2000 {
+		t.Errorf("learning timestamps = (%d, %d), want (1000, 2000)", learning.CreatedAt, learning.UpdatedAt)
+	}
+
+	compiled, ok := byName[compiledPage]
+	if !ok {
+		t.Fatalf("compiled page missing: %+v", entities)
+	}
+	if compiled.OriginalName != "gateway" {
+		t.Errorf("compiled OriginalName = %q, want %q", compiled.OriginalName, "gateway")
+	}
+	if _, ok := byName["readme"]; ok {
+		t.Error("disk-local mirror row must be excluded from ListStorePages")
+	}
+}
+
+func TestVaultStore_ListStorePages_NilStore(t *testing.T) {
+	vs := NewVaultStore(nil, t.TempDir(), "disk-local")
+
+	entities, err := vs.ListStorePages()
+	if err != nil {
+		t.Fatalf("ListStorePages with nil store: %v", err)
+	}
+	if len(entities) != 0 {
+		t.Errorf("entities = %d, want 0 for nil store", len(entities))
+	}
+}
+
+func TestVaultStore_ListStorePages_StoreError(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Closing the store makes every query fail deterministically.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := vs.ListStorePages(); err == nil {
+		t.Fatal("expected error from closed store, got nil")
+	}
+}
+
+func TestVaultStore_ListStorePages_InvalidPropertiesIgnored(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "web-crawl/bad-props", SourceID: "web-crawl", Properties: "{not json"},
+	)
+
+	entities, err := vs.ListStorePages()
+	if err != nil {
+		t.Fatalf("ListStorePages: %v", err)
+	}
+	if len(entities) != 1 {
+		t.Fatalf("entities = %d, want 1", len(entities))
+	}
+	if entities[0].Properties != nil {
+		t.Errorf("Properties = %v, want nil for unparseable blob", entities[0].Properties)
+	}
+}
+
+// --- SearchStoreBlocks tests (mcp-internal-store-access task 2.5) ---
+
+func TestVaultStore_SearchStoreBlocks_Found(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "compiled/gateway", OriginalName: "gateway", SourceID: "compiled"},
+		&store.Block{UUID: "gw-root", PageName: "compiled/gateway", Content: "# Gateway overview", HeadingLevel: 1, Position: 0},
+		&store.Block{UUID: "gw-body", PageName: "compiled/gateway", Content: "Gateway body text with unique-phrase.", Position: 1},
+	)
+
+	hits, err := vs.SearchStoreBlocks("unique-phrase", 10)
+	if err != nil {
+		t.Fatalf("SearchStoreBlocks: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %d, want 1 (only gw-body matches): %+v", len(hits), hits)
+	}
+	if hits[0].PageName != "compiled/gateway" {
+		t.Errorf("PageName = %q, want %q", hits[0].PageName, "compiled/gateway")
+	}
+	if hits[0].UUID != "gw-body" {
+		t.Errorf("UUID = %q, want %q", hits[0].UUID, "gw-body")
+	}
+	if hits[0].Content != "Gateway body text with unique-phrase." {
+		t.Errorf("Content = %q, want the stored block content", hits[0].Content)
+	}
+
+	// Limit pass-through and case-insensitive match: both blocks contain
+	// "gateway" (ASCII case-insensitive LIKE).
+	capped, err := vs.SearchStoreBlocks("GATEWAY", 1)
+	if err != nil {
+		t.Fatalf("SearchStoreBlocks (capped): %v", err)
+	}
+	if len(capped) != 1 {
+		t.Errorf("hits with limit 1 = %d, want 1", len(capped))
+	}
+
+	all, err := vs.SearchStoreBlocks("gateway", 10)
+	if err != nil {
+		t.Fatalf("SearchStoreBlocks (all): %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("hits with limit 10 = %d, want 2", len(all))
+	}
+}
+
+func TestVaultStore_SearchStoreBlocks_NilStore(t *testing.T) {
+	vs := NewVaultStore(nil, t.TempDir(), "disk-local")
+
+	hits, err := vs.SearchStoreBlocks("anything", 10)
+	if err != nil {
+		t.Fatalf("SearchStoreBlocks with nil store: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("hits = %d, want 0 for nil store", len(hits))
+	}
+}
+
+func TestVaultStore_SearchStoreBlocks_StoreError(t *testing.T) {
+	vs, s := newTestVaultStore(t, t.TempDir())
+
+	// Closing the store makes every query fail deterministically.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := vs.SearchStoreBlocks("anything", 10); err == nil {
+		t.Fatal("expected error from closed store, got nil")
+	}
+}

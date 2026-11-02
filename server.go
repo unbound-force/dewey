@@ -520,7 +520,7 @@ func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
 func registerPromoteTools(srv *mcp.Server, promote *tools.Promote) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "promote",
-		Description: "Promote a draft learning or compiled article to validated status after human review.",
+		Description: "Promote a draft learning or compiled article to validated status after human review. Accepts a full name (compiled/... or learning/...) or a bare name, resolved against compiled/ then learning/.",
 	}, promote.Promote)
 
 	return 1

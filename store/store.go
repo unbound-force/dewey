@@ -164,6 +164,23 @@ type Page struct {
 	Category     string // "decision", "pattern", "gotcha", "context", "reference", or ""
 }
 
+// Source IDs for Dewey's internal knowledge namespaces — the pages written
+// by its own store tools (store_compiled, store_learning). They double as
+// page-name prefixes for those pages ("compiled/<tag>", "learning/<name>")
+// and are the vocabulary the promote shorthand, the tag-search store merge,
+// and the write guard for store-backed pages all key on. One home for the
+// domain vocabulary so the coupling does not compound (CS-012).
+const (
+	// SourceCompiled is the source ID and name prefix for compiled articles.
+	SourceCompiled = "compiled"
+	// SourceLearning is the source ID and name prefix for stored learnings.
+	SourceLearning = "learning"
+	// CompiledPrefix is the page-name prefix for compiled articles.
+	CompiledPrefix = SourceCompiled + "/"
+	// LearningPrefix is the page-name prefix for stored learnings.
+	LearningPrefix = SourceLearning + "/"
+)
+
 // Block represents a heading-delimited section within a page.
 type Block struct {
 	UUID         string
@@ -219,13 +236,33 @@ func (s *Store) InsertPage(p *Page) error {
 // Returns the page and nil error on success, or (nil, nil) if no page
 // exists with the given name. Returns a non-nil error if the query fails.
 func (s *Store) GetPage(name string) (*Page, error) {
+	return s.getPageWhere(`FROM pages WHERE name = ?`, name)
+}
+
+// GetPageFoldCase retrieves a page by name with ASCII case-insensitive
+// matching (SQLite COLLATE NOCASE), mirroring the vault client's
+// case-insensitive in-memory page keying. It backs the live store
+// read-through fallbacks (mcp-internal-store-access), where a wrong-case
+// lookup must behave like the in-memory tier and like the post-restart
+// hydration (which re-keys pages lowercased) — an exact-match query would
+// leave same-session store-only pages unreachable by case while in-memory
+// pages are not. Returns the page and nil error on success, or (nil, nil)
+// if no page matches. Returns a non-nil error if the query fails.
+func (s *Store) GetPageFoldCase(name string) (*Page, error) {
+	return s.getPageWhere(`FROM pages WHERE name = ? COLLATE NOCASE`, name)
+}
+
+// getPageWhere runs a single-row page query with one name parameter and
+// scans the result into a Page. Shared by GetPage and GetPageFoldCase
+// (DRY); the caller supplies the WHERE clause.
+func (s *Store) getPageWhere(where, name string) (*Page, error) {
 	p := &Page{}
 	var isJournal int
 	var sourceDocID, properties, contentHash, tier, category sql.NullString
 
 	err := s.db.QueryRow(`
 		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
-		FROM pages WHERE name = ?`, name).Scan(
+		`+where, name).Scan(
 		&p.Name, &p.OriginalName, &p.SourceID, &sourceDocID,
 		&properties, &contentHash, &isJournal,
 		&p.CreatedAt, &p.UpdatedAt, &tier, &category,
@@ -363,6 +400,62 @@ func (s *Store) GetBlocksByPage(pageName string) ([]*Block, error) {
 	defer func() { _ = rows.Close() }()
 
 	var blocks []*Block
+	for rows.Next() {
+		b := &Block{}
+		if err := rows.Scan(
+			&b.UUID, &b.PageName, &b.ParentUUID,
+			&b.Content, &b.HeadingLevel, &b.Position,
+		); err != nil {
+			return nil, fmt.Errorf("scan block: %w", err)
+		}
+		blocks = append(blocks, b)
+	}
+	return blocks, rows.Err()
+}
+
+// SearchBlocksByContent returns blocks whose content contains the given query
+// as a case-insensitive substring (containment) match, ordered by page name
+// then position for deterministic results. Each returned block carries its
+// page name. Used by the vault layer to merge store-backed hits into
+// full-text search results (mcp-internal-store-access, Unified Full-Text
+// Search).
+//
+// The query is matched as literal text: LIKE metacharacters (%, _, \) in the
+// query are escaped so they cannot alter the match pattern, and the pattern
+// is passed as a parameterized argument (FR-028). SQLite's LIKE operator is
+// case-insensitive for ASCII by default, which matches the vault layer's
+// case-insensitive search semantics. An empty query matches every block
+// (all content is non-NULL).
+//
+// A limit greater than 0 caps the number of returned blocks; limit <= 0
+// returns all matches, following the same convention as SearchSimilar.
+//
+// Returns an empty slice (not nil) if no blocks match. Returns an error if
+// the query or row scanning fails.
+func (s *Store) SearchBlocksByContent(query string, limit int) ([]*Block, error) {
+	// Containment semantics: wrap the escaped literal query in % wildcards.
+	// escapeLike prevents user-supplied % and _ from acting as wildcards
+	// (pattern injection); the ESCAPE '\' clause activates those escapes.
+	pattern := "%" + escapeLike(query) + "%"
+
+	// SQLite treats a negative LIMIT as unbounded, so limit <= 0 means
+	// "no cap" without dynamic SQL construction.
+	if limit <= 0 {
+		limit = -1
+	}
+
+	rows, err := s.db.Query(`
+		SELECT uuid, page_name, parent_uuid, content, heading_level, position
+		FROM blocks
+		WHERE content LIKE ? ESCAPE '\'
+		ORDER BY page_name, position
+		LIMIT ?`, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search blocks by content %q: %w", query, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	blocks := make([]*Block, 0)
 	for rows.Next() {
 		b := &Block{}
 		if err := rows.Scan(

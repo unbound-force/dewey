@@ -1,5 +1,7 @@
 # Feature Specification: Unified Content Serve
 
+> **Later update (2026-11-01)**: When this spec was completed, external/store-backed pages appeared in tool results alongside local pages only after a restart. The live-read bridge landed later via [mcp-internal-store-access](../../openspec/changes/mcp-internal-store-access/) — read tools now query the persistent store on an in-memory miss, so store pages are served in the same session they were written.
+
 **Feature Branch**: `004-unified-content-serve`
 **Created**: 2026-03-28
 **Status**: Complete

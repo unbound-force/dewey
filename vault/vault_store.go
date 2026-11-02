@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/unbound-force/dewey/v3/backend"
 	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/ignore"
 	"github.com/unbound-force/dewey/v3/store"
@@ -25,11 +26,11 @@ import (
 // (SOLID Single Responsibility). The vault.Client owns in-memory indexing;
 // VaultStore owns the persistence bridge.
 type VaultStore struct {
-	store        *store.Store
-	embedder     embed.Embedder // optional — nil when Ollama is unavailable
-	vaultPath    string
-	sourceID     string // e.g., "disk-local"
-	maxChunkChars int   // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	store         *store.Store
+	embedder      embed.Embedder // optional — nil when Ollama is unavailable
+	vaultPath     string
+	sourceID      string // e.g., "disk-local"
+	maxChunkChars int    // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 }
 
 // NewVaultStore creates a VaultStore adapter for bridging vault and store.
@@ -467,14 +468,217 @@ func (vs *VaultStore) generateEmbeddings(pageName string, blocks []types.BlockEn
 	GenerateEmbeddings(vs.store, vs.embedder, pageName, blocks, headingPath, vs.effectiveMaxChunkChars())
 }
 
+// --- Store read helpers (mcp-internal-store-access) ---
+
+// GetStorePage looks up a page by name in the persistent store and returns the
+// page entity together with its reconstructed block tree — the same shape
+// LoadExternalPages registers for external pages. It backs the vault client's
+// live read-through fallbacks so store-backed pages are retrievable without a
+// server restart (mcp-internal-store-access, Live Retrieval of Internal Store
+// Pages). Results are not cached; every call queries the store fresh (design
+// D2 — live lookups, no mid-session caching of store reads). The lookup folds
+// case in SQL (GetPageFoldCase), matching the in-memory tier's
+// case-insensitive keying so a wrong-case lookup behaves the same at every
+// session age.
+//
+// Returns (nil, nil, false, nil) when no page with the given name exists, and
+// a non-nil error when a store query fails. A nil store behaves as an
+// always-miss lookup, preserving no-store parity (Constitution II).
+func (vs *VaultStore) GetStorePage(name string) (*types.PageEntity, []types.BlockEntity, bool, error) {
+	if vs.store == nil {
+		return nil, nil, false, nil
+	}
+
+	sp, err := vs.store.GetPageFoldCase(name)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("look up store page %q: %w", name, err)
+	}
+	if sp == nil {
+		return nil, nil, false, nil
+	}
+
+	entity, blocks, err := vs.hydrateStorePage(sp)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return &entity, blocks, true, nil
+}
+
+// GetStoreBlock resolves a block by UUID in the persistent store and returns
+// it with a reference to its page, matching the shape the vault client's
+// in-memory GetBlock serves (content, UUID, and page reference). It backs the
+// get_block fallback for pages that live only in the store
+// (mcp-internal-store-access, Block Retrieval for Store Pages).
+//
+// Returns (nil, false, nil) when no block with the given UUID exists, and a
+// non-nil error when the store query fails. A nil store behaves as an
+// always-miss lookup, preserving no-store parity (Constitution II).
+func (vs *VaultStore) GetStoreBlock(uuid string) (*types.BlockEntity, bool, error) {
+	if vs.store == nil {
+		return nil, false, nil
+	}
+
+	sb, err := vs.store.GetBlock(uuid)
+	if err != nil {
+		return nil, false, fmt.Errorf("look up store block %q: %w", uuid, err)
+	}
+	if sb == nil {
+		return nil, false, nil
+	}
+
+	return &types.BlockEntity{
+		UUID:    sb.UUID,
+		Content: sb.Content,
+		Page:    &types.PageRef{Name: sb.PageName},
+	}, true, nil
+}
+
+// StorePageMeta reports whether a page with the given name exists in the
+// persistent store and, when it does, its canonical name and source ID. It
+// is the write-guard counterpart to the live read-through: vault write tools
+// resolve read-only state from the same source the reads serve, so a
+// store-backed page absent from the in-memory index cannot be shadowed by a
+// create-if-missing write (mcp-internal-store-access, write guard for
+// store-backed pages). The lookup folds case in SQL, matching GetStorePage
+// and the in-memory tier's keying. Metadata only — no blocks are loaded,
+// keeping the guard one cheap page-row query. A nil store behaves as an
+// always-miss lookup, preserving no-store parity (Constitution II).
+func (vs *VaultStore) StorePageMeta(name string) (found bool, canonicalName, sourceID string, err error) {
+	if vs.store == nil {
+		return false, "", "", nil
+	}
+	sp, err := vs.store.GetPageFoldCase(name)
+	if err != nil {
+		return false, "", "", fmt.Errorf("look up store page %q: %w", name, err)
+	}
+	if sp == nil {
+		return false, "", "", nil
+	}
+	return true, sp.Name, sp.SourceID, nil
+}
+
+// ListStorePages returns the entities of all store pages that are not
+// persisted mirrors of local vault files — the same
+// ListPagesExcludingSource("disk-local") predicate LoadExternalPages uses —
+// converted via the shared storePageEntity conversion. It backs the vault
+// client's GetAllPages unified enumeration merge (mcp-internal-store-access,
+// spec: Unified Page Enumeration). Page rows only: no blocks are loaded,
+// keeping the merge cost at one store scan (design D2/D3).
+//
+// Results are not cached; every call queries the store fresh (design D2). A
+// nil store behaves as an empty list, preserving no-store parity
+// (Constitution II).
+func (vs *VaultStore) ListStorePages() ([]types.PageEntity, error) {
+	if vs.store == nil {
+		return nil, nil
+	}
+
+	rows, err := vs.store.ListPagesExcludingSource("disk-local")
+	if err != nil {
+		return nil, fmt.Errorf("list store pages: %w", err)
+	}
+
+	entities := make([]types.PageEntity, 0, len(rows))
+	for _, sp := range rows {
+		entities = append(entities, storePageEntity(sp))
+	}
+	return entities, nil
+}
+
+// SearchStoreBlocks searches block content in the persistent store via
+// store.SearchBlocksByContent (case-insensitive containment match) and returns
+// the hits converted to backend.SearchHit — page name, UUID, content — the
+// same shape the vault's in-memory search index produces. It backs the vault
+// client's FullTextSearch store merge (mcp-internal-store-access, design D4;
+// spec: Unified Full-Text Search).
+//
+// Results are not cached; every call queries the store fresh (design D2 —
+// live lookups, no mid-session caching of store reads). A nil store behaves
+// as an empty result, preserving no-store parity (Constitution II). A limit
+// greater than 0 caps the returned hits; limit <= 0 returns all matches,
+// following the SearchBlocksByContent convention.
+func (vs *VaultStore) SearchStoreBlocks(query string, limit int) ([]backend.SearchHit, error) {
+	if vs.store == nil {
+		return nil, nil
+	}
+
+	blocks, err := vs.store.SearchBlocksByContent(query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search store blocks for %q: %w", query, err)
+	}
+
+	hits := make([]backend.SearchHit, 0, len(blocks))
+	for _, b := range blocks {
+		if b == nil {
+			continue
+		}
+		hits = append(hits, backend.SearchHit{
+			PageName: b.PageName,
+			UUID:     b.UUID,
+			Content:  b.Content,
+		})
+	}
+	return hits, nil
+}
+
+// hydrateStorePage converts a persisted store.Page row into the
+// types.PageEntity and reconstructed block-tree shape the vault serves for
+// store-backed pages. It is the single conversion shared by GetStorePage and
+// LoadExternalPages (DRY), so live lookups and the startup load produce
+// identical results.
+//
+// Properties are parsed from the stored JSON blob; an unparseable blob leaves
+// properties nil rather than failing the lookup, matching the historical
+// LoadExternalPages behavior. Returns an error only when the block query fails.
+func (vs *VaultStore) hydrateStorePage(sp *store.Page) (types.PageEntity, []types.BlockEntity, error) {
+	entity := storePageEntity(sp)
+
+	storeBlocks, err := vs.store.GetBlocksByPage(sp.Name)
+	if err != nil {
+		return types.PageEntity{}, nil, fmt.Errorf("load blocks for store page %q: %w", sp.Name, err)
+	}
+
+	return entity, reconstructBlockTree(storeBlocks), nil
+}
+
+// storePageEntity converts the metadata half of a persisted store.Page row
+// into a types.PageEntity: name, original name, journal flag, timestamps,
+// and properties. It is the single entity conversion shared by
+// hydrateStorePage and ListStorePages (DRY), so block-loading lookups
+// (GetStorePage, LoadExternalPages) and the GetAllPages merge serve
+// identical entity shapes.
+//
+// Properties are parsed from the stored JSON blob; an unparseable blob leaves
+// properties nil rather than failing the read, matching the historical
+// LoadExternalPages behavior.
+func storePageEntity(sp *store.Page) types.PageEntity {
+	entity := types.PageEntity{
+		Name:         sp.Name,
+		OriginalName: sp.OriginalName,
+		Journal:      sp.IsJournal,
+		CreatedAt:    sp.CreatedAt,
+		UpdatedAt:    sp.UpdatedAt,
+	}
+
+	if sp.Properties != "" {
+		var props map[string]any
+		if err := json.Unmarshal([]byte(sp.Properties), &props); err == nil {
+			entity.Properties = props
+		}
+	}
+
+	return entity
+}
+
 // LoadExternalPages loads all non-local pages from the persistent store into
 // the vault client's in-memory index. This makes external-source content
 // (GitHub, web crawl) queryable via all MCP tools alongside local vault pages.
 //
-// For each external page: converts store.Page → types.PageEntity, loads blocks
-// via store.GetBlocksByPage(), reconstructs the block tree via reconstructBlockTree(),
-// builds a cachedPage with sourceID and readOnly=true, and registers it via
-// applyPageIndex(). Returns the number of pages loaded.
+// For each external page: the shared hydrateStorePage conversion (also used by
+// GetStorePage) produces the types.PageEntity and the reconstructed block
+// tree, then a cachedPage with sourceID and readOnly=true is registered via
+// applyPageIndex(). Pages whose blocks fail to load are skipped with a
+// warning. Returns the number of pages loaded.
 //
 // Design decision: External pages are marked readOnly=true to prevent write
 // operations from modifying content that doesn't exist on disk (per research R7).
@@ -496,32 +700,16 @@ func (vs *VaultStore) LoadExternalPages(c *Client) (int, error) {
 	defer c.mu.Unlock()
 
 	for _, sp := range pages {
-		// Convert store.Page → types.PageEntity.
-		entity := types.PageEntity{
-			Name:         sp.Name,
-			OriginalName: sp.OriginalName,
-			Journal:      sp.IsJournal,
-			CreatedAt:    sp.CreatedAt,
-			UpdatedAt:    sp.UpdatedAt,
-		}
-
-		// Parse properties JSON if present.
-		if sp.Properties != "" {
-			var props map[string]any
-			if err := json.Unmarshal([]byte(sp.Properties), &props); err == nil {
-				entity.Properties = props
-			}
-		}
-
-		// Load blocks from store and reconstruct tree.
-		storeBlocks, err := vs.store.GetBlocksByPage(sp.Name)
+		// Convert store.Page → entity + reconstructed block tree via the
+		// shared conversion, so live lookups (GetStorePage) and this startup
+		// load produce identical shapes.
+		entity, blocks, err := vs.hydrateStorePage(sp)
 		if err != nil {
 			logger.Warn("failed to load blocks for external page",
 				"page", sp.Name, "err", err)
 			continue
 		}
-		blocks := reconstructBlockTree(storeBlocks)
-		totalBlocks += len(storeBlocks)
+		totalBlocks += countBlocks(blocks)
 
 		// Build cachedPage with external source metadata.
 		page := &cachedPage{

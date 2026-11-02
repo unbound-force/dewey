@@ -215,12 +215,29 @@ The issue should include:
 - Which website pages are affected (reference `content/docs/` paths when known)
 - What specifically needs updating (new section, changed example, removed content)
 
-Use `gh issue create --repo unbound-force/website` to create the issue. The issue title should follow the format: `docs: sync dewey <feature> documentation`.
+Use `gh issue create --repo unbound-force/website --label docs` to create the issue. The issue title should follow the format: `docs: sync dewey <feature> documentation`. The `docs` label keeps sync issues consistent with their siblings (e.g., website#41, #113, #335).
 
 Exempt from this requirement:
 - Internal refactors with no user-facing changes
 - Test-only changes
 - Spec artifact updates (these live in the dewey repo, not the website)
+
+### Learnings Direct-Commit Practice
+
+Learnings written to `.uf/dewey/learnings/` (by `store_learning`, review-dispatch
+proposal storage, or `dewey compile` runs) are deliberately stageable — they are
+non-rebuildable knowledge artifacts, and gitignoring them would risk silent data
+loss when `graph.db` is deleted without a backup remote (dewey-publish design).
+Direct-committing them in feature PRs is the accepted practice:
+
+- Keep `.uf/dewey/learnings/` OUT of `.gitignore`.
+- Before committing, screen the files for credentials/secrets (the gitleaks
+  MegaLinter job scans `.uf/` as a backstop, but do not rely on it alone).
+- Prefer `dewey artifacts plan` to review what would be published, and use
+  `dewey artifacts sync` when publishing stranded artifacts deliberately —
+  it adds credential screening and audit trailers behind a human gate.
+- Never force publication through the staging sweep: if a learning is not
+  ready to be public, leave it uncommitted.
 
 ### Spec Commit Gate
 
@@ -331,6 +348,7 @@ artifacts/           # Knowledge-artifact publishing: plan/sync sweep, screening
 
 - **Backend interface**: All MCP tools program against `backend.Backend`, not concrete implementations. Adding a new backend (e.g., Dendron) requires no changes to existing tools.
 - **Optional persistence**: The `store.Store` is passed via `vault.WithStore()` option. When nil, Dewey operates in-memory (graphthulhu-compatible mode).
+- **Live store read-through**: When a store is configured, vault read operations (`GetPage`, `GetPageBlocksTree`, `GetBlock`, `GetAllPages`, `FullTextSearch`, tag search) query the persistent store on an in-memory miss — no mid-session caching, vault files take precedence, and a nil store behaves as an always-miss (no-store parity, Constitution II). Store-written pages (`store_learning`, `store_compiled`) are visible to read tools in the same session without a restart, and `Reload()` re-runs the store page load so store-backed pages survive reloads (mcp-internal-store-access).
 - **Graceful degradation**: Semantic search tools return clear error messages when Ollama is unavailable. All keyword-based tools continue to work.
 - **Cobra CLI**: Root command doubles as `serve` for backward compatibility.
 - **charmbracelet/log**: Structured logging throughout. No `fmt.Fprintf` to stderr.
@@ -604,6 +622,7 @@ specs/
 - Go 1.25 (per `go.mod`) + stdlib git plumbing via `os/exec` (worktrees, stashes, commit surgery), `github.com/unbound-force/dewey/v3/sanitize` (credential screening), `github.com/spf13/cobra` (CLI — `dewey artifacts plan|sync` commands) (dewey-publish)
 
 ## Recent Changes
+- mcp-internal-store-access (OpenSpec): MCP read tools (get_page, get_page_blocks_tree, get_block, list_pages, search, find_by_tag) now serve a unified live view of vault files and persistent store pages via vault read bridge (RLock snapshot → live store read-through, vault precedence, no caching); promote resolves bare names against compiled/ then learning/ and distinguishes lookup errors from absence; CLI promote reports lock-holder PID/command; shared persistent-storage error with lock hint across tools (dewey #90, #91)
 - dewey-publish (OpenSpec): Added `artifacts` package (plan/sync sweep of `.uf/dewey/{learnings,compiled,knowledge}` from working tree, stashes, unpushed commits; credential screening; bounded gitignore fix), `dewey artifacts plan|sync` CLI commands, `/dewey-publish` slash command (non-destructive, mandatory human approval gate)
 - 016-pluggable-providers: Added Vertex AI embedding and synthesis providers, `store_compiled` MCP tool, global config fallback (`~/.config/dewey/config.yaml`), factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()`, `golang.org/x/oauth2/google` dependency
 - learning-identity-collision-fix (OpenSpec): Changed learning identity format from `{tag}-{sequence}` to `{tag}-{YYYYMMDDTHHMMSS}-{author}` with three-tier author resolution (`DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`), sub-second collision avoidance via `O_CREATE|O_EXCL` with suffix fallback, removed `NextLearningSequence` from store, backward-compatible re-ingestion of old-format files

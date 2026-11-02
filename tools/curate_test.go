@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/unbound-force/dewey/v3/curate"
 	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -267,7 +268,7 @@ func TestCurateTool_Synthesizes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read curated file: %v", err)
 		}
-		if !strings.Contains(string(data), "tier: curated") {
+		if !strings.Contains(string(data), "tier: \"curated\"") {
 			t.Errorf("curated file missing tier frontmatter: %s", data)
 		}
 		found = true
@@ -358,5 +359,86 @@ func TestCurateTool_PartialStoreFailure(t *testing.T) {
 	}
 	if failed != 1 || succeeded != 1 {
 		t.Errorf("failed=%d succeeded=%d, want 1 and 1 (results: %v)", failed, succeeded, results)
+	}
+}
+
+// TestAutoIndex_PreservesValidatedTier verifies that auto-indexing a
+// knowledge store does not silently demote a human-validated page back to
+// "curated" when its content changes. It pins the validated-tier guard on
+// the update path: reverting the guard to an unconditional tier assignment
+// must fail this test. The seed content hash is stale by construction (the
+// on-disk file is rewritten with different content before the second
+// indexing), so the hash-skip short-circuit cannot produce a vacuous pass.
+func TestAutoIndex_PreservesValidatedTier(t *testing.T) {
+	s := newTestStore(t)
+
+	vaultDir := t.TempDir()
+	deweyDir := filepath.Join(vaultDir, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("create dewey dir: %v", err)
+	}
+
+	storePath := filepath.Join(deweyDir, "knowledge", "test-store")
+	writeKnowledgeFile(t, storePath, "auth", 1, "high", nil)
+	writeKnowledgeFile(t, storePath, "vault", 2, "high", nil)
+
+	cfg := curate.StoreConfig{
+		Name:    "test-store",
+		Sources: []string{"disk-local"},
+		Path:    storePath,
+	}
+
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
+	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 2 {
+		t.Fatalf("first indexing = %d, want 2", indexed)
+	}
+
+	// Promote the auth page to validated, mirroring dewey promote.
+	promoted, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || promoted == nil {
+		t.Fatalf("get auth page: %v", err)
+	}
+	promoted.Tier = "validated"
+	if err := s.UpdatePage(promoted); err != nil {
+		t.Fatalf("promote auth page: %v", err)
+	}
+	before, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || before == nil {
+		t.Fatalf("get auth page: %v", err)
+	}
+	if before.Tier != "validated" {
+		t.Fatalf("seed tier = %q, want validated before reindex", before.Tier)
+	}
+
+	// Rewrite both files with changed content so the next indexing takes
+	// the update path (the stored content hashes no longer match).
+	writeKnowledgeFile(t, storePath, "auth", 1, "medium", []string{"missing_rationale"})
+	writeKnowledgeFile(t, storePath, "vault", 2, "medium", nil)
+
+	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 2 {
+		t.Fatalf("second indexing = %d, want 2 (content changed)", indexed)
+	}
+
+	// The validated page must keep its tier while its content hash is
+	// refreshed by the update path.
+	after, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || after == nil {
+		t.Fatalf("get auth page after reindex: %v", err)
+	}
+	if after.Tier != "validated" {
+		t.Errorf("validated page tier = %q, want 'validated' (content change must not demote)", after.Tier)
+	}
+	if after.ContentHash == before.ContentHash {
+		t.Errorf("content hash unchanged (%q); update path should refresh it", after.ContentHash)
+	}
+
+	// Complementary branch: a non-validated page is (re)set to curated on
+	// the update path.
+	other, err := s.GetPage("knowledge/test-store/vault-2")
+	if err != nil || other == nil {
+		t.Fatalf("get vault page: %v", err)
+	}
+	if other.Tier != "curated" {
+		t.Errorf("non-validated page tier = %q, want 'curated'", other.Tier)
 	}
 }

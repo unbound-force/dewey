@@ -35,8 +35,8 @@ func TestPromote_NilStore(t *testing.T) {
 		t.Fatal("expected error result when store is nil")
 	}
 	text := resultText(result)
-	if !strings.Contains(text, "promote requires persistent storage") {
-		t.Errorf("error message = %q, should mention 'promote requires persistent storage'", text)
+	if !strings.Contains(text, "persistent storage") {
+		t.Errorf("error message = %q, should mention 'persistent storage'", text)
 	}
 }
 
@@ -304,260 +304,6 @@ func TestPromote_CompiledPage(t *testing.T) {
 	}
 }
 
-// --- Promote internal-store regression tests (mcp-internal-store-access task 3.3) ---
-
-// TestPromote_PromotesInternalPagesByExactName verifies the #91 MCP path:
-// promote locates internal store pages — both compiled/* and learning/* —
-// by exact name and flips their tier from draft to validated, reporting
-// the previous and new tier (spec: Promote Locates Internal Store Pages).
-func TestPromote_PromotesInternalPagesByExactName(t *testing.T) {
-	tests := []struct {
-		name string
-		page string
-	}{
-		{"compiled page", "compiled/gateway"},
-		{"learning page", "learning/auth-20260101-alice"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := newTestStore(t)
-			p := NewPromote(s)
-			insertPromotePage(t, s, tt.page, "test", tt.page, "draft")
-
-			result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{Page: tt.page})
-			if err != nil {
-				t.Fatalf("Promote error: %v", err)
-			}
-			if result.IsError {
-				t.Fatalf("expected success, got error: %s", resultText(result))
-			}
-
-			parsed := parsePromoteResult(t, resultText(result))
-			if parsed["page"] != tt.page {
-				t.Errorf("page = %v, want %q", parsed["page"], tt.page)
-			}
-			if parsed["previous_tier"] != "draft" {
-				t.Errorf("previous_tier = %v, want 'draft'", parsed["previous_tier"])
-			}
-			if parsed["new_tier"] != "validated" {
-				t.Errorf("new_tier = %v, want 'validated'", parsed["new_tier"])
-			}
-
-			stored, err := s.GetPage(tt.page)
-			if err != nil {
-				t.Fatalf("GetPage: %v", err)
-			}
-			if stored == nil {
-				t.Fatalf("page %q missing after promotion", tt.page)
-			}
-			if stored.Tier != "validated" {
-				t.Errorf("stored tier = %q, want 'validated'", stored.Tier)
-			}
-		})
-	}
-}
-
-// TestPromote_ShorthandResolution verifies bare-name resolution: when the
-// exact name misses and the input contains no "/", promote resolves the
-// name against the compiled/ and learning/ namespaces (dewey-distill makes
-// the resolution deterministic and reports ambiguity as an error instead
-// of picking a winner). When no candidate exists the not-found error names
-// the original input (spec: Promote Name Resolution; issue #91 records
-// agents calling promote with the bare tag).
-func TestPromote_ShorthandResolution(t *testing.T) {
-	tests := []struct {
-		name     string
-		seed     []string // draft pages to seed before the call
-		input    string   // page name passed to promote
-		wantPage string   // resolved page expected on success; empty means not found
-	}{
-		{
-			name:     "bare name resolves to compiled page",
-			seed:     []string{"compiled/gateway"},
-			input:    "gateway",
-			wantPage: "compiled/gateway",
-		},
-		{
-			name:     "learning prefix resolves when only learning exists",
-			seed:     []string{"learning/gateway"},
-			input:    "gateway",
-			wantPage: "learning/gateway",
-		},
-		{
-			name:  "no candidate reports the original name as not found",
-			seed:  []string{"compiled/unrelated"},
-			input: "gateway",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := newTestStore(t)
-			p := NewPromote(s)
-			for _, page := range tt.seed {
-				insertPromotePage(t, s, page, "test", page, "draft")
-			}
-
-			result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{Page: tt.input})
-			if err != nil {
-				t.Fatalf("Promote error: %v", err)
-			}
-
-			if tt.wantPage == "" {
-				if !result.IsError {
-					t.Fatalf("expected error result, got success: %s", resultText(result))
-				}
-				text := resultText(result)
-				if !strings.Contains(text, "not found") {
-					t.Errorf("error message = %q, should mention 'not found'", text)
-				}
-				if !strings.Contains(text, "'"+tt.input+"'") {
-					t.Errorf("error message = %q, should name the original input %q", text, tt.input)
-				}
-				return
-			}
-
-			if result.IsError {
-				t.Fatalf("expected success, got error: %s", resultText(result))
-			}
-			parsed := parsePromoteResult(t, resultText(result))
-			if parsed["page"] != tt.wantPage {
-				t.Errorf("page = %v, want %q", parsed["page"], tt.wantPage)
-			}
-
-			// The resolved page is promoted; every other seeded page stays draft.
-			for _, page := range tt.seed {
-				stored, err := s.GetPage(page)
-				if err != nil {
-					t.Fatalf("GetPage(%q): %v", page, err)
-				}
-				if stored == nil {
-					t.Fatalf("page %q missing", page)
-				}
-				wantTier := "draft"
-				if page == tt.wantPage {
-					wantTier = "validated"
-				}
-				if stored.Tier != wantTier {
-					t.Errorf("page %q tier = %q, want %q", page, stored.Tier, wantTier)
-				}
-			}
-		})
-	}
-}
-
-// TestPromote_StoreErrorSurfaces verifies that a failing store lookup is
-// reported as a resolution error and never masked as "not found" (spec:
-// Promote Error Distinction — the #91 bug class). The underlying database
-// is closed after creation so the lookup fails, mirroring the pattern in
-// vault.TestGetPage_StoreErrorSurfaces.
-func TestPromote_StoreErrorSurfaces(t *testing.T) {
-	s := newTestStore(t)
-	// Close the underlying database so every lookup fails. The t.Cleanup
-	// close registered by newTestStore is a safe no-op — database/sql
-	// Close is idempotent.
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close store: %v", err)
-	}
-	p := NewPromote(s)
-
-	result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{
-		Page: "compiled/gateway",
-	})
-	if err != nil {
-		t.Fatalf("Promote error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected error result when the store lookup fails")
-	}
-
-	text := resultText(result)
-	if !strings.Contains(text, "failed to resolve page") {
-		t.Errorf("error message = %q, should mention 'failed to resolve page'", text)
-	}
-	if !strings.Contains(text, "compiled/gateway") {
-		t.Errorf("error message = %q, should name the queried page", text)
-	}
-	if strings.Contains(text, "not found") {
-		t.Errorf("error message = %q, a store failure must not be masked as not-found", text)
-	}
-}
-
-// TestPromote_NonDraftRejectionKeepsTier verifies the tier invariant from
-// both directions: authored and validated pages are rejected with the
-// tier-invariant error naming the resolved page, and the rejected attempt
-// leaves the stored tier unchanged. The rejection also applies to pages
-// located via the shorthand (spec: Promote Locates Internal Store Pages,
-// non-draft scenario).
-func TestPromote_NonDraftRejectionKeepsTier(t *testing.T) {
-	tests := []struct {
-		name      string
-		seed      string // page to seed
-		tier      string // tier to seed
-		input     string // page name passed to promote
-		wantInErr string // resolved page name the error must report
-	}{
-		{
-			name:      "authored page",
-			seed:      "specs/001-core",
-			tier:      "authored",
-			input:     "specs/001-core",
-			wantInErr: "specs/001-core",
-		},
-		{
-			name:      "validated page",
-			seed:      "compiled/gateway",
-			tier:      "validated",
-			input:     "compiled/gateway",
-			wantInErr: "compiled/gateway",
-		},
-		{
-			name:      "shorthand-resolved authored page",
-			seed:      "compiled/gateway",
-			tier:      "authored",
-			input:     "gateway",
-			wantInErr: "compiled/gateway",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := newTestStore(t)
-			p := NewPromote(s)
-			insertPromotePage(t, s, tt.seed, "test", tt.seed, tt.tier)
-
-			result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{Page: tt.input})
-			if err != nil {
-				t.Fatalf("Promote error: %v", err)
-			}
-			if !result.IsError {
-				t.Fatalf("expected error result for %q-tier page", tt.tier)
-			}
-
-			text := resultText(result)
-			if !strings.Contains(text, "cannot be promoted") {
-				t.Errorf("error message = %q, should mention 'cannot be promoted'", text)
-			}
-			if !strings.Contains(text, "'"+tt.tier+"'") {
-				t.Errorf("error message = %q, should mention the current tier %q", text, tt.tier)
-			}
-			if !strings.Contains(text, tt.wantInErr) {
-				t.Errorf("error message = %q, should name the resolved page %q", text, tt.wantInErr)
-			}
-
-			// The rejected attempt must leave the stored tier untouched.
-			stored, err := s.GetPage(tt.seed)
-			if err != nil {
-				t.Fatalf("GetPage: %v", err)
-			}
-			if stored == nil {
-				t.Fatalf("page %q missing after rejected promote", tt.seed)
-			}
-			if stored.Tier != tt.tier {
-				t.Errorf("stored tier = %q, want unchanged %q", stored.Tier, tt.tier)
-			}
-		})
-	}
-}
-
 // --- Batch promotion and page resolution (dewey-distill, #91) ---
 
 func insertPromotePage(t *testing.T, s *store.Store, name, sourceID, sourceDocID, tier string) {
@@ -567,6 +313,19 @@ func insertPromotePage(t *testing.T, s *store.Store, name, sourceID, sourceDocID
 		OriginalName: name,
 		SourceID:     sourceID,
 		SourceDocID:  sourceDocID,
+		Tier:         tier,
+	}); err != nil {
+		t.Fatalf("InsertPage(%q): %v", name, err)
+	}
+}
+
+func insertPromotePageTier(t *testing.T, s *store.Store, name, tier string) {
+	t.Helper()
+	if err := s.InsertPage(&store.Page{
+		Name:         name,
+		OriginalName: name,
+		SourceID:     "compiled",
+		SourceDocID:  strings.TrimPrefix(name, "compiled/"),
 		Tier:         tier,
 	}); err != nil {
 		t.Fatalf("InsertPage(%q): %v", name, err)
@@ -784,7 +543,7 @@ func TestPromote_StoreErrorNotMasked(t *testing.T) {
 	if strings.Contains(text, "Page 'compiled/gateway' not found.") {
 		t.Errorf("store error was masked as not found: %q", text)
 	}
-	if !strings.Contains(text, "failed to resolve page") {
+	if !strings.Contains(text, "failed to look up page") {
 		t.Errorf("result = %q, want resolution error", text)
 	}
 }
@@ -845,5 +604,261 @@ func TestPromote_EmptyPagesSlice(t *testing.T) {
 	}
 	if !strings.Contains(resultText(result), "at least one") {
 		t.Errorf("result = %q, want an empty-batch error", resultText(result))
+	}
+}
+
+// --- Promote internal-store regression tests (mcp-internal-store-access task 3.3) ---
+
+// TestPromote_PromotesInternalPagesByExactName verifies the #91 MCP path:
+// promote locates internal store pages — both compiled/* and learning/* —
+// by exact name and flips their tier from draft to validated, reporting
+// the previous and new tier (spec: Promote Locates Internal Store Pages).
+func TestPromote_PromotesInternalPagesByExactName(t *testing.T) {
+	tests := []struct {
+		name string
+		page string
+	}{
+		{"compiled page", "compiled/gateway"},
+		{"learning page", "learning/auth-20260101-alice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			p := NewPromote(s)
+			insertPromotePageTier(t, s, tt.page, "draft")
+
+			result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{Page: tt.page})
+			if err != nil {
+				t.Fatalf("Promote error: %v", err)
+			}
+			if result.IsError {
+				t.Fatalf("expected success, got error: %s", resultText(result))
+			}
+
+			parsed := parsePromoteResult(t, resultText(result))
+			if parsed["page"] != tt.page {
+				t.Errorf("page = %v, want %q", parsed["page"], tt.page)
+			}
+			if parsed["previous_tier"] != "draft" {
+				t.Errorf("previous_tier = %v, want 'draft'", parsed["previous_tier"])
+			}
+			if parsed["new_tier"] != "validated" {
+				t.Errorf("new_tier = %v, want 'validated'", parsed["new_tier"])
+			}
+
+			stored, err := s.GetPage(tt.page)
+			if err != nil {
+				t.Fatalf("GetPage: %v", err)
+			}
+			if stored == nil {
+				t.Fatalf("page %q missing after promotion", tt.page)
+			}
+			if stored.Tier != "validated" {
+				t.Errorf("stored tier = %q, want 'validated'", stored.Tier)
+			}
+		})
+	}
+}
+
+// TestPromote_ShorthandResolution verifies bare-name resolution: when the
+// exact name misses and the input contains no "/", promote tries
+// "compiled/{name}" then "learning/{name}" and promotes the first existing
+// candidate — compiled wins when both exist. When no candidate exists the
+// not-found error names the original input (spec: Promote Name
+// Resolution; issue #91 records agents calling promote with the bare tag).
+func TestPromote_ShorthandResolution(t *testing.T) {
+	tests := []struct {
+		name     string
+		seed     []string // draft pages to seed before the call
+		input    string   // page name passed to promote
+		wantPage string   // resolved page expected on success; empty means not found
+	}{
+		{
+			name:     "bare name resolves to compiled page",
+			seed:     []string{"compiled/gateway"},
+			input:    "gateway",
+			wantPage: "compiled/gateway",
+		},
+		// When both compiled/ and learning/ candidates exist, bare-name
+		// resolution is ambiguous by design (see TestPromote_Ambiguous):
+		// the human must name the page rather than have promote guess.
+		{
+			name:     "learning prefix resolves when only learning exists",
+			seed:     []string{"learning/gateway"},
+			input:    "gateway",
+			wantPage: "learning/gateway",
+		},
+		{
+			name:  "no candidate reports the original name as not found",
+			seed:  []string{"compiled/unrelated"},
+			input: "gateway",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			p := NewPromote(s)
+			for _, page := range tt.seed {
+				insertPromotePageTier(t, s, page, "draft")
+			}
+
+			result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{Page: tt.input})
+			if err != nil {
+				t.Fatalf("Promote error: %v", err)
+			}
+
+			if tt.wantPage == "" {
+				if !result.IsError {
+					t.Fatalf("expected error result, got success: %s", resultText(result))
+				}
+				text := resultText(result)
+				if !strings.Contains(text, "not found") {
+					t.Errorf("error message = %q, should mention 'not found'", text)
+				}
+				if !strings.Contains(text, "'"+tt.input+"'") {
+					t.Errorf("error message = %q, should name the original input %q", text, tt.input)
+				}
+				return
+			}
+
+			if result.IsError {
+				t.Fatalf("expected success, got error: %s", resultText(result))
+			}
+			parsed := parsePromoteResult(t, resultText(result))
+			if parsed["page"] != tt.wantPage {
+				t.Errorf("page = %v, want %q", parsed["page"], tt.wantPage)
+			}
+
+			// The resolved page is promoted; every other seeded page stays draft.
+			for _, page := range tt.seed {
+				stored, err := s.GetPage(page)
+				if err != nil {
+					t.Fatalf("GetPage(%q): %v", page, err)
+				}
+				if stored == nil {
+					t.Fatalf("page %q missing", page)
+				}
+				wantTier := "draft"
+				if page == tt.wantPage {
+					wantTier = "validated"
+				}
+				if stored.Tier != wantTier {
+					t.Errorf("page %q tier = %q, want %q", page, stored.Tier, wantTier)
+				}
+			}
+		})
+	}
+}
+
+// TestPromote_StoreErrorSurfaces verifies that a failing store lookup is
+// reported as a lookup error and never masked as "not found" (spec:
+// Promote Error Distinction — the #91 bug class). The underlying database
+// is closed after creation so GetPage fails, mirroring the pattern in
+// vault.TestGetPage_StoreErrorSurfaces.
+func TestPromote_StoreErrorSurfaces(t *testing.T) {
+	s := newTestStore(t)
+	// Close the underlying database so every lookup fails. The t.Cleanup
+	// close registered by newTestStore is a safe no-op — database/sql
+	// Close is idempotent.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+	p := NewPromote(s)
+
+	result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{
+		Page: "compiled/gateway",
+	})
+	if err != nil {
+		t.Fatalf("Promote error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when the store lookup fails")
+	}
+
+	text := resultText(result)
+	if !strings.Contains(text, "failed to look up page") {
+		t.Errorf("error message = %q, should mention 'failed to look up page'", text)
+	}
+	if !strings.Contains(text, "compiled/gateway") {
+		t.Errorf("error message = %q, should name the queried page", text)
+	}
+	if strings.Contains(text, "not found") {
+		t.Errorf("error message = %q, a store failure must not be masked as not-found", text)
+	}
+}
+
+// TestPromote_NonDraftRejectionKeepsTier verifies the tier invariant from
+// both directions: authored and validated pages are rejected with the
+// tier-invariant error naming the resolved page, and the rejected attempt
+// leaves the stored tier unchanged. The rejection also applies to pages
+// located via the shorthand (spec: Promote Locates Internal Store Pages,
+// non-draft scenario).
+func TestPromote_NonDraftRejectionKeepsTier(t *testing.T) {
+	tests := []struct {
+		name      string
+		seed      string // page to seed
+		tier      string // tier to seed
+		input     string // page name passed to promote
+		wantInErr string // resolved page name the error must report
+	}{
+		{
+			name:      "authored page",
+			seed:      "specs/001-core",
+			tier:      "authored",
+			input:     "specs/001-core",
+			wantInErr: "specs/001-core",
+		},
+		{
+			name:      "validated page",
+			seed:      "compiled/gateway",
+			tier:      "validated",
+			input:     "compiled/gateway",
+			wantInErr: "compiled/gateway",
+		},
+		{
+			name:      "shorthand-resolved authored page",
+			seed:      "compiled/gateway",
+			tier:      "authored",
+			input:     "gateway",
+			wantInErr: "compiled/gateway",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestStore(t)
+			p := NewPromote(s)
+			insertPromotePageTier(t, s, tt.seed, tt.tier)
+
+			result, _, err := p.Promote(context.Background(), nil, types.PromoteInput{Page: tt.input})
+			if err != nil {
+				t.Fatalf("Promote error: %v", err)
+			}
+			if !result.IsError {
+				t.Fatalf("expected error result for %q-tier page", tt.tier)
+			}
+
+			text := resultText(result)
+			if !strings.Contains(text, "cannot be promoted") {
+				t.Errorf("error message = %q, should mention 'cannot be promoted'", text)
+			}
+			if !strings.Contains(text, "'"+tt.tier+"'") {
+				t.Errorf("error message = %q, should mention the current tier %q", text, tt.tier)
+			}
+			if !strings.Contains(text, tt.wantInErr) {
+				t.Errorf("error message = %q, should name the resolved page %q", text, tt.wantInErr)
+			}
+
+			// The rejected attempt must leave the stored tier untouched.
+			stored, err := s.GetPage(tt.seed)
+			if err != nil {
+				t.Fatalf("GetPage: %v", err)
+			}
+			if stored == nil {
+				t.Fatalf("page %q missing after rejected promote", tt.seed)
+			}
+			if stored.Tier != tt.tier {
+				t.Errorf("stored tier = %q, want unchanged %q", stored.Tier, tt.tier)
+			}
+		})
 	}
 }

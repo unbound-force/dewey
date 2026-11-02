@@ -1920,7 +1920,7 @@ func TestGetPagesWithProperty_EmptyIndex(t *testing.T) {
 	}
 }
 
-// --- FindPage resolution (dewey-distill) ---
+// --- Promote tier operations ---
 
 func insertResolvePage(t *testing.T, s *Store, name, sourceID, sourceDocID, tier string) {
 	t.Helper()
@@ -1932,181 +1932,6 @@ func insertResolvePage(t *testing.T, s *Store, name, sourceID, sourceDocID, tier
 		Tier:         tier,
 	}); err != nil {
 		t.Fatalf("InsertPage(%q): %v", name, err)
-	}
-}
-
-func TestFindPage_Exact(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "draft")
-
-	p, err := s.FindPage("compiled/gateway")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "compiled/gateway" {
-		t.Fatalf("page = %+v, want compiled/gateway", p)
-	}
-}
-
-func TestFindPage_CaseInsensitive(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "compiled/Gateway", "compiled", "Gateway", "draft")
-
-	p, err := s.FindPage("compiled/gateway")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "compiled/Gateway" {
-		t.Fatalf("page = %+v, want compiled/Gateway", p)
-	}
-}
-
-func TestFindPage_BareTagResolvesCompiled(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "draft")
-
-	p, err := s.FindPage("gateway")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "compiled/gateway" {
-		t.Fatalf("page = %+v, want compiled/gateway", p)
-	}
-}
-
-func TestFindPage_BareTagResolvesLearning(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "learning/auth-20260101T000000-alice", "learning", "auth-20260101T000000-alice", "draft")
-
-	p, err := s.FindPage("auth-20260101T000000-alice")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "learning/auth-20260101T000000-alice" {
-		t.Fatalf("page = %+v, want learning page", p)
-	}
-}
-
-func TestFindPage_BareTagResolvesKnowledgeSuffix(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "knowledge/team/authentication", "knowledge-team", "authentication", "curated")
-
-	p, err := s.FindPage("authentication")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "knowledge/team/authentication" {
-		t.Fatalf("page = %+v, want knowledge page", p)
-	}
-}
-
-func TestFindPage_SourceDocIDMatch(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "Article Gateway", "compiled", "gateway", "draft")
-
-	p, err := s.FindPage("compiled/gateway")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "Article Gateway" {
-		t.Fatalf("page = %+v, want Article Gateway via source_doc_id", p)
-	}
-}
-
-func TestFindPage_ExactBeatsNamespace(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "gateway", "disk-local", "gateway.md", "authored")
-	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "draft")
-
-	p, err := s.FindPage("gateway")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p == nil || p.Name != "gateway" {
-		t.Fatalf("page = %+v, want exact gateway", p)
-	}
-}
-
-func TestFindPage_Ambiguous(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "learning/gateway", "learning", "gateway", "draft")
-	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "draft")
-
-	_, err := s.FindPage("gateway")
-	if err == nil {
-		t.Fatal("expected ambiguity error")
-	}
-	if !strings.Contains(err.Error(), "ambiguous") {
-		t.Errorf("error = %q, want ambiguity", err.Error())
-	}
-	if !strings.Contains(err.Error(), "learning/gateway") || !strings.Contains(err.Error(), "compiled/gateway") {
-		t.Errorf("error = %q, want both candidates", err.Error())
-	}
-}
-
-func TestFindPage_Missing(t *testing.T) {
-	s := newTestStore(t)
-	p, err := s.FindPage("does-not-exist")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p != nil {
-		t.Fatalf("page = %+v, want nil", p)
-	}
-}
-
-func TestFindPage_EmptyName(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.FindPage("   "); err == nil {
-		t.Fatal("expected error for empty page name")
-	}
-}
-
-func TestFindPage_StoreError(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if _, err := s.FindPage("gateway"); err == nil {
-		t.Fatal("expected error from closed store")
-	}
-}
-
-func TestFindPage_UnderscoreIsLiteral(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "knowledge/team/authXflow", "knowledge-team", "authXflow", "curated")
-
-	// "_" must not act as a LIKE wildcard. Without escaping, auth_flow would
-	// match authXflow.
-	p, err := s.FindPage("auth_flow")
-	if err != nil {
-		t.Fatalf("FindPage: %v", err)
-	}
-	if p != nil {
-		t.Errorf("FindPage(auth_flow) = %q, want nil (underscore is literal)", p.Name)
-	}
-}
-
-func TestPromotePageTier(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "draft")
-
-	if err := s.PromotePageTier("compiled/gateway"); err != nil {
-		t.Fatalf("PromotePageTier: %v", err)
-	}
-	page, _ := s.GetPage("compiled/gateway")
-	if page.Tier != "validated" {
-		t.Errorf("tier = %q, want validated", page.Tier)
-	}
-
-	// A second conditional promote must fail because the page is no longer draft.
-	if err := s.PromotePageTier("compiled/gateway"); err == nil {
-		t.Fatal("expected error promoting an already-validated page")
-	}
-
-	// A missing page must fail rather than silently succeeding.
-	if err := s.PromotePageTier("compiled/missing"); err == nil {
-		t.Fatal("expected error promoting a missing page")
 	}
 }
 
@@ -2126,26 +1951,168 @@ func TestPromotePagesTiers_AtomicRollback(t *testing.T) {
 	}
 }
 
-func TestFindPage_SourceDocIDBareMatch(t *testing.T) {
-	s := newTestStore(t)
-	insertResolvePage(t, s, "Article Gateway", "compiled", "gateway", "draft")
+// --- Index usage verification (dewey-distill items 10+14) ---
 
-	p, err := s.FindPage("gateway")
+// explainQueryPlan runs EXPLAIN QUERY PLAN for the given statement and
+// returns the concatenated plan detail rows. These tests pin the
+// resolution queries to index seeks: a regression that reintroduces a
+// full-table SCAN (e.g. a per-row LIKE) fails loudly here instead of
+// only showing up as latency in production vaults.
+func explainQueryPlan(t *testing.T, s *Store, query string, args ...any) string {
+	t.Helper()
+	rows, err := s.db.Query("EXPLAIN QUERY PLAN "+query, args...)
 	if err != nil {
-		t.Fatalf("FindPage: %v", err)
+		t.Fatalf("EXPLAIN QUERY PLAN %q: %v", query, err)
 	}
-	if p == nil || p.Name != "Article Gateway" {
-		t.Fatalf("page = %+v, want bare source_doc_id match", p)
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan plan row: %v", err)
+		}
+		if plan.Len() > 0 {
+			plan.WriteString("; ")
+		}
+		plan.WriteString(detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("plan rows: %v", err)
+	}
+	return plan.String()
+}
+
+// assertIndexSearch verifies a query plan performs an index SEARCH on the
+// named index rather than a full-table SCAN.
+func assertIndexSearch(t *testing.T, plan, index string) {
+	t.Helper()
+	if !strings.Contains(plan, "SEARCH") {
+		t.Errorf("query plan = %q, want SEARCH via %s", plan, index)
+	}
+	if !strings.Contains(plan, index) {
+		t.Errorf("query plan = %q, want index %s", plan, index)
+	}
+	if strings.Contains(plan, "SCAN") {
+		t.Errorf("query plan = %q, full table SCAN not expected", plan)
 	}
 }
 
-func TestFindPage_CaseAmbiguous(t *testing.T) {
+func TestListPagesByNameFoldCase_UsesIndex(t *testing.T) {
 	s := newTestStore(t)
-	insertResolvePage(t, s, "compiled/Gateway", "compiled", "Gateway", "draft")
 	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "draft")
 
-	_, err := s.FindPage("COMPILED/GATEWAY")
-	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
-		t.Fatalf("error = %v, want case-insensitive ambiguity", err)
+	plan := explainQueryPlan(t, s, listPagesByNameFoldCaseSQL, "compiled/gateway")
+	assertIndexSearch(t, plan, "idx_pages_name_nocase")
+
+	pages, err := s.ListPagesByNameFoldCase("COMPILED/GATEWAY")
+	if err != nil {
+		t.Fatalf("ListPagesByNameFoldCase: %v", err)
+	}
+	if len(pages) != 1 || pages[0].Name != "compiled/gateway" {
+		t.Errorf("pages = %+v, want compiled/gateway", pages)
+	}
+}
+
+func TestListKnowledgePagesFoldCase_UsesIndex(t *testing.T) {
+	s := newTestStore(t)
+	insertResolvePage(t, s, "knowledge/team/authentication", "knowledge-team", "authentication", "curated")
+	insertResolvePage(t, s, "compiled/elsewhere", "compiled", "elsewhere", "draft")
+
+	// The range predicate must seek idx_pages_name_nocase instead of
+	// evaluating LIKE per row.
+	plan := explainQueryPlan(t, s, listKnowledgePagesFoldCaseSQL)
+	assertIndexSearch(t, plan, "idx_pages_name_nocase")
+
+	pages, err := s.ListKnowledgePagesFoldCase()
+	if err != nil {
+		t.Fatalf("ListKnowledgePagesFoldCase: %v", err)
+	}
+	if len(pages) != 1 || pages[0].Name != "knowledge/team/authentication" {
+		t.Errorf("pages = %+v, want knowledge/team/authentication only", pages)
+	}
+}
+
+func TestGetPageBySourceDoc_UsesIndex(t *testing.T) {
+	s := newTestStore(t)
+	insertResolvePage(t, s, "Article Gateway", "compiled", "gateway", "draft")
+
+	plan := explainQueryPlan(t, s, getPageBySourceDocSQL, "compiled", "gateway")
+	assertIndexSearch(t, plan, "idx_pages_source_doc_nocase")
+
+	// Mixed-case arguments must resolve through the NOCASE index.
+	pages, err := s.GetPageBySourceDoc("COMPILED", "Gateway")
+	if err != nil {
+		t.Fatalf("GetPageBySourceDoc: %v", err)
+	}
+	if len(pages) != 1 || pages[0].Name != "Article Gateway" {
+		t.Errorf("pages = %+v, want Article Gateway", pages)
+	}
+}
+
+// TestDeletePagesBySourceExcludingTier verifies the compiled-page cleanup
+// helper (dewey-distill): it deletes only pages from the given source whose
+// tier differs from the excluded tier, returns the deleted page names so
+// callers can remove their files, and leaves validated pages and pages from
+// other sources untouched.
+func TestDeletePagesBySourceExcludingTier(t *testing.T) {
+	s := newTestStore(t)
+	insertResolvePage(t, s, "compiled/a", "compiled", "a", "draft")
+	insertResolvePage(t, s, "compiled/b", "compiled", "b", "validated")
+	insertResolvePage(t, s, "learning/c", "learning", "c", "draft")
+
+	deleted, err := s.DeletePagesBySourceExcludingTier("compiled", "validated")
+	if err != nil {
+		t.Fatalf("DeletePagesBySourceExcludingTier: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != "compiled/a" {
+		t.Errorf("deleted = %v, want [compiled/a]", deleted)
+	}
+	if p, _ := s.GetPage("compiled/a"); p != nil {
+		t.Errorf("compiled/a = %+v, want deleted", p)
+	}
+	b, _ := s.GetPage("compiled/b")
+	if b == nil || b.Tier != "validated" {
+		t.Errorf("compiled/b = %+v, want retained validated page", b)
+	}
+	if p, _ := s.GetPage("learning/c"); p == nil {
+		t.Error("learning/c was deleted; tier exclusion must be scoped to the source")
+	}
+}
+
+// TestUpdatePage_PreservesValidatedTier verifies the UpdatePage tier guard:
+// a write carrying a draft tier (for example a racing compile that rebuilt
+// the article) must not demote a human-validated page — the SQL CASE clause
+// keeps the validated value.
+func TestUpdatePage_PreservesValidatedTier(t *testing.T) {
+	s := newTestStore(t)
+	insertResolvePage(t, s, "compiled/gateway", "compiled", "gateway", "validated")
+
+	page, err := s.GetPage("compiled/gateway")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage: %v (page=%v)", err, page)
+	}
+	page.Tier = "draft"
+	if err := s.UpdatePage(page); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+	after, _ := s.GetPage("compiled/gateway")
+	if after.Tier != "validated" {
+		t.Errorf("tier = %q, want validated preserved against a draft-tier write", after.Tier)
+	}
+
+	// The guard must not block normal draft-to-draft updates.
+	insertResolvePage(t, s, "compiled/normal", "compiled", "normal", "draft")
+	np, _ := s.GetPage("compiled/normal")
+	if np == nil {
+		t.Fatal("compiled/normal missing")
+	}
+	np.Tier = "draft"
+	if err := s.UpdatePage(np); err != nil {
+		t.Fatalf("UpdatePage(normal): %v", err)
+	}
+	na, _ := s.GetPage("compiled/normal")
+	if na.Tier != "draft" {
+		t.Errorf("normal tier = %q, want draft", na.Tier)
 	}
 }

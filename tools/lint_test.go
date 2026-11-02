@@ -217,8 +217,13 @@ func TestLint_StaleDecision_ValidatedSkipped(t *testing.T) {
 	pageName := fmt.Sprintf("learning/auth-config-%s-test", ts)
 
 	// Promote it to validated — should no longer be flagged.
-	if err := s.UpdatePageTier(pageName, "validated"); err != nil {
-		t.Fatalf("UpdatePageTier: %v", err)
+	page, err := s.GetPage(pageName)
+	if err != nil || page == nil {
+		t.Fatalf("get page: %v", err)
+	}
+	page.Tier = "validated"
+	if err := s.UpdatePage(page); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
 	}
 
 	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})

@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/sanitize"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
 	"github.com/unbound-force/dewey/v3/vault"
@@ -149,7 +150,7 @@ func (c *Compile) compileAll(ctx context.Context, start time.Time) (*mcp.CallToo
 		if c.synth == nil || !c.synth.Available() {
 			return c.returnPromptMode(nil, 0, start)
 		}
-		c.clearCompiled()
+		retained := c.clearCompiled()
 		if err := c.writeEmptyIndex(); err != nil {
 			return errorResult(fmt.Sprintf("failed to write empty index: %v", err)), nil, nil
 		}
@@ -160,6 +161,10 @@ func (c *Compile) compileAll(ctx context.Context, start time.Time) (*mcp.CallToo
 			"total_learnings": 0,
 			"total_articles":  0,
 			"message":         "No learnings to compile.",
+		}
+		if len(retained) > 0 {
+			result["retained_validated"] = retained
+			result["message"] = fmt.Sprintf("No learnings to compile. %d validated article(s) retained.", len(retained))
 		}
 		res, err := jsonTextResult(result)
 		return res, nil, err
@@ -267,8 +272,9 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 		return compileFailureResult(totalLearnings, failures)
 	}
 
+	var retainedValidated []string
 	if full {
-		c.removeStaleTopics(compiledDir, clusters)
+		retainedValidated = c.removeStaleTopics(compiledDir, clusters)
 	}
 
 	articles, replaceFailures := c.replaceArticles(compiledDir, produced)
@@ -301,6 +307,9 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 		result["total_failed"] = len(failures)
 		result["message"] = fmt.Sprintf("Compiled %d learnings into %d articles; %d topic(s) failed.", totalLearnings, len(articles), len(failures))
 	}
+	if len(retainedValidated) > 0 {
+		result["retained_validated"] = retainedValidated
+	}
 	res, err := jsonTextResult(result)
 	if err != nil {
 		return nil, nil, err
@@ -327,7 +336,17 @@ func (c *Compile) synthesizeClusters(ctx context.Context, clusters []Cluster, mo
 		}
 
 		tier := "draft"
-		if existing, findErr := c.store.GetPage("compiled/" + cl.DominantTag); findErr == nil && existing != nil && existing.Tier == "validated" {
+		existing, findErr := c.store.GetPage(store.CompiledPrefix + cl.DominantTag)
+		if findErr != nil {
+			// A lookup failure must fail the topic, not silently default the
+			// tier — the existing article's tier would be demoted on write.
+			failures = append(failures, map[string]string{
+				"topic": cl.DominantTag,
+				"error": fmt.Sprintf("look up existing compiled page: %v", findErr),
+			})
+			continue
+		}
+		if existing != nil && existing.Tier == "validated" {
 			tier = "validated"
 		}
 		produced = append(produced, synthesizedCluster{
@@ -342,26 +361,33 @@ func (c *Compile) synthesizeClusters(ctx context.Context, clusters []Cluster, mo
 
 // removeStaleTopics deletes compiled articles for topics that no longer have
 // learnings. Failed topics are in clusters and therefore retained.
-func (c *Compile) removeStaleTopics(compiledDir string, clusters []Cluster) {
+// Human-validated articles are never deleted; their tags are returned so the
+// compile result can report them as retained.
+func (c *Compile) removeStaleTopics(compiledDir string, clusters []Cluster) []string {
 	currentTopics := make(map[string]struct{}, len(clusters))
 	for _, cl := range clusters {
 		currentTopics[cl.DominantTag] = struct{}{}
 	}
 
-	existingPages, err := c.store.ListPagesBySource("compiled")
+	existingPages, err := c.store.ListPagesBySource(store.SourceCompiled)
 	if err != nil {
 		compileLogger.Warn("failed to list compiled pages for stale cleanup", "err", err)
-		return
+		return nil
 	}
+	var retained []string
 	for _, p := range existingPages {
 		tag := p.SourceDocID
 		if tag == "" {
-			tag = strings.TrimPrefix(p.Name, "compiled/")
+			tag = strings.TrimPrefix(p.Name, store.CompiledPrefix)
 		}
 		if _, ok := currentTopics[tag]; ok {
 			continue
 		}
-		if !isValidTag(tag) {
+		if p.Tier == "validated" {
+			retained = append(retained, tag)
+			continue
+		}
+		if !sanitize.ValidTag(tag) {
 			compileLogger.Warn("skipping stale compiled page with unsafe tag", "page", p.Name, "tag", tag)
 			continue
 		}
@@ -371,10 +397,16 @@ func (c *Compile) removeStaleTopics(compiledDir string, clusters []Cluster) {
 			continue
 		}
 		if err := c.store.DeletePage(p.Name); err != nil {
-			compileLogger.Debug("failed to delete stale compiled page", "page", p.Name, "err", err)
+			// Keep the file when the store row survives so the store and the
+			// filesystem cannot drift apart.
+			compileLogger.Warn("failed to delete stale compiled page", "page", p.Name, "err", err)
+			continue
 		}
-		_ = os.Remove(stalePath)
+		if err := os.Remove(stalePath); err != nil && !os.IsNotExist(err) {
+			compileLogger.Warn("failed to remove stale compiled file", "path", stalePath, "err", err)
+		}
 	}
+	return retained
 }
 
 // replaceArticles stages each article, persists the page and blocks, then
@@ -386,7 +418,7 @@ func (c *Compile) replaceArticles(compiledDir string, produced []synthesizedClus
 
 	for _, sc := range produced {
 		tag := sc.cluster.DominantTag
-		if !isValidTag(tag) {
+		if !sanitize.ValidTag(tag) {
 			failures = append(failures, map[string]string{"topic": tag, "error": "invalid tag: only letters, digits, '-' and '_' are allowed"})
 			continue
 		}
@@ -420,6 +452,13 @@ func (c *Compile) replaceArticles(compiledDir string, produced []synthesizedClus
 
 // writeArticle stages an article beside its destination, persists the page
 // and blocks, then atomically renames the staged file into place.
+//
+// Ordering rationale: the store row is written before the file is renamed
+// on purpose. A crash between the two leaves a hidden .tmp file (ignored
+// by the next compile) rather than a file the store does not know about,
+// and the next compile re-persists the page anyway — the store, not the
+// filesystem, is the source of truth for search, so it must never lag
+// behind the file (PR 145 review amendment).
 func (c *Compile) writeArticle(articlePath string, sc synthesizedCluster) error {
 	tmpPath := filepath.Join(filepath.Dir(articlePath), "."+filepath.Base(articlePath)+".tmp")
 	if err := os.WriteFile(tmpPath, []byte(sc.article), 0o644); err != nil {
@@ -457,15 +496,63 @@ func compileFailureResult(totalLearnings int, failures []map[string]string) (*mc
 	return res, nil, nil
 }
 
-// clearCompiled removes all compiled pages and article files. Used only when
-// there are no learnings left to compile.
-func (c *Compile) clearCompiled() {
-	if _, err := c.store.DeletePagesBySource("compiled"); err != nil {
+// clearCompiled removes all non-validated compiled pages and their article
+// files, retaining human-validated articles in both the store and the
+// filesystem. Used only when there are no learnings left to compile. It
+// returns the tags of retained validated articles so callers can report
+// them.
+func (c *Compile) clearCompiled() []string {
+	deleted, err := c.store.DeletePagesBySourceExcludingTier(store.SourceCompiled, "validated")
+	if err != nil {
 		compileLogger.Warn("failed to delete existing compiled pages", "err", err)
 	}
-	if err := os.RemoveAll(c.compiledDir()); err != nil && !os.IsNotExist(err) {
-		compileLogger.Warn("failed to remove compiled directory", "err", err)
+	compiledDir := c.compiledDir()
+	for _, name := range deleted {
+		tag := strings.TrimPrefix(name, store.CompiledPrefix)
+		if !sanitize.ValidTag(tag) {
+			continue
+		}
+		stalePath := filepath.Join(compiledDir, tag+".md")
+		if !pathWithin(compiledDir, stalePath) {
+			continue
+		}
+		_ = os.Remove(stalePath)
 	}
+	// The index is regenerated by writeEmptyIndex; remove the directory only
+	// when no validated article files are retained.
+	_ = os.Remove(filepath.Join(compiledDir, "_index.md"))
+	retained := c.retainedValidatedTopics()
+	if len(retained) == 0 {
+		if err := os.Remove(compiledDir); err != nil && !os.IsNotExist(err) {
+			compileLogger.Warn("failed to remove compiled directory", "err", err)
+		}
+	}
+	return retained
+}
+
+// retainedValidatedTopics lists the tags of compiled pages still marked
+// validated after a cleanup pass. They are reported in the compile result so
+// callers can see that human-reviewed articles were retained, not lost.
+func (c *Compile) retainedValidatedTopics() []string {
+	pages, err := c.store.ListPagesBySource(store.SourceCompiled)
+	if err != nil {
+		compileLogger.Warn("failed to list retained compiled pages", "err", err)
+		return nil
+	}
+	var retained []string
+	for _, p := range pages {
+		if p.Tier != "validated" {
+			continue
+		}
+		tag := p.SourceDocID
+		if tag == "" {
+			tag = strings.TrimPrefix(p.Name, store.CompiledPrefix)
+		}
+		if sanitize.ValidTag(tag) {
+			retained = append(retained, tag)
+		}
+	}
+	return retained
 }
 
 // returnPromptMode returns clusters with synthesis prompts when no
@@ -494,13 +581,17 @@ func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start
 	}
 
 	elapsed := time.Since(start)
+	message := fmt.Sprintf("Clustered %d learnings into %d topics. Synthesis prompts ready for agent execution.", totalLearnings, len(clusters))
+	if len(clusters) == 0 {
+		message = "No learnings to compile."
+	}
 	result := map[string]any{
 		"status":          "prompts_ready",
 		"clusters":        clusterResults,
 		"total_learnings": totalLearnings,
 		"total_clusters":  len(clusters),
 		"elapsed_ms":      elapsed.Milliseconds(),
-		"message":         fmt.Sprintf("Clustered %d learnings into %d topics. Synthesis prompts ready for agent execution.", totalLearnings, len(clusters)),
+		"message":         message,
 	}
 	res, err := jsonTextResult(result)
 	return res, nil, err
@@ -856,7 +947,7 @@ func (c *Compile) writeIndex() error {
 	sb.WriteString("| Topic | Articles | Sources |\n")
 	sb.WriteString("|-------|----------|--------|\n")
 	for _, p := range pages {
-		if !isValidTag(p.SourceDocID) {
+		if !sanitize.ValidTag(p.SourceDocID) {
 			continue
 		}
 		topic := p.OriginalName
@@ -914,6 +1005,13 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 	if c.store == nil {
 		return errorResult(persistentStorageError("store_compiled").Error()), nil, nil
 	}
+	// Non-blocking mutual exclusion on the pipeline-wide index mutex, mirroring
+	// Compile: the validated-refusal check below is check-then-act, so it must
+	// not interleave with a compile that rewrites the same pages.
+	if !c.mu.TryLock() {
+		return errorResult("store_compiled already in progress (indexing, curation, or compile holds the index lock)"), nil, nil
+	}
+	defer c.mu.Unlock()
 	if input.Tag == "" {
 		return errorResult("tag is required"), nil, nil
 	}
@@ -922,19 +1020,19 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 	}
 
 	// Validate tag to prevent path traversal (FR-010).
-	if !isValidTag(input.Tag) {
+	if !sanitize.ValidTag(input.Tag) {
 		return errorResult("invalid tag: must contain only alphanumeric characters, hyphens, and underscores"), nil, nil
 	}
 
 	// Validate model to prevent YAML frontmatter injection.
-	if input.Model != "" && containsNewline(input.Model) {
-		return errorResult("invalid model: must not contain newlines or null bytes"), nil, nil
+	if input.Model != "" && !sanitize.SafeFrontmatterScalar(input.Model) {
+		return errorResult("invalid model: must not contain control characters"), nil, nil
 	}
 
 	// Validate sources to prevent YAML frontmatter injection.
 	for _, s := range input.Sources {
-		if containsNewline(s) {
-			return errorResult("invalid source: must not contain newlines or null bytes"), nil, nil
+		if !sanitize.SafeFrontmatterScalar(s) {
+			return errorResult("invalid source: must not contain control characters"), nil, nil
 		}
 	}
 
@@ -955,7 +1053,7 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 	}
 	if existing != nil && existing.Tier == "validated" {
 		return errorResult(fmt.Sprintf(
-			"compiled page '%s' is validated; refusing to overwrite reviewed content. Use a new tag or re-open review before storing.",
+			"compiled page '%s' is validated; refusing to overwrite reviewed content. Store the updated article under a new tag instead.",
 			pageName)), nil, nil
 	}
 
@@ -1065,32 +1163,4 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 
 	res, err := jsonTextResult(result)
 	return res, nil, err
-}
-
-// containsNewline returns true if s contains any newline (\n, \r) or null byte
-// characters. Used to prevent YAML frontmatter injection via interpolated values.
-func containsNewline(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 {
-			return true
-		}
-	}
-	return false
-}
-
-// isValidTag checks that a tag contains only alphanumeric characters,
-// hyphens, and underscores. Prevents path traversal in filesystem paths
-// constructed from the tag (e.g., .uf/dewey/compiled/{tag}.md).
-func isValidTag(tag string) bool {
-	if len(tag) == 0 {
-		return false
-	}
-	for _, r := range tag {
-		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		if !isAlpha && !isDigit && r != '-' && r != '_' {
-			return false
-		}
-	}
-	return true
 }

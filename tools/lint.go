@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -849,6 +850,20 @@ func parseKnowledgeFrontmatter(content string) (knowledgeFrontmatter, error) {
 	return fm, nil
 }
 
+// unquoteScalar strips one layer of double quoting from a frontmatter
+// value. The curate renderer quotes scalar fields with %q so they cannot
+// restructure the YAML document (PR 145 review amendment); this reverses
+// that quoting for values that are plain double-quoted scalars, and leaves
+// unquoted values (older files, the unquoted tag field) untouched.
+func unquoteScalar(s string) string {
+	if len(s) >= 2 && strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+		if unquoted, err := strconv.Unquote(s); err == nil {
+			return unquoted
+		}
+	}
+	return s
+}
+
 // parseKnowledgeFrontmatterManual parses YAML frontmatter by scanning
 // for known keys. This avoids importing gopkg.in/yaml.v3 in the tools
 // package (which would add a dependency the tools package doesn't currently
@@ -882,7 +897,7 @@ func parseKnowledgeFrontmatterManual(yamlContent string) knowledgeFrontmatter {
 		// Parse quality flag entries.
 		if inQualityFlags {
 			if strings.HasPrefix(trimmed, "- type:") {
-				flagType := strings.TrimSpace(strings.TrimPrefix(trimmed, "- type:"))
+				flagType := unquoteScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "- type:")))
 				fm.QualityFlags = append(fm.QualityFlags, struct {
 					Type string `yaml:"type"`
 				}{Type: flagType})
@@ -902,13 +917,13 @@ func parseKnowledgeFrontmatterManual(yamlContent string) knowledgeFrontmatter {
 		// Parse top-level key-value pairs.
 		if !inQualityFlags {
 			if strings.HasPrefix(trimmed, "tag:") {
-				fm.Tag = strings.TrimSpace(strings.TrimPrefix(trimmed, "tag:"))
+				fm.Tag = unquoteScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "tag:")))
 			} else if strings.HasPrefix(trimmed, "category:") {
-				fm.Category = strings.TrimSpace(strings.TrimPrefix(trimmed, "category:"))
+				fm.Category = unquoteScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "category:")))
 			} else if strings.HasPrefix(trimmed, "confidence:") {
-				fm.Confidence = strings.TrimSpace(strings.TrimPrefix(trimmed, "confidence:"))
+				fm.Confidence = unquoteScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "confidence:")))
 			} else if strings.HasPrefix(trimmed, "tier:") {
-				fm.Tier = strings.TrimSpace(strings.TrimPrefix(trimmed, "tier:"))
+				fm.Tier = unquoteScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "tier:")))
 			}
 		}
 	}

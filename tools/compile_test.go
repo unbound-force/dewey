@@ -1053,31 +1053,6 @@ func TestStoreCompiled_ResponseBody(t *testing.T) {
 	}
 }
 
-func TestIsValidTag(t *testing.T) {
-	tests := []struct {
-		tag   string
-		valid bool
-	}{
-		{"auth", true},
-		{"vault-walker", true},
-		{"my_tag_123", true},
-		{"ABC", true},
-		{"", false},
-		{"../evil", false},
-		{"auth/sub", false},
-		{"tag.dot", false},
-		{"has space", false},
-		{"null\x00byte", false},
-		{"back\\slash", false},
-	}
-	for _, tt := range tests {
-		got := isValidTag(tt.tag)
-		if got != tt.valid {
-			t.Errorf("isValidTag(%q) = %v, want %v", tt.tag, got, tt.valid)
-		}
-	}
-}
-
 func TestStoreCompiled_MissingTag(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
@@ -1463,6 +1438,20 @@ func TestCompile_PartialFailureKeepsFailedTopic(t *testing.T) {
 	if page == nil || page.Tier != "validated" {
 		t.Errorf("deploy page/tier changed: %+v", page)
 	}
+
+	// The store-derived index lists both the successful topic and the
+	// retained validated topic whose synthesis failed.
+	indexData, err := os.ReadFile(filepath.Join(compiledDir, "_index.md"))
+	if err != nil {
+		t.Fatalf("reading _index.md: %v", err)
+	}
+	indexContent := string(indexData)
+	if !strings.Contains(indexContent, "auth.md") {
+		t.Errorf("index missing successful topic auth.md: %s", indexContent)
+	}
+	if !strings.Contains(indexContent, "deploy.md") {
+		t.Errorf("index missing retained validated topic deploy.md: %s", indexContent)
+	}
 }
 
 // TestCompile_WriteFailureKeepsExistingPage verifies that a staging-file
@@ -1677,8 +1666,8 @@ func TestStoreCompiled_RefusesValidatedOverwrite(t *testing.T) {
 	if res, _, err := c.StoreCompiled(context.Background(), nil, first); err != nil || res.IsError {
 		t.Fatalf("first StoreCompiled: err=%v result=%v", err, res)
 	}
-	if err := s.PromotePageTier("compiled/gateway"); err != nil {
-		t.Fatalf("PromotePageTier: %v", err)
+	if err := s.PromotePagesTiers([]string{"compiled/gateway"}); err != nil {
+		t.Fatalf("PromotePagesTiers: %v", err)
 	}
 
 	second := types.StoreCompiledInput{Tag: "gateway", Content: "Second version.", Sources: []string{"gateway-2"}, Model: "model-b"}
@@ -1691,6 +1680,9 @@ func TestStoreCompiled_RefusesValidatedOverwrite(t *testing.T) {
 	}
 	if !strings.Contains(resultText(res), "validated") {
 		t.Errorf("result = %q, want validated-overwrite refusal", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "Store the updated article under a new tag instead.") {
+		t.Errorf("result = %q, want the new-tag guidance", resultText(res))
 	}
 
 	page, err := s.GetPage("compiled/gateway")
@@ -1706,5 +1698,217 @@ func TestStoreCompiled_RefusesValidatedOverwrite(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "First version.") {
 		t.Errorf("validated article was overwritten: %q", data)
+	}
+}
+
+// TestCompile_ZeroLearningsRetainsValidatedArticles verifies that a full
+// compile with zero learnings and an available synthesizer clears draft
+// compiled articles but retains validated ones, reporting them through
+// retained_validated in the result so human-reviewed knowledge is never
+// silently lost.
+func TestCompile_ZeroLearningsRetainsValidatedArticles(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// A validated compiled article that must survive, plus its file.
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/deploy", OriginalName: "Deploy", SourceID: "compiled",
+		SourceDocID: "deploy", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage(deploy): %v", err)
+	}
+	deployPath := filepath.Join(compiledDir, "deploy.md")
+	if err := os.WriteFile(deployPath, []byte("reviewed deploy article"), 0o644); err != nil {
+		t.Fatalf("write deploy article: %v", err)
+	}
+	// A draft compiled article that must be cleared.
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/old", OriginalName: "Old", SourceID: "compiled",
+		SourceDocID: "old", Tier: "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage(old): %v", err)
+	}
+	oldPath := filepath.Join(compiledDir, "old.md")
+	if err := os.WriteFile(oldPath, []byte("stale draft article"), 0o644); err != nil {
+		t.Fatalf("write old article: %v", err)
+	}
+
+	c := NewCompile(s, nil, &scriptedSynth{failOn: "\x00unmatchable", model: "model-x"}, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got: %s", resultText(result))
+	}
+
+	parsed := parsePromoteResult(t, resultText(result))
+	retained, _ := parsed["retained_validated"].([]any)
+	found := false
+	for _, r := range retained {
+		if r == "deploy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("retained_validated = %v, want deploy listed", parsed["retained_validated"])
+	}
+	msg, _ := parsed["message"].(string)
+	if !strings.Contains(msg, "retained") {
+		t.Errorf("message = %q, want a retention note", msg)
+	}
+
+	// The validated page and file survive; the draft ones are cleared.
+	page, err := s.GetPage("compiled/deploy")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage(deploy): %v (page=%v)", err, page)
+	}
+	if page.Tier != "validated" {
+		t.Errorf("deploy tier = %q, want validated", page.Tier)
+	}
+	if _, err := os.Stat(deployPath); err != nil {
+		t.Errorf("validated article file was deleted: %v", err)
+	}
+	if page, _ := s.GetPage("compiled/old"); page != nil {
+		t.Errorf("draft page compiled/old = %+v, want cleared", page)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Errorf("draft article file still present: %v", err)
+	}
+}
+
+// TestCompile_FullRetainsValidatedStaleTopic verifies that a validated
+// compiled article for a topic with no remaining learnings survives a full
+// compile: removeStaleTopics reports it as retained instead of deleting it,
+// while draft stale topics are removed.
+func TestCompile_FullRetainsValidatedStaleTopic(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	compiledDir := filepath.Join(tmpDir, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(compiledDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// A validated stale topic: no learnings reference it anymore.
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/legacy", OriginalName: "Legacy", SourceID: "compiled",
+		SourceDocID: "legacy", Tier: "validated",
+	}); err != nil {
+		t.Fatalf("InsertPage(legacy): %v", err)
+	}
+	legacyPath := filepath.Join(compiledDir, "legacy.md")
+	if err := os.WriteFile(legacyPath, []byte("reviewed legacy article"), 0o644); err != nil {
+		t.Fatalf("write legacy article: %v", err)
+	}
+	// A draft stale topic: not reviewed, so it must be removed.
+	if err := s.InsertPage(&store.Page{
+		Name: "compiled/stale", OriginalName: "Stale", SourceID: "compiled",
+		SourceDocID: "stale", Tier: "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage(stale): %v", err)
+	}
+
+	// Fresh learnings for an active topic.
+	now := time.Now()
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A for authentication", now)
+
+	c := NewCompile(s, nil, &scriptedSynth{failOn: "\x00unmatchable", model: "model-x"}, tmpDir, nil, 0)
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got: %s", resultText(result))
+	}
+
+	parsed := parsePromoteResult(t, resultText(result))
+	retained, _ := parsed["retained_validated"].([]any)
+	found := false
+	for _, r := range retained {
+		if r == "legacy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("retained_validated = %v, want legacy listed", parsed["retained_validated"])
+	}
+
+	page, err := s.GetPage("compiled/legacy")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage(legacy): %v (page=%v)", err, page)
+	}
+	if page.Tier != "validated" {
+		t.Errorf("legacy tier = %q, want validated", page.Tier)
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		t.Errorf("validated stale article file was deleted: %v", err)
+	}
+	if page, _ := s.GetPage("compiled/stale"); page != nil {
+		t.Errorf("draft stale page compiled/stale = %+v, want removed", page)
+	}
+	if page, _ := s.GetPage("compiled/auth"); page == nil {
+		t.Error("compiled/auth missing after full compile")
+	}
+
+	// The regenerated index lists the fresh topic and the retained
+	// validated topic, and no longer lists the removed draft topic.
+	indexData, err := os.ReadFile(filepath.Join(compiledDir, "_index.md"))
+	if err != nil {
+		t.Fatalf("reading _index.md: %v", err)
+	}
+	indexContent := string(indexData)
+	if !strings.Contains(indexContent, "legacy.md") {
+		t.Errorf("index missing retained validated topic legacy.md: %s", indexContent)
+	}
+	if !strings.Contains(indexContent, "auth.md") {
+		t.Errorf("index missing fresh topic auth.md: %s", indexContent)
+	}
+	if strings.Contains(indexContent, "stale.md") {
+		t.Errorf("index still lists removed draft topic stale.md: %s", indexContent)
+	}
+}
+
+// TestCompile_SynthesizeClustersLookupFailureFailsTopic verifies that when
+// the tier-preservation GetPage lookup fails mid-synthesis, the topic fails
+// rather than being written with a default draft tier — which would demote
+// a validated article on overwrite.
+func TestCompile_SynthesizeClustersLookupFailureFailsTopic(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+
+	now := time.Now()
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A for authentication", now)
+
+	c := NewCompile(s, nil, &scriptedSynth{failOn: "\x00unmatchable", model: "model-x"}, tmpDir, nil, 0)
+
+	// Build the clusters through the real pipeline while the store is open.
+	pages, err := s.ListLearningPages()
+	if err != nil {
+		t.Fatalf("ListLearningPages: %v", err)
+	}
+	entries, err := c.buildLearningEntries(pages)
+	if err != nil {
+		t.Fatalf("buildLearningEntries: %v", err)
+	}
+	clusters := clusterLearnings(entries)
+	if len(clusters) == 0 {
+		t.Fatal("expected at least one cluster")
+	}
+
+	// Close the store so the per-topic tier lookup fails after synthesis.
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	produced, failures := c.synthesizeClusters(context.Background(), clusters, "model-x")
+	if len(produced) != 0 {
+		t.Errorf("produced = %d topics, want 0 (lookup failure must not write)", len(produced))
+	}
+	if len(failures) != 1 || !strings.Contains(failures[0]["error"], "look up existing compiled page") {
+		t.Errorf("failures = %v, want a lookup failure for the topic", failures)
 	}
 }

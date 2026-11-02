@@ -496,6 +496,71 @@ func TestRenamePageUpdatesLinks(t *testing.T) {
 	}
 }
 
+func TestDeletePage_CleansUpEmptyParentDirs(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	// Create a page in a new subdirectory.
+	_, err := c.CreatePage(ctx, "notes/temp", nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+
+	err = c.DeletePage(ctx, "notes/temp")
+	if err != nil {
+		t.Fatalf("DeletePage: %v", err)
+	}
+
+	// The page file and its now-empty parent directory should be gone.
+	if _, statErr := os.Stat(filepath.Join(c.vaultPath, "notes", "temp.md")); !os.IsNotExist(statErr) {
+		t.Errorf("page file still exists: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(c.vaultPath, "notes")); !os.IsNotExist(statErr) {
+		t.Error("empty parent directory was not removed")
+	}
+
+	// A directory that still holds another page must survive deletion.
+	_, err = c.CreatePage(ctx, "keep/a", nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+	_, err = c.CreatePage(ctx, "keep/b", nil, nil)
+	if err != nil {
+		t.Fatalf("CreatePage: %v", err)
+	}
+	if err := c.DeletePage(ctx, "keep/a"); err != nil {
+		t.Fatalf("DeletePage: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(c.vaultPath, "keep", "b.md")); statErr != nil {
+		t.Errorf("sibling page removed: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(c.vaultPath, "keep")); statErr != nil {
+		t.Errorf("non-empty parent directory removed: %v", statErr)
+	}
+}
+
+func TestRenamePage_ValidationErrors(t *testing.T) {
+	c := testWritableVault(t)
+	ctx := context.Background()
+
+	// New name exceeding the 255-byte limit should be rejected.
+	longName := strings.Repeat("x", 256)
+	if err := c.RenamePage(ctx, "index", longName); err == nil {
+		t.Error("expected error for over-length new name")
+	}
+
+	// Renaming a non-existent page should fail.
+	if err := c.RenamePage(ctx, "does-not-exist", "renamed"); err == nil {
+		t.Error("expected error for non-existent page")
+	}
+
+	// The original page must be untouched by the failed renames.
+	page, _ := c.GetPage(ctx, "index")
+	if page == nil {
+		t.Fatal("index page should still exist after failed renames")
+	}
+}
+
 func TestPrependBlockInPage(t *testing.T) {
 	c := testWritableVault(t)
 	ctx := context.Background()

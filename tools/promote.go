@@ -102,7 +102,7 @@ func (p *Promote) resolvePage(name string) (*store.Page, string, error) {
 	if page != nil || strings.Contains(name, "/") {
 		return page, name, nil
 	}
-	for _, prefix := range []string{"compiled/", "learning/"} {
+	for _, prefix := range []string{store.CompiledPrefix, store.LearningPrefix} {
 		candidate := prefix + name
 		candidatePage, err := p.store.GetPage(candidate)
 		if err != nil {

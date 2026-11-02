@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1611,19 +1612,39 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		}
 
 	case "openai-compatible":
-		section(fmt.Sprintf("Synthesis Layer (%s via %s)", displayGatewayValue(synthCfg.Model), displayGatewayValue(openaicompat.DisplayURL(synthCfg.Endpoint))))
-		synth, err := llm.NewSynthesizerFromConfig(synthCfg)
-		if err != nil {
-			c.printCheck(w, "FAIL", "config", fmt.Sprintf("incomplete: %s", err))
+		section(fmt.Sprintf("Synthesis Layer (%s via openai-compatible)", synthCfg.Model))
+
+		// Configuration completeness only — no live API call and the key is
+		// never printed.
+		if synthCfg.Endpoint == "" {
+			c.printCheck(w, "FAIL", "endpoint", "missing")
+			dp("     Fix: set synthesis.endpoint in .uf/dewey/config.yaml\n")
+		} else if u, err := url.Parse(synthCfg.Endpoint); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			c.printCheck(w, "FAIL", "endpoint", "invalid URL (must be an absolute http(s) URL without credentials, query, or fragment)")
+			dp("     Fix: use a plain absolute http(s) URL without credentials, query, or fragment\n")
 		} else {
-			c.printCheck(w, "PASS", "config", fmt.Sprintf("provider=%s endpoint=%s model=%s", synthCfg.Provider, openaicompat.DisplayURL(synthCfg.Endpoint), synthCfg.Model))
-			if synth.Available() {
-				c.printCheck(w, "PASS", "provider", "ready")
-			} else {
-				c.printCheck(w, "WARN", "provider", synthesizerUnavailableReason(synth))
+			// Print the sanitized endpoint (no userinfo/query) so credentials
+			// embedded in the URL never reach terminal output or logs.
+			c.printCheck(w, "PASS", "endpoint", u.Scheme+"://"+u.Host+u.Path)
+			host := u.Hostname()
+			loopback := host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.")
+			if u.Scheme == "http" && !loopback {
+				c.printCheck(w, "WARN", "tls", "plaintext http endpoint; the API key and prompts are sent in cleartext")
+				dp("     Fix: use https:// or a loopback endpoint\n")
 			}
 		}
-		printGatewayCredentialChecks(c, w, openaicompat.CapabilitySynthesis, synthCfg.Endpoint, llm.HasAPIKeyField(deweyDir))
+		if synthCfg.Model == "" {
+			c.printCheck(w, "FAIL", "model", "missing")
+			dp("     Fix: set synthesis.model in .uf/dewey/config.yaml\n")
+		} else {
+			c.printCheck(w, "PASS", "model", synthCfg.Model)
+		}
+		if llm.ResolveSynthesisAPIKey(synthCfg.APIKey) == "" {
+			c.printCheck(w, "FAIL", "credential", "missing")
+			dp("     Fix: set DEWEY_SYNTHESIS_API_KEY or synthesis.api_key\n")
+		} else {
+			c.printCheck(w, "PASS", "credential", "configured")
+		}
 
 	default:
 		section(fmt.Sprintf("Synthesis Layer (unknown provider: %s)", synthCfg.Provider))
@@ -2196,7 +2217,7 @@ Examples:
 
 			// Create compile tool and run.
 			compileEmbCfg := embed.ReadEmbeddingConfig(deweyDir)
-			compile := tools.NewCompile(s, embedder, synth, vp, compileEmbCfg.MaxChunkChars)
+			compile := tools.NewCompile(s, embedder, synth, vp, nil, compileEmbCfg.MaxChunkChars)
 			input := types.CompileInput{Incremental: incremental}
 
 			start := time.Now()
@@ -2469,23 +2490,27 @@ Exit code 0 if clean, 1 if issues found.`,
 // --- Promote command (T036, 013-knowledge-compile Phase 7) ---
 
 // newPromoteCmd creates the `dewey promote` subcommand.
-// Promotes a draft page to validated tier after human review.
+// Promotes one or more draft pages to validated tier after human review.
 func newPromoteCmd() *cobra.Command {
 	var vaultPath string
 
 	cmd := &cobra.Command{
-		Use:   "promote PAGE_NAME",
-		Short: "Promote a draft page to validated",
-		Long: `Promote a draft learning or compiled article to validated status
+		Use:   "promote PAGE_NAME...",
+		Short: "Promote draft pages to validated",
+		Long: `Promote draft learnings or compiled articles to validated status
 after human review. Only pages with tier=draft can be promoted.
+
+Page names are resolved case-insensitively; a bare tag resolves against
+the learning/ and compiled/ namespaces. Multiple names are promoted as an
+all-or-nothing batch: if any page cannot be promoted, none are changed.
 
 Examples:
   dewey promote learning/authentication-3
-  dewey promote compiled/authentication`,
+  dewey promote authentication
+  dewey promote compiled/authentication learning/authentication-3`,
 		SilenceUsage: true,
-		Args:         cobra.ExactArgs(1),
+		Args:         cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			pageName := args[0]
 
 			vp, err := resolveVaultPathOrCwd(vaultPath)
 			if err != nil {
@@ -2505,9 +2530,13 @@ Examples:
 			}
 			defer func() { _ = s.Close() }()
 
-			// Create promote tool and run.
+			// Create promote tool and run. A single argument preserves the
+			// single-page result shape; multiple arguments use batch mode.
 			promote := tools.NewPromote(s)
-			input := types.PromoteInput{Page: pageName}
+			input := types.PromoteInput{Page: args[0]}
+			if len(args) > 1 {
+				input = types.PromoteInput{Pages: args}
+			}
 
 			result, _, mcpErr := promote.Promote(context.Background(), nil, input)
 			if mcpErr != nil {
@@ -2767,15 +2796,6 @@ func displayGatewayValue(value string) string {
 // when it implements embed.UnavailableReasoner, or a generic fallback.
 func embedderUnavailableReason(e embed.Embedder) string {
 	if reason := embed.UnavailableReasonOf(e); reason != "" {
-		return reason
-	}
-	return "unavailable"
-}
-
-// synthesizerUnavailableReason returns the synthesis provider's
-// credential-free reason when it implements llm.UnavailableReasoner.
-func synthesizerUnavailableReason(s llm.Synthesizer) string {
-	if reason := llm.UnavailableReasonOf(s); reason != "" {
 		return reason
 	}
 	return "unavailable"

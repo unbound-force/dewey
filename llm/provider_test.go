@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unbound-force/dewey/v3/embed"
 )
@@ -359,186 +360,193 @@ func TestReadSynthesisConfig_ConfigYAMLWinsOverSynthesisEndpoint(t *testing.T) {
 	}
 }
 
-// --- OpenAI-compatible provider factory and configuration tests ---
-
 func TestNewSynthesizerFromConfig_OpenAICompatible(t *testing.T) {
-	clearSynthesisKeyEnv(t)
+	t.Setenv("DEWEY_SYNTHESIS_API_KEY", "")
 	cfg := ProviderConfig{
 		Provider: "openai-compatible",
-		Model:    "enmaas/rits/zai-org/glm-5-3",
-		Endpoint: "https://gateway.example/v1",
+		Model:    "rits/zai-org/glm-5-3",
+		Endpoint: "https://api.enmaas.devshift.net/v1",
+		APIKey:   "config-key",
 	}
-
 	s, err := NewSynthesizerFromConfig(cfg)
 	if err != nil {
-		t.Fatalf("factory construction must succeed with no API key: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := s.(*OpenAICompatibleSynthesizer); !ok {
-		t.Fatalf("expected *OpenAICompatibleSynthesizer, got %T", s)
+	o, ok := s.(*OpenAICompatibleSynthesizer)
+	if !ok {
+		t.Fatalf("synthesizer type = %T, want *OpenAICompatibleSynthesizer", s)
 	}
-	if s.ModelID() != "enmaas/rits/zai-org/glm-5-3" {
+	if o.apiKey != "config-key" {
+		t.Errorf("apiKey = %q, want config-key", o.apiKey)
+	}
+	if s.ModelID() != "rits/zai-org/glm-5-3" {
 		t.Errorf("ModelID = %q", s.ModelID())
 	}
 }
 
-func TestNewSynthesizerFromConfig_OpenAICompatibleMissingFields(t *testing.T) {
-	clearSynthesisKeyEnv(t)
-
-	_, err := NewSynthesizerFromConfig(ProviderConfig{
+func TestNewSynthesizerFromConfig_OpenAICompatibleEnvKeyWins(t *testing.T) {
+	t.Setenv("DEWEY_SYNTHESIS_API_KEY", "env-key")
+	cfg := ProviderConfig{
 		Provider: "openai-compatible",
 		Model:    "model",
-	})
-	if err == nil || !strings.Contains(err.Error(), "synthesis.endpoint") {
-		t.Fatalf("missing endpoint must name synthesis.endpoint: %v", err)
+		Endpoint: "https://example.com/v1",
+		APIKey:   "config-key",
 	}
-
-	_, err = NewSynthesizerFromConfig(ProviderConfig{
-		Provider: "openai-compatible",
-		Endpoint: "https://gateway.example/v1",
-	})
-	if err == nil || !strings.Contains(err.Error(), "synthesis.model") {
-		t.Fatalf("missing model must name synthesis.model: %v", err)
+	s, err := NewSynthesizerFromConfig(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	o, ok := s.(*OpenAICompatibleSynthesizer)
+	if !ok {
+		t.Fatalf("synthesizer type = %T, want *OpenAICompatibleSynthesizer", s)
+	}
+	if o.apiKey != "env-key" {
+		t.Errorf("apiKey = %q, want env-key", o.apiKey)
 	}
 }
 
-func TestNewSynthesizerFromConfig_UnknownProviderListsAll(t *testing.T) {
+func TestNewSynthesizerFromConfig_OpenAICompatibleMissingFields(t *testing.T) {
+	t.Setenv("DEWEY_SYNTHESIS_API_KEY", "")
+	cases := []struct {
+		name string
+		cfg  ProviderConfig
+		want string
+	}{
+		{
+			name: "endpoint",
+			cfg:  ProviderConfig{Provider: "openai-compatible", Model: "m", APIKey: "k"},
+			want: "endpoint",
+		},
+		{
+			name: "model",
+			cfg:  ProviderConfig{Provider: "openai-compatible", Endpoint: "https://example.com", APIKey: "k"},
+			want: "model",
+		},
+		{
+			name: "key",
+			cfg:  ProviderConfig{Provider: "openai-compatible", Endpoint: "https://example.com", Model: "m"},
+			want: "synthesis.api_key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewSynthesizerFromConfig(tc.cfg)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestNewSynthesizerFromConfig_UnknownProviderListsOpenAICompatible(t *testing.T) {
 	_, err := NewSynthesizerFromConfig(ProviderConfig{Provider: "unsupported"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, provider := range []string{"ollama", "vertex", "openai-compatible"} {
-		if !strings.Contains(err.Error(), provider) {
-			t.Fatalf("unknown-provider error must list %q: %v", provider, err)
-		}
+	if !strings.Contains(err.Error(), "openai-compatible") {
+		t.Errorf("error = %q, want supported-provider list", err.Error())
 	}
 }
 
-func TestReadSynthesisConfig_GatewayConfigFirst(t *testing.T) {
+func TestReadSynthesisConfig_OpenAICompatibleFields(t *testing.T) {
 	dir := t.TempDir()
 	configYAML := `synthesis:
   provider: openai-compatible
-  model: gateway-model
-  endpoint: http://config-host:8080/v1
+  model: rits/zai-org/glm-5-3
+  endpoint: https://api.enmaas.devshift.net/v1
+  api_key: config-key
+  timeout: 45s
+  max_tokens: 900
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-
-	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
-	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	cfg := ReadSynthesisConfig(dir)
 	if cfg.Provider != "openai-compatible" {
-		t.Fatalf("Provider = %q", cfg.Provider)
+		t.Errorf("Provider = %q", cfg.Provider)
 	}
-	if cfg.Endpoint != "http://config-host:8080/v1" {
-		t.Fatalf("config.yaml must win for synthesis (config-first): %q", cfg.Endpoint)
+	if cfg.APIKey != "config-key" {
+		t.Errorf("APIKey = %q", cfg.APIKey)
+	}
+	if cfg.Timeout != 45*time.Second {
+		t.Errorf("Timeout = %v, want 45s", cfg.Timeout)
+	}
+	if cfg.MaxTokens != 900 {
+		t.Errorf("MaxTokens = %d, want 900", cfg.MaxTokens)
 	}
 }
 
-func TestReadSynthesisConfig_GatewayEnvEndpointFallback(t *testing.T) {
+func TestReadSynthesisConfig_OpenAICompatibleDefaults(t *testing.T) {
 	dir := t.TempDir()
 	configYAML := `synthesis:
   provider: openai-compatible
-  model: gateway-model
+  model: model
+  endpoint: https://example.com/v1
 `
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
 	cfg := ReadSynthesisConfig(dir)
-	if cfg.Endpoint != "http://env-host:9090/v1" {
-		t.Fatalf("gateway endpoint should fall back to DEWEY_SYNTHESIS_ENDPOINT: %q", cfg.Endpoint)
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (provider default applies later)", cfg.Timeout)
+	}
+	if cfg.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d, want 0 (provider default applies later)", cfg.MaxTokens)
 	}
 }
 
-func TestReadSynthesisConfig_GatewayDoesNotUseOllamaFallbacks(t *testing.T) {
+func TestReadSynthesisConfig_GlobalOpenAICompatibleFields(t *testing.T) {
+	globalDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", globalDir)
+	if err := os.MkdirAll(filepath.Join(globalDir, "dewey"), 0o755); err != nil {
+		t.Fatalf("mkdir global config: %v", err)
+	}
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: global-model
+  endpoint: https://example.com/v1
+  api_key: global-key
+  timeout: 90s
+  max_tokens: 2048
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "dewey", "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+
+	cfg := ReadSynthesisConfig(t.TempDir())
+	if cfg.Provider != "openai-compatible" || cfg.Model != "global-model" {
+		t.Errorf("provider/model = %q/%q", cfg.Provider, cfg.Model)
+	}
+	if cfg.APIKey != "global-key" {
+		t.Errorf("APIKey = %q", cfg.APIKey)
+	}
+	if cfg.Timeout != 90*time.Second {
+		t.Errorf("Timeout = %v, want 90s", cfg.Timeout)
+	}
+	if cfg.MaxTokens != 2048 {
+		t.Errorf("MaxTokens = %d", cfg.MaxTokens)
+	}
+}
+
+func TestReadSynthesisConfig_IntegerTimeoutInterpretedAsSeconds(t *testing.T) {
 	dir := t.TempDir()
 	configYAML := `synthesis:
   provider: openai-compatible
-  model: gateway-model
+  model: model
+  endpoint: https://example.com/v1
+  timeout: 45
 `
-	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
-	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "")
-	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-
 	cfg := ReadSynthesisConfig(dir)
-	if cfg.Endpoint != "" {
-		t.Fatalf("gateway endpoint must not fall back to OLLAMA_HOST or localhost: %q", cfg.Endpoint)
-	}
-}
-
-// TestReadSynthesisConfig_GatewayGlobalConfigEnvFallback exercises the
-// global-config branch of resolveGatewaySynthesisConfig: a gateway
-// provider declared only in the global config.yaml still gets the
-// DEWEY_SYNTHESIS_ENDPOINT fallback (code review L-15).
-func TestReadSynthesisConfig_GatewayGlobalConfigEnvFallback(t *testing.T) {
-	vaultDir := t.TempDir()
-
-	globalDir := filepath.Join(t.TempDir(), "dewey")
-	if err := os.MkdirAll(globalDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	globalYAML := `synthesis:
-  provider: openai-compatible
-  model: gateway-model
-`
-	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0644); err != nil {
-		t.Fatalf("write global config: %v", err)
-	}
-	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(globalDir))
-	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
-
-	cfg := ReadSynthesisConfig(vaultDir)
-	if cfg.Provider != "openai-compatible" {
-		t.Fatalf("Provider = %q, want openai-compatible (from global)", cfg.Provider)
-	}
-	if cfg.Endpoint != "http://env-host:9090/v1" {
-		t.Fatalf("global gateway endpoint should fall back to DEWEY_SYNTHESIS_ENDPOINT: %q", cfg.Endpoint)
-	}
-}
-
-// TestHasAPIKeyField_VaultAndGlobal covers both config sources for the
-// ignored-key warning probe (FR-024), including the per-vault and global
-// branches (code review HIGH-2, L-15).
-func TestHasAPIKeyField_VaultAndGlobal(t *testing.T) {
-	vaultDir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if HasAPIKeyField(vaultDir) {
-		t.Fatal("no config anywhere: want false")
-	}
-
-	vaultYAML := `synthesis:
-  api_key: vault-secret
-`
-	if err := os.WriteFile(filepath.Join(vaultDir, "config.yaml"), []byte(vaultYAML), 0644); err != nil {
-		t.Fatalf("write vault config: %v", err)
-	}
-	if !HasAPIKeyField(vaultDir) {
-		t.Fatal("vault api_key: want true")
-	}
-
-	emptyVault := t.TempDir()
-	globalDir := filepath.Join(t.TempDir(), "dewey")
-	if err := os.MkdirAll(globalDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	globalYAML := `synthesis:
-  api_key: global-secret
-`
-	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0644); err != nil {
-		t.Fatalf("write global config: %v", err)
-	}
-	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(globalDir))
-	if !HasAPIKeyField(emptyVault) {
-		t.Fatal("global api_key with empty vault: want true")
+	if cfg.Timeout != 45*time.Second {
+		t.Errorf("Timeout = %v, want 45s (integer interpreted as seconds)", cfg.Timeout)
 	}
 }

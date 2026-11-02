@@ -306,7 +306,7 @@ func (p *Pipeline) BuildExtractionPrompt(documents []DocumentContent) string {
 
 	sb.WriteString("## Documents\n\n")
 	for i, doc := range documents {
-		sb.WriteString(fmt.Sprintf("### Document %d: %s (source: %s)\n\n", i+1, doc.PageName, doc.SourceID))
+		fmt.Fprintf(&sb, "### Document %d: %s (source: %s)\n\n", i+1, doc.PageName, doc.SourceID)
 		sb.WriteString(doc.Content)
 		sb.WriteString("\n\n---\n\n")
 	}
@@ -314,6 +314,63 @@ func (p *Pipeline) BuildExtractionPrompt(documents []DocumentContent) string {
 	sb.WriteString("Extract all knowledge items from the documents above. Return ONLY the JSON array, no other text.\n")
 
 	return sb.String()
+}
+
+// isValidKnowledgeTag reports whether a curated tag is safe to use as a
+// filename component and plain YAML scalar.
+func isValidKnowledgeTag(tag string) bool {
+	if tag == "" {
+		return false
+	}
+	for _, r := range tag {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if !isAlpha && !isDigit && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// isSafeFrontmatterText reports whether s can be embedded as a single-line
+// YAML scalar without injecting new keys.
+func isSafeFrontmatterText(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidKnowledgeFile validates the fields that become filenames or
+// single-line YAML scalars, and normalizes confidence. Invalid items are
+// skipped rather than written with attacker-controlled metadata.
+func isValidKnowledgeFile(f *KnowledgeFile) bool {
+	if f.Tag == "" || f.Category == "" || f.Content == "" {
+		curateLogger.Warn("skipping knowledge item with missing fields", "tag", f.Tag)
+		return false
+	}
+	if !isValidKnowledgeTag(f.Tag) {
+		curateLogger.Warn("skipping knowledge item with unsafe tag", "tag", f.Tag)
+		return false
+	}
+	if !isSafeFrontmatterText(f.Category) || !isSafeFrontmatterText(f.Confidence) || !isSafeFrontmatterText(f.StoreName) {
+		curateLogger.Warn("skipping knowledge item with unsafe metadata", "tag", f.Tag)
+		return false
+	}
+	for _, src := range f.Sources {
+		if !isSafeFrontmatterText(src.SourceID) || !isSafeFrontmatterText(src.Document) || !isSafeFrontmatterText(src.Section) {
+			curateLogger.Warn("skipping knowledge item with unsafe source metadata", "tag", f.Tag)
+			return false
+		}
+	}
+	switch f.Confidence {
+	case "high", "medium", "low", "flagged":
+	default:
+		f.Confidence = "medium"
+	}
+	return true
 }
 
 // ParseExtractionResponse parses the LLM's JSON response into KnowledgeFile structs.
@@ -374,26 +431,75 @@ func ParseExtractionResponse(response string) ([]KnowledgeFile, error) {
 	// Validate required fields.
 	var valid []KnowledgeFile
 	for _, f := range files {
-		if f.Tag == "" {
-			curateLogger.Warn("skipping knowledge item with empty tag")
+		if !isValidKnowledgeFile(&f) {
 			continue
-		}
-		if f.Category == "" {
-			curateLogger.Warn("skipping knowledge item with empty category", "tag", f.Tag)
-			continue
-		}
-		if f.Content == "" {
-			curateLogger.Warn("skipping knowledge item with empty content", "tag", f.Tag)
-			continue
-		}
-		// Default confidence to "medium" if not specified.
-		if f.Confidence == "" {
-			f.Confidence = "medium"
 		}
 		valid = append(valid, f)
 	}
-
 	return valid, nil
+}
+
+// renderKnowledgeFileContent renders knowledge file frontmatter and body.
+func renderKnowledgeFileContent(file KnowledgeFile) string {
+	var buf strings.Builder
+	buf.WriteString("---\n")
+	fmt.Fprintf(&buf, "tag: %s\n", file.Tag)
+	fmt.Fprintf(&buf, "category: %s\n", file.Category)
+	fmt.Fprintf(&buf, "confidence: %s\n", file.Confidence)
+	fmt.Fprintf(&buf, "created_at: %s\n", file.CreatedAt)
+	if file.StoreName != "" {
+		fmt.Fprintf(&buf, "store: %s\n", file.StoreName)
+	}
+	fmt.Fprintf(&buf, "tier: %s\n", file.Tier)
+	buf.WriteString(renderKnowledgeSources(file.Sources))
+	buf.WriteString(renderKnowledgeQualityFlags(file.QualityFlags))
+	buf.WriteString("---\n\n")
+	buf.WriteString(file.Content)
+	buf.WriteString("\n")
+	return buf.String()
+}
+
+// renderKnowledgeSources renders the optional sources YAML list.
+func renderKnowledgeSources(sources []SourceRef) string {
+	if len(sources) == 0 {
+		return ""
+	}
+	var buf strings.Builder
+	buf.WriteString("sources:\n")
+	for _, src := range sources {
+		fmt.Fprintf(&buf, "  - source_id: %s\n", src.SourceID)
+		fmt.Fprintf(&buf, "    document: %s\n", src.Document)
+		if src.Section != "" {
+			fmt.Fprintf(&buf, "    section: %s\n", src.Section)
+		}
+		if src.Excerpt != "" {
+			fmt.Fprintf(&buf, "    excerpt: %q\n", src.Excerpt)
+		}
+	}
+	return buf.String()
+}
+
+// renderKnowledgeQualityFlags renders the quality_flags YAML list.
+func renderKnowledgeQualityFlags(flags []QualityFlag) string {
+	if len(flags) == 0 {
+		return "quality_flags: []\n"
+	}
+	var buf strings.Builder
+	buf.WriteString("quality_flags:\n")
+	for _, flag := range flags {
+		fmt.Fprintf(&buf, "  - type: %s\n", flag.Type)
+		fmt.Fprintf(&buf, "    detail: %q\n", flag.Detail)
+		if len(flag.Sources) > 0 {
+			buf.WriteString("    sources:\n")
+			for _, s := range flag.Sources {
+				fmt.Fprintf(&buf, "      - %s\n", s)
+			}
+		}
+		if flag.Resolution != "" {
+			fmt.Fprintf(&buf, "    resolution: %q\n", flag.Resolution)
+		}
+	}
+	return buf.String()
 }
 
 // WriteKnowledgeFile writes a curated knowledge file to the store's directory.
@@ -401,66 +507,26 @@ func ParseExtractionResponse(response string) ([]KnowledgeFile, error) {
 // with YAML frontmatter containing all metadata fields.
 // Returns the file path on success.
 func WriteKnowledgeFile(file KnowledgeFile, storePath string, seq int) (string, error) {
+	if !isValidKnowledgeTag(file.Tag) {
+		return "", fmt.Errorf("invalid knowledge tag %q", file.Tag)
+	}
+	if !isSafeFrontmatterText(file.Category) || !isSafeFrontmatterText(file.Confidence) ||
+		!isSafeFrontmatterText(file.StoreName) || !isSafeFrontmatterText(file.CreatedAt) || !isSafeFrontmatterText(file.Tier) {
+		return "", fmt.Errorf("knowledge metadata contains control characters")
+	}
 	if err := os.MkdirAll(storePath, 0o755); err != nil {
 		return "", fmt.Errorf("create store directory: %w", err)
 	}
 
 	filename := fmt.Sprintf("%s-%d.md", file.Tag, seq)
 	filePath := filepath.Join(storePath, filename)
-
-	// Build YAML frontmatter using fmt.Sprintf for simple key-value pairs
-	// and json.Marshal for complex nested structures (quality_flags, sources).
-	var buf strings.Builder
-	buf.WriteString("---\n")
-	buf.WriteString(fmt.Sprintf("tag: %s\n", file.Tag))
-	buf.WriteString(fmt.Sprintf("category: %s\n", file.Category))
-	buf.WriteString(fmt.Sprintf("confidence: %s\n", file.Confidence))
-	buf.WriteString(fmt.Sprintf("created_at: %s\n", file.CreatedAt))
-	if file.StoreName != "" {
-		buf.WriteString(fmt.Sprintf("store: %s\n", file.StoreName))
-	}
-	buf.WriteString(fmt.Sprintf("tier: %s\n", file.Tier))
-
-	// Write sources as YAML list.
-	if len(file.Sources) > 0 {
-		buf.WriteString("sources:\n")
-		for _, src := range file.Sources {
-			buf.WriteString(fmt.Sprintf("  - source_id: %s\n", src.SourceID))
-			buf.WriteString(fmt.Sprintf("    document: %s\n", src.Document))
-			if src.Section != "" {
-				buf.WriteString(fmt.Sprintf("    section: %s\n", src.Section))
-			}
-			if src.Excerpt != "" {
-				buf.WriteString(fmt.Sprintf("    excerpt: %q\n", src.Excerpt))
-			}
-		}
+	if filepath.Base(filePath) != filename {
+		return "", fmt.Errorf("invalid knowledge filename %q", filename)
 	}
 
-	// Write quality flags as YAML list.
-	if len(file.QualityFlags) > 0 {
-		buf.WriteString("quality_flags:\n")
-		for _, flag := range file.QualityFlags {
-			buf.WriteString(fmt.Sprintf("  - type: %s\n", flag.Type))
-			buf.WriteString(fmt.Sprintf("    detail: %q\n", flag.Detail))
-			if len(flag.Sources) > 0 {
-				buf.WriteString("    sources:\n")
-				for _, s := range flag.Sources {
-					buf.WriteString(fmt.Sprintf("      - %s\n", s))
-				}
-			}
-			if flag.Resolution != "" {
-				buf.WriteString(fmt.Sprintf("    resolution: %q\n", flag.Resolution))
-			}
-		}
-	} else {
-		buf.WriteString("quality_flags: []\n")
-	}
+	content := renderKnowledgeFileContent(file)
 
-	buf.WriteString("---\n\n")
-	buf.WriteString(file.Content)
-	buf.WriteString("\n")
-
-	if err := os.WriteFile(filePath, []byte(buf.String()), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("write knowledge file %q: %w", filePath, err)
 	}
 
@@ -514,7 +580,7 @@ func SaveCurationState(state CurationState, storePath string) error {
 func writeStoreIndex(files []KnowledgeFile, storePath string) error {
 	var sb strings.Builder
 	sb.WriteString("# Knowledge Store Index\n\n")
-	sb.WriteString(fmt.Sprintf("*Generated: %s*\n\n", time.Now().UTC().Format(time.RFC3339)))
+	fmt.Fprintf(&sb, "*Generated: %s*\n\n", time.Now().UTC().Format(time.RFC3339))
 
 	if len(files) == 0 {
 		sb.WriteString("No knowledge files curated yet.\n")
@@ -523,8 +589,8 @@ func writeStoreIndex(files []KnowledgeFile, storePath string) error {
 		sb.WriteString("|-----|----------|------------|---------------|\n")
 		for i, f := range files {
 			flagCount := len(f.QualityFlags)
-			sb.WriteString(fmt.Sprintf("| [%s](%s-%d.md) | %s | %s | %d |\n",
-				f.Tag, f.Tag, i+1, f.Category, f.Confidence, flagCount))
+			fmt.Fprintf(&sb, "| [%s](%s-%d.md) | %s | %s | %d |\n",
+				f.Tag, f.Tag, i+1, f.Category, f.Confidence, flagCount)
 		}
 	}
 

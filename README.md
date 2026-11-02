@@ -375,7 +375,7 @@ dewey status [--vault PATH] [--json]
 
 ### dewey doctor
 
-Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), Ollama availability, embedding model status, synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, connectivity, model availability), MCP server process, and opencode.json configuration.
+Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), Ollama availability, embedding model status, synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, connectivity, model and credential presence), MCP server process, and opencode.json configuration.
 
 ```bash
 dewey doctor [--vault PATH]
@@ -443,16 +443,18 @@ dewey lint [--vault PATH] [--fix]
 Promote a page from `draft` tier to `validated` after human review. Only draft-tier pages (agent-generated content) can be promoted.
 
 ```bash
-dewey promote [--vault PATH] PAGE_NAME
+dewey promote [--vault PATH] PAGE_NAME...
 ```
 
-The page is located by its exact name; when that name is absent and `PAGE_NAME` contains no `/`, the shorthand is resolved by trying `compiled/PAGE_NAME`, then `learning/PAGE_NAME`. A missing page reports `Page '<name>' not found`; a store failure reports `failed to look up page '<name>'` so the error is not mistaken for absence.
+The page is located by its exact name; when that name is absent, resolution falls back deterministically: a case-insensitive exact match, then — for a bare name containing no `/` — the `compiled/PAGE_NAME`, `learning/PAGE_NAME`, and `knowledge/*/PAGE_NAME` namespaces, followed by a `source_id`/`source_doc_id` match. A bare tag that matches more than one page reports the candidates instead of picking one. A missing page reports `Page '<name>' not found`; a store failure reports `failed to resolve page '<name>'` so the error is not mistaken for absence.
 
 When the store cannot be opened because another Dewey process holds the database lock, the error identifies the lock holder (PID and command, read from `.uf/dewey/dewey.lock`) and points to the `dewey_promote` MCP tool as the supported write path while a server is running.
 
+Multiple names are promoted as an all-or-nothing batch: if any page is missing, ambiguous, or not `draft`, no tiers change and the command reports each failure.
+
 ### dewey curate
 
-Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores. Uses an LLM (via Ollama) to analyze indexed content and produce curated markdown files with confidence scoring and quality flags.
+Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores. Uses the configured synthesis provider (Ollama, Vertex AI, or OpenAI-compatible) to analyze indexed content and produce curated markdown files with confidence scoring and quality flags.
 
 ```bash
 dewey curate [--vault PATH] [--store NAME] [--force] [--no-embeddings]
@@ -659,7 +661,7 @@ Set `project` and `region` in your config to match your GCP setup. Use a regiona
 - Availability is a cached (30-second) authenticated `GET /models` probe with a one-second timeout. While it reports unavailable, semantic tools return the provider's reason and keyword/graph tools keep working.
 - HTTP 429 responses retry with `Retry-After` or exponential backoff with jitter, matching Vertex (base 1 second, cap 60 seconds, one initial attempt plus at most five retries).
 
-Credentials are environment-only — never put them in `config.yaml`:
+Embedding gateway credentials are environment-only — never put them in `config.yaml`:
 
 | Variable | Applies to | Position |
 |----------|------------|----------|
@@ -668,20 +670,43 @@ Credentials are environment-only — never put them in `config.yaml`:
 | `DEWEY_API_KEY` | both | second |
 | `OPENROUTER_API_KEY` | both | third, only when the endpoint host is exactly `openrouter.ai` |
 
-An empty variable counts as unset, and no key is required for an unauthenticated self-hosted gateway (the `Authorization` header is omitted). A key present in `config.yaml` is ignored, and startup plus `dewey doctor` warn about it. Both commands also warn when a resolved key would transit `http://` to a non-loopback host.
+An empty variable counts as unset, and no key is required for an unauthenticated self-hosted gateway (the `Authorization` header is omitted). An `api_key` field under `embedding:` in `config.yaml` is ignored, and startup plus `dewey doctor` warn about it. For synthesis, `DEWEY_SYNTHESIS_API_KEY` wins over `synthesis.api_key` (see the server-side synthesis section below). Both commands also warn when a resolved key would transit `http://` to a non-loopback host.
 
 ```bash
 export DEWEY_SYNTHESIS_API_KEY="<your-key>"
 dewey doctor   # reports gateway configuration and probe status without secrets
 ```
 
+#### OpenAI-Compatible Synthesis (Server-Side)
+
+Any provider that exposes the OpenAI chat-completions contract can perform synthesis. enmaas is the reference deployment:
+
+```yaml
+synthesis:
+  provider: openai-compatible
+  endpoint: https://api.enmaas.devshift.net/v1
+  model: rits/zai-org/glm-5-3
+  # api_key: prefer the environment variable instead of committing a key
+  timeout: 300s       # optional, default 300s
+  max_tokens: 16000   # optional, default 16000
+```
+
+Provide the credential with `DEWEY_SYNTHESIS_API_KEY` (recommended) or `synthesis.api_key`; the environment variable wins. The key is sent only in the `Authorization` header, is never logged, and is redacted from provider error bodies.
+
+With a provider configured, `dewey serve` performs synthesis inside the MCP `compile` and `curate` tools, so agents do not need a CLI round-trip (the server holds the store lock while it runs). Requests retry HTTP 429 with the same bounded backoff as Vertex. A response that stops because it hit `max_tokens` (`finish_reason: "length"`) is reported as an error instead of silently returning truncated text — raise `max_tokens` or reduce the prompt size.
+
+If no provider is configured or it cannot be constructed, `compile` and `curate` keep their prompt-mode behavior: they return the synthesis prompts for the calling agent to complete. Compiled articles can be persisted with `store_compiled`; curated content has no write-back MCP tool, so it requires a configured server-side synthesizer.
+
+Configuring this provider sends learning and source content to the configured endpoint. Keep the local Ollama/Vertex setup if content must not leave your network. `DEWEY_SYNTHESIS_API_KEY` is read when the server builds the synthesizer, so restart `dewey serve` after rotating the key. `timeout` accepts a duration string (`300s`) or an integer number of seconds.
+
+`compile` and `curate` hold the shared index lock while they synthesize, so `index`/`reindex` report "already in progress" during a long run. Prefer incremental compilation for large knowledge bases.
 #### Global Config
 
 Create `~/.config/dewey/config.yaml` (or `$XDG_CONFIG_HOME/dewey/config.yaml`) to set defaults for all vaults. Per-vault config overrides global.
 
 #### Environment Variables
 
-Environment variables override config file values for embedding. For synthesis, they serve as fallbacks when no config exists.
+Environment variables override config file values for embedding. For synthesis, they serve as fallbacks when no config exists; the exception is `DEWEY_SYNTHESIS_API_KEY`, which always overrides `synthesis.api_key`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -690,7 +715,7 @@ Environment variables override config file values for embedding. For synthesis, 
 | `DEWEY_CHUNK_MAX_CHARS` | `12288` | Max chunk characters for embedding (overrides config) |
 | `DEWEY_GENERATION_MODEL` | *(none)* | Synthesis model (fallback when no config) |
 | `DEWEY_EMBEDDING_API_KEY` | *(none)* | Gateway embedding key (first in the credential chain) |
-| `DEWEY_SYNTHESIS_API_KEY` | *(none)* | Gateway synthesis key (first in the credential chain) |
+| `DEWEY_SYNTHESIS_API_KEY` | *(none)* | Gateway synthesis key (first in the credential chain; overrides `synthesis.api_key`) |
 | `DEWEY_API_KEY` | *(none)* | Shared gateway key (second in the credential chain) |
 | `OPENROUTER_API_KEY` | *(none)* | Gateway key used only for the exact `openrouter.ai` host |
 
@@ -698,7 +723,11 @@ Environment variables override config file values for embedding. For synthesis, 
 
 Dewey can synthesize stored learnings into compiled knowledge articles using an LLM. The `compile` tool reads all learnings, clusters them by topic tag, and produces current-state articles that resolve temporal contradictions — newer facts replace older ones, while non-contradicted information carries forward.
 
-Agents can also compile knowledge directly: call `compile` to receive synthesis prompts, perform synthesis with any model, then call `store_compiled` to persist the result with provenance tracking. This enables agent-driven compilation without requiring a local LLM.
+When a synthesis provider is configured, the running MCP server performs compilation server-side: `compile` returns `status: "compiled"` and writes `.uf/dewey/compiled/{tag}.md`. If some topics fail it returns `status: "partial"` with a `failed` array and keeps the previous articles for those topics; if every topic fails it returns `status: "failed"` and changes nothing. Recompiling a `validated` article preserves its tier and records the synthesizing model as `compiled_by`. When no provider is configured or available, `compile` returns synthesis prompts, the agent performs synthesis with any model, and `store_compiled` persists the result with provenance tracking. `store_compiled` refuses to overwrite an article whose tier is `validated`; re-open review or use a new tag instead. A full compile with no learnings and no synthesizer returns `prompts_ready` and leaves existing compiled artifacts untouched.
+
+Learning markdown files are treated as untrusted backups during startup re-ingestion: a file that claims `tier: validated` is re-ingested as `draft` until a human promotes it again.
+
+Use `/dewey-distill` to run lint → compile → curate → promote through the running MCP server. It gates the synthesis scope and the promotion list on human approval, and it falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable.
 
 ### Trust Tiers
 

@@ -9,10 +9,12 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/backend"
 	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/tools"
 	"github.com/unbound-force/dewey/v3/types"
@@ -951,7 +953,7 @@ func TestServerIntegration_StoreBackedPagesSameSession(t *testing.T) {
 	// against the shared store.
 	nav := tools.NewNavigate(vc)
 	searchTool := tools.NewSearch(vc)
-	compileTool := tools.NewCompile(s, nil, nil, vaultDir, 0)
+	compileTool := tools.NewCompile(s, nil, nil, vaultDir, nil, 0)
 	promoteTool := tools.NewPromote(s)
 	ctx := context.Background()
 
@@ -1285,5 +1287,328 @@ func storeAccessAssertPromoted(t *testing.T, label, text, wantPage string) {
 	}
 	if result["new_tier"] != "validated" {
 		t.Errorf("%s: new_tier = %v, want validated", label, result["new_tier"])
+	}
+}
+
+// --- Server-side synthesis wiring (dewey-distill) ---
+
+// insertServerLearning stores a draft learning page for compile tests.
+func insertServerLearning(t *testing.T, s *store.Store, tag string, offset int, content string) {
+	t.Helper()
+	createdAt := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC).Add(time.Duration(offset) * time.Minute)
+	identity := fmt.Sprintf("%s-%s-test", tag, createdAt.Format("20060102T150405"))
+	pageName := "learning/" + identity
+	page := &store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "learning",
+		SourceDocID:  "learning-" + identity,
+		Properties:   fmt.Sprintf(`{"tag":"%s","created_at":"%s"}`, tag, createdAt.Format(time.RFC3339)),
+		Tier:         "draft",
+		Category:     "decision",
+		CreatedAt:    createdAt.UnixMilli(),
+		UpdatedAt:    createdAt.UnixMilli(),
+	}
+	if err := s.InsertPage(page); err != nil {
+		t.Fatalf("InsertPage(%q): %v", pageName, err)
+	}
+	if err := s.InsertBlock(&store.Block{
+		UUID:     "block-" + identity,
+		PageName: pageName,
+		Content:  content,
+		Position: 0,
+	}); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+}
+
+// callToolJSON calls an MCP tool through an in-memory client and decodes its
+// first text content as JSON.
+func callToolJSON(t *testing.T, srv *mcp.Server, name string, args map[string]any) map[string]any {
+	t.Helper()
+
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+
+	ss, err := srv.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer func() { _ = ss.Close() }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0.0.1"}, nil)
+	cs, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	result, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool(%s): %v", name, err)
+	}
+	if result.IsError {
+		t.Fatalf("CallTool(%s) returned error: %v", name, result.Content)
+	}
+	if len(result.Content) == 0 {
+		t.Fatalf("CallTool(%s) returned no content", name)
+	}
+	tc, ok := result.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content is %T, want *mcp.TextContent", result.Content[0])
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &parsed); err != nil {
+		t.Fatalf("decode %s result: %v\ntext: %s", name, err, tc.Text)
+	}
+	return parsed
+}
+
+// TestNewServer_WithSynthesizerCompiles verifies that a synthesizer supplied
+// through WithSynthesizer reaches the compile tool and produces articles
+// server-side.
+func TestNewServer_WithSynthesizerCompiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	insertServerLearning(t, s, "auth", 0, "Use Option A for authentication")
+	insertServerLearning(t, s, "auth", 1, "Switch to Option B for authentication")
+
+	synth := &llm.NoopSynthesizer{
+		Response: "## Current State\n\nUse Option B.",
+		Model:    "fake-model",
+		Avail:    true,
+	}
+	srv, _ := newServer(&serverMockBackend{}, false,
+		WithPersistentStore(s), WithVaultPath(tmpDir), WithSynthesizer(synth))
+
+	parsed := callToolJSON(t, srv, "compile", nil)
+	if parsed["status"] != "compiled" {
+		t.Fatalf("status = %v, want compiled (result: %v)", parsed["status"], parsed)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md")); err != nil {
+		t.Errorf("compiled article not written: %v", err)
+	}
+}
+
+// TestNewServer_WithoutSynthesizerPromptMode verifies the fallback stays
+// byte-compatible when no synthesizer is wired in.
+func TestNewServer_WithoutSynthesizerPromptMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	insertServerLearning(t, s, "auth", 0, "Use Option A")
+
+	srv, _ := newServer(&serverMockBackend{}, false,
+		WithPersistentStore(s), WithVaultPath(tmpDir))
+
+	parsed := callToolJSON(t, srv, "compile", nil)
+	if parsed["status"] != "prompts_ready" {
+		t.Fatalf("status = %v, want prompts_ready (result: %v)", parsed["status"], parsed)
+	}
+	if _, ok := parsed["clusters"]; !ok {
+		t.Errorf("prompt-mode result missing clusters: %v", parsed)
+	}
+}
+
+// TestBuildSharedSynthesizer covers the startup wiring helper: no vault path,
+// no configured model, a constructible provider (which appends WithSynthesizer),
+// and a construction failure (which leaves prompt mode intact).
+func TestBuildSharedSynthesizer(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("DEWEY_GENERATION_MODEL", "")
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "")
+
+	t.Run("no vault path", func(t *testing.T) {
+		var opts []serverOption
+		if got := buildSharedSynthesizer(opts); got != nil {
+			t.Fatalf("synth = %v, want nil", got)
+		}
+	})
+
+	t.Run("no configured model", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		opts := []serverOption{WithVaultPath(vaultPath)}
+		if got := buildSharedSynthesizer(opts); got != nil {
+			t.Fatalf("synth = %v, want nil", got)
+		}
+	})
+
+	t.Run("constructible provider", func(t *testing.T) {
+		t.Setenv("DEWEY_SYNTHESIS_API_KEY", "test-key")
+		vaultPath := t.TempDir()
+		deweyDir := filepath.Join(vaultPath, ".uf", "dewey")
+		if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		config := `synthesis:
+  provider: openai-compatible
+  endpoint: https://example.com/v1
+  model: test-model
+`
+		if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(config), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		opts := []serverOption{WithVaultPath(vaultPath)}
+		synth := buildSharedSynthesizer(opts)
+		if synth == nil {
+			t.Fatal("synth = nil, want provider")
+		}
+		if synth.ModelID() != "test-model" {
+			t.Errorf("ModelID = %q", synth.ModelID())
+		}
+
+		// executeServe appends WithSynthesizer when the helper returns a
+		// provider; verify the option wires through to the server config.
+		opts = append(opts, WithSynthesizer(synth))
+		var cfg serverConfig
+		for _, opt := range opts {
+			opt(&cfg)
+		}
+		if cfg.synth == nil {
+			t.Error("server options missing synthesizer")
+		}
+	})
+
+	t.Run("construction failure keeps prompt mode", func(t *testing.T) {
+		t.Setenv("DEWEY_SYNTHESIS_API_KEY", "")
+		vaultPath := t.TempDir()
+		deweyDir := filepath.Join(vaultPath, ".uf", "dewey")
+		if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		// Missing API key makes the factory fail.
+		config := `synthesis:
+  provider: openai-compatible
+  endpoint: https://example.com/v1
+  model: test-model
+`
+		if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(config), 0o644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		opts := []serverOption{WithVaultPath(vaultPath)}
+		if got := buildSharedSynthesizer(opts); got != nil {
+			t.Fatalf("synth = %v, want nil", got)
+		}
+	})
+}
+
+// listServerToolDescriptors returns the registered tool descriptors.
+func listServerToolDescriptors(t *testing.T, srv *mcp.Server) []*mcp.Tool {
+	t.Helper()
+	ctx := context.Background()
+	t1, t2 := mcp.NewInMemoryTransports()
+	ss, err := srv.Connect(ctx, t1, nil)
+	if err != nil {
+		t.Fatalf("server.Connect: %v", err)
+	}
+	defer func() { _ = ss.Close() }()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0.0.1"}, nil)
+	cs, err := client.Connect(ctx, t2, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+	result, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	return result.Tools
+}
+
+// TestNewServer_PromoteSchemaIncludesPages is the DE-007 registration-surface
+// seam: promote must advertise the additive pages array alongside page.
+func TestNewServer_PromoteSchemaIncludesPages(t *testing.T) {
+	srv, _ := newServer(&serverMockBackend{}, false)
+
+	var promoteTool *mcp.Tool
+	for _, tool := range listServerToolDescriptors(t, srv) {
+		if tool.Name == "promote" {
+			promoteTool = tool
+			break
+		}
+	}
+	if promoteTool == nil {
+		t.Fatal("promote tool not registered")
+	}
+
+	data, err := json.Marshal(promoteTool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %v", schema["properties"])
+	}
+	if _, ok := props["page"]; !ok {
+		t.Error("schema missing 'page' property")
+	}
+	pagesProp, ok := props["pages"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing 'pages' property: %v", props)
+	}
+	if pagesProp["type"] != "array" {
+		t.Errorf("pages type = %v, want array", pagesProp["type"])
+	}
+	if !strings.Contains(promoteTool.Description, "pages") {
+		t.Errorf("description does not mention batch pages: %q", promoteTool.Description)
+	}
+}
+
+// TestNewServer_WithSynthesizerCurates verifies the synthesizer reaches the
+// curate tool and produces status complete server-side.
+func TestNewServer_WithSynthesizerCurates(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "knowledge-stores.yaml"), []byte("stores:\n  - name: team-knowledge\n    sources: [disk-meetings]\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if err := s.InsertPage(&store.Page{
+		Name: "meetings/kickoff", OriginalName: "kickoff",
+		SourceID: "disk-meetings", SourceDocID: "kickoff", ContentHash: "h1",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if err := s.InsertBlock(&store.Block{UUID: "b1", PageName: "meetings/kickoff", Content: "We decided to use Option A.", Position: 0}); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	synth := &llm.NoopSynthesizer{
+		Avail:    true,
+		Model:    "fake-model",
+		Response: `[{"tag":"auth","category":"decision","confidence":"high","sources":[{"source_id":"disk-meetings","document":"kickoff"}],"content":"Use Option A."}]`,
+	}
+	srv, _ := newServer(&serverMockBackend{}, false,
+		WithPersistentStore(s), WithVaultPath(tmpDir), WithSynthesizer(synth))
+
+	parsed := callToolJSON(t, srv, "curate", map[string]any{"incremental": false})
+	if parsed["status"] != "complete" {
+		t.Fatalf("status = %v, want complete (result: %v)", parsed["status"], parsed)
 	}
 }

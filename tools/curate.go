@@ -121,6 +121,7 @@ func (c *Curate) Curate(ctx context.Context, req *mcp.CallToolRequest, input typ
 	// Run curation for each store.
 	var results []curate.CurationResult
 	totalFiles := 0
+	failedStores := 0
 
 	for _, cfg := range stores {
 		curateLogger.Info("curating store", "store", cfg.Name, "sources", len(cfg.Sources))
@@ -139,6 +140,7 @@ func (c *Curate) Curate(ctx context.Context, req *mcp.CallToolRequest, input typ
 		}
 		if curateErr != nil {
 			result.Error = curateErr.Error()
+			failedStores++
 		}
 		results = append(results, result)
 		totalFiles += filesCreated
@@ -153,14 +155,26 @@ func (c *Curate) Curate(ctx context.Context, req *mcp.CallToolRequest, input typ
 		}
 	}
 
+	status := "complete"
 	response := map[string]any{
-		"status":  "complete",
+		"status":  status,
 		"results": results,
 		"message": fmt.Sprintf("Curated %d knowledge files across %d store(s).", totalFiles, len(stores)),
 	}
+	if failedStores > 0 {
+		response["status"] = "partial"
+		response["total_failed"] = failedStores
+		response["message"] = fmt.Sprintf("Curated %d knowledge files across %d store(s); %d store(s) failed.", totalFiles, len(stores), failedStores)
+	}
 
 	res, err := jsonTextResult(response)
-	return res, nil, err
+	if err != nil {
+		return nil, nil, err
+	}
+	if failedStores > 0 {
+		res.IsError = true
+	}
+	return res, nil, nil
 }
 
 // returnPromptMode returns extraction prompts for all stores when no
@@ -303,9 +317,12 @@ func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
 				curateLogger.Warn("failed to delete old blocks",
 					"page", pageName, "err", err)
 			}
-			// Update existing page.
+			// Update existing page. Preserve a human-validated tier; a
+			// content change does not silently demote reviewed knowledge.
 			existing.ContentHash = contentHash
-			existing.Tier = "curated"
+			if existing.Tier != "validated" {
+				existing.Tier = "curated"
+			}
 			existing.SourceID = sourceID
 			if err := c.store.UpdatePage(existing); err != nil {
 				curateLogger.Warn("failed to update page",

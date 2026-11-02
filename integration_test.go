@@ -817,7 +817,7 @@ func TestEndToEnd_StoreCompileSearch(t *testing.T) {
 		Avail:    true,
 		Model:    "test-noop",
 	}
-	compile := tools.NewCompile(s, nil, synth, tmpDir, 0)
+	compile := tools.NewCompile(s, nil, synth, tmpDir, nil, 0)
 
 	// Step 5: Call CompileAll (no incremental identities).
 	compileResult, _, err := compile.Compile(context.Background(), nil, types.CompileInput{})

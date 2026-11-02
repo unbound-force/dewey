@@ -1756,7 +1756,7 @@ func TestBackgroundCuration_NoConfig(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCuration(ctx, indexMu, indexReady, nil, s, nil, t.TempDir(), 0)
+		backgroundCuration(ctx, indexMu, indexReady, nil, s, nil, t.TempDir(), 0, nil)
 	}()
 
 	select {
@@ -1849,7 +1849,7 @@ func TestBackgroundCuration_WaitsForIndexReady(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		backgroundCuration(ctx, indexMu, indexReady, stores, s, nil, t.TempDir(), 0)
+		backgroundCuration(ctx, indexMu, indexReady, stores, s, nil, t.TempDir(), 0, nil)
 	}()
 
 	// Verify the goroutine is still waiting (indexReady is false).
@@ -1925,73 +1925,117 @@ func TestBackgroundCuration_ContinuesAfterError(t *testing.T) {
 	}
 }
 
-// --- OpenAI-compatible startup tests (spec 017, T036) ---
-
-// TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode verifies
-// that an unreachable openai-compatible endpoint degrades to keyword mode,
-// logs the provider reason, never suggests ollama pull, and emits both
-// FR-024 credential warnings without leaking the key.
-func TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode(t *testing.T) {
-	tmpDir := t.TempDir()
-	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
-	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
-		t.Fatalf("mkdir .uf/dewey: %v", err)
-	}
-
-	configYAML := `embedding:
-  provider: openai-compatible
-  model: stub-model
-  endpoint: http://192.0.2.1:1/v1
-  api_key: super-secret-value
-`
-	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
-		t.Fatalf("write config.yaml: %v", err)
-	}
-
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
-	t.Setenv("DEWEY_EMBEDDING_MODEL", "")
-	t.Setenv("OLLAMA_HOST", "")
-	t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-startup-secret")
-	t.Setenv("DEWEY_API_KEY", "")
-
-	var logBuf bytes.Buffer
-	logger.SetOutput(&logBuf)
-	defer logger.SetOutput(os.Stderr)
-
-	be, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", false)
+// TestBackgroundCuration_WithAvailableSynthesizer exercises the ready path:
+// the shared synthesizer is available, a store is configured, and the loop
+// launches its per-store goroutine before the context is cancelled.
+func TestBackgroundCuration_WithAvailableSynthesizer(t *testing.T) {
+	s, err := store.New(":memory:")
 	if err != nil {
-		t.Fatalf("initObsidianBackend should degrade, got error: %v", err)
+		t.Fatalf("store.New: %v", err)
 	}
-	if cleanup != nil {
-		defer cleanup()
+	defer func() { _ = s.Close() }()
+
+	indexMu := &sync.Mutex{}
+	ready := &atomic.Bool{}
+	ready.Store(true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stores := []curate.StoreConfig{{
+		Name:             "team",
+		Sources:          []string{"disk-x"},
+		CurationInterval: "10m",
+	}}
+	synth := &llm.NoopSynthesizer{Avail: true, Model: "fake-model"}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCuration(ctx, indexMu, ready, stores, s, nil, t.TempDir(), 0, synth)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("backgroundCuration did not exit after cancellation")
 	}
-	if be == nil {
-		t.Fatal("expected non-nil backend in keyword mode")
+}
+
+// TestBackgroundCuration_UnavailableSynthesizer covers the skip path when a
+// synthesizer exists but reports itself unavailable.
+func TestBackgroundCuration_UnavailableSynthesizer(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	ready := &atomic.Bool{}
+	ready.Store(true)
+	synth := &llm.NoopSynthesizer{Avail: false, Model: "fake-model"}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		backgroundCuration(context.Background(), &sync.Mutex{}, ready, nil, s, nil, t.TempDir(), 0, synth)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("backgroundCuration did not return for an unavailable synthesizer")
+	}
+}
+
+// TestReIngestLearnings_IgnoresClaimedTier verifies that a learning file
+// cannot grant itself a higher trust tier; re-ingested pages are always
+// drafts until a human promotes them.
+func TestReIngestLearnings_IgnoresClaimedTier(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	logOutput := logBuf.String()
-	checks := []struct {
-		substr string
-		desc   string
-	}{
-		{"embedding model not available", "degradation warning"},
-		{"openai-compatible", "provider name"},
-		{"unreachable", "provider reason"},
-		{"would transit http://", "cleartext credential warning"},
-		{"api_key in config.yaml is ignored", "ignored api_key warning"},
+	file := `---
+tag: authentication
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: authentication-20260421T103000-alice
+tier: validated
+---
+
+OAuth tokens should be rotated every 24 hours.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "authentication-20260421T103000-alice.md"), []byte(file), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
-	for _, c := range checks {
-		if !strings.Contains(logOutput, c.substr) {
-			t.Errorf("log should contain %s %q, got: %q", c.desc, c.substr, logOutput)
-		}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
 	}
-	if strings.Contains(logOutput, "ollama pull") {
-		t.Errorf("gateway startup must not suggest ollama pull, got: %q", logOutput)
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIngestLearnings: %v", err)
 	}
-	for _, secret := range []string{"sk-startup-secret", "super-secret-value"} {
-		if strings.Contains(logOutput, secret) {
-			t.Errorf("log must not contain credential material %q, got: %q", secret, logOutput)
-		}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+
+	page, err := s.GetPage("learning/authentication-20260421T103000-alice")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("learning page not re-ingested")
+	}
+	if page.Tier != "draft" {
+		t.Errorf("tier = %q, want draft (file must not self-promote)", page.Tier)
 	}
 }

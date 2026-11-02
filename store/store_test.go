@@ -205,6 +205,59 @@ func TestInsertPage_Duplicate(t *testing.T) {
 	}
 }
 
+func TestGetPageFoldCase_FindsPageRegardlessOfCase(t *testing.T) {
+	// Learning page names carry an uppercase "T" in their ISO timestamps,
+	// and the in-memory vault tier keys pages case-insensitively — the
+	// store fallback must therefore fold case in SQL rather than by
+	// normalizing the input (which would miss the stored name entirely).
+	s := newTestStore(t)
+	if err := s.InsertPage(&Page{
+		Name:         "learning/auth-20261101T235959-alice",
+		OriginalName: "auth",
+		SourceID:     "learning",
+		ContentHash:  "abc123",
+		CreatedAt:    1000,
+	}); err != nil {
+		t.Fatalf("InsertPage() error = %v", err)
+	}
+
+	for _, lookup := range []string{
+		"learning/auth-20261101T235959-alice", // exact
+		"learning/auth-20261101t235959-alice", // lowercase t
+		"LEARNING/AUTH-20261101T235959-ALICE", // full uppercase
+	} {
+		p, err := s.GetPageFoldCase(lookup)
+		if err != nil {
+			t.Errorf("GetPageFoldCase(%q) error = %v", lookup, err)
+			continue
+		}
+		if p == nil {
+			t.Errorf("GetPageFoldCase(%q) = nil, want the stored page", lookup)
+			continue
+		}
+		if p.Name != "learning/auth-20261101T235959-alice" {
+			t.Errorf("GetPageFoldCase(%q).Name = %q, want canonical stored name", lookup, p.Name)
+		}
+	}
+
+	// The exact-match lookup keeps its case sensitivity — folding is
+	// scoped to the fold-case variant, not the whole store API.
+	if p, err := s.GetPage("learning/auth-20261101t235959-alice"); err != nil || p != nil {
+		t.Errorf("GetPage(wrong case) = (%p, %v), want (nil, nil)", p, err)
+	}
+}
+
+func TestGetPageFoldCase_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	p, err := s.GetPageFoldCase("learning/does-not-exist")
+	if err != nil {
+		t.Fatalf("GetPageFoldCase() error = %v", err)
+	}
+	if p != nil {
+		t.Errorf("GetPageFoldCase() = %v, want nil", p)
+	}
+}
+
 func TestGetPage_NotFound(t *testing.T) {
 	s := newTestStore(t)
 

@@ -754,6 +754,26 @@ func buildCompiledArticle(cl Cluster, synthesized, tier, model string) string {
 	return sb.String()
 }
 
+// upsertCompiledPage inserts a new compiled page or updates the existing one.
+// UpdatePage preserves the page's blocks until persistCompiledArticle replaces
+// them explicitly.
+func (c *Compile) upsertCompiledPage(page *store.Page) error {
+	existing, err := c.store.GetPage(page.Name)
+	if err != nil {
+		return fmt.Errorf("look up existing compiled page: %w", err)
+	}
+	if existing != nil {
+		if err := c.store.UpdatePage(page); err != nil {
+			return fmt.Errorf("update compiled page: %w", err)
+		}
+		return nil
+	}
+	if err := c.store.InsertPage(page); err != nil {
+		return fmt.Errorf("insert compiled page: %w", err)
+	}
+	return nil
+}
+
 // persistCompiledArticle stores a compiled article as a page in the store
 // with source_id="compiled" and the supplied tier (draft, or validated when
 // the previous article was already approved). Also persists blocks and
@@ -791,16 +811,8 @@ func (c *Compile) persistCompiledArticle(cl Cluster, articleContent, tier, model
 		Properties:   string(propsJSON),
 		Tier:         tier,
 	}
-	existing, err := c.store.GetPage(pageName)
-	if err != nil {
-		return fmt.Errorf("look up existing compiled page: %w", err)
-	}
-	if existing != nil {
-		if err := c.store.UpdatePage(page); err != nil {
-			return fmt.Errorf("update compiled page: %w", err)
-		}
-	} else if err := c.store.InsertPage(page); err != nil {
-		return fmt.Errorf("insert compiled page: %w", err)
+	if err := c.upsertCompiledPage(page); err != nil {
+		return err
 	}
 
 	// Replace blocks for the page (UpdatePage leaves the old blocks in place).

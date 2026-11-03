@@ -76,8 +76,11 @@ Inspect the result status:
   `synthesis_prompt` and `category_instructions`, then call
   `store_compiled` with the cluster's `dominant_tag`, the synthesized
   content, the cluster's learning identities as `sources`, and the model
-  identifier you used as `model`. Report each stored page. Do not skip a
-  cluster silently.
+  identifier you used as `model`. Report each stored page. Note:
+  `store_compiled` refuses to overwrite an article whose existing tier
+  is `validated` and suggests storing under a new tag — if you hit that
+  refusal, report it to the human rather than retrying the same tag. Do
+  not skip a cluster silently.
 
 If curation was approved, call the `curate` MCP tool for the approved
 store (or with no `store` only when all stores were approved). Inspect the

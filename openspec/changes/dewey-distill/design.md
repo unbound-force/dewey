@@ -115,7 +115,7 @@ retries, 1s base delay, 60s cap, exponential backoff with ±25% jitter,
 between retries. Only HTTP 429 is retried. A `finish_reason` of
 `length` returns an error naming `synthesis.max_tokens` instead of
 silently returning truncated content (issue #76). Response bodies are
-read with a 50 MiB limit and truncated to 512 bytes in error messages;
+read with a 50 MiB limit and truncated to 512 runes in error messages;
 the key is replaced with `[REDACTED]` in any body text before it is
 returned or logged (issue #77 covers adequate limits).
 
@@ -155,7 +155,18 @@ race.
 
 ### D7: Promote resolution ladder and all-or-nothing batch
 
-Add `store.FindPage(name)` with deterministic tiers:
+Resolve names through `resolvePromotePage` in `tools/promote.go`, a
+tools-side ladder over narrow, index-backed store list queries
+(`ListPagesByNameFoldCase`, `ListKnowledgePagesFoldCase`,
+`GetPageBySourceDoc`), with deterministic tiers:
+
+**Addendum (PR 145 review, items 10+14).** Resolution moved out of
+`store.FindPage` so the store stays resolution-policy-free and every
+tier query is index-backed. Schema v3 adds `idx_pages_name_nocase` and
+`idx_pages_source_doc_nocase` via an additive, index-only migration;
+`EXPLAIN QUERY PLAN` tests in `store` pin each query to an index
+`SEARCH` rather than a full-table `SCAN`. The tier semantics are
+unchanged:
 
 1. exact `name = ?`;
 2. `name = ? COLLATE NOCASE`;

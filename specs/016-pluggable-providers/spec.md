@@ -63,7 +63,7 @@ An AI agent calls `compile` and receives synthesis prompts (nil synthesizer path
 
 1. **Given** an agent calls `store_compiled` with `tag: "auth"`, `content: "..."`, `sources: ["auth-1", "auth-3"]`, **Then** Dewey persists a page with `source_id: "compiled"`, `tier: "draft"`, and writes to `.uf/dewey/compiled/auth.md`
 2. **Given** an agent provides `model: "claude-opus-4-6"`, **When** the article is persisted, **Then** frontmatter includes `compiled_by: claude-opus-4-6`
-3. **Given** a compiled article for tag `auth` already exists, **When** `store_compiled` is called with tag `auth`, **Then** the existing article is overwritten
+3. **Given** a compiled article for tag `auth` already exists, **When** `store_compiled` is called with tag `auth`, **Then** the existing article is overwritten if its tier is `draft`; if its tier is `validated` the overwrite is refused with an actionable error suggesting a new tag (dewey-distill PR 145 amendment: validated articles are never silently overwritten)
 4. **Given** an empty `tag` field, **When** `store_compiled` is called, **Then** it returns an error
 
 ---

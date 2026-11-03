@@ -707,12 +707,27 @@ sections instead of embedding their text.
 
 **Processing results**:
 
-- If the verdict is APPROVE or APPROVE WITH ADVISORIES:
-  record any advisories for the final report and
-  proceed to Step 5 (Implement) — approving verdicts
-  never trigger the decision gate below.
+- Read the authoritative full data once from the persisted
+  artifact at `artifact_path` returned by the finalization
+  call (`payload.findings` and `payload.advisories`); the
+  compact result carries the outcome, the scalar
+  `review_verdict`, and run counts, never the projection.
+  The artifact lists findings and advisories before `plan`
+  and `runs`; if a read returns part of the file, continue
+  from the next offset, and fail closed if the whole file
+  cannot be read and parsed as one JSON object.
+- Parse the entire finalization response as one JSON
+  object first. If it parses, it is complete — ignore any
+  truncation-shaped text inside it. If it does not parse,
+  the host truncated it (typically a truncation notice
+  such as `[... truncated ... saved to: /path ...]`): fail
+  closed and do not read the saved file.
+- If `operation_verdict` is APPROVE or APPROVE WITH
+  ADVISORIES: record the artifact's advisories for the final
+  report and proceed to Step 5 (Implement) — approving
+  verdicts never trigger the decision gate below.
 
-- If the verdict is REQUEST CHANGES: present the
+- If `operation_verdict` is REQUEST CHANGES: present the
   per-finding spec review decision gate. The council's
   "Spec Review Mode" MANDATORY GATE in
   `.opencode/commands/uf.review-council.md` governs the
@@ -864,7 +879,7 @@ from the pre-flight gate below):
       (docs authorship is judgment work)]
     skill: [repo skill or script reference that performs the
       change end-to-end -- only when deterministic]
-    skill_absent_reason: [what was searched and what was
+    skill_absent_reason: [<=512 chars: what was searched and what was
       found -- only when deterministic and no repo skill or
       script applies; never together with skill]
     checkpoint_step: "implement"
@@ -988,7 +1003,10 @@ its Local Tool Detection phase to discover additional
      deterministic classification; mutually exclusive with
      `skill_absent_reason`.
    - `skill_absent_reason`: a substantive reason stating
-     what was searched and what was found. Valid only with a
+     what was searched and what was found, in one or two
+     sentences of at most 512 characters (longer values
+     fail with `INVALID_INPUT`; name the searched
+     locations, not their contents). Valid only with a
      deterministic classification; mutually exclusive with
      `skill`.
 
@@ -1084,7 +1102,7 @@ For each iteration (up to 3 total):
        the usual case for diagnosing a broken test]
      skill: [repo skill or script reference that performs
        the fix end-to-end -- only when deterministic]
-     skill_absent_reason: [what was searched and what was
+     skill_absent_reason: [<=512 chars: what was searched and what was
        found -- only when deterministic and no repo skill
        or script applies; never together with skill]
      feature_dir: FEATURE_DIR
@@ -1163,7 +1181,7 @@ its spent budget the same way, from its budget-only
        deterministic or judgment, per the step above]
      skill: [repo skill or script reference that performs
        the task end-to-end -- only when deterministic]
-     skill_absent_reason: [what was searched and what was
+     skill_absent_reason: [<=512 chars: what was searched and what was
        found -- only when deterministic and no repo skill or
        script applies; never together with skill]
      feature_dir: FEATURE_DIR
@@ -1219,8 +1237,8 @@ its spent budget the same way, from its budget-only
             deterministic or judgment, per the step above]
           skill: [repo skill or script reference that performs
             the task end-to-end -- only when deterministic]
-          skill_absent_reason: [what was searched and what was
-            found -- only when deterministic and no repo skill or
+          skill_absent_reason: [<=512 chars: what was searched and what
+            was found -- only when deterministic and no repo skill or
             script applies; never together with skill]
           files: [files from the task]
           project_path: [the worktree path]
@@ -1616,15 +1634,29 @@ text.
    `**Files Reviewed**:` attestation) strictly above —
    below-threshold prompt assembly is unchanged.
 
+Read the authoritative full data once from the persisted artifact at
+`artifact_path` returned by the finalization call (`payload.findings`
+and `payload.advisories`); the compact result carries the outcome, the
+scalar `review_verdict`, and run counts, never the projection. The
+artifact lists findings and advisories before `plan` and `runs`; if a
+read returns part of the file, continue from the next offset, and fail
+closed if the whole file cannot be read and parsed as one JSON object.
+
+Parse the entire finalization response as one JSON object first. If it
+parses, it is complete — ignore any truncation-shaped text inside it. If
+it does not parse, the host truncated it (typically a truncation notice
+such as `[... truncated ... saved to: /path ...]`): fail closed and do
+not read the saved file.
+
 **Processing results**:
 
-- If the verdict is APPROVE or APPROVE WITH ADVISORIES
+- If `operation_verdict` is APPROVE or APPROVE WITH ADVISORIES
   (at least one successful reviewer assessment is
   required for a valid verdict): record any advisories
   for the final report and proceed to Step 7
   (Retrospective).
 
-- If the verdict is REQUEST CHANGES: enter the fix loop.
+- If `operation_verdict` is REQUEST CHANGES: enter the fix loop.
   For each iteration (up to 3 total):
   a. Address the findings by making code fixes --
      delegate the code-fix application to the
@@ -1643,7 +1675,7 @@ text.
          applying prose findings, which is authorship work]
        skill: [repo skill or script reference that performs
          the fix end-to-end -- only when deterministic]
-       skill_absent_reason: [what was searched and what was
+       skill_absent_reason: [<=512 chars: what was searched and what was
          found -- only when deterministic and no repo skill
          or script applies; never together with skill]
        feature_dir: FEATURE_DIR

@@ -112,7 +112,39 @@ Local tools detected:
 ```
 
 If no tools are detected, report "No local tools detected"
-and proceed to Phase 3.
+and proceed to Phase 2b.
+
+---
+
+## Phase 2b: Project-Declared Checks
+
+Call `uf_preflight_declared_checks` with the consuming
+command's `mode`. It runs the checks a project declares in
+`.uf/preflight.yaml` (validation, availability, diff scope,
+execution without a shell, and — in `soft-gate` —
+merge-base baseline classification) and returns:
+
+```json
+{"status":"ok","data":{"mode":"soft-gate","config_present":true,
+ "required_failures":["bash-env-contract"],"verdict":"PASS",
+ "baseline_method":"worktree",
+ "rendered":"| bash-env-contract | `.uf/scripts/bash-env-contract` | 1 | FAIL | pre-existing |\n| bash-impact | `.uf/scripts/bash-impact` | — | SKIP — not available: ripwire | — |",
+ "checks":[{"name":"bash-env-contract","gate":"required","status":"FAIL","exit_code":1,"causality":"pre-existing","output":"…"}]}}
+```
+
+- `config_present: false`: report "No project-declared
+  checks" and continue.
+- Error `INVALID_PREFLIGHT_CONFIG`: report a pre-flight
+  FAIL with the message; no declared check ran.
+- Otherwise insert `rendered` verbatim into the Phase 5
+  Execution Results table (its columns already match the
+  mode), include each non-PASS check's `output`,
+  and combine `verdict` with the detected tools' verdict:
+  the overall result is FAIL if either is FAIL.
+
+Declared checks are complete after this call. Do not run
+them again in Phases 2a–4b, map them to CI checks, or
+re-classify them.
 
 ---
 
@@ -142,6 +174,9 @@ cannot be reliably determined from file extensions alone.
 Additional tools added to Phase 2's tool-to-command mapping
 in the future MUST have a corresponding file-scope entry
 added to this table.
+
+Project-declared checks (Phase 2b) are scoped by
+`uf_preflight_declared_checks` and are not listed here.
 
 Note: `go vet` and `go build` are CI commands discovered
 in Phase 1 (CI Workflow Parsing), not independently detected
@@ -524,6 +559,9 @@ Present results in a standardized format.
 - **Pre-existing failures**: [list if any]
 - **Baseline method**: CI API | worktree | unavailable
 ```
+
+Project-declared check rows come from Phase 2b's
+`rendered` value unchanged.
 
 Tools skipped by the file-scope filter (Phase 2a) use the
 canonical status string `SKIP — no in-scope files` (em

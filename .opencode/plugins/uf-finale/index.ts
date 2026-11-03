@@ -809,6 +809,172 @@ export function createUfFinaleCreatePrTool(
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-invocation bound for each `gh` subprocess (FCP-FR-001, design D2).
+ *
+ * Matches review-dispatch's `GH_CLI_TIMEOUT_MS` (30 seconds) so a hung gh
+ * process cannot wedge the poll loop or suppress `CI_POLL_TIMEOUT`. The
+ * value is normative: FCP-FR-001 pins a bound of at most 30 seconds.
+ */
+const GH_CLI_TIMEOUT_MS = 30_000
+
+/**
+ * stderr marker gh emits for a PR with zero checks (FCP-FR-002).
+ *
+ * Verified shape (gh 2.91.0, 2026-10-22): `gh pr checks <N> --json
+ * name,state,bucket,link` exits 1 with EMPTY stdout and this message on
+ * stderr — gh does not emit `[]` for a checkless PR. The marker is
+ * matched against stderr only; array stdout remains data regardless of
+ * stderr.
+ */
+const NO_CHECKS_REPORTED_PATTERN = /no checks reported/i
+
+/**
+ * stderr pattern indicating the PR number does not resolve (FCP-FR-002).
+ *
+ * Verified against gh 2.91.0 (2026-10-22): `gh pr checks` reports
+ * "Could not resolve to a PullRequest with the number of N" on stderr —
+ * the only verified unresolvable-PR shape. The pattern deliberately
+ * matches only that phrase: looser "not found" alternatives (carried by
+ * review-dispatch's prior art) misclassify unrelated gh failures as a
+ * non-retryable PR_NOT_FOUND, suppressing the retry semantics a
+ * transient error warrants. Matched against stderr only.
+ */
+const PR_CHECKS_NOT_FOUND_PATTERN = /could not resolve to a pullrequest/i
+
+/** gh check `bucket` values this poller recognizes (FCP-FR-003). */
+const KNOWN_POLL_BUCKETS: ReadonlySet<string> = new Set([
+  "pass",
+  "fail",
+  "pending",
+  "skipping",
+  "cancel",
+])
+
+/** Result of an exit-code-tolerant gh invocation. */
+interface GhCommandResult {
+  readonly stdout: string
+  readonly stderr: string
+  readonly exitCode: number
+}
+
+/**
+ * Run a `gh` CLI command via Bun.spawn WITHOUT throwing on non-zero exit.
+ *
+ * Twin: review-dispatch's `runGhCommandTolerant`
+ * (`.opencode/plugins/review-dispatch/index.ts`) is the prior-art first
+ * consumer. This module-local copy is the second consumer; a third
+ * consumer MUST trigger extraction into `.opencode/lib/` (design D2/R4).
+ * Argument arrays remove the shell layer; `AbortSignal.timeout` bounds
+ * each invocation (FCP-FR-001). Divergence from the twin: this copy
+ * binds every invocation to `cwd` because uf-finale's tools are
+ * cwd-parameterized — the plugin registers each tool with
+ * `input.worktree || input.directory`, so the checks poll MUST resolve
+ * the same repository as the `gh pr view` pre-check and the
+ * `.github/workflows` probe rather than inherit the plugin host
+ * process's working directory (FCP-FR-001).
+ *
+ * @param args CLI arguments (e.g. ["pr", "checks", "123", "--json", ...]).
+ * @param cwd Working directory for the gh invocation — repository
+ *   resolution MUST match the tool's other gh/git calls.
+ * @returns stdout, stderr, and the exit code.
+ */
+async function runGhCommandTolerant(
+  args: readonly string[],
+  cwd: string,
+): Promise<GhCommandResult> {
+  const process = Bun.spawn(["gh", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    cwd,
+    signal: AbortSignal.timeout(GH_CLI_TIMEOUT_MS),
+  })
+
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(process.stdout).text(),
+    new Response(process.stderr).text(),
+    process.exited,
+  ])
+
+  return { stdout, stderr, exitCode }
+}
+
+/**
+ * Parse text as a JSON array, or null when it does not parse as one.
+ *
+ * On ANY exit code, stdout that parses as a JSON array is check-status
+ * data (FCP-FR-001); anything else falls through to the stderr marker
+ * checks and then the generic failure.
+ *
+ * @param text The gh process's stdout.
+ * @returns The parsed array, or null when stdout is not a JSON array.
+ */
+function tryParseJsonArray(text: string): unknown[] | null {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/** A parsed `gh pr checks` entry for the fields the poller requests. */
+interface PollCheck {
+  readonly name: string
+  readonly state: string
+  readonly bucket: string
+  readonly link: string
+}
+
+/** Map a raw parsed entry to defensive field defaults (missing bucket -> ""). */
+function mapPollCheck(entry: unknown): PollCheck {
+  const check = (entry ?? {}) as Partial<PollCheck>
+  return {
+    name: check.name ?? "",
+    state: check.state ?? "",
+    bucket: check.bucket ?? "",
+    link: check.link ?? "",
+  }
+}
+
+/**
+ * Build the zero-checks outcome, choosing the workflows branch from the
+ * presence of `.github/workflows/` (FCP-FR-002, design D5).
+ *
+ * @param cwd Working directory used to probe for workflows.
+ * @returns The `{output}` envelope for the zero-checks status.
+ */
+function noChecksResult(cwd: string): { output: string } {
+  const workflowsConfigured = existsSync(resolve(cwd, ".github/workflows"))
+  if (workflowsConfigured) {
+    return {
+      output: JSON.stringify(
+        success({
+          status: "no-checks-workflows-exist",
+          failedChecks: [],
+          mergeable: true,
+          workflowsConfigured: true,
+          skipReason:
+            "No CI checks detected but .github/workflows/ exists — " +
+            "checks may not be triggered for this PR type",
+        }),
+      ),
+    }
+  }
+  return {
+    output: JSON.stringify(
+      success({
+        status: "no-checks-no-workflows",
+        failedChecks: [],
+        mergeable: true,
+        workflowsConfigured: false,
+        skipReason:
+          "No CI checks detected and no .github/workflows/ directory found",
+      }),
+    ),
+  }
+}
+
+/**
  * Factory for the uf_finale_ci_poll tool.
  *
  * @param exec - Injectable git executor for command execution.
@@ -879,102 +1045,18 @@ export function createUfFinaleCiPollTool(
 
         // Polling loop.
         while (Date.now() - startTime < timeout) {
+          let result: GhCommandResult
           try {
-            const checksOutput = execSync(
-              `gh pr checks ${pr} --json name,state,conclusion,detailsUrl`,
-              { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-            ).trim()
-
-            const checks = JSON.parse(checksOutput) as Array<{
-              name: string
-              state: string
-              conclusion: string
-              detailsUrl: string
-            }>
-
-            if (checks.length === 0) {
-              // No checks found — determine if workflows are configured.
-              const workflowsConfigured = existsSync(
-                resolve(cwd, ".github/workflows"),
-              )
-
-              if (workflowsConfigured) {
-                return {
-                  output: JSON.stringify(
-                    success({
-                      status: "no-checks-workflows-exist",
-                      failedChecks: [],
-                      mergeable: true,
-                      workflowsConfigured: true,
-                      skipReason:
-                        "No CI checks detected but .github/workflows/ exists — " +
-                        "checks may not be triggered for this PR type",
-                    }),
-                  ),
-                }
-              }
-
-              // No checks and no workflow files.
-              return {
-                output: JSON.stringify(
-                  success({
-                    status: "no-checks-no-workflows",
-                    failedChecks: [],
-                    mergeable: true,
-                    workflowsConfigured: false,
-                    skipReason:
-                      "No CI checks detected and no .github/workflows/ directory found",
-                  }),
-                ),
-              }
-            }
-
-            // Check if all checks are complete.
-            const pending = checks.filter(
-              (c) => c.state === "PENDING" || c.state === "QUEUED" || c.state === "IN_PROGRESS",
+            result = await runGhCommandTolerant(
+              [
+                "pr",
+                "checks",
+                String(pr),
+                "--json",
+                "name,state,bucket,link",
+              ],
+              cwd,
             )
-
-            if (pending.length === 0) {
-              // All checks complete — determine pass/fail.
-              const failed = checks.filter(
-                (c) =>
-                  c.conclusion !== "SUCCESS" &&
-                  c.conclusion !== "NEUTRAL" &&
-                  c.conclusion !== "SKIPPED",
-              )
-
-              if (failed.length === 0) {
-                return {
-                  output: JSON.stringify(
-                    success({
-                      status: "pass",
-                      failedChecks: [],
-                      mergeable: true,
-                      workflowsConfigured: true,
-                    }),
-                  ),
-                }
-              }
-
-              const failedChecks = failed.map((c) => ({
-                name: c.name,
-                conclusion: c.conclusion,
-                url: c.detailsUrl,
-              }))
-              return {
-                output: JSON.stringify(
-                  success({
-                    status: "fail",
-                    failedChecks,
-                    mergeable: false,
-                    workflowsConfigured: true,
-                  }),
-                ),
-              }
-            }
-
-            // Still pending — wait before the next poll.
-            await new Promise((r) => setTimeout(r, pollInterval))
           } catch (pollErr: unknown) {
             const msg =
               pollErr instanceof Error ? pollErr.message : String(pollErr)
@@ -986,6 +1068,98 @@ export function createUfFinaleCiPollTool(
                 }),
               ),
             }
+          }
+
+          const checks = tryParseJsonArray(result.stdout.trim())
+
+          if (checks === null) {
+            // Not a JSON array: the stderr markers take precedence over the
+            // generic non-array rule (FCP-FR-001/FCP-FR-002). Array stdout is
+            // data on any exit code regardless of stderr.
+            if (NO_CHECKS_REPORTED_PATTERN.test(result.stderr)) {
+              return noChecksResult(cwd)
+            }
+            if (PR_CHECKS_NOT_FOUND_PATTERN.test(result.stderr)) {
+              // Echo gh's stderr so the classification is diagnosable
+              // from the failure envelope, mirroring the GH_CLI_ERROR
+              // path below (FCP-FR-002).
+              const detail = result.stderr.trim()
+              return {
+                output: JSON.stringify(
+                  failure(
+                    `PR #${pr} not found in the current repository` +
+                      (detail ? `: ${detail}` : ""),
+                    {
+                      retryable: false,
+                      code: "PR_NOT_FOUND",
+                    },
+                  ),
+                ),
+              }
+            }
+            const detail =
+              result.stderr.trim() ||
+              `gh pr checks stdout was not a JSON array (exit ${result.exitCode}): ` +
+                JSON.stringify(result.stdout.trim().slice(0, 200))
+            return {
+              output: JSON.stringify(
+                failure(`gh CLI error: ${detail}`, {
+                  retryable: true,
+                  code: "GH_CLI_ERROR",
+                }),
+              ),
+            }
+          }
+
+          if (checks.length === 0) {
+            // A parsed empty array is honored should a future gh emit `[]`.
+            return noChecksResult(cwd)
+          }
+
+          const parsedChecks = checks.map(mapPollCheck)
+
+          // Still pending — wait before the next poll (FCP-FR-003).
+          if (parsedChecks.some((check) => check.bucket === "pending")) {
+            await new Promise((r) => setTimeout(r, pollInterval))
+            continue
+          }
+
+          // All terminal: fail/cancel and unknown vocabulary fail closed so
+          // drift surfaces immediately instead of exhausting the timeout.
+          const failed = parsedChecks.filter(
+            (check) =>
+              check.bucket === "fail" ||
+              check.bucket === "cancel" ||
+              !KNOWN_POLL_BUCKETS.has(check.bucket),
+          )
+
+          if (failed.length === 0) {
+            return {
+              output: JSON.stringify(
+                success({
+                  status: "pass",
+                  failedChecks: [],
+                  mergeable: true,
+                  workflowsConfigured: true,
+                }),
+              ),
+            }
+          }
+
+          const failedChecks = failed.map((check) => ({
+            name: check.name,
+            conclusion: check.state,
+            url: check.link,
+          }))
+          return {
+            output: JSON.stringify(
+              success({
+                status: "fail",
+                failedChecks,
+                mergeable: false,
+                workflowsConfigured: true,
+              }),
+            ),
           }
         }
 

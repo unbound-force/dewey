@@ -544,15 +544,32 @@ With provenance the tool runs the finalizer internally and returns
 the finalization result directly. Never call `finalize_review_dispatch`
 yourself, and never hand-build or transform a finalization payload.
 
-The tool's response is authoritative. On `status: "success"`, read the
-review-dispatch artifact path (`artifact_path`), the canonical
-review-verdict v2 projection (`review_verdict`), and whether calculated
-data is authoritative (`calculated_assessment.authoritative`) directly
-from the response. Do not recompute, re-derive, or re-map any of them,
-and do not alter the tool-computed verdict, `verdict_reason`, run
-counts, findings, or advisories. The response's top-level `proposals`
-and `warnings` arrays are the single source for lesson proposals and
-consolidation warnings.
+The compact finalization result is authoritative for the outcome. On
+`status: "success"`, read `operation_verdict`, `correlation_id`,
+`artifact_path`, the scalar review verdict (`review_verdict`), run
+counts, `calculated_assessment.authoritative`, `errors`, and the bounded
+`proposals` and `warnings` arrays directly from the result. Read the
+authoritative full data — findings, advisories, plan, and runs (each
+run's `workflow_verdict` is that persona's native verdict) — once from
+the persisted artifact at `artifact_path` (its `payload.findings` and
+`payload.advisories`). The artifact persists `payload.findings` and
+`payload.advisories` before `plan` and `runs`. When the file-read tool
+returns only part of the file, keep reading from the next offset until
+the closing brace; if the whole file cannot be read and parsed as one
+JSON object, fail closed rather than report partial findings. Do not
+recompute, re-derive, or re-map any of them, and do not alter the
+tool-computed verdict, `verdict_reason`, run counts, findings, or
+advisories. The compact result's `proposals` and `warnings` arrays are
+the single source for lesson proposals and consolidation warnings.
+
+**Truncation check.** First parse the entire consolidation response as
+one JSON object. If the parse succeeds, the response is complete: use it
+and ignore any notice-shaped text inside it, such as a finding that
+mentions truncation. If the parse fails, the host truncated the output —
+typically a truncation notice line matching the case-insensitive shape
+`^\[?[^\n]*\btruncat\w*\b[^\n]*\bsaved\b[^\n]*[:=]\s*("[^"]+"|\/[^\s\]]+)\]?$`
+— and the result is unusable: fail closed. Do not read the saved file
+and do not recover through a separate no-provenance retrieval call.
 
 Each proposal in the finalization result's top-level `proposals` array
 carries the validated shape `{agent, information, tag, category}` as
@@ -566,6 +583,13 @@ text or child-supplied tags, categories, or hashes. Source the
 proposals only from the finalization result — never from
 `dispatch_review_runs` and never via a separate no-provenance
 retrieval call.
+
+The compact result is capped: at most 10 proposals, each `information`
+cut to 512 characters, and the artifact does not persist proposals, so
+these entries are the only copy. When the result sets
+`proposals_truncated: true`, report how many lessons were stored and
+that further proposals were dropped; for every stored proposal carrying
+`truncated: true`, report that the lesson was stored shortened.
 
 **Bounded mechanical retry.** If the call fails, classify the failure
 from the structured response alone — default-deny. The failure is
@@ -670,10 +694,11 @@ separate. These transformations are presentation-only: they govern
 presenting the GitHub review comment and the terminal report ONLY,
 and never merge, filter, re-order, or otherwise alter the findings,
 contributing run ids, verdicts, run counts, or advisories in
-finalization data. The finalized payload's findings remain exactly
-as `consolidate_dispatch` returned them, because the finalizer
-enforces exact correspondence between run findings and consolidated
-findings.
+finalization data. After finalization, the authoritative full data
+(findings, advisories, plan, and runs, where each run's
+`workflow_verdict` is that persona's native verdict) lives in the
+persisted artifact at `artifact_path`; the compact finalization
+result carries the outcome and the scalar review verdict.
 
 Severity levels from `.opencode/uf/packs/severity.md` when loaded, otherwise:
 - **CRITICAL**: Must be fixed before merge (security vulnerabilities, data loss risks)

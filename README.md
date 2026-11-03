@@ -691,7 +691,7 @@ synthesis:
   max_tokens: 16000   # optional, default 16000
 ```
 
-Provide the credential with `DEWEY_SYNTHESIS_API_KEY` (recommended) or `synthesis.api_key`; the environment variable wins. The key is sent only in the `Authorization` header, is never logged, and is redacted from provider error bodies.
+Provide the credential with `DEWEY_SYNTHESIS_API_KEY` (recommended) or `synthesis.api_key`; the environment variable wins. The per-vault `.uf/dewey/config.yaml` is git-tracked (`dewey init` keeps it shareable for team config), so keep secrets in the environment variable or the global `~/.config/dewey/config.yaml`. The key is sent only in the `Authorization` header, is never logged, and is redacted from provider error bodies.
 
 With a provider configured, `dewey serve` performs synthesis inside the MCP `compile` and `curate` tools, so agents do not need a CLI round-trip (the server holds the store lock while it runs). Requests retry HTTP 429 with the same bounded backoff as Vertex. A response that stops because it hit `max_tokens` (`finish_reason: "length"`) is reported as an error instead of silently returning truncated text — raise `max_tokens` or reduce the prompt size.
 

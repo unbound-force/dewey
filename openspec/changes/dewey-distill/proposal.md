@@ -56,7 +56,10 @@ promotion).
   `curate` receive it instead of `nil`, and background curation
   reuses the same instance. When no synthesis model is configured, or
   the provider cannot be constructed, the option stays nil and both
-  tools keep returning prompt mode byte-compatibly.
+  tools keep returning prompt mode byte-compatibly for non-empty
+  learning collections. An empty collection with synthesis available
+  clears draft compiled pages, retains validated ones, and reports the
+  retained tags in `retained_validated`.
 - **Shared index mutex for compile**: `compile` joins `curate` on the
   shared `indexMutex` so a compile cannot race a background index. The
   existing "already in progress" behavior is preserved, now keyed on
@@ -75,7 +78,9 @@ promotion).
   MCP → human review gate → batch promote → report with a
   `/dewey-publish` suggestion. The command never shells out to the
   CLI, because the running server owns the store lock. In prompt mode
-  it synthesizes compile prompts itself and calls `store_compiled`;
+  it synthesizes compile prompts itself and calls `store_compiled`
+  (which refuses to overwrite a validated article and suggests a new
+  tag instead);
   curated content has no write-back tool, so it reports that
   server-side synthesis is required rather than fabricating output.
 - **Doctor diagnostics**: `dewey doctor` validates the new provider's
@@ -99,8 +104,19 @@ promotion).
 
 ### Modified Capabilities
 
-None. Existing MCP tool contracts for the 37 inherited graphthulhu
-tools are untouched; `promote` gains an optional additive field.
+Existing MCP tool contracts for the 37 inherited graphthulhu tools
+are untouched; `promote` gains an optional additive field. The
+knowledge-compilation lifecycle is modified:
+
+- `compile` retains validated compiled articles: zero-learnings and
+  full recompiles clear draft pages but keep validated ones, listing
+  surviving tags in `retained_validated`.
+- `store_compiled` refuses to overwrite a page whose existing tier is
+  `validated`, returning an actionable error that suggests storing the
+  updated article under a new tag; draft overwrites remain allowed.
+- Prompt-mode byte-compatibility for `compile` is scoped to non-empty
+  learning collections; an empty collection with synthesis available
+  is handled explicitly (drafts cleared, validated retained).
 
 ### Removed Capabilities
 
@@ -115,10 +131,13 @@ None.
   gains the `openai-compatible` branch and an updated supported-list
   error.
 - **`tools/`**: `NewCompile` accepts the shared index mutex; `promote`
-  gains batch input, namespace-aware resolution via `store.FindPage`,
-  and truthful error propagation; tests for each.
-- **`store/`**: new `FindPage` resolution helper with
-  deterministic precedence and ambiguity detection; no schema change.
+  gains batch input, a tools-side resolution ladder
+  (`resolvePromotePage`) over narrow index-backed store queries, and
+  truthful error propagation; tests for each.
+- **`store/`**: three narrow index-backed list methods
+  (`ListPagesByNameFoldCase`, `ListKnowledgePagesFoldCase`,
+  `GetPageBySourceDoc`) with deterministic ambiguity detection left to
+  the caller; schema v3 adds the backing NOCASE indexes additively.
 - **`server.go`**: `serverConfig.synth` plus `WithSynthesizer`; compile
   and curate receive the configured synthesizer.
 - **`main.go`**: `executeServe` builds the synthesizer after backend
@@ -130,9 +149,10 @@ None.
 - **`slash_commands.go` / `dewey init`**: new `dewey-distill.md` map
   entry, scaffolded with the existing non-overwriting mechanism; the
   command file is also tracked in `.opencode/commands/`.
-- **No new module dependencies, no CGO, no schema migration.** The
-  provider uses `net/http` only. enmaas provides synthesis only;
-  embeddings remain Ollama or Vertex.
+- **No new module dependencies, no CGO.** The provider uses `net/http`
+  only. enmaas provides synthesis only; embeddings remain Ollama or
+  Vertex. The schema change is an additive, index-only v2→v3 migration
+  creating two NOCASE indexes; no tables or columns change.
 - **Behavior while the server runs**: the whole pipeline works against
   the live MCP server without a restart or a CLI process. On the next
   server start the new compiled/curated files are indexed normally.
@@ -151,7 +171,8 @@ constitution; the org constitution prevails on conflict).
 
 Dewey remains independently installable and usable with no synthesis
 provider: `compile` and `curate` fall back to the existing prompt
-mode, byte-compatible with today, and the new provider is opt-in via
+mode, byte-compatible with today for non-empty learning collections,
+and the new provider is opt-in via
 `config.yaml` or environment. The slash command uses MCP tools and
 degrades to prompt mode when server-side synthesis is unavailable. No
 new module dependency, no CGO, and no coupling to another Unbound

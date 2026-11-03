@@ -149,9 +149,14 @@ add a network call to server startup.
 When synthesis is unconfigured, unavailable, or the provider cannot be
 constructed, `compile` MUST return `status: "prompts_ready"` with the
 existing cluster/prompt fields and `curate` MUST return
-`status: "prompt_ready"` with the existing store/prompt fields. These
-payloads MUST remain byte-compatible with the pre-change behavior so
-calling agents can synthesize and call `store_compiled`.
+`status: "prompt_ready"` with the existing store/prompt fields. For
+non-empty learning collections these payloads MUST remain
+byte-compatible with the pre-change behavior so calling agents can
+synthesize and call `store_compiled`. When no learnings exist and a
+synthesizer is available, `compile` MUST clear draft compiled pages,
+retain validated ones, and report surviving tags in
+`retained_validated` — validated knowledge is never silently
+destroyed by an empty collection (PR 145 amendment).
 
 #### Scenario: Compile prompt mode
 

@@ -13,7 +13,7 @@
   `Retry-After` integer seconds when present and exponential backoff
   with ±25% jitter otherwise; honor context cancellation between
   attempts; return a final error naming the retry count; read bodies
-  with a 50 MiB limit and truncate error excerpts to 512 bytes
+  with a 50 MiB limit and truncate error excerpts to 512 runes
 - [x] 1.3 Implement safety guards: treat `choices[0].message.content`
   as required (empty → error naming the response contract); treat
   `finish_reason == "length"` as an error naming
@@ -89,20 +89,27 @@
 
 ## 4. Page Resolution and Batch Promotion
 
-- [x] 4.1 Add `store.FindPage(name string) (*Page, error)` with the
-  design D7 resolution ladder (exact → NOCASE → bare-name namespace
+- [x] 4.1 Add the resolution ladder: `resolvePromotePage` in
+  `tools/promote.go` (exact → NOCASE → bare-name namespace
   candidates including `knowledge/*` → `source_id`/`source_doc_id`),
-  deterministic ambiguity errors listing candidates, empty-name
-  validation, and wrapped query errors; no schema change
-- [x] 4.2 Add `store.FindPage` tests in `store/store_test.go`:
+  with deterministic ambiguity errors listing candidates, empty-name
+  validation, and wrapped query errors; backed by three narrow store
+  list methods (`ListPagesByNameFoldCase`,
+  `ListKnowledgePagesFoldCase`, `GetPageBySourceDoc`) and a schema v3
+  additive, index-only migration creating the two NOCASE indexes
+- [x] 4.2 Add resolver tests in `tools/promote_resolve_test.go`:
   exact; case mismatch; bare tag resolving `compiled/` and `learning/`;
-  `knowledge/{store}/{name}`; namespaced source-doc-id match;
-  ambiguity; missing page returns `(nil, nil)`; empty name error;
-  store/query error propagation
+  `knowledge/{store}/{name}` (including a mixed-case fixture);
+  namespaced source-doc-id match; ambiguity (with candidate cap);
+  missing page returns `(nil, nil)`; empty name error;
+  store/query error propagation; namespace-beats-source-doc
+  precedence — plus `store` tests asserting `EXPLAIN QUERY PLAN` pins
+  each query to an index `SEARCH` and a v2→v3 migration test
 - [x] 4.3 Extend `types.PromoteInput` with
   `Pages []string` (`json:"pages,omitempty"`) while keeping `Page`;
   document mutual exclusivity in the jsonschema text
-- [x] 4.4 Rewrite `tools/promote.go`: resolve via `store.FindPage`,
+- [x] 4.4 Rewrite `tools/promote.go`: resolve via the tools-side
+  `resolvePromotePage` ladder,
   surface real store errors, keep the single-page result shape when
   only `page` is set, add batch mode with validate-all-then-mutate,
   dedupe in request order, per-page `{page, error}` failures, no
@@ -187,7 +194,8 @@
   before any task in this group is marked complete
 - [x] 7.6 Constitution alignment verification: confirm all four
   principles still PASS, the 37 inherited tools are untouched, no
-  `go.mod` change, no CGO, no schema migration, and the provider is
+  `go.mod` change, no CGO, only an additive index-only schema
+  migration (v3 NOCASE indexes), and the provider is
   tested without network or real credentials
 - [x] 7.7 Run `/uf.review-council` and resolve all REQUEST CHANGES
   findings until every reviewer returns APPROVE, immediately before PR

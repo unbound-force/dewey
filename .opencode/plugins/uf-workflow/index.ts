@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer"
-import { execFileSync } from "node:child_process"
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { lstat, readFile, readdir, writeFile } from "node:fs/promises"
+import { execFile, execFileSync } from "node:child_process"
+import { accessSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { lstat, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { basename, resolve } from "node:path"
 import { tool, type PluginInput, type PluginModule } from "@opencode-ai/plugin"
 import { z } from "zod"
@@ -33,6 +34,14 @@ import {
   parseReviewDispatchArtifact,
   type ReviewDispatchArtifactSummary,
 } from "../../lib/review-dispatch-artifact.js"
+import {
+  PREFLIGHT_MODES,
+  PreflightConfigError,
+  runDeclaredChecks,
+  type DeclaredChecksData,
+  type PreflightDeclaredDependencies,
+  type ProcessResult,
+} from "../../lib/preflight-declared.js"
 import { createBunYamlParser, type YamlParser } from "../../lib/reviewer-manifest.js"
 import {
   BASE_REF_CANDIDATES,
@@ -365,6 +374,32 @@ function recordAutoCheckpoint(
 // Checkpoint tool factories (exported for testability)
 // ---------------------------------------------------------------------------
 
+/** Phase-scoped checkpoint argument shape (`implement-phase-<number>` records). */
+const PhaseCheckpointArgSchema = z.object({
+  number: z.number().int().min(1).max(1000),
+  verdict: z.enum(["green", "failed"]),
+  inventory: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(512),
+        classification: z.enum([
+          "pre-existing",
+          "environmental",
+          "change-caused",
+        ]),
+      }),
+    )
+    .max(200)
+    .default([]),
+})
+
+/**
+ * Validation for the checkpoint tool's `phase` argument inside execute: the
+ * host does not enforce the args shape, and a bare `phase: 5` previously
+ * surfaced as "requires step implement-phase-undefined" (issue #936).
+ */
+const CheckpointPhaseInputSchema = z.object({ phase: PhaseCheckpointArgSchema.optional() })
+
 /** Factory for the checkpoint tool (FR-001). */
 export function createCheckpointTool(exec: GitExec, cwd: string) {
   return tool({
@@ -384,24 +419,7 @@ export function createCheckpointTool(exec: GitExec, cwd: string) {
       key: z.string().optional().describe(
         "Optional state key override; defaults to sanitized current git branch",
       ),
-      phase: z
-        .object({
-          number: z.number().int().min(1).max(1000),
-          verdict: z.enum(["green", "failed"]),
-          inventory: z
-            .array(
-              z.object({
-                name: z.string().min(1).max(512),
-                classification: z.enum([
-                  "pre-existing",
-                  "environmental",
-                  "change-caused",
-                ]),
-              }),
-            )
-            .max(200)
-            .default([]),
-        })
+      phase: PhaseCheckpointArgSchema
         .optional()
         .describe(
           "Optional phase-scoped record; requires step implement-phase-<number>. " +
@@ -424,14 +442,11 @@ export function createCheckpointTool(exec: GitExec, cwd: string) {
           dataToMerge = JSON.parse(args.data) as Record<string, unknown>
         }
 
-        const phaseRecord =
-          args.phase === undefined
-            ? undefined
-            : {
-                number: args.phase.number,
-                verdict: args.phase.verdict,
-                inventory: args.phase.inventory ?? [],
-              }
+        const parsedPhase = parseToolInput(CheckpointPhaseInputSchema, { phase: args.phase })
+        if (!parsedPhase.ok) {
+          return { output: parsedPhase.failureOutput }
+        }
+        const phaseRecord = parsedPhase.value.phase
 
         const state = upsertCheckpointStep(
           cwd,
@@ -5318,6 +5333,142 @@ export function createPersistUnleashSummaryTool(exec: GitExec, cwd: string): Ret
 }
 
 // ---------------------------------------------------------------------------
+// uf_preflight_declared_checks tool
+// ---------------------------------------------------------------------------
+
+export type { DeclaredChecksData } from "../../lib/preflight-declared.js"
+
+/** True when the path is an executable regular file. */
+function isExecutableFile(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) {
+      return false
+    }
+    accessSync(path, fsConstants.X_OK)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** True when the path is a regular file (follows symlinks). */
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** Output budget for one declared check before execFile kills it. */
+export const PREFLIGHT_MAX_BUFFER_BYTES = 64 * 1024 * 1024
+
+/**
+ * Map an execFile completion onto a ProcessResult. stdout and stderr are
+ * concatenated (stdout first). Three failure classes:
+ * - timeout: execFile killed the child (`killed` + a signal) -> exit 124,
+ *   timedOut true;
+ * - output limit: `code` is ERR_CHILD_PROCESS_STDIO_MAXBUFFER (Node and
+ *   Bun; `killed` is not set) -> exit 1 with an annotation, timedOut false;
+ * - ordinary exit: numeric `code` passes through.
+ */
+export function processResultFromExecFile(error: Error | null, stdout: string, stderr: string): ProcessResult {
+  const output = [stdout, stderr].filter((part) => part.length > 0).join("\n")
+  if (error === null) {
+    return { exitCode: 0, output, timedOut: false }
+  }
+  const failed = error as NodeJS.ErrnoException & { code?: number | string | null; killed?: boolean; signal?: string | null }
+  if (failed.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return { exitCode: 1, output: `${output}\n[output limit exceeded: ${failed.message}]`, timedOut: false }
+  }
+  const timedOut = failed.killed === true && failed.signal !== undefined && failed.signal !== null
+  const exitCode = typeof failed.code === "number" ? failed.code : 1
+  return { exitCode: timedOut ? 124 : exitCode, output: output || failed.message, timedOut }
+}
+
+/** Run an executable with an argv list and no shell; see processResultFromExecFile. */
+export function runProcessNoShell(
+  file: string,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+  env: Readonly<Record<string, string>>,
+  maxBuffer: number = PREFLIGHT_MAX_BUFFER_BYTES,
+): Promise<ProcessResult> {
+  return new Promise((resolvePromise) => {
+    execFile(
+      file,
+      [...args],
+      { cwd, env: { ...process.env, ...env }, timeout: timeoutMs, maxBuffer, encoding: "utf8", shell: false },
+      (error, stdout, stderr) => resolvePromise(processResultFromExecFile(error, stdout, stderr)),
+    )
+  })
+}
+
+/** Production dependencies for uf_preflight_declared_checks. */
+export function createPreflightDeclaredDependencies(): PreflightDeclaredDependencies {
+  return {
+    readText: (path: string) => readFile(path, "utf8"),
+    fileExists: isRegularFile,
+    isExecutable: isExecutableFile,
+    // Resolved at registration, like uf_delegate_command's matrix parser.
+    parseYaml: createBunYamlParser(),
+    pathEnv: process.env.PATH ?? "",
+    git: defaultGitExec,
+    runProcess: runProcessNoShell,
+    makeTempDir: () => mkdtemp(resolve(tmpdir(), "uf-preflight-baseline-")),
+    removeDir: (path: string) => rm(path, { recursive: true, force: true }),
+  }
+}
+
+/**
+ * Factory for uf_preflight_declared_checks: the pre-flight skill's
+ * Phase 2b as one deterministic call (determinism pack DE-001/DE-003/
+ * DE-005). Parses and validates `.uf/preflight.yaml`, probes `requires`
+ * binaries on PATH and the `run` executable, applies the diff-scope
+ * filter, runs each in-scope check as an argv list without a shell, maps
+ * `required`/`advisory` onto statuses, and returns structured results
+ * plus tool-rendered Execution Results rows.
+ *
+ * Failure codes: INVALID_PREFLIGHT_CONFIG (no check ran),
+ * PREFLIGHT_DECLARED_FAILED (unexpected error).
+ */
+export function createPreflightDeclaredChecksTool(cwd: string, deps: PreflightDeclaredDependencies): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Pre-flight Phase 2b: run the project-declared checks in .uf/preflight.yaml. " +
+      "Validates the file, skips checks whose requires/run are unavailable or whose " +
+      "paths miss the branch diff, runs the rest without a shell, and returns " +
+      "{mode, config_present, scope, checks[], required_failures[], verdict, " +
+      "baseline_method, rendered}. In soft-gate mode required failures are " +
+      "re-run in a merge-base worktree and classified branch-caused / " +
+      "pre-existing / unknown. `rendered` holds the Execution Results rows to " +
+      "insert verbatim; `verdict` is the declared checks' contribution to the " +
+      "pre-flight verdict; advisory rows never affect it. Failure code " +
+      "INVALID_PREFLIGHT_CONFIG means the file is invalid and no check ran.",
+    args: {
+      mode: z.enum(PREFLIGHT_MODES).describe("Pre-flight execution policy chosen by the consuming command."),
+    },
+    execute: async (args: { mode: (typeof PREFLIGHT_MODES)[number] }) => {
+      try {
+        const data: DeclaredChecksData = await runDeclaredChecks(cwd, deps, args.mode)
+        return { output: JSON.stringify(success(data)) }
+      } catch (error) {
+        if (error instanceof PreflightConfigError) {
+          return { output: JSON.stringify(failure(error.message, { retryable: false, code: "INVALID_PREFLIGHT_CONFIG" })) }
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        return {
+          output: JSON.stringify(
+            failure(`Project-declared pre-flight checks failed: ${message}`, { retryable: false, code: "PREFLIGHT_DECLARED_FAILED" }),
+          ),
+        }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
@@ -5343,6 +5494,7 @@ const UfWorkflowPlugin = {
         git_conflict_files: createGitConflictFilesTool(defaultGitExec, cwd),
         git_commit_no_edit: createGitCommitNoEditTool(defaultGitExec, cwd),
         uf_unleash_branch_gate: createUnleashBranchGateTool(defaultGitExec, cwd, defaultFileExists),
+        uf_preflight_declared_checks: createPreflightDeclaredChecksTool(cwd, createPreflightDeclaredDependencies()),
         uf_unleash_route_decision: createUnleashRouteDecisionTool(defaultGitExec, cwd),
         uf_unleash_resolve_issue: createUnleashResolveIssueTool(defaultGhRunner, cwd),
         uf_delegate_command: createDelegateCommandTool(defaultGitExec, cwd, {

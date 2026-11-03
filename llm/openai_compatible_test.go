@@ -116,12 +116,13 @@ func TestOpenAICompatibleSynthesizer_NonASCIIRoundTrip(t *testing.T) {
 
 func TestOpenAICompatibleSynthesizer_EmptyContent(t *testing.T) {
 	tests := []struct {
-		name string
-		body string
+		name    string
+		body    string
+		wantErr string
 	}{
-		{name: "empty content", body: `{"choices":[{"message":{"role":"assistant","content":""}}]}`},
-		{name: "no choices", body: `{"choices":[]}`},
-		{name: "missing content", body: `{"choices":[{"message":{"role":"assistant"}}]}`},
+		{name: "empty content", body: `{"choices":[{"message":{"role":"assistant","content":""}}]}`, wantErr: "returned empty content"},
+		{name: "no choices", body: `{"choices":[]}`, wantErr: "returned no choices"},
+		{name: "missing content", body: `{"choices":[{"message":{"role":"assistant"}}]}`, wantErr: "returned empty content"},
 	}
 
 	for _, tt := range tests {
@@ -132,8 +133,12 @@ func TestOpenAICompatibleSynthesizer_EmptyContent(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewOpenAICompatibleSynthesizer: %v", err)
 			}
-			if _, err := synth.Synthesize(context.Background(), "prompt"); err == nil {
+			_, err = synth.Synthesize(context.Background(), "prompt")
+			if err == nil {
 				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected %q in error, got %v", tt.wantErr, err)
 			}
 		})
 	}

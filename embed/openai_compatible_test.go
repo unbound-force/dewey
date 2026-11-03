@@ -145,6 +145,12 @@ func TestOpenAICompatibleEmbedder_OrderingErrors(t *testing.T) {
 			inputs:   []string{"a", "b"},
 			wantWord: "out of range",
 		},
+		{
+			name:     "empty embedding vector",
+			body:     `{"data":[{"index":0,"embedding":[]},{"index":1,"embedding":[2]}]}`,
+			inputs:   []string{"a", "b"},
+			wantWord: "empty vector at index 0",
+		},
 	}
 
 	for _, tt := range tests {

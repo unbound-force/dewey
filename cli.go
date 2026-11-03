@@ -1473,12 +1473,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 	embedModel := embCfg.Model
 
 	switch embCfg.Provider {
-	case "ollama", "", "vertex":
-		// Vertex shares the Ollama diagnostics to preserve the
-		// pre-017 doctor behavior exactly (FR-017). The known gap —
-		// the embedding layer treating Vertex as Ollama — stays out of
-		// scope here and is tracked by the follow-up issue filed in
-		// task T047.
+	case "ollama", "":
 		section(fmt.Sprintf("Embedding Layer (%s via %s)", embedModel, embedEndpoint))
 
 		// Ollama state check via ensureOllama (autoStart=false for doctor —
@@ -1518,6 +1513,9 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			c.printCheck(w, "INFO", "model", "granite-embedding:30m has a newer replacement (Granite Embedding R2)")
 			dp("     Tip: update embedding.model in config.yaml, then run: dewey reindex\n")
 		}
+
+	case "vertex":
+		printVertexEmbeddingChecks(c, w, section, embCfg)
 
 	case "openai-compatible":
 		section(fmt.Sprintf("Embedding Layer (%s via %s)", displayGatewayValue(embedModel), displayGatewayValue(openaicompat.DisplayURL(embedEndpoint))))
@@ -2816,6 +2814,20 @@ func gatewayCredentialWarnings(capability openaicompat.Capability, endpoint stri
 		warnings = append(warnings, fmt.Sprintf("%s.api_key in config.yaml is ignored; keys are environment-only", capability))
 	}
 	return warnings
+}
+
+// printVertexEmbeddingChecks renders the Embedding Layer section for the
+// Vertex provider (issue #143): configuration completeness (model,
+// project, region) checked through the provider factory, which makes no
+// network calls — mirroring the Synthesis Layer's Vertex branch. Vertex
+// never gets Ollama reachability checks or `ollama pull` hints.
+func printVertexEmbeddingChecks(c *doctorCounter, w io.Writer, section func(string), cfg embed.ProviderConfig) {
+	section(fmt.Sprintf("Embedding Layer (%s via vertex)", cfg.Model))
+	if _, err := embed.NewEmbedderFromConfig(cfg); err != nil {
+		c.printCheck(w, "FAIL", "config", fmt.Sprintf("incomplete: %s", err))
+		return
+	}
+	c.printCheck(w, "PASS", "config", fmt.Sprintf("project=%s region=%s model=%s", cfg.Project, cfg.Region, cfg.Model))
 }
 
 // printGatewayCredentialChecks renders the credential warnings in dewey

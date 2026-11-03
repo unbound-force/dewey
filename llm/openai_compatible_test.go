@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const testAPIKey = "unit-test-placeholder-not-a-secret"
@@ -375,5 +376,62 @@ func TestOpenAICompatibleSynthesizer_RetryAfterZeroIsImmediate(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Errorf("Retry-After: 0 took %v, want an immediate retry", elapsed)
+	}
+}
+
+func TestTruncateBody_BoundsWithoutRuneSplit(t *testing.T) {
+	s := newTestOpenAISynth(t, "http://127.0.0.1:0")
+
+	// More than 512 multibyte runes: the excerpt must end at a rune
+	// boundary with the truncation marker, never mid-rune.
+	got := s.truncateBody([]byte(strings.Repeat("é", 600)))
+	if !strings.HasSuffix(got, "... (truncated)") {
+		t.Errorf("excerpt = %q, want truncation marker", got)
+	}
+	if strings.Contains(got, "\uFFFD") {
+		t.Errorf("excerpt split a rune: %q", got)
+	}
+	head := strings.TrimSuffix(got, "... (truncated)")
+	if runes := []rune(head); len(runes) > 512 {
+		t.Errorf("excerpt rune count = %d, want <= 512", len(runes))
+	}
+}
+
+func TestTruncateBody_LargeBodyRedactsBeforeBounding(t *testing.T) {
+	s := newTestOpenAISynth(t, "http://127.0.0.1:0")
+
+	// A body well past the 2048-byte bound with the key straddling the
+	// cut: redaction runs on the full body first, so no fragment of the
+	// key can survive the byte-bound slice.
+	body := []byte(strings.Repeat("a", 2030) + testAPIKey + strings.Repeat("b", 2030))
+	got := s.truncateBody(body)
+	if strings.Contains(got, testAPIKey) {
+		t.Errorf("excerpt leaked the API key: %q", got)
+	}
+	if fragment := testAPIKey[:12]; strings.Contains(got, fragment) {
+		t.Errorf("excerpt leaked a key fragment: %q", got)
+	}
+	if runes := []rune(strings.TrimSuffix(got, "... (truncated)")); len(runes) > 512 {
+		t.Errorf("excerpt rune count = %d, want <= 512", len(runes))
+	}
+}
+
+func TestTruncateBody_ByteCapBacksOffToRuneBoundary(t *testing.T) {
+	s := newTestOpenAISynth(t, "http://127.0.0.1:0")
+
+	// 2046 bytes of two-byte runes followed by four-byte runes: the
+	// 2048-byte cap slices inside the first emoji. The excerpt must back
+	// off to the last complete rune boundary instead of relying on the
+	// rune-count cap to re-encode a partial rune away.
+	body := []byte(strings.Repeat("é", 1023) + strings.Repeat("😀", 10))
+	got := s.truncateBody(body)
+	if !strings.HasSuffix(got, "... (truncated)") {
+		t.Errorf("excerpt = %q, want truncation marker", got)
+	}
+	if head := strings.TrimSuffix(got, "... (truncated)"); !utf8.ValidString(head) {
+		t.Errorf("excerpt ends mid-rune: %q", head)
+	}
+	if strings.Contains(got, "\uFFFD") {
+		t.Errorf("excerpt contains a replacement rune: %q", got)
 	}
 }

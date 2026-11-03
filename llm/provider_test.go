@@ -550,3 +550,34 @@ func TestReadSynthesisConfig_IntegerTimeoutInterpretedAsSeconds(t *testing.T) {
 		t.Errorf("Timeout = %v, want 45s (integer interpreted as seconds)", cfg.Timeout)
 	}
 }
+
+func TestReadSynthesisConfig_InvalidTimeoutKeepsSiblingFields(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: rits/zai-org/glm-5-3
+  endpoint: https://api.enmaas.devshift.net/v1
+  api_key: config-key
+  timeout: bogus
+  max_tokens: 900`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Provider != "openai-compatible" {
+		t.Errorf("Provider = %q, want openai-compatible (malformed timeout must not discard sibling fields)", cfg.Provider)
+	}
+	if cfg.Model != "rits/zai-org/glm-5-3" {
+		t.Errorf("Model = %q", cfg.Model)
+	}
+	if cfg.APIKey != "config-key" {
+		t.Errorf("APIKey = %q", cfg.APIKey)
+	}
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (provider default applies later)", cfg.Timeout)
+	}
+	if cfg.MaxTokens != 900 {
+		t.Errorf("MaxTokens = %d, want 900", cfg.MaxTokens)
+	}
+}

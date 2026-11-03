@@ -39,7 +39,9 @@ implementation shape.
   `DEWEY_EMBEDDING_API_KEY` or `DEWEY_SYNTHESIS_API_KEY` by capability,
   then `DEWEY_API_KEY`, then `OPENROUTER_API_KEY` when the endpoint
   host is exactly `openrouter.ai`. Empty values count as unset. No
-  `api_key` field is added to configuration structs or YAML.
+  `api_key` field reaches `ProviderConfig`; the parsed `configFile`
+  structs carry a warn-only `api_key` field used solely to detect and
+  warn on keys present in `config.yaml`.
 - **Rationale**: FR-006 and FR-007 make the environment the only
   accepted source and make the key transient. The host check is a
   convenience for OpenRouter users and does not weaken the explicit
@@ -182,12 +184,16 @@ implementation shape.
   `openai-compatible <capability>`, include the HTTP status, and append
   a response excerpt capped at 512 bytes with every occurrence of the
   resolved key replaced by `[REDACTED]`. Never log request headers or
-  bodies. Rely on `net/http`'s default redirect policy, which strips
-  `Authorization` when the destination host differs from the original.
+  bodies. The HTTP client installs an explicit `CheckRedirect` policy
+  that strips `Authorization` unless the redirect destination matches
+  the initial request's host (port-insensitive, case-insensitive) and
+  scheme; subdomain redirects and same-host scheme downgrades (https to
+  http) are treated as different origins.
 - **Rationale**: FR-019 and FR-020 forbid credential material in logs,
-  errors, and artifacts, and require a bounded excerpt. The standard
-  library already implements safe cross-host redirect handling, so a
-  custom policy would add risk without benefit.
+  errors, and artifacts, and require a bounded excerpt. `net/http`'s
+  default policy forwards `Authorization` to same-host subdomains and
+  across same-host scheme downgrades, so an explicit policy is required
+  to enforce FR-018.
 - **Alternatives considered**:
   - A custom `CheckRedirect` that rejects all redirects (rejected:
     breaks legitimate gateway redirects; the spec allows following

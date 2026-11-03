@@ -181,8 +181,11 @@ openai-compatible <capability> error (HTTP <status>): <excerpt>
 
 ## Redirects
 
-The HTTP client follows redirects using `net/http` defaults. The
-`Authorization` header is not forwarded to a different host.
+The HTTP client follows redirects under an explicit `CheckRedirect`
+policy: the `Authorization` header is forwarded only when the
+destination matches the initial request's host (port-insensitive,
+case-insensitive) and scheme. Cross-host destinations, subdomains, and
+same-host scheme downgrades (https to http) do not receive the header.
 
 ## Out of Scope
 

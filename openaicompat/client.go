@@ -84,12 +84,12 @@ func NewClient(cfg Config) (*Client, error) {
 	timeout := cfg.Capability.defaultTimeout()
 
 	return &Client{
-		capability:  cfg.Capability,
-		baseURL:     baseURL,
-		apiKey:      ResolveAPIKey(cfg.Capability, baseURL),
+		capability: cfg.Capability,
+		baseURL:    baseURL,
+		apiKey:     ResolveAPIKey(cfg.Capability, baseURL),
 		httpClient: &http.Client{
-			Timeout:        timeout,
-			CheckRedirect:  redirectPolicy,
+			Timeout:       timeout,
+			CheckRedirect: redirectPolicy,
 		},
 		checkExpiry: availabilityCacheTTL,
 		waitFn:      Wait,

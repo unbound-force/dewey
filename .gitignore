@@ -83,3 +83,4 @@ Thumbs.db
 .mx-f/
 opencode.json
 /.uf/review-matrix.override.yaml
+*.log

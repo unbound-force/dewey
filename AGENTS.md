@@ -611,7 +611,7 @@ specs/
   013-knowledge-compile/       # Knowledge compilation, temporal intelligence, linting, trust tiers (Complete)
   015-curated-knowledge-stores/ # File-backed learnings, curation pipeline, knowledge stores, curated tier (In Progress)
   016-pluggable-providers/       # Pluggable embedding/synthesis providers (Ollama, Vertex AI), store_compiled, global config (Complete)
-  017-openai-compatible-providers/ # OpenAI-compatible embedding and synthesis gateways, environment-only credentials (In Progress)
+  017-openai-compatible-providers/ # OpenAI-compatible embedding and synthesis gateways, environment-only credentials (Complete)
 ```
 
 ## Active Technologies

@@ -97,8 +97,10 @@ func (e *OpenAICompatibleEmbedder) EmbedBatch(ctx context.Context, texts []strin
 }
 
 // orderVectors restores input order by index and converts to float32. A
-// count mismatch, duplicate index, or out-of-range index is a descriptive
-// error (FR-023, US2-3, US2-4).
+// count mismatch, duplicate index, out-of-range index, or empty vector is a
+// descriptive error (FR-023, US2-3, US2-4). Empty vectors are rejected
+// because a zero-norm vector yields NaN cosine similarity and silently
+// degrades ranking.
 func orderVectors(entries []gatewayEmbedding, inputs int) ([][]float32, error) {
 	if len(entries) != inputs {
 		return nil, fmt.Errorf(
@@ -119,6 +121,12 @@ func orderVectors(entries []gatewayEmbedding, inputs int) ([][]float32, error) {
 		if seen[entry.Index] {
 			return nil, fmt.Errorf(
 				"openai-compatible embedding provider returned duplicate index %d",
+				entry.Index,
+			)
+		}
+		if len(entry.Embedding) == 0 {
+			return nil, fmt.Errorf(
+				"openai-compatible embedding provider returned an empty vector at index %d",
 				entry.Index,
 			)
 		}

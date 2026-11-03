@@ -147,7 +147,7 @@ Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `sear
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `store_learning` | Both | Store a learning with tag, category, and temporal identity |
+| `store_learning` | Both | Store a learning with tag, category, and temporal identity; pins `as_of` and accepts `evidence`, `validity`, and `supersedes` ([Temporal Validity](#temporal-validity)) |
 
 ### Curate
 
@@ -767,6 +767,19 @@ Each curated knowledge item includes:
 - **Source traceability**: Every fact traces back to its source document
 
 Learnings stored via `store_learning` are also dual-written to `.uf/dewey/learnings/` as markdown files, ensuring they survive database deletion.
+
+#### Temporal Validity
+
+Learnings carry metadata about the code state they were true against, in their properties and markdown frontmatter (returned by every read tool):
+
+| Field | Set by | Meaning |
+|-------|--------|---------|
+| `as_of` | automatic | `<repo>@<sha>` — the vault's git repository and `HEAD` commit when the learning was stored. Omitted when the vault is not a git repository. Uncommitted changes are not represented. |
+| `evidence` | `evidence` input | Locators backing the learning: `<repo>:<path>`, `<repo>#<n>`, `learning/<identity>`, `session:<id>` (max 50, each max 512 characters). |
+| `validity` | `validity` input | `current`, `stale-unverified`, `superseded`, or `historical`. Absent means unknown. |
+| `supersedes` / `superseded_by` | `supersedes` input | Two-way link. Storing a learning with `supersedes: <identity>` marks the target `superseded_by` the new learning and `validity: superseded`, in the store and in its markdown file. The target is never deleted and its tier is unchanged; a learning can be superseded once. |
+
+Validity is separate from trust tiers: a tier says who vouched for a learning, validity says whether it still holds as the code evolves. All fields round-trip through re-ingestion.
 
 ### Content Sanitization
 

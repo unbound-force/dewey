@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -1398,6 +1399,76 @@ Test learning with specific timestamp.
 	// Verify author is preserved in properties.
 	if !strings.Contains(page.Properties, `"author":"testuser"`) {
 		t.Errorf("properties should contain author=testuser, got %s", page.Properties)
+	}
+}
+
+// TestReIngestLearnings_TemporalFields verifies that the temporal-validity
+// frontmatter keys (issue #146) are restored into page properties.
+func TestReIngestLearnings_TemporalFields(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	file := `---
+tag: gate
+author: alice
+created_at: 2026-11-01T10:00:00Z
+identity: gate-20261101T100000-alice
+tier: draft
+as_of: "dewey@abc123"
+evidence:
+  - "dewey:tools/lint.go"
+  - "dewey#147"
+validity: "superseded"
+supersedes: "gate-20261001T100000-alice"
+superseded_by: "gate-20261102T100000-alice"
+---
+
+Gate uses two layers.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "gate-20261101T100000-alice.md"), []byte(file), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if count, err := reIngestLearnings(s, nil, vaultPath, 0); err != nil || count != 1 {
+		t.Fatalf("reIngestLearnings = %d, %v; want 1, nil", count, err)
+	}
+	page, err := s.GetPage("learning/gate-20261101T100000-alice")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage = %v, %v", page, err)
+	}
+	var props map[string]any
+	if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+		t.Fatalf("unmarshal properties: %v", err)
+	}
+	for key, want := range map[string]string{
+		"as_of":         "dewey@abc123",
+		"validity":      "superseded",
+		"supersedes":    "gate-20261001T100000-alice",
+		"superseded_by": "gate-20261102T100000-alice",
+		"author":        "alice",
+	} {
+		if props[key] != want {
+			t.Errorf("%s = %v, want %q", key, props[key], want)
+		}
+	}
+	if evidence, _ := props["evidence"].([]any); len(evidence) != 2 || evidence[1] != "dewey#147" {
+		t.Errorf("evidence = %v", props["evidence"])
+	}
+}
+
+// TestLearningFrontmatterProperties_LegacyFile verifies that a frontmatter
+// without optional keys yields only the tag (legacy files re-ingest unchanged).
+func TestLearningFrontmatterProperties_LegacyFile(t *testing.T) {
+	props := learningFrontmatter{Tag: "auth", Identity: "auth-1", Tier: "draft"}.properties()
+	if len(props) != 1 || props["tag"] != "auth" {
+		t.Errorf("properties() = %v, want only tag", props)
 	}
 }
 

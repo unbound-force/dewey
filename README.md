@@ -439,6 +439,13 @@ Scan the knowledge base for quality issues: stale decisions, embedding gaps, con
 dewey lint [--vault PATH] [--fix]
 ```
 
+**Anchor checks.** For learnings pinned with `as_of` (see [Temporal Validity](#temporal-validity)), lint checks each `<repo>:<path>` evidence locator for the vault's own repository against local git:
+
+- `anchor_missing`: the path does not exist at the `as_of` commit, or that commit is not in the repository.
+- `anchor_drift`: the path changed between the `as_of` commit and `HEAD`.
+
+`--fix` marks drifted learnings `validity: stale-unverified` (store and markdown file); tiers are never changed. Skipped outside a git repository. Not checked: `<repo>#<n>` locators (no network), other repositories, and learnings marked `superseded` or `historical`. The 30-day `stale_decision` check remains as a secondary signal.
+
 ### dewey promote
 
 Promote a page from `draft` tier to `validated` after human review. Only draft-tier pages (agent-generated content) can be promoted.

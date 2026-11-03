@@ -4808,6 +4808,61 @@ func newGatewayDoctorVault(t *testing.T, configYAML string) string {
 	return tmpDir
 }
 
+// embeddingLayerSection returns the doctor output from the Embedding Layer
+// header up to the next section (the Synthesis Layer header).
+func embeddingLayerSection(t *testing.T, output string) string {
+	t.Helper()
+	start := strings.Index(output, "Embedding Layer")
+	if start < 0 {
+		t.Fatalf("doctor output has no Embedding Layer section:\n%s", output)
+	}
+	section := output[start:]
+	if end := strings.Index(section, "Synthesis Layer"); end >= 0 {
+		section = section[:end]
+	}
+	return section
+}
+
+// TestDoctorCmd_EmbeddingVertexConfigured verifies a complete Vertex
+// embedding config is reported through Vertex diagnostics, not Ollama
+// (issue #143).
+func TestDoctorCmd_EmbeddingVertexConfigured(t *testing.T) {
+	configYAML := "embedding:\n  provider: vertex\n  model: text-embedding-005\n  project: my-test-project\n  region: us-central1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	section := embeddingLayerSection(t, buf.String())
+
+	for _, want := range []string{"text-embedding-005 via vertex", "project=my-test-project", "region=us-central1", "model=text-embedding-005"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("Embedding Layer should contain %q, got:\n%s", want, section)
+		}
+	}
+	if strings.Contains(strings.ToLower(section), "ollama") {
+		t.Errorf("Vertex Embedding Layer must not mention Ollama, got:\n%s", section)
+	}
+}
+
+// TestDoctorCmd_EmbeddingVertexMisconfigured verifies an incomplete Vertex
+// embedding config reports FAIL naming the missing field, with no Ollama
+// fix hint (issue #143).
+func TestDoctorCmd_EmbeddingVertexMisconfigured(t *testing.T) {
+	configYAML := "embedding:\n  provider: vertex\n  model: text-embedding-005\n  region: us-central1\n"
+	tmpDir := newGatewayDoctorVault(t, configYAML)
+
+	var buf bytes.Buffer
+	runDoctorChecks(&buf, tmpDir)
+	section := embeddingLayerSection(t, buf.String())
+
+	if !strings.Contains(section, "incomplete") || !strings.Contains(section, "project") {
+		t.Errorf("Embedding Layer should report incomplete config naming project, got:\n%s", section)
+	}
+	if strings.Contains(section, "ollama pull") || strings.Contains(strings.ToLower(section), "ollama") {
+		t.Errorf("Vertex Embedding Layer must not suggest Ollama, got:\n%s", section)
+	}
+}
+
 func TestDoctorCmd_EmbeddingGatewayConfigured(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"data":[]}`))

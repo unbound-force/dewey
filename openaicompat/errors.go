@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -44,7 +45,9 @@ func ParseError(capability Capability, err error) error {
 // Excerpt returns a bounded, credential-free, log-safe excerpt of a
 // response body. Control characters and ESC-initiated escape sequences
 // are stripped first, then every occurrence of key is redacted, then the
-// result is capped at MaxExcerptBytes with a truncation marker.
+// result is capped at MaxExcerptBytes with a truncation marker. The
+// cap backs up to the last UTF-8 rune boundary so the excerpt is always
+// valid UTF-8.
 //
 // Redaction precedes truncation deliberately: a key straddling the cap
 // boundary cannot leak a prefix (FR-020).
@@ -54,7 +57,14 @@ func Excerpt(body []byte, key string) string {
 		cleaned = strings.ReplaceAll(cleaned, key, redactionToken)
 	}
 	if len(cleaned) > MaxExcerptBytes {
-		cleaned = cleaned[:MaxExcerptBytes] + truncationMarker
+		// Back the cut up to the last rune boundary so truncation
+		// cannot split a multi-byte UTF-8 sequence into invalid
+		// bytes (mojibake in logs).
+		cut := MaxExcerptBytes
+		for cut > 0 && !utf8.RuneStart(cleaned[cut]) {
+			cut--
+		}
+		cleaned = cleaned[:cut] + truncationMarker
 	}
 	return cleaned
 }

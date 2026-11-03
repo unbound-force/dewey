@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -200,22 +201,42 @@ func TestClient_RetryExhaustion(t *testing.T) {
 	}
 }
 
+// TestClient_ContextCancellationDuringRetry pins FR-013: cancellation
+// arriving between a 429 and the next attempt propagates through the
+// retry wait, so the loop stops and the server sees exactly one
+// request. The client uses the real Wait, not a test stub.
 func TestClient_ContextCancellationDuringRetry(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
 		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte("rate limited"))
+		if n == 1 {
+			// Cancel after the first 429 is delivered so the
+			// backoff wait — not the transport — must observe it.
+			cancel()
+		}
 	}))
 	defer server.Close()
 
 	client := newTestClient(t, CapabilityEmbedding, server.URL+"/v1")
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	client.waitFn = Wait // real context-aware backoff
 
 	_, err := client.PostJSON(ctx, PathEmbeddings, map[string]any{})
-	if err == nil {
-		t.Fatal("expected context error")
-	}
-	if !strings.Contains(err.Error(), "context canceled") {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("attempts: got %d, want exactly 1 (cancellation must stop the retry loop)", attempts)
 	}
 }
 
@@ -236,21 +257,47 @@ func TestClient_CapabilityTimeouts(t *testing.T) {
 	if synthesis.httpClient.Timeout != 300*time.Second {
 		t.Fatalf("synthesis timeout: got %v, want 300s", synthesis.httpClient.Timeout)
 	}
+
+	// Pin the probe timeout (FR-014/SC-004): it bounds how long the
+	// availability probe holds the client write mutex against a
+	// hanging gateway, so a regression would serialize concurrent
+	// semantic-tool calls.
+	if probeTimeout != time.Second {
+		t.Fatalf("probe timeout: got %v, want 1s", probeTimeout)
+	}
+	// Pin the availability cache window (FR-014) and its wiring into
+	// new clients.
+	if availabilityCacheTTL != 30*time.Second {
+		t.Fatalf("availability cache TTL: got %v, want 30s", availabilityCacheTTL)
+	}
+	if embedding.checkExpiry != 30*time.Second {
+		t.Fatalf("check expiry: got %v, want 30s", embedding.checkExpiry)
+	}
 }
 
-// captureTransport serves a cross-host redirect for the first request and
-// records the Authorization header of the redirected request.
+// captureTransport serves one redirect from the initial https request to
+// first.example and records the Authorization header of the redirected
+// request. The 307 is keyed on scheme as well as host so the redirect
+// target — including a same-host scheme downgrade like
+// http://first.example — falls through to the 200 branch and the chain
+// terminates. A stub RoundTripper is required because a loopback
+// httptest server cannot synthesize subdomain or
+// same-host-scheme-downgrade redirect shapes.
 type captureTransport struct {
 	mu          sync.Mutex
 	secondAuth  string
 	secondCalls int
+
+	// redirectTo is the Location served for the first request; it is
+	// set before the client runs and never mutated afterwards.
+	redirectTo string
 }
 
 func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.URL.Host == "first.example" {
+	if req.URL.Scheme == "https" && req.URL.Host == "first.example" {
 		return &http.Response{
 			StatusCode: http.StatusTemporaryRedirect,
-			Header:     http.Header{"Location": []string{"https://second.example/v1/embeddings"}},
+			Header:     http.Header{"Location": []string{c.redirectTo}},
 			Body:       http.NoBody,
 			Request:    req,
 		}, nil
@@ -267,28 +314,68 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
-func TestClient_AuthorizationNotForwardedOnCrossHostRedirect(t *testing.T) {
-	transport := &captureTransport{}
-	t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-embedding")
-
-	client, err := NewClient(Config{Capability: CapabilityEmbedding, Endpoint: "https://first.example/v1"})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+// TestClient_RedirectAuthorizationPolicy pins the explicit redirect
+// policy: the Authorization header survives a redirect only when the
+// destination scheme and host both match the initial request (hosts
+// compared port-stripped and case-insensitively, the FR-007
+// convention). Cross-host redirects, subdomains, and same-host
+// https-to-http downgrades all drop it. The net/http default would
+// keep the header for same-host and subdomain destinations regardless
+// of scheme, so this policy is what enforces the spec's
+// "Authorization header MUST NOT be forwarded across hosts" rule.
+// A redirect chain longer than maxRedirects terminates with an error,
+// preserving the stdlib default bound that a custom CheckRedirect
+// replaces.
+func TestClient_RedirectAuthorizationPolicy(t *testing.T) {
+	cases := []struct {
+		name       string
+		redirectTo string
+		wantAuth   string
+		wantErr    string
+	}{
+		{"cross host strips", "https://second.example/v1/embeddings", "", ""},
+		{"subdomain strips", "https://api.first.example/v1/embeddings", "", ""},
+		{"same host scheme downgrade strips", "http://first.example/v1/embeddings", "", ""},
+		{"same origin different port keeps", "https://first.example:8443/v1/embeddings", "Bearer sk-embedding", ""},
+		{"redirect loop errors after bound", "https://first.example/v1/embeddings", "", "stopped after 10 redirects"},
 	}
-	client.httpClient.Transport = transport
-	client.waitFn = func(context.Context, time.Duration) error { return nil }
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := &captureTransport{redirectTo: tc.redirectTo}
+			t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-embedding")
 
-	if _, err := client.PostJSON(context.Background(), PathEmbeddings, map[string]any{}); err != nil {
-		t.Fatalf("PostJSON: %v", err)
-	}
+			client, err := NewClient(Config{Capability: CapabilityEmbedding, Endpoint: "https://first.example/v1"})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			client.httpClient.Transport = transport
+			client.waitFn = func(context.Context, time.Duration) error { return nil }
 
-	transport.mu.Lock()
-	defer transport.mu.Unlock()
-	if transport.secondCalls != 1 {
-		t.Fatalf("expected one redirected request, got %d", transport.secondCalls)
-	}
-	if transport.secondAuth != "" {
-		t.Fatalf("authorization leaked across hosts: %q", transport.secondAuth)
+			_, err = client.PostJSON(context.Background(), PathEmbeddings, map[string]any{})
+			if tc.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got success", tc.wantErr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+			} else if err != nil {
+				t.Fatalf("PostJSON: %v", err)
+			}
+
+			wantSecond := 1
+			if tc.wantErr != "" {
+				wantSecond = 0
+			}
+			transport.mu.Lock()
+			defer transport.mu.Unlock()
+			if transport.secondCalls != wantSecond {
+				t.Fatalf("expected %d redirected request(s), got %d", wantSecond, transport.secondCalls)
+			}
+			if tc.wantErr == "" && transport.secondAuth != tc.wantAuth {
+				t.Fatalf("redirected authorization: got %q, want %q", transport.secondAuth, tc.wantAuth)
+			}
+		})
 	}
 }
 

@@ -84,6 +84,9 @@ Produced by one embedding request and stored per input text.
 
 - Exactly one vector per input, in the original input order (FR-023).
 - A count mismatch, duplicate index, or out-of-range index is an error.
+- Every persisted vector is non-empty; a zero-length `embedding` array is
+  rejected as an error naming the offending index (a zero-norm vector yields
+  NaN cosine similarity).
 - An empty input list returns an empty result without a network call
   (US2-5).
 - Non-ASCII text round-trips unchanged as UTF-8 JSON.

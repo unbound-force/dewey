@@ -203,9 +203,11 @@ different keys and verify both requests authenticate correctly.
 - Very large embedding batches that exceed a gateway's per-request
   limit. Dewey MUST surface the gateway error rather than silently
   dropping inputs.
-- A gateway that redirects to another host. The HTTP client follows
-  redirects, but the `Authorization` header MUST NOT be forwarded across
-  hosts.
+- A gateway that redirects to another host, a subdomain, or a
+  same-host scheme downgrade (https to http). The HTTP client follows
+  redirects, but the `Authorization` header MUST NOT be forwarded to a
+  different origin; only a destination matching the initial request's
+  host and scheme receives it.
 - Concurrent calls to `Available()` and `Embed` or `Synthesize`. The
   implementation MUST be safe for concurrent use.
 - A prompt or document containing non-ASCII text. It MUST be sent as

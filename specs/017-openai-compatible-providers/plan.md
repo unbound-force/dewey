@@ -165,8 +165,11 @@ stay per package.
 
 ### D2: Credentials are environment-only
 
-No `api_key` field is added to `ProviderConfig` or to the parsed
-`configFile` structs. The factory resolves the key at construction
+No `api_key` field is added to `ProviderConfig`. The parsed `configFile`
+structs carry a warn-only `api_key` field so a key present in
+`config.yaml` can be detected and warned about at startup and in `dewey
+doctor` (FR-024); the value is never copied into `ProviderConfig` and
+never authenticates a request. The factory resolves the key at construction
 time using the FR-007 chain: provider-scoped variable, then
 `DEWEY_API_KEY`, then `OPENROUTER_API_KEY` when the endpoint host is
 `openrouter.ai`. Empty variables count as unset. The `Authorization`
@@ -221,8 +224,10 @@ Non-success responses produce `openai-compatible <capability> error
 (HTTP <status>): <excerpt>`, where the excerpt is capped at 512 bytes
 and has any occurrence of the resolved key replaced with
 `[REDACTED]`. Parse errors are prefixed the same way. The HTTP client
-relies on `net/http`'s default redirect policy, which does not forward
-`Authorization` to a different host.
+installs an explicit redirect policy that strips `Authorization` unless
+the destination matches the initial request's host (port-insensitive,
+case-insensitive) and scheme; subdomains and same-host scheme
+downgrades are treated as different origins.
 
 ### D8: Diagnostics become provider-aware
 
@@ -254,8 +259,8 @@ Tests never assert private struct layouts or retry constants by name.
 - `openaicompat`: endpoint normalization and join, key precedence,
   request shape, 429 then success, retry exhaustion, context
   cancellation, redaction and truncation, probe outcomes, cache
-  behavior, concurrent `Available` plus request, and cross-host
-  redirect header stripping.
+  behavior, concurrent `Available` plus request, and redirect
+  authorization stripping (cross host, subdomain, scheme downgrade).
 - `embed`: `/embeddings` path, one request per batch, count mismatch,
   out-of-order index reorder, empty input without a network call,
   model identifiers with slashes verbatim, and non-ASCII round-trip.

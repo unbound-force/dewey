@@ -737,3 +737,65 @@ func TestWriteKnowledgeFile_RejectsUnsafeTag(t *testing.T) {
 		t.Errorf("unsafe tag created a file outside the store")
 	}
 }
+
+func TestParseExtractionResponse_RejectsUnsafeQualityFlags(t *testing.T) {
+	unsafeTypes := []string{
+		"missing_rationale\ninjected: yes",
+		"missing_rationale\n",
+		"unsupported_claim: extra",
+	}
+	for _, flagType := range unsafeTypes {
+		resp := `[{"tag":"auth","category":"context","confidence":"high","content":"x","quality_flags":[{"type":` + strconv.Quote(flagType) + `,"sources":["doc.md"]}]}]`
+		files, err := ParseExtractionResponse(resp)
+		if err != nil {
+			t.Fatalf("flag type %q: unexpected error: %v", flagType, err)
+		}
+		if len(files) != 0 {
+			t.Errorf("flag type %q accepted, want rejected", flagType)
+		}
+	}
+}
+
+func TestWriteKnowledgeFile_RejectsUnsafeQualityFlags(t *testing.T) {
+	dir := t.TempDir()
+
+	// Unsafe quality flag type must be rejected at the write boundary.
+	_, err := WriteKnowledgeFile(KnowledgeFile{
+		Tag:          "auth",
+		Category:     "decision",
+		Confidence:   "high",
+		Content:      "x",
+		QualityFlags: []QualityFlag{{Type: "missing_rationale\ninjected: yes", Sources: []string{"doc.md"}}},
+	}, dir, 1)
+	if err == nil {
+		t.Fatal("expected error for unsafe quality flag type")
+	}
+
+	// Unsafe quality flag source entries must be rejected at the write boundary.
+	_, err = WriteKnowledgeFile(KnowledgeFile{
+		Tag:          "auth",
+		Category:     "decision",
+		Confidence:   "high",
+		Content:      "x",
+		QualityFlags: []QualityFlag{{Type: "missing_rationale", Sources: []string{"doc\ninjected: yes"}}},
+	}, dir, 2)
+	if err == nil {
+		t.Fatal("expected error for unsafe quality flag sources")
+	}
+
+	// Unsafe source metadata must be rejected at the write boundary.
+	_, err = WriteKnowledgeFile(KnowledgeFile{
+		Tag:        "auth",
+		Category:   "decision",
+		Confidence: "high",
+		Content:    "x",
+		Sources:    []SourceRef{{SourceID: "disk\nmeetings", Document: "doc.md"}},
+	}, dir, 3)
+	if err == nil {
+		t.Fatal("expected error for unsafe source metadata")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(dir, "auth-1.md")); !os.IsNotExist(statErr) {
+		t.Errorf("unsafe quality flags created a file")
+	}
+}

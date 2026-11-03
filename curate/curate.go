@@ -11,6 +11,7 @@ import (
 
 	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/llm"
+	"github.com/unbound-force/dewey/v3/sanitize"
 	"github.com/unbound-force/dewey/v3/store"
 )
 
@@ -316,31 +317,16 @@ func (p *Pipeline) BuildExtractionPrompt(documents []DocumentContent) string {
 	return sb.String()
 }
 
-// isValidKnowledgeTag reports whether a curated tag is safe to use as a
-// filename component and plain YAML scalar.
-func isValidKnowledgeTag(tag string) bool {
-	if tag == "" {
-		return false
+// isValidKnowledgeType reports whether t is one of the documented quality
+// flag types. A flag with an unexpected type is treated as unsafe: the type
+// is interpolated into frontmatter as a plain scalar, so anything outside
+// this enum (including values carrying control characters) is rejected.
+func isValidKnowledgeType(t string) bool {
+	switch t {
+	case "missing_rationale", "implied_assumption", "incongruent", "unsupported_claim":
+		return true
 	}
-	for _, r := range tag {
-		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		isDigit := r >= '0' && r <= '9'
-		if !isAlpha && !isDigit && r != '-' && r != '_' {
-			return false
-		}
-	}
-	return true
-}
-
-// isSafeFrontmatterText reports whether s can be embedded as a single-line
-// YAML scalar without injecting new keys.
-func isSafeFrontmatterText(s string) bool {
-	for _, r := range s {
-		if r < 0x20 || r == 0x7f || r == 0x85 || r == 0x2028 || r == 0x2029 {
-			return false
-		}
-	}
-	return true
+	return false
 }
 
 // isValidKnowledgeFile validates the fields that become filenames or
@@ -351,18 +337,30 @@ func isValidKnowledgeFile(f *KnowledgeFile) bool {
 		curateLogger.Warn("skipping knowledge item with missing fields", "tag", f.Tag)
 		return false
 	}
-	if !isValidKnowledgeTag(f.Tag) {
+	if !sanitize.ValidTag(f.Tag) {
 		curateLogger.Warn("skipping knowledge item with unsafe tag", "tag", f.Tag)
 		return false
 	}
-	if !isSafeFrontmatterText(f.Category) || !isSafeFrontmatterText(f.Confidence) || !isSafeFrontmatterText(f.StoreName) {
+	if !sanitize.SafeFrontmatterScalar(f.Category) || !sanitize.SafeFrontmatterScalar(f.Confidence) || !sanitize.SafeFrontmatterScalar(f.StoreName) {
 		curateLogger.Warn("skipping knowledge item with unsafe metadata", "tag", f.Tag)
 		return false
 	}
 	for _, src := range f.Sources {
-		if !isSafeFrontmatterText(src.SourceID) || !isSafeFrontmatterText(src.Document) || !isSafeFrontmatterText(src.Section) {
+		if !sanitize.SafeFrontmatterScalar(src.SourceID) || !sanitize.SafeFrontmatterScalar(src.Document) || !sanitize.SafeFrontmatterScalar(src.Section) {
 			curateLogger.Warn("skipping knowledge item with unsafe source metadata", "tag", f.Tag)
 			return false
+		}
+	}
+	for _, flag := range f.QualityFlags {
+		if !isValidKnowledgeType(flag.Type) || !sanitize.SafeFrontmatterScalar(flag.Type) {
+			curateLogger.Warn("skipping knowledge item with unsafe quality flag type", "tag", f.Tag, "flag_type", flag.Type)
+			return false
+		}
+		for _, s := range flag.Sources {
+			if !sanitize.SafeFrontmatterScalar(s) {
+				curateLogger.Warn("skipping knowledge item with unsafe quality flag source", "tag", f.Tag, "flag_type", flag.Type)
+				return false
+			}
 		}
 	}
 	switch f.Confidence {
@@ -507,12 +505,27 @@ func renderKnowledgeQualityFlags(flags []QualityFlag) string {
 // with YAML frontmatter containing all metadata fields.
 // Returns the file path on success.
 func WriteKnowledgeFile(file KnowledgeFile, storePath string, seq int) (string, error) {
-	if !isValidKnowledgeTag(file.Tag) {
+	if !sanitize.ValidTag(file.Tag) {
 		return "", fmt.Errorf("invalid knowledge tag %q", file.Tag)
 	}
-	if !isSafeFrontmatterText(file.Category) || !isSafeFrontmatterText(file.Confidence) ||
-		!isSafeFrontmatterText(file.StoreName) || !isSafeFrontmatterText(file.CreatedAt) || !isSafeFrontmatterText(file.Tier) {
+	if !sanitize.SafeFrontmatterScalar(file.Category) || !sanitize.SafeFrontmatterScalar(file.Confidence) ||
+		!sanitize.SafeFrontmatterScalar(file.StoreName) || !sanitize.SafeFrontmatterScalar(file.CreatedAt) || !sanitize.SafeFrontmatterScalar(file.Tier) {
 		return "", fmt.Errorf("knowledge metadata contains control characters")
+	}
+	for _, src := range file.Sources {
+		if !sanitize.SafeFrontmatterScalar(src.SourceID) || !sanitize.SafeFrontmatterScalar(src.Document) || !sanitize.SafeFrontmatterScalar(src.Section) {
+			return "", fmt.Errorf("knowledge source metadata contains control characters")
+		}
+	}
+	for _, flag := range file.QualityFlags {
+		if !isValidKnowledgeType(flag.Type) || !sanitize.SafeFrontmatterScalar(flag.Type) {
+			return "", fmt.Errorf("knowledge quality flag type %q is invalid", flag.Type)
+		}
+		for _, s := range flag.Sources {
+			if !sanitize.SafeFrontmatterScalar(s) {
+				return "", fmt.Errorf("knowledge quality flags contain unsafe values")
+			}
+		}
 	}
 	if err := os.MkdirAll(storePath, 0o755); err != nil {
 		return "", fmt.Errorf("create store directory: %w", err)

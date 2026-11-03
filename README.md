@@ -112,9 +112,9 @@ Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `sear
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `semantic_search` | Both | Find documents semantically similar to a natural language query |
+| `semantic_search` | Both | Find documents semantically similar to a natural language query. Results carry `validity` / `as_of`; superseded (×0.6) and stale-unverified (×0.85) results rank lower unless `ignore_validity: true` (reported similarity stays raw) |
 | `similar` | Both | Find the most similar documents to a given page or block |
-| `semantic_search_filtered` | Both | Semantic search with metadata filters (source, properties, tier) |
+| `semantic_search_filtered` | Both | Semantic search with metadata filters (source, properties, tier, validity), with the same validity ranking as `semantic_search` |
 
 ### Compile
 

@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/v3/types"
@@ -161,6 +162,86 @@ func TestSearchIndex_RemovePage(t *testing.T) {
 	results = si.Search("searchable", 20)
 	if len(results) != 0 {
 		t.Errorf("expected 0 results after removal, got %d", len(results))
+	}
+}
+
+// compoundIndex builds an index over one page whose blocks have the given
+// UUID → content pairs (issue #149 tests).
+func compoundIndex(blocks map[string]string) *SearchIndex {
+	page := &cachedPage{
+		entity:    types.PageEntity{Name: "KB", OriginalName: "KB"},
+		lowerName: "kb",
+		filePath:  "KB.md",
+	}
+	for uuid, content := range blocks {
+		page.blocks = append(page.blocks, types.BlockEntity{UUID: uuid, Content: content})
+	}
+	si := NewSearchIndex()
+	si.BuildFrom(map[string]*cachedPage{"kb": page})
+	return si
+}
+
+func TestSearchIndex_CompoundIDForms(t *testing.T) {
+	si := compoundIndex(map[string]string{
+		"claim":  "## KB-REVIEW-ADJUD-01: Verdict gates use two layers",
+		"other":  "## KB-GOV-CI-03: Pin actions by SHA",
+		"snake":  "Set max_crap_load in config",
+		"noise":  "Unrelated review notes",
+		"single": "Use the a-b test pattern",
+	})
+
+	for _, query := range []string{"KB-REVIEW-ADJUD-01", "KB-REVIEW-ADJUD", "KB REVIEW ADJUD 01", "kb-review-adjud-01"} {
+		results := si.Search(query, 20)
+		if len(results) != 1 || results[0].UUID != "claim" {
+			t.Errorf("Search(%q) = %v, want only the claim block", query, results)
+		}
+	}
+	if results := si.Search("crap_load", 20); len(results) != 1 || results[0].UUID != "snake" {
+		t.Errorf("Search(crap_load) = %v, want the snake_case block", results)
+	}
+	// A compound with no indexable component stays a whole-term lookup.
+	if results := si.Search("a-b", 20); len(results) != 1 || results[0].UUID != "single" {
+		t.Errorf("Search(a-b) = %v, want the a-b block", results)
+	}
+}
+
+func TestSearchIndex_CompoundExactMatchesFirst(t *testing.T) {
+	si := compoundIndex(map[string]string{
+		"apart": "foo is near bar here",
+		"exact": "the foo-bar widget",
+	})
+	results := si.Search("foo-bar", 20)
+	if len(results) != 2 {
+		t.Fatalf("Search(foo-bar) returned %d results, want 2 (each block once): %v", len(results), results)
+	}
+	if results[0].UUID != "exact" || results[1].UUID != "apart" {
+		t.Errorf("order = %s, %s; want exact, apart", results[0].UUID, results[1].UUID)
+	}
+
+	// Exact matches that fill the limit skip the component pass.
+	if results := si.Search("foo-bar", 1); len(results) != 1 || results[0].UUID != "exact" {
+		t.Errorf("Search(foo-bar, 1) = %v, want only the exact block", results)
+	}
+}
+
+func TestSearchIndex_CompoundComponentsRemovedWithPage(t *testing.T) {
+	si := compoundIndex(map[string]string{"claim": "KB-REVIEW-ADJUD-01"})
+	si.RemovePage("kb")
+	if results := si.Search("adjud", 20); len(results) != 0 {
+		t.Errorf("Search(adjud) after removal = %v, want none", results)
+	}
+}
+
+func TestSplitCompound(t *testing.T) {
+	for term, want := range map[string]string{
+		"kb-review-adjud-01": "kb,review,adjud,01",
+		"max_crap_load":      "max,crap,load",
+		"a-b":                "",
+		"plain":              "",
+	} {
+		if got := strings.Join(splitCompound(term), ","); got != want {
+			t.Errorf("splitCompound(%q) = %q, want %q", term, got, want)
+		}
 	}
 }
 

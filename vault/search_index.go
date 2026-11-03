@@ -69,7 +69,11 @@ func (si *SearchIndex) RemovePage(lowerName string) {
 }
 
 // Search finds blocks matching all terms in the query (AND semantics).
-// Returns results sorted by relevance (number of term hits).
+// Exact-term matches come first. When the query has compound terms
+// (containing `-` or `_`) and exact matches do not fill the limit, the
+// rest is filled with blocks matching every component of those terms,
+// so truncated and space-split forms of hyphenated IDs still find them
+// (issue #149).
 func (si *SearchIndex) Search(query string, limit int) []SearchResult {
 	si.mu.RLock()
 	defer si.mu.RUnlock()
@@ -83,6 +87,21 @@ func (si *SearchIndex) Search(query string, limit int) []SearchResult {
 		limit = 20
 	}
 
+	results := si.matchAllLocked(terms, limit, nil)
+	expanded, compound := expandCompoundTerms(terms)
+	if !compound || len(results) >= limit {
+		return results
+	}
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		seen[r.UUID] = true
+	}
+	return append(results, si.matchAllLocked(expanded, limit-len(results), seen)...)
+}
+
+// matchAllLocked returns up to limit blocks whose terms include every
+// term, skipping blocks whose UUID is in skip. Caller holds si.mu.
+func (si *SearchIndex) matchAllLocked(terms []string, limit int, skip map[string]bool) []SearchResult {
 	// Find blocks that contain ALL terms.
 	// Start with the rarest term for efficiency.
 	var rarest string
@@ -123,7 +142,7 @@ func (si *SearchIndex) Search(query string, limit int) []SearchResult {
 				break
 			}
 		}
-		if !inAll {
+		if !inAll || skip[ref.uuid] {
 			continue
 		}
 
@@ -158,7 +177,7 @@ func (si *SearchIndex) indexPageLocked(page *cachedPage) {
 
 func (si *SearchIndex) indexBlocksLocked(blocks []types.BlockEntity, pageName string, terms map[string]bool) {
 	for _, b := range blocks {
-		blockTerms := tokenize(b.Content)
+		blockTerms := withCompoundComponents(tokenize(b.Content))
 
 		// Also index parsed links and tags as terms.
 		parsed := parser.Parse(b.Content)
@@ -245,6 +264,50 @@ func tokenize(text string) []string {
 	}
 
 	return terms
+}
+
+// splitCompound returns the components (at least 2 characters each) of a
+// term containing `-` or `_`, or nil when the term is not compound or has
+// no component long enough to index (issue #149).
+func splitCompound(term string) []string {
+	if !strings.ContainsAny(term, "-_") {
+		return nil
+	}
+	var parts []string
+	for _, p := range strings.FieldsFunc(term, func(r rune) bool { return r == '-' || r == '_' }) {
+		if len(p) >= 2 {
+			parts = append(parts, p)
+		}
+	}
+	return parts
+}
+
+// withCompoundComponents returns terms followed by the components of each
+// compound term, so a block is indexed under both `kb-review-adjud-01`
+// and `kb`, `review`, `adjud`, `01`.
+func withCompoundComponents(terms []string) []string {
+	out := append([]string(nil), terms...)
+	for _, t := range terms {
+		out = append(out, splitCompound(t)...)
+	}
+	return out
+}
+
+// expandCompoundTerms replaces each compound query term with its
+// components. Reports whether any term was replaced; a compound with no
+// indexable component is kept whole.
+func expandCompoundTerms(terms []string) ([]string, bool) {
+	expanded := make([]string, 0, len(terms))
+	changed := false
+	for _, t := range terms {
+		if parts := splitCompound(t); len(parts) > 0 {
+			expanded = append(expanded, parts...)
+			changed = true
+			continue
+		}
+		expanded = append(expanded, t)
+	}
+	return expanded, changed
 }
 
 // isWordChar returns true for letters and digits (Unicode-aware).

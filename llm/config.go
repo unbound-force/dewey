@@ -52,35 +52,62 @@ func globalConfigDir() string {
 }
 
 // synthesisTimeout decodes synthesis.timeout from either a duration string
-// (for example "300s") or an integer number of seconds. Supporting both avoids
-// the yaml.v3 footgun where `timeout: 300` fails to unmarshal (which would
-// discard the entire config file).
-type synthesisTimeout time.Duration
+// (for example "300s") or an integer number of seconds. Parse failures are
+// captured on the value instead of failing the whole file: one malformed
+// optional field must not discard every other synthesis setting. Callers
+// report the captured error via Err and fall back to the provider default.
+type synthesisTimeout struct {
+	duration time.Duration
+	err      error
+}
 
-// UnmarshalYAML implements yaml.Unmarshaler.
+// UnmarshalYAML implements yaml.Unmarshaler. It never returns an error for a
+// malformed value; the parse error is recorded on the value for use-site
+// reporting so sibling config fields still load.
 func (t *synthesisTimeout) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
 	case yaml.ScalarNode:
 		if value.Tag == "!!int" {
 			secs, err := strconv.Atoi(value.Value)
 			if err != nil {
-				return fmt.Errorf("invalid synthesis.timeout %q: %w", value.Value, err)
+				t.err = fmt.Errorf("invalid synthesis.timeout %q: %w", value.Value, err)
+				return nil
 			}
 			if secs < 0 {
-				return fmt.Errorf("synthesis.timeout must not be negative")
+				t.err = fmt.Errorf("synthesis.timeout must not be negative")
+				return nil
 			}
-			*t = synthesisTimeout(time.Duration(secs) * time.Second)
+			t.duration = time.Duration(secs) * time.Second
 			return nil
 		}
 		d, err := time.ParseDuration(value.Value)
 		if err != nil {
-			return fmt.Errorf("invalid synthesis.timeout %q: %w", value.Value, err)
+			t.err = fmt.Errorf("invalid synthesis.timeout %q: %w", value.Value, err)
+			return nil
 		}
-		*t = synthesisTimeout(d)
+		t.duration = d
 		return nil
 	default:
-		return fmt.Errorf("synthesis.timeout must be a duration string or integer seconds")
+		t.err = fmt.Errorf("synthesis.timeout must be a duration string or integer seconds")
+		return nil
 	}
+}
+
+// Duration returns the decoded duration. It is zero when the value was
+// malformed or absent; providers apply their own default for zero timeouts.
+func (t synthesisTimeout) Duration() time.Duration { return t.duration }
+
+// Err returns the parse error captured during unmarshalling, if any.
+func (t synthesisTimeout) Err() error { return t.err }
+
+// synthesisTimeoutValue converts the tolerant timeout field into a
+// ProviderConfig value, warning once when the configured value was malformed
+// so only the timeout falls back to the provider default.
+func synthesisTimeoutValue(t synthesisTimeout) time.Duration {
+	if err := t.Err(); err != nil {
+		logger.Warn("ignoring invalid synthesis.timeout, using provider default", "err", err)
+	}
+	return t.Duration()
 }
 
 // configFile represents the structure of config.yaml
@@ -143,7 +170,7 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 			Project:   cfg.Synthesis.Project,
 			Region:    cfg.Synthesis.Region,
 			APIKey:    cfg.Synthesis.APIKey,
-			Timeout:   time.Duration(cfg.Synthesis.Timeout),
+			Timeout:   synthesisTimeoutValue(cfg.Synthesis.Timeout),
 			MaxTokens: cfg.Synthesis.MaxTokens,
 		}
 	}
@@ -167,7 +194,7 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 			Project:   globalCfg.Synthesis.Project,
 			Region:    globalCfg.Synthesis.Region,
 			APIKey:    globalCfg.Synthesis.APIKey,
-			Timeout:   time.Duration(globalCfg.Synthesis.Timeout),
+			Timeout:   synthesisTimeoutValue(globalCfg.Synthesis.Timeout),
 			MaxTokens: globalCfg.Synthesis.MaxTokens,
 		}
 	}

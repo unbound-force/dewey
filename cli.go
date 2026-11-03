@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1619,7 +1618,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		if synthCfg.Endpoint == "" {
 			c.printCheck(w, "FAIL", "endpoint", "missing")
 			dp("     Fix: set synthesis.endpoint in .uf/dewey/config.yaml\n")
-		} else if u, err := url.Parse(synthCfg.Endpoint); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		} else if u, err := llm.ValidateSynthesisEndpoint(synthCfg.Endpoint); err != nil {
 			c.printCheck(w, "FAIL", "endpoint", "invalid URL (must be an absolute http(s) URL without credentials, query, or fragment)")
 			dp("     Fix: use a plain absolute http(s) URL without credentials, query, or fragment\n")
 		} else {
@@ -1627,7 +1626,7 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			// embedded in the URL never reach terminal output or logs.
 			c.printCheck(w, "PASS", "endpoint", u.Scheme+"://"+u.Host+u.Path)
 			host := u.Hostname()
-			loopback := host == "localhost" || host == "::1" || strings.HasPrefix(host, "127.")
+			loopback := llm.IsLoopbackHost(host)
 			if u.Scheme == "http" && !loopback {
 				c.printCheck(w, "WARN", "tls", "plaintext http endpoint; the API key and prompts are sent in cleartext")
 				dp("     Fix: use https:// or a loopback endpoint\n")
@@ -1641,7 +1640,9 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 		}
 		if llm.ResolveSynthesisAPIKey(synthCfg.APIKey) == "" {
 			c.printCheck(w, "FAIL", "credential", "missing")
-			dp("     Fix: set DEWEY_SYNTHESIS_API_KEY or synthesis.api_key\n")
+			dp("     Fix: set DEWEY_SYNTHESIS_API_KEY (recommended) or synthesis.api_key; the per-vault\n")
+			dp("     .uf/dewey/config.yaml is git-tracked (dewey init keeps it shareable), so keep secrets\n")
+			dp("     in the env var or the global ~/.config/dewey/config.yaml\n")
 		} else {
 			c.printCheck(w, "PASS", "credential", "configured")
 		}

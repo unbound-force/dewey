@@ -14,6 +14,12 @@ import (
 func synthRetryDelay(attempt int, retryAfter string, baseDelay, maxDelay time.Duration) time.Duration {
 	if retryAfter != "" {
 		if secs, err := strconv.Atoi(retryAfter); err == nil && secs >= 0 {
+			// Clamp before multiplying: a large Retry-After value would
+			// overflow time.Duration, wrap negative, bypass the cap below,
+			// and make time.After fire immediately.
+			if secs > int(maxDelay/time.Second) {
+				return maxDelay
+			}
 			d := time.Duration(secs) * time.Second
 			if d > maxDelay {
 				d = maxDelay

@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +28,10 @@ const (
 	availabilityCacheTTL = 30 * time.Second
 	// maxResponseBytes mirrors the Vertex providers' 50 MiB read limit.
 	maxResponseBytes = 50 * 1024 * 1024
+	// maxRedirects preserves the net/http default redirect bound that a
+	// custom CheckRedirect replaces. A longer redirect chain is an error,
+	// not an infinite loop.
+	maxRedirects = 10
 )
 
 var clientLogger = log.NewWithOptions(os.Stderr, log.Options{
@@ -80,10 +87,55 @@ func NewClient(cfg Config) (*Client, error) {
 		capability:  cfg.Capability,
 		baseURL:     baseURL,
 		apiKey:      ResolveAPIKey(cfg.Capability, baseURL),
-		httpClient:  &http.Client{Timeout: timeout},
+		httpClient: &http.Client{
+			Timeout:        timeout,
+			CheckRedirect:  redirectPolicy,
+		},
 		checkExpiry: availabilityCacheTTL,
 		waitFn:      Wait,
 	}, nil
+}
+
+// redirectPolicy strips the Authorization header whenever a redirect
+// leaves the initial request's origin: a different host (including a
+// subdomain of the initial host) or a different scheme (an
+// https-to-http downgrade on the same host). The net/http default
+// only strips the header across hosts, which still forwards
+// credentials to subdomains and over same-host cleartext downgrades
+// (spec 017: the Authorization header MUST NOT be forwarded across
+// hosts; FR-024: credentials must not transit http outside loopback).
+// The chain is also bounded at maxRedirects hops because installing a
+// custom CheckRedirect replaces the stdlib's default 10-redirect
+// limit, which would otherwise allow an unbounded redirect loop.
+func redirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	if len(via) == 0 {
+		return nil
+	}
+	if sameOrigin(via[0].URL, req.URL) {
+		return nil
+	}
+	req.Header.Del("Authorization")
+	return nil
+}
+
+// sameOrigin reports whether two URLs share the same scheme and host.
+// Hosts compare case-insensitively with any port stripped, the FR-007
+// hostname convention; subdomains and scheme downgrades are different
+// origins.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(hostOnly(a.Host), hostOnly(b.Host)) && a.Scheme == b.Scheme
+}
+
+// hostOnly strips the port from a URL host, returning the host
+// unchanged when no port is present.
+func hostOnly(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 // PostJSON marshals payload, POSTs it to one operation path under the

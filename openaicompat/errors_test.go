@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestExcerpt_CapAndMarker(t *testing.T) {
@@ -46,6 +47,36 @@ func TestExcerpt_RedactsBeforeTruncation(t *testing.T) {
 		if strings.Contains(got, key[:i]) && i >= 6 {
 			t.Fatalf("key prefix %q leaked across the truncation boundary: %q", key[:i], got)
 		}
+	}
+}
+
+func TestExcerpt_TruncatesAtRuneBoundary(t *testing.T) {
+	// A multi-byte rune straddling the cap must be excluded whole, not
+	// sliced mid-sequence into invalid UTF-8.
+	tests := []struct {
+		name      string
+		straddle  string
+		prefixLen int
+	}{
+		{name: "two byte rune", straddle: "é", prefixLen: MaxExcerptBytes - 1},
+		{name: "three byte rune", straddle: "世", prefixLen: MaxExcerptBytes - 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(strings.Repeat("a", tt.prefixLen) + tt.straddle + strings.Repeat("b", 64))
+			got := Excerpt(body, "")
+			if !utf8.ValidString(got) {
+				t.Fatalf("excerpt is not valid UTF-8: %q", got)
+			}
+			if !strings.HasSuffix(got, truncationMarker) {
+				t.Fatalf("expected truncation marker, got %q", got)
+			}
+			capped := strings.TrimSuffix(got, truncationMarker)
+			if capped != strings.Repeat("a", tt.prefixLen) {
+				t.Fatalf("expected %d-byte prefix without partial rune, got %q", tt.prefixLen, capped)
+			}
+		})
 	}
 }
 

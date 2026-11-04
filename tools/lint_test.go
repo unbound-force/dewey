@@ -1332,3 +1332,58 @@ func TestAutoIndex_CuratedTier(t *testing.T) {
 		t.Errorf("page tier = %q, want 'curated'", page.Tier)
 	}
 }
+
+// TestLint_ParsesCurateRenderedQuotedFrontmatter covers the write→read
+// seam between curate's renderer (%q-quoted frontmatter scalars) and
+// lint's manual parser (unquoteScalar). Council round 4 found the quoted
+// path had zero coverage — every other lint fixture writes unquoted
+// frontmatter, so a regression here would silently misparse every new
+// curated file (PR 145).
+func TestLint_ParsesCurateRenderedQuotedFrontmatter(t *testing.T) {
+	kf := curate.KnowledgeFile{
+		Tag:        "authentication",
+		Category:   "decision",
+		Confidence: "high",
+		CreatedAt:  "2026-11-04T17:00:00Z",
+		StoreName:  "test-store",
+		Tier:       "curated",
+		QualityFlags: []curate.QualityFlag{
+			{Type: "missing_rationale", Detail: "no rationale given"},
+		},
+		Content: "Body text for the curated knowledge item.",
+	}
+	path, err := curate.WriteKnowledgeFile(kf, t.TempDir(), 1)
+	if err != nil {
+		t.Fatalf("WriteKnowledgeFile: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// The rendered frontmatter must quote its scalars; if this ever
+	// changes, the seam this test covers has moved.
+	if !strings.Contains(string(content), `category: "decision"`) {
+		t.Errorf("fixture is not exercising the quoted-scalar path:\n%s", content)
+	}
+
+	fm, err := parseKnowledgeFrontmatter(string(content))
+	if err != nil {
+		t.Fatalf("parseKnowledgeFrontmatter: %v", err)
+	}
+	if fm.Tag != "authentication" {
+		t.Errorf("tag = %q, want authentication", fm.Tag)
+	}
+	if fm.Category != "decision" {
+		t.Errorf("category = %q, want decision without quote marks", fm.Category)
+	}
+	if fm.Confidence != "high" {
+		t.Errorf("confidence = %q, want high without quote marks", fm.Confidence)
+	}
+	if fm.Tier != "curated" {
+		t.Errorf("tier = %q, want curated without quote marks", fm.Tier)
+	}
+	if len(fm.QualityFlags) != 1 || fm.QualityFlags[0].Type != "missing_rationale" {
+		t.Errorf("quality flags = %+v, want one missing_rationale", fm.QualityFlags)
+	}
+}

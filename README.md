@@ -447,7 +447,7 @@ Promote a page from `draft` tier to `validated` after human review. Only draft-t
 dewey promote [--vault PATH] PAGE_NAME...
 ```
 
-The page is located by its exact name; when that name is absent, resolution falls back deterministically: a case-insensitive exact match, then — for a bare name containing no `/` — the `compiled/PAGE_NAME`, `learning/PAGE_NAME`, and `knowledge/*/PAGE_NAME` namespaces, followed by a `source_id`/`source_doc_id` match. A bare tag that matches more than one page reports the candidates instead of picking one. A missing page reports `Page '<name>' not found`; a store failure reports `failed to resolve page '<name>'` so the error is not mistaken for absence.
+The page is located by its exact name; when that name is absent, resolution falls back deterministically: a case-insensitive exact match, then — for a bare name containing no `/` — the `compiled/PAGE_NAME`, `learning/PAGE_NAME`, and `knowledge/*/PAGE_NAME` namespaces, followed by a `source_id`/`source_doc_id` match. A bare tag that matches more than one page reports the candidates instead of picking one. A missing page reports `Page '<name>' not found`; a store failure reports `failed to look up page '<name>': <error>` so the error is not mistaken for absence.
 
 When the store cannot be opened because another Dewey process holds the database lock, the error identifies the lock holder (PID and command, read from `.uf/dewey/dewey.lock`) and points to the `dewey_promote` MCP tool as the supported write path while a server is running.
 
@@ -701,6 +701,7 @@ If no provider is configured or it cannot be constructed, `compile` and `curate`
 Configuring this provider sends learning and source content to the configured endpoint. Keep the local Ollama/Vertex setup if content must not leave your network. `DEWEY_SYNTHESIS_API_KEY` is read when the server builds the synthesizer, so restart `dewey serve` after rotating the key. `timeout` accepts a duration string (`300s`) or an integer number of seconds.
 
 `compile` and `curate` hold the shared index lock while they synthesize, so `index`/`reindex` report "already in progress" during a long run. Prefer incremental compilation for large knowledge bases.
+
 #### Global Config
 
 Create `~/.config/dewey/config.yaml` (or `$XDG_CONFIG_HOME/dewey/config.yaml`) to set defaults for all vaults. Per-vault config overrides global.

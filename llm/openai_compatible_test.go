@@ -435,3 +435,33 @@ func TestTruncateBody_ByteCapBacksOffToRuneBoundary(t *testing.T) {
 		t.Errorf("excerpt contains a replacement rune: %q", got)
 	}
 }
+
+// TestIsLoopbackHost_MatchesOpenAicompatSemantics pins parity between
+// llm.IsLoopbackHost and openaicompat.IsLoopbackHost: the doctor consults
+// both helpers in one run, so a host must classify identically in each
+// (PR 145 round-4 review amendment).
+func TestIsLoopbackHost_MatchesOpenAicompatSemantics(t *testing.T) {
+	for _, host := range []string{
+		"localhost",
+		"LOCALHOST",
+		"  localhost  ",
+		"127.0.0.1",
+		"127.200.1.5",
+		"::1",
+		"::ffff:127.0.0.1",
+	} {
+		if !IsLoopbackHost(host) {
+			t.Errorf("IsLoopbackHost(%q) = false, want true", host)
+		}
+	}
+	for _, host := range []string{
+		"192.0.2.1",
+		"example.com",
+		"",
+		"127.1",
+	} {
+		if IsLoopbackHost(host) {
+			t.Errorf("IsLoopbackHost(%q) = true, want false", host)
+		}
+	}
+}

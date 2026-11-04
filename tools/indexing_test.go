@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
 )
@@ -409,4 +410,39 @@ func TestIndexing_ExternalMutex_NilFallback(t *testing.T) {
 	}
 
 	ix.mu.Unlock()
+}
+
+// TestIndexing_ReportSourceErrors verifies that indexing reports per-source
+// fetch errors to the store: failing sources present in the store get an
+// error status, while unknown sources and clean summaries are left alone.
+func TestIndexing_ReportSourceErrors(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.InsertSource(&store.SourceRecord{
+		ID:     "existing-src",
+		Type:   "disk",
+		Name:   "Existing",
+		Status: "ok",
+	}); err != nil {
+		t.Fatalf("InsertSource failed: %v", err)
+	}
+
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix.reportSourceErrors(&source.FetchResult{Summaries: []source.FetchSummary{
+		{SourceID: "clean-src", SourceType: "disk", Documents: 3},
+		{SourceID: "missing-src", SourceType: "disk", Error: "fetch failed"},
+		{SourceID: "existing-src", SourceType: "disk", Error: "fetch failed"},
+	}})
+
+	rec, err := s.GetSource("existing-src")
+	if err != nil {
+		t.Fatalf("GetSource failed: %v", err)
+	}
+	if rec == nil || rec.Status != "error" || rec.ErrorMessage != "fetch failed" {
+		t.Errorf("existing source after report = %+v, want status error with message fetch failed", rec)
+	}
+
+	missing, _ := s.GetSource("missing-src")
+	if missing != nil {
+		t.Errorf("reportSourceErrors must not create missing sources, got %+v", missing)
+	}
 }

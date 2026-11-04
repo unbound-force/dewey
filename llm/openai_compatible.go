@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -161,13 +162,24 @@ func ValidateSynthesisEndpoint(endpoint string) (*url.URL, error) {
 }
 
 // IsLoopbackHost reports whether host names the local machine. It is
-// exported for the doctor CLI's plaintext-TLS warning.
+// exported for the doctor CLI's plaintext-TLS warning. It mirrors
+// openaicompat.IsLoopbackHost's semantics (case-insensitive, parsed IPs,
+// IPv4-mapped loopback) without importing the embedding transport — the
+// doctor consults both helpers in one run, so they must agree (PR 145
+// round-4 review amendment).
 func IsLoopbackHost(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1":
+	h := strings.ToLower(strings.TrimSpace(host))
+	if h == "" {
+		return false
+	}
+	if h == "localhost" {
 		return true
 	}
-	return strings.HasPrefix(host, "127.")
+	ip := net.ParseIP(h)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 // chatURL returns the full chat-completions URL, tolerating endpoints that

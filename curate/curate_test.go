@@ -799,3 +799,54 @@ func TestWriteKnowledgeFile_RejectsUnsafeQualityFlags(t *testing.T) {
 		t.Errorf("unsafe quality flags created a file")
 	}
 }
+
+// TestParseExtractionResponse_PlainCodeBlockFence verifies that responses
+// wrapped in an untagged code fence still parse: some gateways strip the
+// json language tag from markdown fences.
+func TestParseExtractionResponse_PlainCodeBlockFence(t *testing.T) {
+	response := "```\n" + mockLLMResponse() + "\n```"
+
+	files, err := ParseExtractionResponse(response)
+	if err != nil {
+		t.Fatalf("ParseExtractionResponse returned error: %v", err)
+	}
+	if len(files) != 2 {
+		t.Errorf("parsed %d files from plain-fenced response, want 2", len(files))
+	}
+}
+
+// TestParseExtractionResponse_StringQualityFlagsFallback verifies that a
+// string quality_flags value (which cannot unmarshal into []QualityFlag)
+// falls back to dropping the field while keeping the item itself.
+func TestParseExtractionResponse_StringQualityFlagsFallback(t *testing.T) {
+	response := `[{"tag": "auth", "category": "decision", "confidence": "high", "content": "body text", "quality_flags": "none"}]`
+
+	files, err := ParseExtractionResponse(response)
+	if err != nil {
+		t.Fatalf("ParseExtractionResponse returned error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("parsed %d files, want 1", len(files))
+	}
+	if len(files[0].QualityFlags) != 0 {
+		t.Errorf("quality_flags = %v, want empty after string fallback", files[0].QualityFlags)
+	}
+}
+
+// TestParseExtractionResponse_SkipsNonObjectItems verifies that array
+// elements which are not objects fail both unmarshal paths and are skipped
+// without failing the whole response.
+func TestParseExtractionResponse_SkipsNonObjectItems(t *testing.T) {
+	response := `["just a string", {"tag": "valid", "category": "decision", "content": "good item"}, 42]`
+
+	files, err := ParseExtractionResponse(response)
+	if err != nil {
+		t.Fatalf("ParseExtractionResponse returned error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("parsed %d files, want 1", len(files))
+	}
+	if files[0].Tag != "valid" {
+		t.Errorf("surviving file tag = %q, want valid", files[0].Tag)
+	}
+}

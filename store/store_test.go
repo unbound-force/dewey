@@ -1964,7 +1964,7 @@ func explainQueryPlan(t *testing.T, s *Store, query string, args ...any) string 
 	if err != nil {
 		t.Fatalf("EXPLAIN QUERY PLAN %q: %v", query, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var plan strings.Builder
 	for rows.Next() {
 		var id, parent, notUsed int

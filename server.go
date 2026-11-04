@@ -528,7 +528,7 @@ func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
 func registerPromoteTools(srv *mcp.Server, promote *tools.Promote) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "promote",
-		Description: "Promote draft learnings or compiled articles to validated status after human review. Accepts page for one page or pages for a batch; bare tags resolve against learning/, compiled/, and knowledge/*. Batch promotion is all-or-nothing.",
+		Description: "Promote draft learnings or compiled articles to validated status after human review. Accepts page for one page or pages for a batch; names resolve exact, then case-insensitive, then bare tags against learning/, compiled/, and knowledge/, then source doc IDs; ambiguous matches are refused. Batch promotion is all-or-nothing.",
 	}, promote.Promote)
 
 	return 1

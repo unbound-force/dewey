@@ -341,7 +341,7 @@ type LintInput struct {
 // Provide either Page for a single promotion or Pages for a batch, not both.
 type PromoteInput struct {
 	// Page is a single page name to promote from draft to validated.
-	Page string `json:"page,omitempty" jsonschema:"Page name to promote from draft to validated tier. Accepts a full name, a bare tag resolved against learning/ and compiled/, or a case-insensitive match. Provide either page or pages, not both."`
+	Page string `json:"page,omitempty" jsonschema:"Page name to promote from draft to validated tier. Resolution ladder: exact name, then case-insensitive name, then bare tags against compiled/, learning/, and knowledge/ pages, then source doc IDs; ambiguous matches are refused. Provide either page or pages, not both."`
 
 	// Pages is a batch of page names to promote. All pages are validated
 	// before any tier changes; if one fails, none are promoted.

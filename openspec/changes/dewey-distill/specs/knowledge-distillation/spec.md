@@ -379,6 +379,23 @@ above.
   before
 - **AND** the provider defaults MUST fill the absent optional values
 
+#### Scenario: 017 synthesis requirements superseded
+
+- **GIVEN** the OpenAI-compatible synthesis provider introduced by this change
+- **THEN** it MUST honor `synthesis.api_key` with `DEWEY_SYNTHESIS_API_KEY` taking precedence, superseding 017 FR-006's environment-only rule (which remains embedding-only)
+- **AND** the synthesis credential chain MUST NOT read `DEWEY_API_KEY` or `OPENROUTER_API_KEY`; 017 FR-007's full chain remains embedding-only
+- **AND** a missing synthesis key MUST be a configuration error naming both accepted sources, superseding 017 FR-008's keyless gateway allowance for synthesis (embedding keeps keyless support)
+- **AND** synthesis availability MUST be configuration completeness, not a `/models` probe, superseding 017 FR-014 for synthesis (the embedding transport keeps its cached probe)
+- **AND** synthesis endpoint resolution MUST be config-first, falling back to `DEWEY_SYNTHESIS_ENDPOINT` only when `synthesis.endpoint` is empty, superseding 017 FR-022 for synthesis
+- **AND** no synthesis-side startup credential warnings MUST be emitted; 017 FR-024's warnings remain embedding-only
+
+#### Scenario: openaicompat transport is embedding-only
+
+- **WHEN** the `openaicompat` package is inspected after this change
+- **THEN** it MUST expose embedding operations only — the `/embeddings` and `/models` paths and the embedding capability's credential chain
+- **AND** the synthesis provider MUST own its transport inside the `llm` package and MUST NOT import `openaicompat`
+- **AND** the superseded 017 synthesis-probe CLI tests (`SynthesisGateway*`) MUST NOT be restored; this change's configuration-completeness doctor tests replace them
+
 ### Requirement: Learning Re-ingestion Tier Neutrality
 
 Learning markdown files are untrusted backups. Re-ingestion MUST NOT

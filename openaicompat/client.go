@@ -20,8 +20,6 @@ import (
 const (
 	// embeddingTimeout is the FR-025 HTTP timeout for embedding requests.
 	embeddingTimeout = 30 * time.Second
-	// synthesisTimeout is the FR-025 HTTP timeout for synthesis requests.
-	synthesisTimeout = 300 * time.Second
 	// probeTimeout is the FR-014/SC-004 availability probe timeout.
 	probeTimeout = 1 * time.Second
 	// availabilityCacheTTL is the FR-014 cache window.

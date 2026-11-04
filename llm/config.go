@@ -157,13 +157,16 @@ func readConfigFile(dir string) *configFile {
 //
 // Environment variables do not override config file values for synthesis
 // (unlike embedding), preserving backward compatibility with the legacy
-// compile_model path.
+// compile_model path. The openai-compatible gateway is the exception: when
+// config.yaml declares the gateway but leaves synthesis.endpoint empty, the
+// DEWEY_SYNTHESIS_ENDPOINT environment variable is consulted. OLLAMA_HOST
+// and the localhost default never apply to gateways (FR-022).
 func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 	cfg := readConfigFile(deweyDir)
 
 	// Check per-vault synthesis section.
 	if cfg != nil && (cfg.Synthesis.Provider != "" || cfg.Synthesis.Model != "") {
-		return ProviderConfig{
+		return resolveGatewaySynthesisConfig(ProviderConfig{
 			Provider:  cfg.Synthesis.Provider,
 			Model:     cfg.Synthesis.Model,
 			Endpoint:  cfg.Synthesis.Endpoint,
@@ -172,7 +175,7 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 			APIKey:    cfg.Synthesis.APIKey,
 			Timeout:   synthesisTimeoutValue(cfg.Synthesis.Timeout),
 			MaxTokens: cfg.Synthesis.MaxTokens,
-		}
+		})
 	}
 
 	// Check per-vault legacy compile_model.
@@ -187,7 +190,7 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 	// Check global config.
 	globalCfg := readConfigFile(globalConfigDir())
 	if globalCfg != nil && (globalCfg.Synthesis.Provider != "" || globalCfg.Synthesis.Model != "") {
-		return ProviderConfig{
+		return resolveGatewaySynthesisConfig(ProviderConfig{
 			Provider:  globalCfg.Synthesis.Provider,
 			Model:     globalCfg.Synthesis.Model,
 			Endpoint:  globalCfg.Synthesis.Endpoint,
@@ -196,10 +199,21 @@ func ReadSynthesisConfig(deweyDir string) ProviderConfig {
 			APIKey:    globalCfg.Synthesis.APIKey,
 			Timeout:   synthesisTimeoutValue(globalCfg.Synthesis.Timeout),
 			MaxTokens: globalCfg.Synthesis.MaxTokens,
-		}
+		})
 	}
 
 	return synthConfigFromEnv()
+}
+
+// resolveGatewaySynthesisConfig applies the openai-compatible endpoint
+// fallback: when config.yaml leaves synthesis.endpoint empty, the
+// DEWEY_SYNTHESIS_ENDPOINT environment variable is consulted. For a
+// gateway, OLLAMA_HOST and the localhost default never apply (FR-022).
+func resolveGatewaySynthesisConfig(cfg ProviderConfig) ProviderConfig {
+	if cfg.Provider == "openai-compatible" && strings.TrimSpace(cfg.Endpoint) == "" {
+		cfg.Endpoint = os.Getenv("DEWEY_SYNTHESIS_ENDPOINT")
+	}
+	return cfg
 }
 
 // synthConfigFromEnv builds a synthesis config from environment variables.

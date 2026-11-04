@@ -2501,9 +2501,11 @@ func newPromoteCmd() *cobra.Command {
 		Long: `Promote draft learnings or compiled articles to validated status
 after human review. Only pages with tier=draft can be promoted.
 
-Page names are resolved case-insensitively; a bare tag resolves against
-the learning/ and compiled/ namespaces. Multiple names are promoted as an
-all-or-nothing batch: if any page cannot be promoted, none are changed.
+Page names resolve through a ladder: exact name, then case-insensitive
+name, then bare tags against the compiled/, learning/, and knowledge/
+namespaces, then source doc IDs. Ambiguous matches are refused. Multiple
+names are promoted as an all-or-nothing batch: if any page cannot be
+promoted, none are changed.
 
 Examples:
   dewey promote learning/authentication-3

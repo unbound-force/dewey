@@ -148,9 +148,16 @@ reading learnings while a background index rewrites pages, without
 serializing compile against unrelated requests. The error text becomes
 the index-pipeline message ("compilation cannot run while indexing is
 in progress") and still refuses concurrent compiles. `store_compiled`
-acquires the same mutex via `TryLock` before its validated-tier check,
-so a concurrent compile or promote cannot race the check-then-act window
-(PR 145 review amendment).
+acquires the same mutex via `TryLock` before its validated-tier check, so
+concurrent compiles, curations, index runs, and other `store_compiled`
+calls cannot race the check-then-act window. `promote` deliberately
+transacts without the index mutex — its writes are conditional
+`UPDATE ... WHERE tier = 'draft'` statements — so a promote may land
+between `store_compiled`'s validated-tier read and its write. The store
+layer bounds that residual window: `UpdatePage`'s
+`CASE WHEN tier = 'validated'` guard never unsets a promoted tier, so
+the worst case is a freshly compiled article body landing under a page
+whose validated tier is preserved (PR 145 review amendment).
 
 Rejected: keeping a private compile mutex and adding a second shared
 lock. Two locks invite lock-order bugs and still allow the index
@@ -238,8 +245,23 @@ supported-provider list includes the new provider.
 
 ### D10: Backward compatibility
 
-The `Synthesizer` interface is unchanged. Existing `ReadSynthesisConfig`
-precedence is unchanged except for the new optional fields. Existing
+The `Synthesizer` interface is unchanged. The synthesis side deliberately
+supersedes several 017 gateway behaviors: `synthesis.api_key` is honored
+(017 FR-006's environment-only rule remains embedding-only), the synthesis
+credential chain stops at `DEWEY_SYNTHESIS_API_KEY` then `synthesis.api_key`
+(017 FR-007's `DEWEY_API_KEY`/`OPENROUTER_API_KEY` steps remain
+embedding-only), a missing synthesis key is a configuration error rather
+than an allowed keyless gateway (017 FR-008), synthesis availability is
+configuration completeness rather than a `/models` probe (017 FR-014),
+synthesis endpoints resolve config-first with a `DEWEY_SYNTHESIS_ENDPOINT`
+fallback only when `synthesis.endpoint` is empty (017 FR-022), and there
+are no synthesis-side startup credential warnings (017 FR-024). The delta
+spec's Backward Compatibility requirement records the supersession as
+scenarios, and the 017-era `SynthesisGateway*` CLI tests are deliberately
+superseded by the restored embedding-side doctor tests plus this change's
+synthesis provider tests. Apart from those supersessions, existing
+`ReadSynthesisConfig` precedence is unchanged except for the new optional
+fields. Existing
 configurations without `api_key`/`timeout`/`max_tokens` parse exactly
 as before. `promote` with `page` returns the existing result shape.
 Compile/curate prompt-mode payloads are untouched. Tool counts and the

@@ -7,49 +7,37 @@ import (
 )
 
 // Capability identifies which Dewey subsystem a Client serves. It scopes
-// the API-key variable and the endpoint configuration field, so embedding
-// and synthesis credentials never cross over (FR-007).
+// the API-key variable and the endpoint configuration field, keeping the
+// embedding credential chain explicit (FR-007).
 type Capability string
 
 const (
 	// CapabilityEmbedding serves dewey index and semantic search.
 	CapabilityEmbedding Capability = "embedding"
-	// CapabilitySynthesis serves dewey compile and curation.
-	CapabilitySynthesis Capability = "synthesis"
 )
 
 // String returns the capability name used in error text.
 func (c Capability) String() string { return string(c) }
 
-// valid reports whether the capability is one of the two supported
-// values.
+// valid reports whether the capability is the supported value.
 func (c Capability) valid() bool {
-	return c == CapabilityEmbedding || c == CapabilitySynthesis
+	return c == CapabilityEmbedding
 }
 
 // endpointField returns the configuration key named by factory and
 // validation errors (FR-009).
 func (c Capability) endpointField() string {
-	if c == CapabilitySynthesis {
-		return "synthesis.endpoint"
-	}
 	return "embedding.endpoint"
 }
 
 // scopedKeyVar returns the capability-scoped API-key environment variable
 // name.
 func (c Capability) scopedKeyVar() string {
-	if c == CapabilitySynthesis {
-		return "DEWEY_SYNTHESIS_API_KEY"
-	}
 	return "DEWEY_EMBEDDING_API_KEY"
 }
 
 // defaultTimeout returns the FR-025 client timeout for the capability.
 func (c Capability) defaultTimeout() time.Duration {
-	if c == CapabilitySynthesis {
-		return synthesisTimeout
-	}
 	return embeddingTimeout
 }
 

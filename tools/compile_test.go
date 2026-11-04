@@ -1912,3 +1912,54 @@ func TestCompile_SynthesizeClustersLookupFailureFailsTopic(t *testing.T) {
 		t.Errorf("failures = %v, want a lookup failure for the topic", failures)
 	}
 }
+
+// reasonSynthesizer decorates llm.NoopSynthesizer with the optional
+// llm.UnavailableReasoner capability.
+type reasonSynthesizer struct {
+	llm.NoopSynthesizer
+	reason string
+}
+
+func (r *reasonSynthesizer) UnavailableReason() string { return r.reason }
+
+// TestCompile_SynthesisUnavailableReasonReported verifies that prompt mode
+// reports the gateway's unavailable reason while keeping every prompt
+// (FR-015).
+func TestCompile_SynthesisUnavailableReasonReported(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	reason := "openai-compatible synthesis endpoint is unreachable; check the endpoint and that the gateway is running"
+	synth := &reasonSynthesizer{
+		NoopSynthesizer: llm.NoopSynthesizer{Avail: false},
+		reason:          reason,
+	}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
+	storeLearningDirect(t, s, "auth", 2, "decision", "Switch to Option B", baseTime.Add(24*time.Hour))
+
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Compile returned error: %s", resultText(result))
+	}
+
+	parsed := parseCompileResult(t, resultText(result))
+	if parsed["status"] != "prompts_ready" {
+		t.Errorf("status = %v, want prompts_ready", parsed["status"])
+	}
+	if parsed["unavailable_reason"] != reason {
+		t.Errorf("unavailable_reason = %v, want %q", parsed["unavailable_reason"], reason)
+	}
+	clusters, ok := parsed["clusters"].([]any)
+	if !ok || len(clusters) == 0 {
+		t.Fatalf("prompts must be preserved, got clusters=%v", parsed["clusters"])
+	}
+	message, _ := parsed["message"].(string)
+	if !strings.Contains(message, reason) {
+		t.Errorf("message should carry the reason, got %q", message)
+	}
+}

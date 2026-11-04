@@ -92,8 +92,8 @@ func TestAvailable_403WithKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	t.Setenv("DEWEY_SYNTHESIS_API_KEY", "sk-bad")
-	client, err := NewClient(Config{Capability: CapabilitySynthesis, Endpoint: server.URL + "/v1"})
+	t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-bad")
+	client, err := NewClient(Config{Capability: CapabilityEmbedding, Endpoint: server.URL + "/v1"})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

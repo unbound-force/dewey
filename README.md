@@ -133,7 +133,7 @@ Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `sear
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `promote` | Both | Promote draft content to validated after human review; accepts exact names or shorthand (`name` tries `compiled/name`, then `learning/name`) |
+| `promote` | Both | Promote draft content to validated after human review; names resolve exact, then case-insensitive, then bare-tag shorthand (`name` tries `compiled/name`, `learning/name`, and `knowledge/*` pages), then source doc IDs; ambiguous matches are refused; batch promotion is all-or-nothing |
 
 ### Indexing
 
@@ -319,7 +319,8 @@ Ignore runtime state, not knowledge. The machine-local runtime state — `.uf/de
 | `DEWEY_EMBEDDING_MODEL` | `granite-embedding:30m` | Embedding model name |
 | `DEWEY_EMBEDDING_ENDPOINT` | `http://localhost:11434` | Embedding API endpoint (required for `openai-compatible`, no Ollama fallback) |
 | `DEWEY_CHUNK_MAX_CHARS` | `12288` | Max chunk characters for embedding (model-dependent) |
-| `DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY` / `DEWEY_API_KEY` | *(none)* | OpenAI-compatible gateway credentials (environment-only) |
+| `DEWEY_EMBEDDING_API_KEY` / `DEWEY_API_KEY` | *(none)* | OpenAI-compatible embedding gateway credentials (environment-only) |
+| `DEWEY_SYNTHESIS_API_KEY` | *(none)* | OpenAI-compatible synthesis key (wins over `synthesis.api_key`) |
 | `DEWEY_AUTHOR` | — | Override author identity for `store_learning` (useful in CI or shared environments) |
 | `GITHUB_TOKEN` / `GH_TOKEN` | — | GitHub API token for content sources |
 
@@ -375,7 +376,7 @@ dewey status [--vault PATH] [--json]
 
 ### dewey doctor
 
-Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), Ollama availability, embedding model status, synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, connectivity, model and credential presence), MCP server process, and opencode.json configuration.
+Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), Ollama availability, embedding model status, synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, model and credential presence — only Ollama availability is probed; Vertex and OpenAI-compatible gateways are checked for configuration completeness), MCP server process, and opencode.json configuration.
 
 ```bash
 dewey doctor [--vault PATH]
@@ -658,19 +659,19 @@ Set `project` and `region` in your config to match your GCP setup. Use a regiona
 - `model` is sent verbatim — slashes and hyphens are not parsed or rewritten.
 - `endpoint` has no Ollama fallback: `OLLAMA_HOST` and the localhost default do not apply, so a missing gateway endpoint is a configuration error naming `embedding.endpoint` or `synthesis.endpoint`.
 - Endpoint precedence stays per code path: embedding is env-first (`DEWEY_EMBEDDING_ENDPOINT` over `config.yaml`); synthesis is config-first (`config.yaml` over `DEWEY_SYNTHESIS_ENDPOINT`).
-- Availability is a cached (30-second) authenticated `GET /models` probe with a one-second timeout. While it reports unavailable, semantic tools return the provider's reason and keyword/graph tools keep working.
+- Availability is a cached (30-second) authenticated `GET /models` probe with a one-second timeout (embedding; the synthesis provider reports availability from configuration completeness alone). While it reports unavailable, semantic tools return the provider's reason and keyword/graph tools keep working.
 - HTTP 429 responses retry with `Retry-After` or exponential backoff with jitter, matching Vertex (base 1 second, cap 60 seconds, one initial attempt plus at most five retries).
 
-Embedding gateway credentials are environment-only — never put them in `config.yaml`:
+Gateway credentials resolve from environment variables — embedding keys are environment-only, while synthesis also honors `synthesis.api_key`:
 
 | Variable | Applies to | Position |
 |----------|------------|----------|
 | `DEWEY_EMBEDDING_API_KEY` | embedding | first |
 | `DEWEY_SYNTHESIS_API_KEY` | synthesis | first |
-| `DEWEY_API_KEY` | both | second |
-| `OPENROUTER_API_KEY` | both | third, only when the endpoint host is exactly `openrouter.ai` |
+| `DEWEY_API_KEY` | embedding | second |
+| `OPENROUTER_API_KEY` | embedding | third, only when the endpoint host is exactly `openrouter.ai` |
 
-An empty variable counts as unset, and no key is required for an unauthenticated self-hosted gateway (the `Authorization` header is omitted). An `api_key` field under `embedding:` in `config.yaml` is ignored, and startup plus `dewey doctor` warn about it. For synthesis, `DEWEY_SYNTHESIS_API_KEY` wins over `synthesis.api_key` (see the server-side synthesis section below). Both commands also warn when a resolved key would transit `http://` to a non-loopback host.
+An empty variable counts as unset. For embedding, no key is required for an unauthenticated self-hosted gateway (the `Authorization` header is omitted) and an `api_key` field under `embedding:` in `config.yaml` is ignored — startup and `dewey doctor` warn about the ignored field. For synthesis, `DEWEY_SYNTHESIS_API_KEY` wins over `synthesis.api_key` (see the server-side synthesis section below). Startup and `dewey doctor` warn when a resolved embedding key would transit `http://` to a non-loopback host, and `dewey doctor` performs the same check for synthesis keys.
 
 ```bash
 export DEWEY_SYNTHESIS_API_KEY="<your-key>"

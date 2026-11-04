@@ -360,6 +360,99 @@ func TestReadSynthesisConfig_ConfigYAMLWinsOverSynthesisEndpoint(t *testing.T) {
 	}
 }
 
+func TestReadSynthesisConfig_GatewayConfigFirst(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+  endpoint: http://config-host:8080/v1
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
+	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Provider != "openai-compatible" {
+		t.Fatalf("Provider = %q", cfg.Provider)
+	}
+	if cfg.Endpoint != "http://config-host:8080/v1" {
+		t.Fatalf("config.yaml must win for synthesis (config-first): %q", cfg.Endpoint)
+	}
+}
+
+func TestReadSynthesisConfig_GatewayEnvEndpointFallback(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Endpoint != "http://env-host:9090/v1" {
+		t.Fatalf("gateway endpoint should fall back to DEWEY_SYNTHESIS_ENDPOINT: %q", cfg.Endpoint)
+	}
+}
+
+func TestReadSynthesisConfig_GatewayDoesNotUseOllamaFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	configYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "")
+	t.Setenv("OLLAMA_HOST", "http://ollama-host:11434")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	cfg := ReadSynthesisConfig(dir)
+	if cfg.Endpoint != "" {
+		t.Fatalf("gateway endpoint must not fall back to OLLAMA_HOST or localhost: %q", cfg.Endpoint)
+	}
+}
+
+// TestReadSynthesisConfig_GatewayGlobalConfigEnvFallback exercises the
+// global-config branch of resolveGatewaySynthesisConfig: a gateway
+// provider declared only in the global config.yaml still gets the
+// DEWEY_SYNTHESIS_ENDPOINT fallback (code review L-15).
+func TestReadSynthesisConfig_GatewayGlobalConfigEnvFallback(t *testing.T) {
+	vaultDir := t.TempDir()
+
+	globalDir := filepath.Join(t.TempDir(), "dewey")
+	if err := os.MkdirAll(globalDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	globalYAML := `synthesis:
+  provider: openai-compatible
+  model: gateway-model
+`
+	if err := os.WriteFile(filepath.Join(globalDir, "config.yaml"), []byte(globalYAML), 0644); err != nil {
+		t.Fatalf("write global config: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", filepath.Dir(globalDir))
+	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "http://env-host:9090/v1")
+
+	cfg := ReadSynthesisConfig(vaultDir)
+	if cfg.Provider != "openai-compatible" {
+		t.Fatalf("Provider = %q, want openai-compatible (from global)", cfg.Provider)
+	}
+	if cfg.Endpoint != "http://env-host:9090/v1" {
+		t.Fatalf("global gateway endpoint should fall back to DEWEY_SYNTHESIS_ENDPOINT: %q", cfg.Endpoint)
+	}
+}
+
 func TestNewSynthesizerFromConfig_OpenAICompatible(t *testing.T) {
 	t.Setenv("DEWEY_SYNTHESIS_API_KEY", "")
 	cfg := ProviderConfig{

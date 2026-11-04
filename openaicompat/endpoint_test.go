@@ -55,11 +55,9 @@ func TestOperationURL_SingleOperationPath(t *testing.T) {
 		want      string
 	}{
 		{name: "embeddings", base: "https://host/v1", operation: PathEmbeddings, want: "https://host/v1/embeddings"},
-		{name: "chat completions", base: "https://host/v1", operation: PathChatCompletions, want: "https://host/v1/chat/completions"},
 		{name: "models", base: "https://host/v1", operation: PathModels, want: "https://host/v1/models"},
 		{name: "no double append embeddings", base: "https://host/v1/embeddings", operation: PathEmbeddings, want: "https://host/v1/embeddings"},
-		{name: "no double append chat", base: "https://host/v1/chat/completions", operation: PathChatCompletions, want: "https://host/v1/chat/completions"},
-		{name: "operation switch", base: "https://host/v1/embeddings", operation: PathChatCompletions, want: "https://host/v1/chat/completions"},
+		{name: "operation switch", base: "https://host/v1/embeddings", operation: PathModels, want: "https://host/v1/models"},
 		{name: "trailing slash", base: "https://host/v1/", operation: PathEmbeddings, want: "https://host/v1/embeddings"},
 	}
 

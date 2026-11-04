@@ -862,3 +862,57 @@ func TestPromote_NonDraftRejectionKeepsTier(t *testing.T) {
 		})
 	}
 }
+
+// TestPromote_BatchWriteFailureRollsBackTransaction verifies that when the
+// batch promotion transaction fails mid-write, no page tiers are changed and
+// the result reports the rollback (council round-3 G10).
+func TestPromote_BatchWriteFailureRollsBackTransaction(t *testing.T) {
+	s := newTestStore(t)
+	insertPromotePage(t, s, "compiled/good", "compiled", "good", "draft")
+	insertPromotePage(t, s, "compiled/blocked", "compiled", "blocked", "draft")
+
+	// Abort the transaction once the blocked page's row updates — after
+	// the good page's row has already been updated inside the same tx.
+	if _, err := s.DB().Exec(`CREATE TRIGGER block_promote BEFORE UPDATE ON pages
+WHEN NEW.name = 'compiled/blocked'
+BEGIN
+    SELECT RAISE(ABORT, 'injected failure');
+END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	result, _, err := NewPromote(s).Promote(context.Background(), nil, types.PromoteInput{
+		Pages: []string{"compiled/good", "compiled/blocked"},
+	})
+	if err != nil {
+		t.Fatalf("Promote returned error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected error result for failed batch write, got:\n%s", resultText(result))
+	}
+
+	text := resultText(result)
+	parsed := parsePromoteResult(t, text)
+	if parsed["status"] != "failed" {
+		t.Errorf("result status = %v, want failed", parsed["status"])
+	}
+	if got, ok := parsed["total_failed"].(float64); !ok || got != 2 {
+		t.Errorf("result total_failed = %v, want 2", parsed["total_failed"])
+	}
+	if !strings.Contains(text, "transaction rolled back") || !strings.Contains(text, "no tiers were changed") {
+		t.Errorf("result should report the rolled-back transaction:\n%s", text)
+	}
+
+	// The good page's earlier in-transaction update must have been rolled
+	// back along with the failed one.
+	page, err := s.GetPage("compiled/good")
+	if err != nil {
+		t.Fatalf("GetPage after rollback: %v", err)
+	}
+	if page == nil {
+		t.Fatalf("good page missing after rollback")
+	}
+	if page.Tier != "draft" {
+		t.Errorf("good page tier = %q after rollback, want draft", page.Tier)
+	}
+}

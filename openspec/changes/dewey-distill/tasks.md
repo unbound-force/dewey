@@ -183,7 +183,9 @@
   `gh issue create --repo unbound-force/website --label docs` titled
   `docs: sync dewey distill documentation`, describing the new
   provider, `/dewey-distill`, promote batch behavior, and affected
-  `content/docs/` pages
+  `content/docs/` pages. Round-3 council follow-up: blog opportunity
+  recorded as unbound-force/website#377, tutorial opportunity as #376,
+  and a trust-boundary addendum comment posted on #371
 - [x] 7.4 Verify secret hygiene: grep the diff and test output for the
   key pattern used in tests; confirm no config example contains a real
   key; confirm gitleaks-relevant strings are absent

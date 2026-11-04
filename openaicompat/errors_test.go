@@ -134,7 +134,7 @@ func TestFormatError_Shape(t *testing.T) {
 }
 
 func TestRateLimitError_Shape(t *testing.T) {
-	err := RateLimitError(CapabilitySynthesis, []byte("slow down"), "sk-secret")
+	err := RateLimitError(CapabilityEmbedding, []byte("slow down"), "sk-secret")
 	msg := err.Error()
 	if !strings.Contains(msg, "rate limited (HTTP 429) after 5 retries") {
 		t.Fatalf("unexpected rate-limit error: %q", msg)
@@ -145,8 +145,8 @@ func TestRateLimitError_Shape(t *testing.T) {
 }
 
 func TestParseError_NamesProvider(t *testing.T) {
-	err := ParseError(CapabilitySynthesis, errors.New("unexpected end of JSON input"))
-	if !strings.Contains(err.Error(), "openai-compatible synthesis malformed response") {
+	err := ParseError(CapabilityEmbedding, errors.New("unexpected end of JSON input"))
+	if !strings.Contains(err.Error(), "openai-compatible embedding malformed response") {
 		t.Fatalf("parse error must name the provider: %q", err)
 	}
 }

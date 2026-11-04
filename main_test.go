@@ -2041,3 +2041,154 @@ OAuth tokens should be rotated every 24 hours.
 		t.Errorf("tier = %q, want draft (file must not self-promote)", page.Tier)
 	}
 }
+
+// --- OpenAI-compatible startup tests (spec 017, T036) ---
+
+// TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode verifies
+// that an unreachable openai-compatible endpoint degrades to keyword mode,
+// logs the provider reason, never suggests ollama pull, and emits both
+// FR-024 credential warnings without leaking the key.
+func TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+
+	configYAML := `embedding:
+  provider: openai-compatible
+  model: stub-model
+  endpoint: http://192.0.2.1:1/v1
+  api_key: super-secret-value
+`
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	t.Setenv("DEWEY_EMBEDDING_API_KEY", "sk-startup-secret")
+	t.Setenv("DEWEY_API_KEY", "")
+
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	be, _, cleanup, _, err := initObsidianBackend(tmpDir, "daily notes", false)
+	if err != nil {
+		t.Fatalf("initObsidianBackend should degrade, got error: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if be == nil {
+		t.Fatal("expected non-nil backend in keyword mode")
+	}
+
+	logOutput := logBuf.String()
+	checks := []struct {
+		substr string
+		desc   string
+	}{
+		{"embedding model not available", "degradation warning"},
+		{"openai-compatible", "provider name"},
+		{"unreachable", "provider reason"},
+		{"would transit http://", "cleartext credential warning"},
+		{"api_key in config.yaml is ignored", "ignored api_key warning"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(logOutput, c.substr) {
+			t.Errorf("log should contain %s %q, got: %q", c.desc, c.substr, logOutput)
+		}
+	}
+	if strings.Contains(logOutput, "ollama pull") {
+		t.Errorf("gateway startup must not suggest ollama pull, got: %q", logOutput)
+	}
+	for _, secret := range []string{"sk-startup-secret", "super-secret-value"} {
+		if strings.Contains(logOutput, secret) {
+			t.Errorf("log must not contain credential material %q, got: %q", secret, logOutput)
+		}
+	}
+}
+
+// TestReIngestLearnings_ExistingPageNotOverwritten verifies that a learning
+// whose page name already exists in the store is skipped entirely: human
+// edits to the page's metadata and content win over the file (delta-spec
+// scenario "Human edits take precedence for content and metadata"; council
+// round-3 G10).
+func TestReIngestLearnings_ExistingPageNotOverwritten(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New failed: %v", err)
+	}
+	defer s.Close()
+
+	// A human-edited store page already owns the learning's page name.
+	pageName := "learning/authentication-20260421T103000-alice"
+	preexisting := &store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "learning",
+		SourceDocID:  "learning-authentication-20260421T103000-alice",
+		Properties:   `{"note": "human-edited"}`,
+		Tier:         "validated",
+		Category:     "decision",
+		CreatedAt:    1700000000000,
+		UpdatedAt:    1700000000000,
+	}
+	if err := s.InsertPage(preexisting); err != nil {
+		t.Fatalf("InsertPage failed: %v", err)
+	}
+
+	content := `---
+tag: authentication
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: authentication-20260421T103000-alice
+tier: draft
+---
+
+machine-written body that must not overwrite the human edit
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "authentication-20260421T103000-alice.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIngestLearnings failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("reIngestLearnings count = %d, want 0 for a pre-existing page", count)
+	}
+
+	page, err := s.GetPage(pageName)
+	if err != nil {
+		t.Fatalf("GetPage failed: %v", err)
+	}
+	if page == nil {
+		t.Fatalf("pre-existing page vanished after re-ingestion")
+	}
+	if page.Tier != "validated" {
+		t.Errorf("stored tier = %q, want validated (human edit preserved)", page.Tier)
+	}
+	if !strings.Contains(page.Properties, "human-edited") {
+		t.Errorf("stored properties = %q, want the human-edited properties preserved", page.Properties)
+	}
+	blocks, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage failed: %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Errorf("re-ingestion inserted %d blocks for a pre-existing page, want 0", len(blocks))
+	}
+}

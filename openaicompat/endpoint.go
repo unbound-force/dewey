@@ -15,15 +15,13 @@ import (
 const (
 	// PathEmbeddings is the embeddings operation path.
 	PathEmbeddings = "/embeddings"
-	// PathChatCompletions is the chat completions operation path.
-	PathChatCompletions = "/chat/completions"
 	// PathModels is the model-list operation path used by the probe.
 	PathModels = "/models"
 )
 
 // operationPaths lists every operation path in the order used for
 // suffix detection.
-var operationPaths = []string{PathEmbeddings, PathChatCompletions, PathModels}
+var operationPaths = []string{PathEmbeddings, PathModels}
 
 // NormalizeBaseURL validates a configured gateway endpoint and returns a
 // normalized API base URL: a missing scheme becomes "http://", trailing

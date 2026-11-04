@@ -339,8 +339,8 @@ func (o *OpenAICompatibleSynthesizer) ModelID() string {
 
 // UnavailableReason reports why the synthesizer is unavailable, or "" when
 // it is fully configured. It mirrors the credential-free diagnostics of
-// the shared openaicompat transport and the embed provider's reasoner,
-// satisfying the UnavailableReasoner capability interface.
+// the embed provider's reasoner, satisfying the UnavailableReasoner
+// capability interface.
 func (o *OpenAICompatibleSynthesizer) UnavailableReason() string {
 	if o.endpoint == "" || o.model == "" || o.apiKey == "" {
 		return "synthesizer is not fully configured"

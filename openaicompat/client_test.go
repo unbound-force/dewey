@@ -120,8 +120,8 @@ func TestClient_MalformedJSONIsProviderError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestClient(t, CapabilitySynthesis, server.URL+"/v1")
-	body, err := client.PostJSON(context.Background(), PathChatCompletions, map[string]any{})
+	client := newTestClient(t, CapabilityEmbedding, server.URL+"/v1")
+	body, err := client.PostJSON(context.Background(), PathEmbeddings, map[string]any{})
 	if err != nil {
 		t.Fatalf("PostJSON should return raw bytes: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestClient_MalformedJSONIsProviderError(t *testing.T) {
 	if parseErr == nil {
 		t.Fatal("expected parse failure")
 	}
-	if wrapped := ParseError(CapabilitySynthesis, parseErr); !strings.Contains(wrapped.Error(), "openai-compatible synthesis malformed response") {
+	if wrapped := ParseError(CapabilityEmbedding, parseErr); !strings.Contains(wrapped.Error(), "openai-compatible embedding malformed response") {
 		t.Fatalf("unexpected parse error: %v", wrapped)
 	}
 }
@@ -248,14 +248,6 @@ func TestClient_CapabilityTimeouts(t *testing.T) {
 	}
 	if embedding.httpClient.Timeout != 30*time.Second {
 		t.Fatalf("embedding timeout: got %v, want 30s", embedding.httpClient.Timeout)
-	}
-
-	synthesis, err := NewClient(Config{Capability: CapabilitySynthesis, Endpoint: "https://gateway.example/v1"})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	if synthesis.httpClient.Timeout != 300*time.Second {
-		t.Fatalf("synthesis timeout: got %v, want 300s", synthesis.httpClient.Timeout)
 	}
 
 	// Pin the probe timeout (FR-014/SC-004): it bounds how long the

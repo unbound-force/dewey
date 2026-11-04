@@ -199,7 +199,7 @@
   `go.mod` change, no CGO, only an additive index-only schema
   migration (v3 NOCASE indexes), and the provider is
   tested without network or real credentials
-- [ ] 7.7 Run `/uf.review-council` and resolve all REQUEST CHANGES
+- [x] 7.7 Run `/uf.review-council` and resolve all REQUEST CHANGES
   findings until every reviewer returns APPROVE, immediately before PR
   submission
 - [x] 7.8 Document learning re-ingestion tier semantics (PR 145):

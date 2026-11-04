@@ -1049,13 +1049,13 @@ func TestEndToEnd_CurateKnowledgeStore(t *testing.T) {
 	if !strings.Contains(authContent, "tag: authentication") {
 		t.Error("authentication-1.md missing 'tag: authentication' in frontmatter")
 	}
-	if !strings.Contains(authContent, "category: decision") {
+	if !strings.Contains(authContent, "category: \"decision\"") {
 		t.Error("authentication-1.md missing 'category: decision' in frontmatter")
 	}
-	if !strings.Contains(authContent, "confidence: high") {
+	if !strings.Contains(authContent, "confidence: \"high\"") {
 		t.Error("authentication-1.md missing 'confidence: high' in frontmatter")
 	}
-	if !strings.Contains(authContent, "tier: curated") {
+	if !strings.Contains(authContent, "tier: \"curated\"") {
 		t.Error("authentication-1.md missing 'tier: curated' in frontmatter")
 	}
 	if !strings.Contains(authContent, "OAuth2") {
@@ -1072,7 +1072,7 @@ func TestEndToEnd_CurateKnowledgeStore(t *testing.T) {
 	if !strings.Contains(dbPerfContent, "tag: database-performance") {
 		t.Error("database-performance-2.md missing 'tag: database-performance' in frontmatter")
 	}
-	if !strings.Contains(dbPerfContent, "category: pattern") {
+	if !strings.Contains(dbPerfContent, "category: \"pattern\"") {
 		t.Error("database-performance-2.md missing 'category: pattern' in frontmatter")
 	}
 	if !strings.Contains(dbPerfContent, "implied_assumption") {

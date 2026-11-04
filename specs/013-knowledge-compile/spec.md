@@ -118,7 +118,7 @@ Over time, learnings on the same topic evolve. Session 1: "Use Option A for auth
 
 ### Edge Cases
 
-- What happens when no learnings exist? Without a synthesizer, `dewey compile` produces an empty compiled directory with just an `_index.md` noting "No learnings to compile." No error. With a synthesizer available (dewey-distill), draft compiled pages are cleared, validated articles are retained, and the result lists surviving tags in `retained_validated` — validated knowledge is never silently destroyed by an empty collection (PR 145 amendment).
+- What happens when no learnings exist? Without a synthesizer, `dewey compile` returns prompt mode (`prompts_ready`) and writes nothing — existing compiled artifacts are left untouched. With a synthesizer available (dewey-distill), draft compiled pages are cleared, validated articles are retained, the result lists surviving tags in `retained_validated`, and an `_index.md` notes "No learnings to compile" — validated knowledge is never silently destroyed by an empty collection (PR 145 amendment).
 - What happens when the LLM is unavailable during compilation? The compile step fails with a clear error. Existing compiled articles are not affected. The failure is logged. Session-end auto-compile treats this as non-blocking.
 - What happens when two learnings on the same topic have the same timestamp? They are treated as additive (both facts included). Compilation does not attempt to determine which came "first" within the same timestamp.
 - What happens when `dewey lint --fix` generates embeddings for a page that has since been deleted from the source? The embedding is generated for the page as it exists in the store. If the page is later removed by a reindex, the embedding is cleaned up normally.

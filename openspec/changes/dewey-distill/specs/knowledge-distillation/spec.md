@@ -356,7 +356,9 @@ the supported providers including `openai-compatible`.
 
 The change MUST NOT alter the contract or output of the 37 inherited
 graphthulhu MCP tools, MUST NOT add module dependencies or CGO, and MUST
-NOT change the database schema. Existing CLI `compile`/`curate` success
+NOT change the database schema except for the additive, index-only
+v2→v3 migration that creates two NOCASE indexes backing promote name
+resolution (no tables or columns altered). Existing CLI `compile`/`curate` success
 paths and payloads MUST remain compatible; the shared handlers gain the
 same non-destructive prompt mode and partial/failed reporting described
 above.
@@ -376,3 +378,39 @@ above.
 - **THEN** it MUST return the same provider, model, and endpoint as
   before
 - **AND** the provider defaults MUST fill the absent optional values
+
+### Requirement: Learning Re-ingestion Tier Neutrality
+
+Learning markdown files are untrusted backups. Re-ingestion MUST NOT
+process tier claims: files declaring `tier: validated` or `tier:
+authored` in frontmatter MUST be ingested as `draft`, with a warning
+naming the ignored claim. Tier transitions route exclusively through
+the `promote` gate. Re-ingestion only fills pages absent from the
+store, so an existing promoted page is never demoted.
+
+#### Scenario: Claimed tier is ignored
+
+- **GIVEN** a learning markdown file whose frontmatter declares
+  `tier: validated` and whose `learning/{identity}` page is absent
+  from the store
+- **WHEN** re-ingestion runs (for example, after `graph.db` is
+  recreated)
+- **THEN** the page MUST be created with tier `draft`
+- **AND** a warning MUST be logged that the claimed tier was ignored
+
+#### Scenario: Human edits take precedence for content and metadata
+
+- **GIVEN** a human edits a learning markdown file's content or
+  metadata
+- **WHEN** the file is re-ingested while its store page is absent
+- **THEN** the edited content and metadata MUST take precedence
+- **AND** the tier MUST still land at `draft` — tier claims never take
+  effect via re-ingestion
+
+#### Scenario: Existing store pages are not demoted
+
+- **GIVEN** a promoted learning page (`learning/{identity}`, tier
+  `validated`) exists in the store
+- **WHEN** re-ingestion runs
+- **THEN** the file MUST be skipped and the stored tier MUST remain
+  unchanged

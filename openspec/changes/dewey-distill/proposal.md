@@ -117,6 +117,9 @@ knowledge-compilation lifecycle is modified:
 - Prompt-mode byte-compatibility for `compile` is scoped to non-empty
   learning collections; an empty collection with synthesis available
   is handled explicitly (drafts cleared, validated retained).
+- Learning files are untrusted backups: re-ingestion ignores frontmatter
+  tier claims (always landing at `draft`), and tier transitions route
+  exclusively through the `promote` gate.
 
 ### Removed Capabilities
 

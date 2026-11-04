@@ -1925,9 +1925,11 @@ func TestBackgroundCuration_ContinuesAfterError(t *testing.T) {
 	}
 }
 
-// TestBackgroundCuration_WithAvailableSynthesizer exercises the ready path:
-// the shared synthesizer is available, a store is configured, and the loop
-// launches its per-store goroutine before the context is cancelled.
+// TestBackgroundCuration_WithAvailableSynthesizer is a smoke test for the
+// ready-path branch: the shared synthesizer is available, a store is
+// configured, and the loop starts and shuts down cleanly when the context is
+// cancelled. The fixture defines no source documents, so no curation output
+// is produced or verified.
 func TestBackgroundCuration_WithAvailableSynthesizer(t *testing.T) {
 	s, err := store.New(":memory:")
 	if err != nil {

@@ -86,13 +86,14 @@ Store unavailable:
 ## New Store Method
 
 ```go
-// UpdatePageTier updates a page's tier column. Returns an error if the
-// page doesn't exist or the update fails.
-func (s *Store) UpdatePageTier(name, tier string) error
+// PromotePagesTiers atomically transitions every named page from draft to
+// validated in a single transaction. If any page is missing or no longer
+// a draft, the transaction rolls back and no page is changed.
+func (s *Store) PromotePagesTiers(names []string) error
 ```
 
 ```sql
-UPDATE pages SET tier = ?, updated_at = ? WHERE name = ?
+UPDATE pages SET tier = 'validated', updated_at = ? WHERE name = ? AND tier = 'draft'
 ```
 
 ## CLI Command: `dewey promote`

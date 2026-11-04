@@ -147,7 +147,10 @@ in the same position as `NewCurate`, and `Compile` uses
 reading learnings while a background index rewrites pages, without
 serializing compile against unrelated requests. The error text becomes
 the index-pipeline message ("compilation cannot run while indexing is
-in progress") and still refuses concurrent compiles.
+in progress") and still refuses concurrent compiles. `store_compiled`
+acquires the same mutex via `TryLock` before its validated-tier check,
+so a concurrent compile or promote cannot race the check-then-act window
+(PR 145 review amendment).
 
 Rejected: keeping a private compile mutex and adding a second shared
 lock. Two locks invite lock-order bugs and still allow the index

@@ -196,6 +196,6 @@ func newCompileCmd() *cobra.Command
 3. The `_index.md` file MUST list all compiled articles with links
 4. Clustering MUST be deterministic given the same input learnings
 5. Category-aware instructions MUST be included in synthesis prompts
-6. When no learnings exist, produce an empty `_index.md` with "No learnings to compile" (no error); when a synthesizer is available, clear draft compiled pages but retain validated ones, reporting survivors in `retained_validated`
+6. When no learnings exist and no synthesizer is available, return prompt mode (`prompts_ready`) without writing anything; when a synthesizer is available, clear draft compiled pages, retain validated ones, report survivors in `retained_validated`, and produce an empty `_index.md` noting "No learnings to compile" (no error)
 7. Compilation failure MUST NOT corrupt existing compiled articles (atomic write)
 8. Full rebuild MUST produce the same output as equivalent incremental compiles (FR-028)

@@ -180,7 +180,7 @@
 - [x] 7.3 [P] Create the website documentation sync issue with a
   pre-filing duplicate search
   (`gh issue list --repo unbound-force/website --state open --search "dewey distill"`):
-  `gh issue create --repo unbound-force/website` titled
+  `gh issue create --repo unbound-force/website --label docs` titled
   `docs: sync dewey distill documentation`, describing the new
   provider, `/dewey-distill`, promote batch behavior, and affected
   `content/docs/` pages
@@ -197,6 +197,12 @@
   `go.mod` change, no CGO, only an additive index-only schema
   migration (v3 NOCASE indexes), and the provider is
   tested without network or real credentials
-- [x] 7.7 Run `/uf.review-council` and resolve all REQUEST CHANGES
+- [ ] 7.7 Run `/uf.review-council` and resolve all REQUEST CHANGES
   findings until every reviewer returns APPROVE, immediately before PR
   submission
+- [x] 7.8 Document learning re-ingestion tier semantics (PR 145):
+  `reIngestLearnings` in `main.go` keeps forcing `draft` for re-ingested
+  learning files — frontmatter tier claims are ignored with a warning,
+  pinned by `TestReIngestLearnings_IgnoresClaimedTier` in `main_test.go`;
+  spec 015 and the delta requirement route tier transitions exclusively
+  through the promote gate

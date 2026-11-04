@@ -329,37 +329,36 @@ func isValidKnowledgeType(t string) bool {
 	return false
 }
 
-// isValidKnowledgeFile validates the fields that become filenames or
-// single-line YAML scalars, and normalizes confidence. Invalid items are
-// skipped rather than written with attacker-controlled metadata.
-func isValidKnowledgeFile(f *KnowledgeFile) bool {
+// validateKnowledgeMetadata validates the fields that become filenames or
+// single-line YAML scalars, and normalizes confidence. It is the single
+// gate shared by LLM-extraction parsing and file writing so the two paths
+// cannot drift apart (PR 145 review amendment). Callers decide the failure
+// policy: extraction skips the item with a warning, writing returns the
+// error.
+func validateKnowledgeMetadata(f *KnowledgeFile) error {
 	if f.Tag == "" || f.Category == "" || f.Content == "" {
-		curateLogger.Warn("skipping knowledge item with missing fields", "tag", f.Tag)
-		return false
+		return fmt.Errorf("knowledge item has missing required fields (tag, category, content)")
 	}
 	if !sanitize.ValidTag(f.Tag) {
-		curateLogger.Warn("skipping knowledge item with unsafe tag", "tag", f.Tag)
-		return false
+		return fmt.Errorf("knowledge tag %q is unsafe", f.Tag)
 	}
-	if !sanitize.SafeFrontmatterScalar(f.Category) || !sanitize.SafeFrontmatterScalar(f.Confidence) || !sanitize.SafeFrontmatterScalar(f.StoreName) {
-		curateLogger.Warn("skipping knowledge item with unsafe metadata", "tag", f.Tag)
-		return false
+	if !sanitize.SafeFrontmatterScalar(f.Category) || !sanitize.SafeFrontmatterScalar(f.Confidence) ||
+		!sanitize.SafeFrontmatterScalar(f.StoreName) || !sanitize.SafeFrontmatterScalar(f.CreatedAt) ||
+		!sanitize.SafeFrontmatterScalar(f.Tier) {
+		return fmt.Errorf("knowledge metadata for %q contains control characters", f.Tag)
 	}
 	for _, src := range f.Sources {
 		if !sanitize.SafeFrontmatterScalar(src.SourceID) || !sanitize.SafeFrontmatterScalar(src.Document) || !sanitize.SafeFrontmatterScalar(src.Section) {
-			curateLogger.Warn("skipping knowledge item with unsafe source metadata", "tag", f.Tag)
-			return false
+			return fmt.Errorf("knowledge source metadata for %q contains control characters", f.Tag)
 		}
 	}
 	for _, flag := range f.QualityFlags {
 		if !isValidKnowledgeType(flag.Type) || !sanitize.SafeFrontmatterScalar(flag.Type) {
-			curateLogger.Warn("skipping knowledge item with unsafe quality flag type", "tag", f.Tag, "flag_type", flag.Type)
-			return false
+			return fmt.Errorf("knowledge quality flag type %q is invalid", flag.Type)
 		}
 		for _, s := range flag.Sources {
 			if !sanitize.SafeFrontmatterScalar(s) {
-				curateLogger.Warn("skipping knowledge item with unsafe quality flag source", "tag", f.Tag, "flag_type", flag.Type)
-				return false
+				return fmt.Errorf("knowledge quality flag sources for %q contain unsafe values", f.Tag)
 			}
 		}
 	}
@@ -368,7 +367,7 @@ func isValidKnowledgeFile(f *KnowledgeFile) bool {
 	default:
 		f.Confidence = "medium"
 	}
-	return true
+	return nil
 }
 
 // ParseExtractionResponse parses the LLM's JSON response into KnowledgeFile structs.
@@ -429,7 +428,8 @@ func ParseExtractionResponse(response string) ([]KnowledgeFile, error) {
 	// Validate required fields.
 	var valid []KnowledgeFile
 	for _, f := range files {
-		if !isValidKnowledgeFile(&f) {
+		if err := validateKnowledgeMetadata(&f); err != nil {
+			curateLogger.Warn("skipping knowledge item", "err", err, "tag", f.Tag)
 			continue
 		}
 		valid = append(valid, f)
@@ -438,17 +438,21 @@ func ParseExtractionResponse(response string) ([]KnowledgeFile, error) {
 }
 
 // renderKnowledgeFileContent renders knowledge file frontmatter and body.
+// Scalar fields are rendered with %q (double-quoted YAML scalars) so values
+// containing YAML-significant characters such as ": " or " #" cannot
+// restructure the document (PR 145 review amendment); the vault frontmatter
+// parser and lint's manual parser both tolerate quoted scalars.
 func renderKnowledgeFileContent(file KnowledgeFile) string {
 	var buf strings.Builder
 	buf.WriteString("---\n")
 	fmt.Fprintf(&buf, "tag: %s\n", file.Tag)
-	fmt.Fprintf(&buf, "category: %s\n", file.Category)
-	fmt.Fprintf(&buf, "confidence: %s\n", file.Confidence)
-	fmt.Fprintf(&buf, "created_at: %s\n", file.CreatedAt)
+	fmt.Fprintf(&buf, "category: %q\n", file.Category)
+	fmt.Fprintf(&buf, "confidence: %q\n", file.Confidence)
+	fmt.Fprintf(&buf, "created_at: %q\n", file.CreatedAt)
 	if file.StoreName != "" {
-		fmt.Fprintf(&buf, "store: %s\n", file.StoreName)
+		fmt.Fprintf(&buf, "store: %q\n", file.StoreName)
 	}
-	fmt.Fprintf(&buf, "tier: %s\n", file.Tier)
+	fmt.Fprintf(&buf, "tier: %q\n", file.Tier)
 	buf.WriteString(renderKnowledgeSources(file.Sources))
 	buf.WriteString(renderKnowledgeQualityFlags(file.QualityFlags))
 	buf.WriteString("---\n\n")
@@ -465,10 +469,10 @@ func renderKnowledgeSources(sources []SourceRef) string {
 	var buf strings.Builder
 	buf.WriteString("sources:\n")
 	for _, src := range sources {
-		fmt.Fprintf(&buf, "  - source_id: %s\n", src.SourceID)
-		fmt.Fprintf(&buf, "    document: %s\n", src.Document)
+		fmt.Fprintf(&buf, "  - source_id: %q\n", src.SourceID)
+		fmt.Fprintf(&buf, "    document: %q\n", src.Document)
 		if src.Section != "" {
-			fmt.Fprintf(&buf, "    section: %s\n", src.Section)
+			fmt.Fprintf(&buf, "    section: %q\n", src.Section)
 		}
 		if src.Excerpt != "" {
 			fmt.Fprintf(&buf, "    excerpt: %q\n", src.Excerpt)
@@ -485,12 +489,12 @@ func renderKnowledgeQualityFlags(flags []QualityFlag) string {
 	var buf strings.Builder
 	buf.WriteString("quality_flags:\n")
 	for _, flag := range flags {
-		fmt.Fprintf(&buf, "  - type: %s\n", flag.Type)
+		fmt.Fprintf(&buf, "  - type: %q\n", flag.Type)
 		fmt.Fprintf(&buf, "    detail: %q\n", flag.Detail)
 		if len(flag.Sources) > 0 {
 			buf.WriteString("    sources:\n")
 			for _, s := range flag.Sources {
-				fmt.Fprintf(&buf, "      - %s\n", s)
+				fmt.Fprintf(&buf, "      - %q\n", s)
 			}
 		}
 		if flag.Resolution != "" {
@@ -505,27 +509,8 @@ func renderKnowledgeQualityFlags(flags []QualityFlag) string {
 // with YAML frontmatter containing all metadata fields.
 // Returns the file path on success.
 func WriteKnowledgeFile(file KnowledgeFile, storePath string, seq int) (string, error) {
-	if !sanitize.ValidTag(file.Tag) {
-		return "", fmt.Errorf("invalid knowledge tag %q", file.Tag)
-	}
-	if !sanitize.SafeFrontmatterScalar(file.Category) || !sanitize.SafeFrontmatterScalar(file.Confidence) ||
-		!sanitize.SafeFrontmatterScalar(file.StoreName) || !sanitize.SafeFrontmatterScalar(file.CreatedAt) || !sanitize.SafeFrontmatterScalar(file.Tier) {
-		return "", fmt.Errorf("knowledge metadata contains control characters")
-	}
-	for _, src := range file.Sources {
-		if !sanitize.SafeFrontmatterScalar(src.SourceID) || !sanitize.SafeFrontmatterScalar(src.Document) || !sanitize.SafeFrontmatterScalar(src.Section) {
-			return "", fmt.Errorf("knowledge source metadata contains control characters")
-		}
-	}
-	for _, flag := range file.QualityFlags {
-		if !isValidKnowledgeType(flag.Type) || !sanitize.SafeFrontmatterScalar(flag.Type) {
-			return "", fmt.Errorf("knowledge quality flag type %q is invalid", flag.Type)
-		}
-		for _, s := range flag.Sources {
-			if !sanitize.SafeFrontmatterScalar(s) {
-				return "", fmt.Errorf("knowledge quality flags contain unsafe values")
-			}
-		}
+	if err := validateKnowledgeMetadata(&file); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(storePath, 0o755); err != nil {
 		return "", fmt.Errorf("create store directory: %w", err)

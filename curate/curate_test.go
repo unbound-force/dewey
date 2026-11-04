@@ -238,19 +238,19 @@ func TestWriteKnowledgeFile_CreatesFile(t *testing.T) {
 	if !strings.Contains(content, "tag: authentication") {
 		t.Error("missing tag in frontmatter")
 	}
-	if !strings.Contains(content, "category: decision") {
+	if !strings.Contains(content, "category: \"decision\"") {
 		t.Error("missing category in frontmatter")
 	}
-	if !strings.Contains(content, "confidence: high") {
+	if !strings.Contains(content, "confidence: \"high\"") {
 		t.Error("missing confidence in frontmatter")
 	}
-	if !strings.Contains(content, "tier: curated") {
+	if !strings.Contains(content, "tier: \"curated\"") {
 		t.Error("missing tier in frontmatter")
 	}
-	if !strings.Contains(content, "store: test-store") {
+	if !strings.Contains(content, "store: \"test-store\"") {
 		t.Error("missing store in frontmatter")
 	}
-	if !strings.Contains(content, "source_id: disk-meetings") {
+	if !strings.Contains(content, "source_id: \"disk-meetings\"") {
 		t.Error("missing source_id in frontmatter")
 	}
 	// Verify body content.
@@ -293,7 +293,7 @@ func TestWriteKnowledgeFile_QualityFlags(t *testing.T) {
 	}
 	content := string(data)
 
-	if !strings.Contains(content, "type: missing_rationale") {
+	if !strings.Contains(content, "type: \"missing_rationale\"") {
 		t.Error("missing quality flag type in frontmatter")
 	}
 	if !strings.Contains(content, "No explanation for choosing blue-green") {
@@ -325,7 +325,7 @@ func TestWriteKnowledgeFile_ConfidenceScoring(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read file: %v", err)
 		}
-		if !strings.Contains(string(data), "confidence: "+level) {
+		if !strings.Contains(string(data), "confidence: \""+level+"\"") {
 			t.Errorf("missing confidence %q in file", level)
 		}
 	}
@@ -359,16 +359,16 @@ func TestWriteKnowledgeFile_SourceTraceability(t *testing.T) {
 	content := string(data)
 
 	// Verify both sources are present.
-	if !strings.Contains(content, "source_id: disk-meetings") {
+	if !strings.Contains(content, "source_id: \"disk-meetings\"") {
 		t.Error("missing first source_id")
 	}
-	if !strings.Contains(content, "source_id: disk-docs") {
+	if !strings.Contains(content, "source_id: \"disk-docs\"") {
 		t.Error("missing second source_id")
 	}
-	if !strings.Contains(content, "document: sprint-planning") {
+	if !strings.Contains(content, "document: \"sprint-planning\"") {
 		t.Error("missing first document name")
 	}
-	if !strings.Contains(content, "section: Auth") {
+	if !strings.Contains(content, "section: \"Auth\"") {
 		t.Error("missing section field")
 	}
 }

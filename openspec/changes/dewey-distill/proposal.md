@@ -89,8 +89,9 @@ promotion).
   the new provider.
 - **Documentation**: README provider configuration and CLI/promote
   sections, AGENTS.md provider/trust-tool notes, and GoDoc for every
-  new exported symbol. A website sync issue is filed in
-  `unbound-force/website`.
+  new exported symbol. Website sync is tracked in `unbound-force/website`:
+  the docs sync issue #371, the tutorial opportunity #376, and the blog
+  opportunity #377.
 
 ## Capabilities
 

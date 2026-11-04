@@ -157,7 +157,14 @@ between `store_compiled`'s validated-tier read and its write. The store
 layer bounds that residual window: `UpdatePage`'s
 `CASE WHEN tier = 'validated'` guard never unsets a promoted tier, so
 the worst case is a freshly compiled article body landing under a page
-whose validated tier is preserved (PR 145 review amendment).
+whose validated tier is preserved (PR 145 review amendment). That
+window also bypasses the `store_compiled` overwrite refusal itself —
+agent content can replace a page whose validated-tier read predates the
+promote — so the refusal is best-effort, not absolute. The window is a
+millisecond-scale race requiring a concurrent promote of the same page
+from another MCP client; it is accepted as residual risk, with a
+follow-up to move the refusal into the store operation (a conditional
+`UPDATE ... WHERE tier != 'validated'` plus a rows-affected check).
 
 Rejected: keeping a private compile mutex and adding a second shared
 lock. Two locks invite lock-order bugs and still allow the index

@@ -1065,6 +1065,15 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 			continue
 		}
 
+		// The frontmatter identity is untrusted input: learning files may be
+		// git-synced, and a forged identity with path separators or ".."
+		// segments could later direct supersession writes outside the
+		// learnings directory (SC-004). Skip such files rather than ingest.
+		if !tools.ValidLearningIdentity(fm.Identity) {
+			logger.Warn("learning file has unsafe identity; skipping", "path", filePath, "identity", fm.Identity)
+			continue
+		}
+
 		// Check if this learning already exists in the store.
 		pageName := fmt.Sprintf("learning/%s", fm.Identity)
 		existing, err := s.GetPage(pageName)

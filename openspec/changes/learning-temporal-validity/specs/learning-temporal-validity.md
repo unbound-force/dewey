@@ -77,3 +77,11 @@ Learning files without these keys MUST re-ingest unchanged.
 - **GIVEN** a learning file whose frontmatter carries all five keys
 - **WHEN** the store is missing that learning at startup
 - **THEN** the re-ingested page's properties MUST contain all five
+
+## MODIFIED Requirements
+
+_None._
+
+## REMOVED Requirements
+
+_None._

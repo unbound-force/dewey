@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -34,7 +35,8 @@ var validValidities = map[string]bool{
 const (
 	// maxEvidenceEntries bounds the evidence list on one learning.
 	maxEvidenceEntries = 50
-	// maxEvidenceLen bounds one evidence locator, in bytes.
+	// maxEvidenceLen bounds one evidence locator, in characters
+	// (runes), matching the spec's "at most 512 characters".
 	maxEvidenceLen = 512
 )
 
@@ -70,8 +72,8 @@ func normalizeEvidence(raw []string) ([]string, error) {
 		if trimmed == "" {
 			return nil, fmt.Errorf("evidence entry %d is empty", i+1)
 		}
-		if len(trimmed) > maxEvidenceLen {
-			return nil, fmt.Errorf("evidence entry %d is %d characters; at most %d are allowed", i+1, len(trimmed), maxEvidenceLen)
+		if runes := utf8.RuneCountInString(trimmed); runes > maxEvidenceLen {
+			return nil, fmt.Errorf("evidence entry %d is %d characters; at most %d are allowed", i+1, runes, maxEvidenceLen)
 		}
 		if seen[trimmed] {
 			continue
@@ -86,6 +88,24 @@ func normalizeEvidence(raw []string) ([]string, error) {
 // callers may pass either an identity or a page name.
 func supersedesIdentity(ref string) string {
 	return strings.TrimPrefix(strings.TrimSpace(ref), "learning/")
+}
+
+// ValidLearningIdentity reports whether identity is safe to embed in a
+// learning path: non-empty, free of path separators, and with no leading
+// dot or ".." traversal segment, so filepath.Join cannot escape the
+// learnings directory (SC-004). Tool-created identities
+// ("{tag}-{timestamp}-{author}") always pass; identities forged through
+// re-ingested, untrusted frontmatter (for example "../../escape") fail.
+// Characters beyond [a-z0-9-] are allowed because identities embed the
+// author, which git config may render with spaces or capitals.
+func ValidLearningIdentity(identity string) bool {
+	if identity == "" || strings.HasPrefix(identity, ".") {
+		return false
+	}
+	if strings.ContainsAny(identity, `/\`) {
+		return false
+	}
+	return !strings.Contains(identity, "..")
 }
 
 // properties returns the non-empty temporal fields as page properties.
@@ -162,6 +182,9 @@ func (l *Learning) resolveSupersedesTarget(ref string) (*store.Page, error) {
 	if identity == "" {
 		return nil, nil
 	}
+	if !ValidLearningIdentity(identity) {
+		return nil, fmt.Errorf("supersedes: learning %q not found", identity)
+	}
 	page, err := l.store.GetPage(store.LearningPrefix + identity)
 	if err != nil {
 		return nil, fmt.Errorf("supersedes: failed to look up learning %q: %v", identity, err)
@@ -170,7 +193,11 @@ func (l *Learning) resolveSupersedesTarget(ref string) (*store.Page, error) {
 		return nil, fmt.Errorf("supersedes: learning %q not found", identity)
 	}
 	var props map[string]any
-	_ = json.Unmarshal([]byte(page.Properties), &props)
+	if page.Properties != "" {
+		if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+			return nil, fmt.Errorf("supersedes: learning %q has unreadable properties: %w", identity, err)
+		}
+	}
 	if successor, ok := props["superseded_by"].(string); ok && successor != "" {
 		return nil, fmt.Errorf("supersedes: learning %q is already superseded by %q", identity, successor)
 	}
@@ -186,7 +213,14 @@ func (l *Learning) linkSuperseded(target *store.Page, successor string) string {
 		return ""
 	}
 	props := map[string]any{}
-	_ = json.Unmarshal([]byte(target.Properties), &props)
+	if target.Properties != "" {
+		if err := json.Unmarshal([]byte(target.Properties), &props); err != nil {
+			return fmt.Sprintf("failed to mark %s superseded: unreadable stored properties: %v", target.Name, err)
+		}
+		if props == nil {
+			props = map[string]any{} // literal JSON null decodes to a nil map
+		}
+	}
 	props["superseded_by"] = successor
 	props["validity"] = "superseded"
 	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
@@ -203,6 +237,9 @@ func (l *Learning) linkSuperseded(target *store.Page, successor string) string {
 func (l *Learning) markSupersededFile(identity, successor string) string {
 	if l.vaultPath == "" {
 		return ""
+	}
+	if !ValidLearningIdentity(identity) {
+		return fmt.Sprintf("skipped marking %q superseded in its backup: unsafe learning identity", identity)
 	}
 	path := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings", identity+".md")
 	content, err := os.ReadFile(path)

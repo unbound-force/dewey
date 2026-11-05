@@ -1463,6 +1463,153 @@ Gate uses two layers.
 	}
 }
 
+// TestReIngestLearnings_RoundTripFromStoreLearning pins the temporal
+// key↔property mapping across packages: whatever StoreLearning (tools)
+// writes to frontmatter, reIngestLearnings (main) must restore into page
+// properties. Per-side tests use their own expectations and hand-written
+// fixtures, so a key renamed or dropped on either side passes both while
+// this composed store → wipe → re-ingest → compare test fails.
+func TestReIngestLearnings_RoundTripFromStoreLearning(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "alice")
+	vaultPath := t.TempDir()
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	l := tools.NewLearning(nil, s, vaultPath, 0).WithAsOfResolver(func() (string, error) {
+		return "dewey@abc123", nil
+	})
+
+	resultJSON := func(res *mcp.CallToolResult) map[string]any {
+		tc, _ := res.Content[0].(*mcp.TextContent)
+		m := map[string]any{}
+		if err := json.Unmarshal([]byte(tc.Text), &m); err != nil {
+			t.Fatalf("unmarshal result %q: %v", tc.Text, err)
+		}
+		return m
+	}
+	storeOne := func(tag, supersedes string) map[string]any {
+		res, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+			Information: "Round trip body for " + tag + ".",
+			Tag:         tag,
+			Evidence:    []string{"dewey:tools/lint.go", "dewey#147"},
+			Validity:    "current",
+			Supersedes:  supersedes,
+		})
+		if err != nil {
+			t.Fatalf("StoreLearning(%s): %v", tag, err)
+		}
+		if res.IsError {
+			t.Fatalf("StoreLearning(%s) error result: %s", tag, resultJSON(res))
+		}
+		return resultJSON(res)
+	}
+
+	target := storeOne("rtgate", "")
+	targetIdentity, _ := target["identity"].(string)
+	successor := storeOne("rtgate2", targetIdentity)
+	successorIdentity, _ := successor["identity"].(string)
+	if targetIdentity == "" || successorIdentity == "" {
+		t.Fatalf("identities missing from results: %q, %q", targetIdentity, successorIdentity)
+	}
+
+	// Wipe the store; re-ingest from the files StoreLearning wrote.
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	fresh, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = fresh.Close() }()
+
+	if count, err := reIngestLearnings(fresh, nil, vaultPath, 0); err != nil || count != 2 {
+		t.Fatalf("reIngestLearnings = %d, %v; want 2, nil", count, err)
+	}
+
+	restoredProps := func(name string) map[string]any {
+		page, err := fresh.GetPage(name)
+		if err != nil || page == nil {
+			t.Fatalf("GetPage(%q) = %v, %v", name, page, err)
+		}
+		props := map[string]any{}
+		if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+			t.Fatalf("unmarshal properties of %q: %v", name, err)
+		}
+		return props
+	}
+
+	// The superseded target: its temporal inputs plus the back-link that
+	// setFrontmatterKeys wrote into its backup.
+	targetProps := restoredProps("learning/" + targetIdentity)
+	for key, want := range map[string]string{
+		"as_of":         "dewey@abc123",
+		"validity":      "superseded",
+		"superseded_by": successorIdentity,
+		"tag":           "rtgate",
+		"author":        "alice",
+	} {
+		if targetProps[key] != want {
+			t.Errorf("target %s = %v, want %q", key, targetProps[key], want)
+		}
+	}
+	if evidence, _ := targetProps["evidence"].([]any); len(evidence) != 2 || evidence[0] != "dewey:tools/lint.go" || evidence[1] != "dewey#147" {
+		t.Errorf("target evidence = %v, want [dewey:tools/lint.go dewey#147]", targetProps["evidence"])
+	}
+
+	// The successor: its supersedes forward-link and its own temporal fields.
+	successorProps := restoredProps("learning/" + successorIdentity)
+	for key, want := range map[string]string{
+		"as_of":      "dewey@abc123",
+		"validity":   "current",
+		"supersedes": targetIdentity,
+		"tag":        "rtgate2",
+	} {
+		if successorProps[key] != want {
+			t.Errorf("successor %s = %v, want %q", key, successorProps[key], want)
+		}
+	}
+	if evidence, _ := successorProps["evidence"].([]any); len(evidence) != 2 || evidence[0] != "dewey:tools/lint.go" || evidence[1] != "dewey#147" {
+		t.Errorf("successor evidence = %v, want [dewey:tools/lint.go dewey#147]", successorProps["evidence"])
+	}
+}
+
+// TestReIngestLearnings_SkipsUnsafeIdentity verifies that a learning file
+// whose frontmatter identity contains path traversal is skipped at
+// re-ingestion, so a forged page name cannot later direct supersession
+// writes outside the learnings directory (SC-004).
+func TestReIngestLearnings_SkipsUnsafeIdentity(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	forged := `---
+tag: evil
+identity: ../../escape
+tier: draft
+---
+
+Forged identity.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "evil.md"), []byte(forged), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if count, err := reIngestLearnings(s, nil, vaultPath, 0); err != nil || count != 0 {
+		t.Fatalf("reIngestLearnings = %d, %v; want 0, nil", count, err)
+	}
+	if pages, err := s.ListLearningPages(); err != nil || len(pages) != 0 {
+		t.Errorf("learning pages = %d, %v; want none", len(pages), err)
+	}
+}
+
 // TestLearningFrontmatterProperties_LegacyFile verifies that a frontmatter
 // without optional keys yields only the tag (legacy files re-ingest unchanged).
 func TestLearningFrontmatterProperties_LegacyFile(t *testing.T) {

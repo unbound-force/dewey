@@ -115,6 +115,17 @@ func TestNormalizeEvidence(t *testing.T) {
 			t.Errorf("%s: expected error", name)
 		}
 	}
+
+	// The bound counts characters, not bytes: a multi-byte locator within
+	// 512 characters passes even though it exceeds 512 bytes, and one
+	// character over the bound still fails.
+	multiByte := strings.Repeat("世", maxEvidenceLen)
+	if got, err := normalizeEvidence([]string{multiByte}); err != nil || len(got) != 1 {
+		t.Errorf("normalizeEvidence(%d multi-byte chars) = %v, %v; want accepted", maxEvidenceLen, got, err)
+	}
+	if _, err := normalizeEvidence([]string{strings.Repeat("世", maxEvidenceLen+1)}); err == nil {
+		t.Errorf("normalizeEvidence(%d multi-byte chars): expected error", maxEvidenceLen+1)
+	}
 }
 
 func TestTemporalFields_Empty(t *testing.T) {
@@ -163,6 +174,26 @@ func TestSupersedesIdentity(t *testing.T) {
 	}
 }
 
+func TestValidLearningIdentity(t *testing.T) {
+	for in, want := range map[string]bool{
+		"auth-1":                            true,
+		"auth-20260502T143022-alice":        true,
+		"auth-20260502T143022-John Flowers": true, // authors come from git config
+		"":                                  false,
+		".":                                 false,
+		"..":                                false,
+		"../../etc/passwd":                  false,
+		"learning/../../x":                  false,
+		"a..b":                              false,
+		".hidden":                           false,
+		`back\slash`:                        false,
+	} {
+		if got := ValidLearningIdentity(in); got != want {
+			t.Errorf("ValidLearningIdentity(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestSetFrontmatterKeys(t *testing.T) {
 	content := "---\ntag: auth\nvalidity: \"current\"\ntier: draft\n---\n\nBody with validity: inline text.\n"
 	got, err := setFrontmatterKeys(content, [][2]string{{"superseded_by", "auth-2"}, {"validity", "superseded"}})
@@ -197,6 +228,9 @@ func TestResolveAsOf(t *testing.T) {
 }
 
 func TestProductionAsOfResolver(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess test in short mode")
+	}
 	if _, err := productionAsOfResolver("")(); err == nil {
 		t.Error("empty vault path: expected error")
 	}
@@ -252,6 +286,9 @@ func TestStoreLearning_TemporalFields(t *testing.T) {
 	if result["as_of"] != "dewey@abc123" || result["validity"] != "current" {
 		t.Errorf("result as_of/validity = %v/%v", result["as_of"], result["validity"])
 	}
+	if evidence, _ := result["evidence"].([]any); len(evidence) != 2 || evidence[0] != "dewey:tools/lint.go" || evidence[1] != "dewey#147" {
+		t.Errorf("result evidence = %v, want [dewey:tools/lint.go dewey#147]", result["evidence"])
+	}
 
 	page, props := pageProps(t, s, resultString(t, result, "page"))
 	if page.Tier != "draft" {
@@ -260,13 +297,16 @@ func TestStoreLearning_TemporalFields(t *testing.T) {
 	if props["as_of"] != "dewey@abc123" || props["validity"] != "current" {
 		t.Errorf("properties as_of/validity = %v/%v", props["as_of"], props["validity"])
 	}
-	if evidence, _ := props["evidence"].([]any); len(evidence) != 2 {
-		t.Errorf("properties evidence = %v, want 2 entries", props["evidence"])
+	if evidence, _ := props["evidence"].([]any); len(evidence) != 2 || evidence[0] != "dewey:tools/lint.go" || evidence[1] != "dewey#147" {
+		t.Errorf("properties evidence = %v, want [dewey:tools/lint.go dewey#147]", props["evidence"])
 	}
 
 	fm, body := fileFrontmatter(t, filepath.Join(vault, resultString(t, result, "file_path")))
 	if fm["as_of"] != "dewey@abc123" || fm["validity"] != "current" || fm["tier"] != "draft" {
 		t.Errorf("frontmatter = %v", fm)
+	}
+	if evidence, _ := fm["evidence"].([]any); len(evidence) != 2 || evidence[0] != "dewey:tools/lint.go" || evidence[1] != "dewey#147" {
+		t.Errorf("frontmatter evidence = %v, want [dewey:tools/lint.go dewey#147]", fm["evidence"])
 	}
 	if !strings.Contains(body, "Lint staleness") {
 		t.Errorf("body = %q", body)
@@ -294,11 +334,30 @@ func TestStoreLearning_InvalidTemporalInputWritesNothing(t *testing.T) {
 	vault := t.TempDir()
 	l := NewLearning(nil, s, vault, 0).WithAsOfResolver(nil)
 
+	// Seed a non-learning page under the learning/ namespace so the
+	// SourceID rejection branch (page exists but is not a stored learning)
+	// actually executes — against an empty store the same input would exit
+	// through the not-found branch. ListLearningPages filters on
+	// source_id='learning', so this disk-sourced seed does not affect the
+	// zero-learning-pages assertion below.
+	seed := &store.Page{
+		Name:         "learning/README",
+		OriginalName: "learning/README",
+		SourceID:     "disk",
+		SourceDocID:  "readme",
+		Properties:   `{"tag":"readme"}`,
+		Tier:         "authored",
+	}
+	if err := s.InsertPage(seed); err != nil {
+		t.Fatalf("InsertPage seed: %v", err)
+	}
+
 	for name, input := range map[string]types.StoreLearningInput{
 		"bad validity":     {Information: "x", Tag: "x", Validity: "fresh"},
 		"empty evidence":   {Information: "x", Tag: "x", Evidence: []string{" "}},
 		"unknown target":   {Information: "x", Tag: "x", Supersedes: "nope-20260101T000000-bob"},
-		"non-learning tgt": {Information: "x", Tag: "x", Supersedes: "README"},
+		"non-learning tgt": {Information: "x", Tag: "x", Supersedes: "learning/README"},
+		"traversal target": {Information: "x", Tag: "x", Supersedes: "../../etc/passwd"},
 	} {
 		if result, isErr := storeLearning(t, l, input); !isErr {
 			t.Errorf("%s: expected error result, got %v", name, result)
@@ -316,6 +375,15 @@ func TestStoreLearning_InvalidTemporalInputWritesNothing(t *testing.T) {
 		if len(entries) != 0 {
 			t.Errorf("expected no learning files, got %d", len(entries))
 		}
+	}
+
+	// The seeded non-learning page is untouched by the rejected calls.
+	after, err := s.GetPage("learning/README")
+	if err != nil || after == nil {
+		t.Fatalf("seeded page missing after invalid calls: %v, %v", after, err)
+	}
+	if after.SourceID != "disk" || after.Properties != `{"tag":"readme"}` {
+		t.Errorf("seeded page changed: source %q, properties %s", after.SourceID, after.Properties)
 	}
 }
 
@@ -371,6 +439,84 @@ func TestStoreLearning_SupersedesLinksBothWays(t *testing.T) {
 	}
 }
 
+// TestStoreLearning_SupersedesWarningOnPartialFailure exercises the
+// supersedes_warning response field through StoreLearning: when the store
+// leg of the back-link succeeds but the markdown backup cannot be
+// rewritten, the learning is still stored and the result carries a
+// non-empty warning naming the target and its file. Every other branch of
+// the warning wiring (success, nil target) is covered elsewhere; without
+// this test, renaming or dropping the result key keeps the suite green.
+func TestStoreLearning_SupersedesWarningOnPartialFailure(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "alice")
+	s := newTestStore(t)
+	vault := t.TempDir()
+	l := NewLearning(nil, s, vault, 0).WithAsOfResolver(nil)
+
+	old, isErr := storeLearning(t, l, types.StoreLearningInput{Information: "Original claim.", Tag: "claim"})
+	if isErr {
+		t.Fatalf("store old: %v", old["error"])
+	}
+	oldIdentity := resultString(t, old, "identity")
+
+	// Corrupt the markdown backup so the file leg of the back-link fails
+	// while the store leg succeeds: the target page is updated in the
+	// store, but rewriting the backup cannot parse its frontmatter.
+	backup := filepath.Join(vault, deweyWorkspaceDir, "learnings", oldIdentity+".md")
+	if err := os.WriteFile(backup, []byte("no frontmatter\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	newer, isErr := storeLearning(t, l, types.StoreLearningInput{
+		Information: "Revised claim.",
+		Tag:         "claim-v2",
+		Supersedes:  oldIdentity,
+	})
+	if isErr {
+		t.Fatalf("store newer: %v", newer["error"])
+	}
+	warning := resultString(t, newer, "supersedes_warning")
+	if !strings.Contains(warning, oldIdentity) || !strings.Contains(warning, "frontmatter") {
+		t.Errorf("supersedes_warning = %q, want %q and a file-failure marker", warning, oldIdentity)
+	}
+	newIdentity := resultString(t, newer, "identity")
+
+	// The store leg succeeded despite the file-leg warning.
+	_, oldProps := pageProps(t, s, "learning/"+oldIdentity)
+	if oldProps["superseded_by"] != newIdentity || oldProps["validity"] != "superseded" {
+		t.Errorf("store back-link missing after partial failure: %v", oldProps["superseded_by"])
+	}
+}
+
+// TestStoreLearning_SupersedesTargetWithCorruptProperties verifies that a
+// supersession target whose stored properties are unreadable fails closed:
+// the call returns an error result and writes nothing, instead of silently
+// proceeding with an empty properties map (which would skip the
+// already-superseded guard and fork the chain).
+func TestStoreLearning_SupersedesTargetWithCorruptProperties(t *testing.T) {
+	s := newTestStore(t)
+	l := NewLearning(nil, s, t.TempDir(), 0).WithAsOfResolver(nil)
+
+	corrupt := &store.Page{
+		Name:         "learning/corrupt-1",
+		OriginalName: "learning/corrupt-1",
+		SourceID:     store.SourceLearning,
+		SourceDocID:  "learning-corrupt-1",
+		Properties:   "{not json",
+		Tier:         "draft",
+	}
+	if err := s.InsertPage(corrupt); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	result, isErr := storeLearning(t, l, types.StoreLearningInput{Information: "x", Tag: "x", Supersedes: "corrupt-1"})
+	if !isErr || !strings.Contains(resultString(t, result, "error"), "unreadable") {
+		t.Errorf("corrupt target = %v, want unreadable-properties error", result)
+	}
+	if pages, err := s.ListLearningPages(); err != nil || len(pages) != 1 {
+		t.Errorf("learning pages = %d, %v; want only the seeded corrupt page", len(pages), err)
+	}
+}
+
 func TestLinkSuperseded_Warnings(t *testing.T) {
 	s := newTestStore(t)
 	vault := t.TempDir()
@@ -400,6 +546,34 @@ func TestLinkSuperseded_Warnings(t *testing.T) {
 	}
 	if got := l.linkSuperseded(page, "x"); !strings.Contains(got, "not in") {
 		t.Errorf("bad backup: %q, want file warning", got)
+	}
+
+	// Unreadable stored properties fail the link with a warning instead of
+	// silently replacing the target's properties wholesale (CS-006).
+	corrupt := &store.Page{Name: "learning/corrupt-1", OriginalName: "learning/corrupt-1", SourceID: store.SourceLearning, SourceDocID: "learning-corrupt-1", Properties: "{not json", Tier: "draft"}
+	if err := s.InsertPage(corrupt); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if got := l.linkSuperseded(corrupt, "x"); !strings.Contains(got, "unreadable") {
+		t.Errorf("corrupt properties: %q, want unreadable-properties warning", got)
+	}
+
+	// A literal JSON null decodes to a nil map; the link must still succeed
+	// rather than panic on the superseded_by assignment.
+	nullProps := &store.Page{Name: "learning/null-1", OriginalName: "learning/null-1", SourceID: store.SourceLearning, SourceDocID: "learning-null-1", Properties: "null", Tier: "draft"}
+	if err := s.InsertPage(nullProps); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if got := l.linkSuperseded(nullProps, "x"); got != "" {
+		t.Errorf("null properties: %q, want empty (no warning)", got)
+	}
+	if _, props := pageProps(t, s, "learning/null-1"); props["superseded_by"] != "x" || props["validity"] != "superseded" {
+		t.Errorf("null-props back-link = %v", props)
+	}
+
+	// An unsafe identity never reaches a file write (SC-004).
+	if got := l.markSupersededFile("../../escape", "x"); !strings.Contains(got, "unsafe") {
+		t.Errorf("unsafe identity: %q, want unsafe-identity warning", got)
 	}
 
 	// No vault, or no backup file: nothing to rewrite, no warning.

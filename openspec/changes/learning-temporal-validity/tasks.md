@@ -43,3 +43,6 @@
   `gaze crap --max-crapload=48 --max-gaze-crapload=45`,
   `golangci-lint run`
 - [ ] 6.3 `/uf.review-council` (OpenCode), draft PR
+- [x] 6.4 Website docs-sync issue filed:
+  unbound-force/website#380 (AGENTS.md Website Documentation
+  Sync rule)

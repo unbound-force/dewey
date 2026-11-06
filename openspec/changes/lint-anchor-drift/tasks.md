@@ -9,6 +9,8 @@
 - [x] 2.1 `tools/lint_anchors.go`: `fixAnchorDrift` (store and
   frontmatter, tier untouched)
 - [x] 2.2 `tools/lint.go`: `fixed.anchor_drift`
+- [x] 2.3 fail closed: hex-only pins, `ValidLearningIdentity`,
+  unreadable properties (#156 council findings)
 
 ## 3. Tests
 

@@ -19,6 +19,9 @@ import (
 // repository path and the first commit.
 func anchorRepo(t *testing.T) (string, string) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping git subprocess test in short mode")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
@@ -274,6 +277,88 @@ func TestSplitAsOfAndParseAnchor(t *testing.T) {
 	}
 	if got := shortSHA("abc"); got != "abc" {
 		t.Errorf("shortSHA(abc) = %q", got)
+	}
+}
+
+// insertRawLearning stores a learning page with verbatim properties text.
+func insertRawLearning(t *testing.T, s *store.Store, identity, properties string) {
+	t.Helper()
+	name := store.LearningPrefix + identity
+	if err := s.InsertPage(&store.Page{Name: name, OriginalName: name, SourceID: store.SourceLearning, SourceDocID: name, Properties: properties, Tier: "draft"}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+}
+
+func TestMarkStaleUnverified_FailsClosed(t *testing.T) {
+	s := newTestStore(t)
+	l := NewLint(s, nil, t.TempDir(), 0)
+
+	// Corrupt properties are reported and left intact, never replaced.
+	insertRawLearning(t, s, "corrupt-1", "{not json")
+	if err := l.markStaleUnverified("learning/corrupt-1"); err == nil {
+		t.Error("corrupt properties: expected error")
+	}
+	page, err := s.GetPage("learning/corrupt-1")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage = %v, %v", page, err)
+	}
+	if page.Properties != "{not json" {
+		t.Errorf("corrupt properties were rewritten: %q", page.Properties)
+	}
+
+	// A literal JSON null and empty properties decode to an empty map.
+	for identity, raw := range map[string]string{"null-1": "null", "empty-1": ""} {
+		insertRawLearning(t, s, identity, raw)
+		if err := l.markStaleUnverified("learning/" + identity); err != nil {
+			t.Errorf("%s: %v", identity, err)
+		}
+		if _, props := pageProps(t, s, "learning/"+identity); props["validity"] != "stale-unverified" {
+			t.Errorf("%s properties = %v", identity, props)
+		}
+	}
+}
+
+func TestMarkStaleUnverified_RejectsUnsafeIdentity(t *testing.T) {
+	s := newTestStore(t)
+	vault := t.TempDir()
+	l := NewLint(s, nil, vault, 0)
+	insertRawLearning(t, s, "../../escape", `{"tag":"x"}`)
+	outside := filepath.Join(vault, deweyWorkspaceDir, "..", "..", "escape.md")
+	original := "---\ntag: x\n---\n\nOutside.\n"
+	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(outside, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := l.markStaleUnverified("learning/../../escape"); err == nil {
+		t.Fatal("unsafe identity: expected error")
+	}
+	if _, props := pageProps(t, s, "learning/../../escape"); props["validity"] != nil {
+		t.Errorf("store was written despite the unsafe identity: %v", props)
+	}
+	if content, err := os.ReadFile(outside); err != nil || string(content) != original {
+		t.Errorf("file outside the learnings directory changed: %q, %v", content, err)
+	}
+}
+
+func TestLearningAnchors_IgnoresNonHexPin(t *testing.T) {
+	for _, asOf := range []string{"kb@--output=/tmp/x", "kb@HEAD", "kb@main"} {
+		data, err := json.Marshal(map[string]any{"as_of": asOf, "evidence": []string{"kb:pkg/a.go"}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, _, ok := learningAnchors(&store.Page{Properties: string(data)}); ok {
+			t.Errorf("learningAnchors accepted pin %q", asOf)
+		}
+	}
+	data, err := json.Marshal(map[string]any{"as_of": "kb@0123abcDEF", "evidence": []string{"kb:pkg/a.go"}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if sha, paths, ok := learningAnchors(&store.Page{Properties: string(data)}); !ok || sha != "0123abcDEF" || len(paths) != 1 {
+		t.Errorf("learningAnchors(hex pin) = %q, %v, %v", sha, paths, ok)
 	}
 }
 

@@ -41,8 +41,31 @@ learning with an `anchor_drift` finding, in the store and in its
 markdown backup when present, and MUST NOT change its tier or
 content.
 
+`fix` MUST NOT write the store or a backup for a learning whose
+identity fails `ValidLearningIdentity` or whose properties are
+unreadable. A pin that is not hexadecimal MUST NOT be passed to git;
+such a learning MUST be skipped.
+
+#### Scenario: Unreadable properties
+- **GIVEN** a learning whose stored properties are not valid JSON
+- **WHEN** `fix` tries to mark it
+- **THEN** the properties MUST be left unchanged
+
+#### Scenario: Option-like pin
+- **GIVEN** a learning with `as_of: repo@--output=x`
+- **WHEN** `lint` runs
+- **THEN** the learning MUST be skipped
+
 #### Scenario: Fix a drifted learning
 - **GIVEN** a learning with an `anchor_drift` finding
 - **WHEN** `lint` runs with `fix: true`
 - **THEN** its properties and frontmatter MUST carry
   `validity: stale-unverified` and its tier MUST be unchanged
+
+## MODIFIED Requirements
+
+_None._
+
+## REMOVED Requirements
+
+_None._

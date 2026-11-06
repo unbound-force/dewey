@@ -28,13 +28,13 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 50 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
-Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. Read store-backed pages by their canonical names (`compiled/<tag>` for compiled articles, `learning/<identity>` for learnings); `list_pages` shows compiled articles under their bare topic, and `promote` accepts either form. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
+Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. Read store-backed pages by their canonical names (`compiled/<tag>` for compiled articles, `learning/<identity>` for learnings) or by the bare name: `list_pages` shows compiled articles under their bare topic, and `get_page` and `get_page_blocks_tree` try the exact name, then `compiled/<name>`, then `learning/<name>`. `promote` accepts either form, but reports a name that matches both namespaces as ambiguous, while reads serve the compiled article. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
 
 ### Navigate
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `get_page` | Both | Full recursive block tree with parsed links, tags, properties |
+| `get_page` | Both | Full recursive block tree with parsed links, tags, properties; a bare name also finds `compiled/<name>` and `learning/<name>` |
 | `get_block` | Both | Block by UUID with ancestor chain, children, siblings |
 | `list_pages` | Both | Filter by namespace, property, or tag; sort by name/modified/created |
 | `get_links` | Both | Forward and backward links with the blocks that contain them |

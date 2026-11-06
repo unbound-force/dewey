@@ -30,6 +30,11 @@ import (
 // locator path.
 var anchorLineSuffix = regexp.MustCompile(`:\d+(-\d+)?$`)
 
+// anchorCommitSHA matches a hexadecimal commit name. as_of can arrive
+// through re-ingested, untrusted frontmatter and is passed to git as a
+// revision, so anything else (for example "--output=x") is never a pin.
+var anchorCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]+$`)
+
 // anchorGitTimeout bounds each git subprocess run by the anchor checker.
 const anchorGitTimeout = 5 * time.Second
 
@@ -128,7 +133,7 @@ func learningAnchors(p *store.Page) (string, []string, bool) {
 	}
 	asOf, _ := props["as_of"].(string)
 	repo, sha, ok := splitAsOf(asOf)
-	if !ok {
+	if !ok || !anchorCommitSHA.MatchString(sha) {
 		return "", nil, false
 	}
 	evidence, _ := props["evidence"].([]any)
@@ -251,8 +256,14 @@ func (l *Lint) fixAnchorDrift(findings []Finding) int {
 
 // markStaleUnverified sets validity: stale-unverified on a learning in the
 // store and in its markdown backup when one exists. Tier and content are
-// untouched.
+// untouched. It fails closed before writing anything when the identity is
+// unsafe to embed in a path or the stored properties are unreadable, so
+// corrupt properties are never replaced wholesale.
 func (l *Lint) markStaleUnverified(pageName string) error {
+	identity := strings.TrimPrefix(pageName, store.LearningPrefix)
+	if !ValidLearningIdentity(identity) {
+		return fmt.Errorf("unsafe learning identity: %q", identity)
+	}
 	page, err := l.store.GetPage(pageName)
 	if err != nil {
 		return err
@@ -260,18 +271,43 @@ func (l *Lint) markStaleUnverified(pageName string) error {
 	if page == nil {
 		return fmt.Errorf("page not found: %s", pageName)
 	}
-	props := map[string]any{}
-	_ = json.Unmarshal([]byte(page.Properties), &props)
+	props, err := decodeLearningProperties(page.Properties)
+	if err != nil {
+		return fmt.Errorf("unreadable stored properties on %s: %w", pageName, err)
+	}
 	props["validity"] = "stale-unverified"
 	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
 	page.Properties = string(data)
 	if err := l.store.UpdatePage(page); err != nil {
 		return err
 	}
+	return l.markStaleFile(identity)
+}
+
+// decodeLearningProperties decodes a page's properties JSON into a non-nil
+// map: empty text and a literal JSON null both yield an empty map.
+func decodeLearningProperties(raw string) (map[string]any, error) {
+	props := map[string]any{}
+	if raw == "" {
+		return props, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &props); err != nil {
+		return nil, err
+	}
+	if props == nil {
+		props = map[string]any{}
+	}
+	return props, nil
+}
+
+// markStaleFile sets validity: stale-unverified in the frontmatter of a
+// learning's markdown backup. A missing file or vault is not an error. The
+// caller has validated identity.
+func (l *Lint) markStaleFile(identity string) error {
 	if l.vaultPath == "" {
 		return nil
 	}
-	path := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings", strings.TrimPrefix(pageName, store.LearningPrefix)+".md")
+	path := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings", identity+".md")
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil

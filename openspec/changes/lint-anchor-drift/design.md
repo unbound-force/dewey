@@ -59,6 +59,16 @@ its markdown backup's frontmatter (when present). Tier and content
 are untouched. The result reports `fixed.anchor_drift` (learnings
 marked).
 
+### D5 Fail closed on untrusted input
+
+`as_of` and page names can arrive through re-ingested frontmatter
+(the trust boundary #156 hardened). A non-hexadecimal pin is not a
+pin, so it never reaches git as a revision. `fix` validates the
+identity with `ValidLearningIdentity` and decodes properties before
+writing anything: an unsafe identity or unreadable properties is an
+error, and the store and backup stay as they were. A literal JSON
+`null` decodes to an empty map.
+
 ## Risks / Trade-offs
 
 - **One subprocess per anchor.** Acceptable at current vault sizes;

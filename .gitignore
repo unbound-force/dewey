@@ -61,3 +61,6 @@ Thumbs.db
 .unbound-force/
 .muti-mind/
 .mx-f/
+
+# opencode plugin install state: opencode rewrites this per machine on every start
+.opencode/package-lock.json

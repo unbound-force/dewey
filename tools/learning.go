@@ -62,6 +62,9 @@ type Learning struct {
 	store         *store.Store
 	vaultPath     string
 	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	// asOfResolver pins learnings to `<repo>@<sha>` (issue #146). Injected
+	// so tests never depend on the runner's git state.
+	asOfResolver func() (string, error)
 }
 
 // NewLearning creates a new Learning tool handler with the given embedder,
@@ -72,9 +75,23 @@ type Learning struct {
 // vault root directory; markdown files are written to
 // {vaultPath}/.uf/dewey/learnings/. The maxChunkChars parameter controls
 // the maximum character length per embedding chunk; pass 0 to use
-// embed.DefaultMaxChunkChars.
+// embed.DefaultMaxChunkChars. The as_of pin resolves from the vault's git
+// repository; use WithAsOfResolver to replace it.
 func NewLearning(e embed.Embedder, s *store.Store, vaultPath string, maxChunkChars int) *Learning {
-	return &Learning{embedder: e, store: s, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
+	return &Learning{
+		embedder:      e,
+		store:         s,
+		vaultPath:     vaultPath,
+		maxChunkChars: maxChunkChars,
+		asOfResolver:  productionAsOfResolver(vaultPath),
+	}
+}
+
+// WithAsOfResolver replaces the as_of resolver (issue #146) and returns the
+// handler. A nil resolver disables as_of pinning.
+func (l *Learning) WithAsOfResolver(resolver func() (string, error)) *Learning {
+	l.asOfResolver = resolver
+	return l
 }
 
 // normalizeTag lowercases, trims whitespace, replaces spaces with hyphens,
@@ -204,6 +221,13 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		)), nil, nil
 	}
 
+	// Validate temporal inputs and resolve the supersession target before
+	// anything is written, so an invalid call writes nothing (issue #146).
+	temporal, supersededPage, err := l.prepareTemporal(input)
+	if err != nil {
+		return errorResult(err.Error()), nil, nil
+	}
+
 	// Resolve the effective tag using priority: tag > tags > "general".
 	tag := resolveTag(input)
 
@@ -228,7 +252,15 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	if l.vaultPath != "" {
 		var finalIdentity string
 		var fileErr error
-		filePath, finalIdentity, fileErr = l.writeLearningFile(tag, author, input.Category, now, identity, input.Information)
+		filePath, finalIdentity, fileErr = l.writeLearningFile(learningFileOpts{
+			tag:                 tag,
+			author:              author,
+			category:            input.Category,
+			createdAt:           now,
+			identity:            identity,
+			temporalFrontmatter: temporal.frontmatter(),
+			information:         input.Information,
+		})
 		if fileErr != nil {
 			// Collision avoidance exhausted (99 attempts) — return MCP error.
 			return errorResult(fileErr.Error()), nil, nil
@@ -242,12 +274,12 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		}
 	}
 
-	// Build properties JSON with tag, category, author, and created_at (FR-004, FR-005).
-	propsMap := map[string]string{
-		"tag":        tag,
-		"author":     author,
-		"created_at": now.UTC().Format(time.RFC3339),
-	}
+	// Build properties JSON with tag, category, author, and created_at
+	// (FR-004, FR-005), plus the temporal fields (issue #146).
+	propsMap := temporal.properties()
+	propsMap["tag"] = tag
+	propsMap["author"] = author
+	propsMap["created_at"] = now.UTC().Format(time.RFC3339)
 	if input.Category != "" {
 		propsMap["category"] = input.Category
 	}
@@ -311,7 +343,13 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		learningUUID = blocks[0].UUID
 	}
 
-	result := map[string]any{
+	// Link the superseded learning back to this one (issue #146). The new
+	// learning is kept even when the back-link fails; the failure is reported.
+	result := temporal.properties()
+	if warning := l.linkSuperseded(supersededPage, identity); warning != "" {
+		result["supersedes_warning"] = warning
+	}
+	for key, value := range map[string]any{
 		"uuid":       learningUUID,
 		"identity":   identity,
 		"page":       pageName,
@@ -321,6 +359,8 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 		"created_at": now.UTC().Format(time.RFC3339),
 		"file_path":  filePath,
 		"message":    "Learning stored successfully." + embeddingMsg,
+	} {
+		result[key] = value
 	}
 
 	res, err := jsonTextResult(result)
@@ -330,6 +370,20 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 // maxCollisionAttempts is the maximum number of collision suffixes to try
 // before giving up. Suffixes go from -2 to -99 (98 attempts + the original).
 const maxCollisionAttempts = 99
+
+// learningFileOpts carries writeLearningFile's parameters as named fields.
+// The positional form took three adjacent string arguments (identity,
+// temporalFrontmatter, information) — a silent transposition risk at the
+// call site; named fields make argument order self-documenting.
+type learningFileOpts struct {
+	tag                 string
+	author              string
+	category            string    // optional; omitted from frontmatter when empty
+	createdAt           time.Time // timestamp baked into the identity and frontmatter
+	identity            string    // {tag}-{YYYYMMDDTHHMMSS}-{author}; may gain a collision suffix
+	temporalFrontmatter string    // pre-rendered temporal YAML lines (issue #146); "" when none
+	information         string    // learning body
+}
 
 // writeLearningFile writes a learning as a markdown file with YAML frontmatter
 // to {vaultPath}/.uf/dewey/learnings/{identity}.md where identity is
@@ -341,39 +395,41 @@ const maxCollisionAttempts = 99
 // avoidance is exhausted.
 //
 // The YAML frontmatter includes tag, author, category (if non-empty),
-// created_at, identity, and tier fields.
+// created_at, identity, and tier fields, followed by the pre-rendered
+// temporal lines (issue #146; empty when the learning has none).
 //
 // Design decision: Uses fmt.Sprintf for YAML frontmatter construction rather
 // than yaml.Marshal to avoid importing gopkg.in/yaml.v3 for trivial key-value
 // pairs. The frontmatter format is simple enough that string formatting is
 // clearer and more predictable than marshaling.
-func (l *Learning) writeLearningFile(tag, author, category string, createdAt time.Time, identity, information string) (string, string, error) {
+func (l *Learning) writeLearningFile(opts learningFileOpts) (string, string, error) {
 	learningsDir := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings")
 	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
 		learningLogger.Warn("failed to create learnings directory", "path", learningsDir, "err", err)
-		return "", identity, nil
+		return "", opts.identity, nil
 	}
 
 	// buildContent constructs the markdown file content with YAML frontmatter.
 	buildContent := func(finalIdentity string) []byte {
 		var buf strings.Builder
 		buf.WriteString("---\n")
-		buf.WriteString(fmt.Sprintf("tag: %s\n", tag))
-		buf.WriteString(fmt.Sprintf("author: %s\n", author))
-		if category != "" {
-			buf.WriteString(fmt.Sprintf("category: %s\n", category))
+		buf.WriteString(fmt.Sprintf("tag: %s\n", opts.tag))
+		buf.WriteString(fmt.Sprintf("author: %s\n", opts.author))
+		if opts.category != "" {
+			buf.WriteString(fmt.Sprintf("category: %s\n", opts.category))
 		}
-		buf.WriteString(fmt.Sprintf("created_at: %s\n", createdAt.UTC().Format(time.RFC3339)))
+		buf.WriteString(fmt.Sprintf("created_at: %s\n", opts.createdAt.UTC().Format(time.RFC3339)))
 		buf.WriteString(fmt.Sprintf("identity: %s\n", finalIdentity))
 		buf.WriteString("tier: draft\n")
+		buf.WriteString(opts.temporalFrontmatter)
 		buf.WriteString("---\n\n")
-		buf.WriteString(information)
+		buf.WriteString(opts.information)
 		buf.WriteString("\n")
 		return []byte(buf.String())
 	}
 
 	// Try the original identity first, then append collision suffixes.
-	finalIdentity := identity
+	finalIdentity := opts.identity
 	for attempt := 1; attempt <= maxCollisionAttempts; attempt++ {
 		filename := fmt.Sprintf("%s.md", finalIdentity)
 		filePath := filepath.Join(learningsDir, filename)
@@ -382,12 +438,12 @@ func (l *Learning) writeLearningFile(tag, author, category string, createdAt tim
 		if err != nil {
 			if errors.Is(err, os.ErrExist) {
 				// File exists — try next collision suffix.
-				finalIdentity = fmt.Sprintf("%s-%d", identity, attempt+1)
+				finalIdentity = fmt.Sprintf("%s-%d", opts.identity, attempt+1)
 				continue
 			}
 			// Non-collision error (e.g., permission denied) — best-effort, log and return.
 			learningLogger.Warn("failed to create learning file", "path", filePath, "err", err)
-			return "", identity, nil
+			return "", opts.identity, nil
 		}
 
 		// File created successfully — write content and close.
@@ -407,5 +463,5 @@ func (l *Learning) writeLearningFile(tag, author, category string, createdAt tim
 	}
 
 	// All collision attempts exhausted.
-	return "", identity, fmt.Errorf("failed to create learning file: %d collision attempts exhausted for identity %q", maxCollisionAttempts, identity)
+	return "", opts.identity, fmt.Errorf("failed to create learning file: %d collision attempts exhausted for identity %q", maxCollisionAttempts, opts.identity)
 }

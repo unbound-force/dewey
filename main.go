@@ -980,6 +980,37 @@ type learningFrontmatter struct {
 	Identity  string `yaml:"identity"`
 	Tier      string `yaml:"tier"`
 	Author    string `yaml:"author"`
+	// Temporal validity (issue #146); all optional.
+	AsOf         string   `yaml:"as_of"`
+	Evidence     []string `yaml:"evidence"`
+	Validity     string   `yaml:"validity"`
+	Supersedes   string   `yaml:"supersedes"`
+	SupersededBy string   `yaml:"superseded_by"`
+}
+
+// properties returns the page properties recovered from the frontmatter:
+// tag always, plus every non-empty optional field, including the temporal
+// fields (issue #146). Files without optional keys yield only what they
+// carry, so legacy learnings re-ingest unchanged.
+func (fm learningFrontmatter) properties() map[string]any {
+	props := map[string]any{"tag": fm.Tag}
+	for key, value := range map[string]string{
+		"created_at":    fm.CreatedAt,
+		"category":      fm.Category,
+		"author":        fm.Author,
+		"as_of":         fm.AsOf,
+		"validity":      fm.Validity,
+		"supersedes":    fm.Supersedes,
+		"superseded_by": fm.SupersededBy,
+	} {
+		if value != "" {
+			props[key] = value
+		}
+	}
+	if len(fm.Evidence) > 0 {
+		props["evidence"] = fm.Evidence
+	}
+	return props
 }
 
 // reIngestLearnings scans the learnings directory for markdown files and
@@ -1034,6 +1065,15 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 			continue
 		}
 
+		// The frontmatter identity is untrusted input: learning files may be
+		// git-synced, and a forged identity with path separators or ".."
+		// segments could later direct supersession writes outside the
+		// learnings directory (SC-004). Skip such files rather than ingest.
+		if !tools.ValidLearningIdentity(fm.Identity) {
+			logger.Warn("learning file has unsafe identity; skipping", "path", filePath, "identity", fm.Identity)
+			continue
+		}
+
 		// Check if this learning already exists in the store.
 		pageName := fmt.Sprintf("learning/%s", fm.Identity)
 		existing, err := s.GetPage(pageName)
@@ -1050,19 +1090,7 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 		docID := fmt.Sprintf("learning-%s", fm.Identity)
 
 		// Build properties JSON preserving original metadata.
-		propsMap := map[string]string{
-			"tag": fm.Tag,
-		}
-		if fm.CreatedAt != "" {
-			propsMap["created_at"] = fm.CreatedAt
-		}
-		if fm.Category != "" {
-			propsMap["category"] = fm.Category
-		}
-		if fm.Author != "" {
-			propsMap["author"] = fm.Author
-		}
-		propsJSON, err := json.Marshal(propsMap)
+		propsJSON, err := json.Marshal(fm.properties())
 		if err != nil {
 			logger.Warn("failed to marshal properties", "identity", fm.Identity, "err", err)
 			continue

@@ -34,7 +34,7 @@ var lintLogger = log.NewWithOptions(os.Stderr, log.Options{
 // Finding represents a single lint issue detected in the knowledge index.
 // Each finding includes an actionable remediation suggestion (invariant 5).
 type Finding struct {
-	Type        string   `json:"type"`                 // stale_decision, uncompiled, embedding_gap, contradiction
+	Type        string   `json:"type"`                 // stale_decision, uncompiled, embedding_gap, contradiction, anchor_drift, anchor_missing, ...
 	Severity    string   `json:"severity"`             // info, warning, error
 	Identity    string   `json:"identity,omitempty"`   // for single-page findings
 	Identities  []string `json:"identities,omitempty"` // for contradictions (pair)
@@ -55,7 +55,8 @@ type Lint struct {
 	store         *store.Store
 	embedder      embed.Embedder
 	vaultPath     string
-	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	maxChunkChars int           // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	anchors       anchorChecker // git-backed anchor checks (issue #147); nil skips them
 }
 
 // NewLint creates a new Lint tool handler with the given store, embedder,
@@ -65,9 +66,14 @@ type Lint struct {
 // skipped when unavailable. The vaultPath may be empty — knowledge store
 // quality checks are skipped. The maxChunkChars parameter controls the
 // maximum character length per embedding chunk; pass 0 to use
-// embed.DefaultMaxChunkChars.
+// embed.DefaultMaxChunkChars. Anchor checks (issue #147) run against the
+// vault's git repository; they are skipped when vaultPath is empty.
 func NewLint(s *store.Store, e embed.Embedder, vaultPath string, maxChunkChars int) *Lint {
-	return &Lint{store: s, embedder: e, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
+	l := &Lint{store: s, embedder: e, vaultPath: vaultPath, maxChunkChars: maxChunkChars}
+	if vaultPath != "" {
+		l.anchors = gitAnchorChecker{dir: vaultPath}
+	}
+	return l
 }
 
 // Lint handles the dewey_lint MCP tool. Scans the index for knowledge
@@ -148,6 +154,14 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		allFindings = append(allFindings, sanitizationFindings...)
 	}
 
+	// Check 8: Anchor drift and missing anchors (issue #147).
+	anchorFindings, err := l.checkAnchors()
+	if err != nil {
+		lintLogger.Warn("anchor check failed", "err", err)
+	} else {
+		allFindings = append(allFindings, anchorFindings...)
+	}
+
 	// Count findings by type for the summary.
 	staleCount := 0
 	uncompiledCount := 0
@@ -156,7 +170,9 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	knowledgeQualityCount := 0
 	staleKnowledgeCount := 0
 	sanitizationCount := 0
+	anchorCounts := map[string]int{}
 	for _, f := range allFindings {
+		anchorCounts[f.Type]++
 		switch f.Type {
 		case "stale_decision":
 			staleCount++
@@ -185,6 +201,12 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		} else {
 			fixedEmbeddings = fixed
 		}
+	}
+	// Marking drifted learnings stale-unverified is mechanical: the drift
+	// is deterministic and tiers are never touched (issue #147).
+	fixedAnchors := 0
+	if input.Fix {
+		fixedAnchors = l.fixAnchorDrift(anchorFindings)
 	}
 
 	// Build the response.
@@ -223,6 +245,12 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	if sanitizationCount > 0 {
 		summary["sanitization_findings"] = sanitizationCount
 	}
+	// Add anchor finding counts when any exist (issue #147).
+	for _, kind := range []string{"anchor_drift", "anchor_missing"} {
+		if anchorCounts[kind] > 0 {
+			summary[kind] = anchorCounts[kind]
+		}
+	}
 
 	result := map[string]any{
 		"status":   status,
@@ -235,6 +263,7 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	if input.Fix {
 		result["fixed"] = map[string]any{
 			"embedding_gaps": fixedEmbeddings,
+			"anchor_drift":   fixedAnchors,
 		}
 	}
 

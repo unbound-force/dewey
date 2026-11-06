@@ -147,7 +147,7 @@ Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `sear
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `store_learning` | Both | Store a learning with tag, category, and temporal identity |
+| `store_learning` | Both | Store a learning with tag, category, and temporal identity; pins `as_of` and accepts `evidence`, `validity`, and `supersedes` ([Temporal Validity](#temporal-validity)) |
 
 ### Curate
 
@@ -438,6 +438,13 @@ Scan the knowledge base for quality issues: stale decisions, embedding gaps, con
 ```bash
 dewey lint [--vault PATH] [--fix]
 ```
+
+**Anchor checks.** For learnings pinned with `as_of` (see [Temporal Validity](#temporal-validity)), lint checks each `<repo>:<path>` evidence locator for the vault's own repository against local git:
+
+- `anchor_missing`: the path does not exist at the `as_of` commit, or that commit is not in the repository.
+- `anchor_drift`: the path changed between the `as_of` commit and `HEAD`.
+
+`--fix` marks drifted learnings `validity: stale-unverified` (store and markdown file); tiers are never changed. Skipped outside a git repository. Not checked: `<repo>#<n>` locators (no network), other repositories, and learnings marked `superseded` or `historical`. The 30-day `stale_decision` check remains as a secondary signal.
 
 ### dewey promote
 
@@ -767,6 +774,19 @@ Each curated knowledge item includes:
 - **Source traceability**: Every fact traces back to its source document
 
 Learnings stored via `store_learning` are also dual-written to `.uf/dewey/learnings/` as markdown files, ensuring they survive database deletion.
+
+#### Temporal Validity
+
+Learnings carry metadata about the code state they were true against, in their properties and markdown frontmatter (returned by every read tool):
+
+| Field | Set by | Meaning |
+|-------|--------|---------|
+| `as_of` | automatic | `<repo>@<sha>` — the vault's git repository and `HEAD` commit when the learning was stored. Omitted when the vault is not a git repository. Uncommitted changes are not represented. |
+| `evidence` | `evidence` input | Locators backing the learning: `<repo>:<path>`, `<repo>#<n>`, `learning/<identity>`, `session:<id>` (max 50, each max 512 characters). |
+| `validity` | `validity` input | `current`, `stale-unverified`, `superseded`, or `historical`. Absent means unknown. |
+| `supersedes` / `superseded_by` | `supersedes` input | Two-way link. Storing a learning with `supersedes: <identity>` marks the target `superseded_by` the new learning and `validity: superseded`, in the store and in its markdown file. The target is never deleted and its tier is unchanged; a learning can be superseded once. |
+
+Validity is separate from trust tiers: a tier says who vouched for a learning, validity says whether it still holds as the code evolves. All fields round-trip through re-ingestion.
 
 ### Content Sanitization
 

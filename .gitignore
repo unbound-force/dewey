@@ -64,3 +64,6 @@ Thumbs.db
 
 # opencode plugin install state: opencode rewrites this per machine on every start
 .opencode/package-lock.json
+
+# opencode run logs written under an unresolved path (.opencode/undefined/)
+.opencode/undefined/

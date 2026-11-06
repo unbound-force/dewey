@@ -481,6 +481,9 @@ func (vs *VaultStore) generateEmbeddings(pageName string, blocks []types.BlockEn
 // case-insensitive keying so a wrong-case lookup behaves the same at every
 // session age.
 //
+// A bare name also resolves compiled articles and learnings (findStorePage),
+// so a topic shown by list_pages can be read back as shown (issue #140).
+//
 // Returns (nil, nil, false, nil) when no page with the given name exists, and
 // a non-nil error when a store query fails. A nil store behaves as an
 // always-miss lookup, preserving no-store parity (Constitution II).
@@ -489,7 +492,7 @@ func (vs *VaultStore) GetStorePage(name string) (*types.PageEntity, []types.Bloc
 		return nil, nil, false, nil
 	}
 
-	sp, err := vs.store.GetPageFoldCase(name)
+	sp, err := vs.findStorePage(name)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("look up store page %q: %w", name, err)
 	}
@@ -502,6 +505,25 @@ func (vs *VaultStore) GetStorePage(name string) (*types.PageEntity, []types.Bloc
 		return nil, nil, false, err
 	}
 	return &entity, blocks, true, nil
+}
+
+// findStorePage looks up a page for reading: the exact name, then for a name
+// without a slash compiled/<name> and learning/<name>. All lookups fold case
+// and the first page found wins (issue #140, design D2). Promote keeps its
+// stricter resolver because it mutates a trust tier; the write guard
+// (StorePageMeta) stays exact so a vault page can still take a bare name.
+func (vs *VaultStore) findStorePage(name string) (*store.Page, error) {
+	sp, err := vs.store.GetPageFoldCase(name)
+	if sp != nil || err != nil || strings.Contains(name, "/") {
+		return sp, err
+	}
+	for _, prefix := range []string{store.CompiledPrefix, store.LearningPrefix} {
+		sp, err := vs.store.GetPageFoldCase(prefix + name)
+		if sp != nil || err != nil {
+			return sp, err
+		}
+	}
+	return nil, nil
 }
 
 // GetStoreBlock resolves a block by UUID in the persistent store and returns

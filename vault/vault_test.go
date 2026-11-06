@@ -2870,6 +2870,97 @@ func TestGetPage_FallbackFoldsCase(t *testing.T) {
 	}
 }
 
+// insertBareNamePage stores a page with one block under an internal namespace.
+func insertBareNamePage(t *testing.T, s *store.Store, name, sourceID, content string) {
+	t.Helper()
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: name, OriginalName: name, SourceID: sourceID, SourceDocID: name, Tier: "draft"},
+		&store.Block{UUID: name + "-root", PageName: name, Content: content, Position: 0},
+	)
+}
+
+func TestGetPage_BareNameResolvesInternalStorePages(t *testing.T) {
+	c, s := newStoreBackedClient(t, nil)
+	insertBareNamePage(t, s, "compiled/gateway", store.SourceCompiled, "# Compiled gateway")
+	insertBareNamePage(t, s, "learning/auth-1", store.SourceLearning, "Auth learning")
+	insertBareNamePage(t, s, "compiled/both", store.SourceCompiled, "# Compiled both")
+	insertBareNamePage(t, s, "learning/both", store.SourceLearning, "Learning both")
+	ctx := context.Background()
+
+	for name, want := range map[string]string{
+		"gateway":          "compiled/gateway",
+		"GATEWAY":          "compiled/gateway",
+		"compiled/gateway": "compiled/gateway",
+		"auth-1":           "learning/auth-1",
+		"both":             "compiled/both",
+	} {
+		page, err := c.GetPage(ctx, name)
+		if err != nil || page == nil {
+			t.Errorf("GetPage(%q) = %v, %v", name, page, err)
+			continue
+		}
+		if page.Name != want {
+			t.Errorf("GetPage(%q).Name = %q, want %q", name, page.Name, want)
+		}
+	}
+
+	blocks, err := c.GetPageBlocksTree(ctx, "auth-1")
+	if err != nil {
+		t.Fatalf("GetPageBlocksTree: %v", err)
+	}
+	if !blockTreeContains(blocks, "Auth learning") {
+		t.Errorf("blocks = %+v, want the learning's block", blocks)
+	}
+
+	// A miss stays a miss, and a slash name never takes the shorthand.
+	insertBareNamePage(t, s, "compiled/a/b", store.SourceCompiled, "# Nested")
+	for _, name := range []string{"absent", "a/b"} {
+		if page, err := c.GetPage(ctx, name); err != nil || page != nil {
+			t.Errorf("GetPage(%q) = %v, %v; want nil, nil", name, page, err)
+		}
+	}
+}
+
+func TestGetPage_BareNameAfterHydration(t *testing.T) {
+	c, s := newStoreBackedClient(t, nil)
+	insertBareNamePage(t, s, "compiled/gateway", store.SourceCompiled, "# Compiled gateway")
+	if _, err := c.vaultStore.LoadExternalPages(c); err != nil {
+		t.Fatalf("LoadExternalPages: %v", err)
+	}
+	page, err := c.GetPage(context.Background(), "gateway")
+	if err != nil || page == nil || page.Name != "compiled/gateway" {
+		t.Errorf("GetPage(gateway) after hydration = %+v, %v", page, err)
+	}
+}
+
+func TestGetPage_VaultFileBeatsBareStoreName(t *testing.T) {
+	c, s := newStoreBackedClient(t, map[string]string{"gateway.md": "# Gateway\n\nFrom the vault file.\n"})
+	insertBareNamePage(t, s, "compiled/gateway", store.SourceCompiled, "# From the store")
+	ctx := context.Background()
+
+	blocks, err := c.GetPageBlocksTree(ctx, "gateway")
+	if err != nil {
+		t.Fatalf("GetPageBlocksTree: %v", err)
+	}
+	if blockTreeContains(blocks, "From the store") || !blockTreeContains(blocks, "From the vault file") {
+		t.Errorf("blocks = %+v, want the vault file's content", blocks)
+	}
+}
+
+func TestBareNameResolutionDoesNotReachWrites(t *testing.T) {
+	c, s := newStoreBackedClient(t, nil)
+	insertBareNamePage(t, s, "compiled/gateway", store.SourceCompiled, "# Compiled gateway")
+
+	found, _, _, err := c.checkStoreBackedWrite("gateway")
+	if err != nil || found {
+		t.Errorf("checkStoreBackedWrite(gateway) = %v, %v; want false, nil", found, err)
+	}
+	// A bare read now finds store blocks; writing to one is still refused.
+	if err := c.UpdateBlock(context.Background(), "compiled/gateway-root", "changed"); err == nil {
+		t.Error("UpdateBlock on a store block: expected error")
+	}
+}
+
 func TestGetPage_StoreErrorSurfaces(t *testing.T) {
 	// A store failure must surface as an error, not be masked as a
 	// not-found result (design D6 honest-error philosophy).
@@ -2882,6 +2973,9 @@ func TestGetPage_StoreErrorSurfaces(t *testing.T) {
 
 	if _, err := c.GetPage(ctx, "compiled/gateway"); err == nil {
 		t.Error("GetPage: expected store query error after store close, got nil")
+	}
+	if _, err := c.GetPage(ctx, "gateway"); err == nil {
+		t.Error("GetPage (bare name): expected store query error after store close, got nil")
 	}
 	if _, err := c.GetPageBlocksTree(ctx, "compiled/gateway"); err == nil {
 		t.Error("GetPageBlocksTree: expected store query error after store close, got nil")

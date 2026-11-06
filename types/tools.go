@@ -3,7 +3,7 @@ package types
 // --- Navigate tool inputs ---
 
 type GetPageInput struct {
-	Name      string `json:"name" jsonschema:"Page name to retrieve"`
+	Name      string `json:"name" jsonschema:"Page name to retrieve. A bare name also finds compiled/<name> and learning/<name>."`
 	Depth     int    `json:"depth,omitempty" jsonschema:"Max block tree depth (-1 for unlimited). Default: -1"`
 	MaxBlocks int    `json:"maxBlocks,omitempty" jsonschema:"Max total blocks to return. Truncates with a flag when exceeded. Default: unlimited"`
 	Compact   bool   `json:"compact,omitempty" jsonschema:"Return blocks as plain strings instead of enriched objects. Saves ~60%% tokens. Default: false"`

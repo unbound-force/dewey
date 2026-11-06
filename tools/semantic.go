@@ -63,14 +63,16 @@ func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest,
 		return errorResult(fmt.Sprintf("Failed to embed query: %v", err)), nil, nil
 	}
 
-	// Search for similar blocks.
-	results, err := s.store.SearchSimilar(s.embedder.ModelID(), queryVec, limit, threshold)
+	// Search for similar blocks, over-fetching when validity ranking may
+	// reorder them (issue #148).
+	results, err := s.store.SearchSimilar(s.embedder.ModelID(), queryVec, semanticFetchLimit(limit, !input.IgnoreValidity), threshold)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Search failed: %v", err)), nil, nil
 	}
 
-	// Convert to output format with provenance metadata.
-	output := toSemanticResults(results, s.store)
+	// Convert to output format with provenance metadata, then rank by
+	// validity and trim to the limit.
+	output := finishSemanticResults(toSemanticResults(results, s.store), "", input.IgnoreValidity, limit)
 
 	res, err := jsonTextResult(output)
 	return res, nil, err
@@ -229,13 +231,8 @@ func (s *Semantic) SemanticSearchFiltered(ctx context.Context, req *mcp.CallTool
 	// because the store's SearchFilters does not support tier natively.
 	// Design decision: Post-query filter chosen over modifying store/ to keep
 	// this change scoped to the tools layer (Single Responsibility Principle).
-	fetchLimit := limit
-	if input.Tier != "" {
-		fetchLimit = limit * 3 // Over-fetch to compensate for post-filter reduction.
-		if fetchLimit < 30 {
-			fetchLimit = 30
-		}
-	}
+	// Validity filtering and ranking (issue #148) over-fetch the same way.
+	fetchLimit := semanticFetchLimit(limit, input.Tier != "" || input.Validity != "" || !input.IgnoreValidity)
 
 	// Search with filters.
 	results, err := s.store.SearchSimilarFiltered(s.embedder.ModelID(), queryVec, filters, fetchLimit, threshold)
@@ -248,12 +245,8 @@ func (s *Semantic) SemanticSearchFiltered(ctx context.Context, req *mcp.CallTool
 		results = filterResultsByTier(results, input.Tier, s.store)
 	}
 
-	// Enforce the original limit after tier filtering.
-	if len(results) > limit {
-		results = results[:limit]
-	}
-
-	output := toSemanticResults(results, s.store)
+	// Apply the validity filter and ranking, then enforce the original limit.
+	output := finishSemanticResults(toSemanticResults(results, s.store), input.Validity, input.IgnoreValidity, limit)
 
 	res, err := jsonTextResult(output)
 	return res, nil, err
@@ -305,6 +298,7 @@ func toSemanticResults(results []store.SimilarityResult, st *store.Store) []type
 		if page, ok := pageCache[r.PageName]; ok {
 			result.Tier = page.Tier
 			result.Category = page.Category
+			result.Validity, result.AsOf = pageValidity(page)
 			if page.CreatedAt > 0 {
 				result.CreatedAt = time.UnixMilli(page.CreatedAt).UTC().Format(time.RFC3339)
 			}

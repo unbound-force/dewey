@@ -210,6 +210,8 @@ type SemanticSearchInput struct {
 	Query     string  `json:"query" jsonschema:"Natural language search query"`
 	Limit     int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
 	Threshold float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
+	// IgnoreValidity disables validity-weighted ranking (issue #148).
+	IgnoreValidity bool `json:"ignore_validity,omitempty" jsonschema:"Order by raw similarity only. By default superseded (x0.6) and stale-unverified (x0.85) results rank lower; reported similarity is always raw."`
 }
 
 // SimilarInput is the input for the dewey_similar MCP tool.
@@ -229,6 +231,9 @@ type SemanticSearchFilteredInput struct {
 	Tier        string  `json:"tier,omitempty" jsonschema:"Filter by trust tier: authored, curated, validated, draft, or untrusted"`
 	Limit       int     `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
 	Threshold   float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
+	// Validity filter and ranking switch (issue #148).
+	Validity       string `json:"validity,omitempty" jsonschema:"Filter by validity: current, stale-unverified, superseded, or historical. Pages without validity are excluded when set."`
+	IgnoreValidity bool   `json:"ignore_validity,omitempty" jsonschema:"Order by raw similarity only. By default superseded (x0.6) and stale-unverified (x0.85) results rank lower; reported similarity is always raw."`
 }
 
 // SemanticSearchResult represents a single result from semantic search.
@@ -248,6 +253,9 @@ type SemanticSearchResult struct {
 	CreatedAt  string  `json:"created_at,omitempty"`
 	Tier       string  `json:"tier,omitempty"`
 	Category   string  `json:"category,omitempty"`
+	// Temporal validity from page properties (issues #146, #148).
+	Validity string `json:"validity,omitempty"`
+	AsOf     string `json:"as_of,omitempty"`
 }
 
 // --- Indexing tool inputs ---
@@ -271,6 +279,11 @@ type StoreLearningInput struct {
 	// Deprecated: Use Tag instead. If provided and Tag is empty, the first
 	// tag from the comma-separated list is used for backward compatibility.
 	Tags string `json:"tags,omitempty" jsonschema:"DEPRECATED: Use 'tag' instead. If provided and 'tag' is empty, first tag is used."`
+	// Temporal validity (issue #146). All optional; as_of is stamped
+	// automatically from the vault's git HEAD.
+	Evidence   []string `json:"evidence,omitempty" jsonschema:"Optional evidence locators backing the learning (max 50, each max 512 chars), e.g. 'dewey:tools/lint.go', 'dewey#147', 'learning/<identity>', 'session:<id>'"`
+	Validity   string   `json:"validity,omitempty" jsonschema:"Optional validity status: current, stale-unverified, superseded, historical. Omit when unknown."`
+	Supersedes string   `json:"supersedes,omitempty" jsonschema:"Optional identity (or learning/<identity> page name) of an existing learning this one replaces. The target gains superseded_by and validity: superseded; it is never deleted."`
 }
 
 // --- Journal tool inputs ---

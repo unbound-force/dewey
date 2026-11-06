@@ -183,7 +183,7 @@ func registerNavigateTools(srv *mcp.Server, nav *tools.Navigate, hasDataScript b
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_page",
-		Description: "Get a Logseq page with its full recursive block tree, properties, tags, and parsed links. Every block includes extracted [[links]], ((references)), #tags, and key:: value properties. Use maxBlocks to limit output size for large pages.",
+		Description: "Get a Logseq page with its full recursive block tree, properties, tags, and parsed links. Every block includes extracted [[links]], ((references)), #tags, and key:: value properties. Use maxBlocks to limit output size for large pages. A bare name also finds compiled/<name> and learning/<name> when no vault page has that name.",
 	}, nav.GetPage)
 
 	mcp.AddTool(srv, &mcp.Tool{

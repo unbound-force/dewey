@@ -446,12 +446,15 @@ The `store_learning` MCP tool stores knowledge with temporal awareness:
 - **`tag`** (required): Topic namespace (e.g., `authentication`, `vault-walker`). Used for clustering and identity.
 - **`category`** (optional): One of `decision`, `pattern`, `gotcha`, `context`, `reference`. Guides compilation strategy.
 - **`information`** (required): Natural language paragraph describing the learning.
+- **`evidence`** (optional): Up to 50 locator strings backing the learning (`<repo>:<path>`, `<repo>#<issue-or-PR>`, `learning/<identity>`, `session:<id>`); each is trimmed, deduplicated, and capped at 512 characters (counted in runes, not bytes).
+- **`validity`** (optional): One of `current`, `stale-unverified`, `superseded`, `historical`. Absent means unknown — there is no default.
+- **`supersedes`** (optional): Identity (or `learning/<identity>`) of an existing learning this one replaces. The target gains `superseded_by` and `validity: superseded` in the store and in its markdown backup; superseded learnings are never deleted and each has at most one successor. If the back-link fails after the successor is stored, the result carries a non-empty `supersedes_warning`.
 - **Returns**: `{tag}-{YYYYMMDDTHHMMSS}-{author}` identity (e.g., `authentication-20260502T143022-alice`), using UTC timestamps and resolved author identity.
-- **Automatic fields**: `created_at` (ISO 8601), `tier` (defaults to `draft`), `author` (resolved via three-tier fallback: `DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`).
+- **Automatic fields**: `created_at` (ISO 8601), `tier` (defaults to `draft`), `author` (resolved via three-tier fallback: `DEWEY_AUTHOR` env var → `git config user.name` → `"anonymous"`), `as_of` (`<repo>@<HEAD sha>` of the vault's git repository; omitted entirely when the vault is not a git repo or git fails — no fallback).
 
 Set `DEWEY_AUTHOR` to override the default author identity (useful in CI or shared environments where git config may not be available).
 
-Backward compatibility: the old `tags` (plural, comma-separated) field is still accepted — the first tag is used.
+Backward compatibility: the old `tags` (plural, comma-separated) field is still accepted — the first tag is used. Temporal-validity fields round-trip through markdown frontmatter and startup re-ingestion; legacy files without them re-ingest unchanged.
 
 ### Trust Tiers
 
@@ -657,6 +660,7 @@ specs/
 - Go 1.25 (per `go.mod`) + `net/http` (OpenAI-compatible chat completions), `github.com/modelcontextprotocol/go-sdk` (MCP tools), `github.com/unbound-force/dewey/v3/llm` (provider factory), `modernc.org/sqlite` (page resolution), `github.com/spf13/cobra` (CLI — multi-page `dewey promote`) (dewey-distill)
 
 ## Recent Changes
+- learning-temporal-validity (OpenSpec, dewey #146 / PR #156): `store_learning` gained temporal-validity metadata — automatic `as_of` git pin (`<repo>@<HEAD sha>`, injectable via `WithAsOfResolver`), optional `evidence` (≤50 locators, 512 runes each), `validity` (`current`/`stale-unverified`/`superseded`/`historical`, absent = unknown), and two-way `supersedes`/`superseded_by` links (append-only, `supersedes_warning` on partial back-link failure); new `tools/learning_temporal.go` pure helpers; all validation runs before any write; fields round-trip through re-ingestion; no SQL schema change (fields live in `properties` JSON)
 - 017-openai-compatible-providers: Added `openaicompat/` shared transport, `OpenAICompatibleEmbedder`, `OpenAICompatibleSynthesizer`, environment-only API-key chain (`DEWEY_EMBEDDING_API_KEY` / `DEWEY_SYNTHESIS_API_KEY` → `DEWEY_API_KEY` → `OPENROUTER_API_KEY` on the exact `openrouter.ai` host), 429 retry parity with Vertex, cached `/models` probe, provider-aware doctor/startup/index warnings, and `UnavailableReasoner` capability interfaces on both providers
 - dewey-distill (OpenSpec): Added the `openai-compatible` synthesis provider (`synthesis.api_key`/`DEWEY_SYNTHESIS_API_KEY`, configurable timeout and max tokens, 429 retry, truncation detection), server-side `compile`/`curate` wiring via `WithSynthesizer`, shared index mutex for compile, validated-article retention through compiles plus `store_compiled` validated-overwrite refusal, batch `promote` with a tools-side resolution ladder (`resolvePromotePage`) over index-backed store queries backed by schema v3 NOCASE indexes (subsumes #91), `/dewey-distill` slash command, and doctor diagnostics for the new provider
 - mcp-internal-store-access (OpenSpec): MCP read tools (get_page, get_page_blocks_tree, get_block, list_pages, search, find_by_tag) now serve a unified live view of vault files and persistent store pages via vault read bridge (RLock snapshot → live store read-through, vault precedence, no caching); promote resolves bare names against compiled/ then learning/ and distinguishes lookup errors from absence; CLI promote reports lock-holder PID/command; shared persistent-storage error with lock hint across tools (dewey #90, #91)

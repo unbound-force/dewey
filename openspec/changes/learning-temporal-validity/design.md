@@ -38,6 +38,12 @@ full `git rev-parse HEAD`. Resolved by an injected function (the
 timeout. Any failure omits `as_of` and logs at debug; storing never
 fails because git is unavailable. The pin is HEAD, not the working
 tree: uncommitted changes are not represented, documented as such.
+The resolver runs under `context.Background()` rather than a request
+context: `as_of` is artifact provenance that must not depend on the
+requester's connection lifetime, the 2-second timeout bounds the
+subprocess cost, and failure only omits the pin. Threading a context
+would widen the `AsOfResolver` signature across every resolver and
+test double; revisit with multi-repo pinning (#106).
 
 ### D3 Validation
 
@@ -85,6 +91,10 @@ straight-line calls.
   between the pin and later HEADs; the uncommitted window is small.
 - **Re-ingested `validity: superseded` is trusted.** Unlike tier,
   validity is not a trust claim, so re-ingestion keeps it as written.
-- **Concurrent supersession** of the same target by two processes is
-  not locked; the second writer overwrites `superseded_by`. Dewey's
-  store lock already serializes writers within one vault.
+- **Concurrent supersession** of the same target is not serialized;
+  the second writer overwrites `superseded_by`, silently forking the
+  chain (no `supersedes_warning`). The store lock serializes
+  processes; the unserialized window is concurrent in-process tool
+  calls under streamable HTTP sharing one store handle. Tracked in
+  #166 — candidate fix is a compare-and-swap update or per-target
+  mutex covering both write legs (store and markdown file).

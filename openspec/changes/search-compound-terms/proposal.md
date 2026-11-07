@@ -19,7 +19,8 @@ Part of #153 (umbrella).
 ## What Changes
 
 - Indexing: a term containing `-` or `_` is indexed whole **and** as
-  its component parts (each at least 2 characters).
+  its component parts (each at least 2 bytes, matching `tokenize`'s
+  term-length convention).
 - Querying: exact-term matches come first, exactly as today. When the
   query has compound terms and fewer than `limit` exact hits, the
   remainder is filled with blocks matching every component (AND),

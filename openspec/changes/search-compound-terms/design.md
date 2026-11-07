@@ -23,8 +23,9 @@ list under its whole spelling only.
 
 `tokenize` is unchanged (it also feeds `SortByRelevance`). Indexing
 adds the components of each compound term (`splitCompound`: split on
-`-` / `_`, keep parts of length ≥ 2). Removal already walks the
-page's recorded term set, so components are removed with the page.
+`-` / `_`, keep parts of length ≥ 2 bytes, matching `tokenize`'s
+term-length filter). Removal already walks the page's recorded term
+set, so components are removed with the page.
 
 ### D2 Two-pass query, exact first
 
@@ -36,10 +37,10 @@ with no compound terms is a single pass, identical to today.
 
 ### D3 Components-only compounds
 
-A compound whose parts are all shorter than 2 characters (`a-b`)
+A compound whose parts are all shorter than 2 bytes (`a-b`)
 yields no components and stays a whole-term lookup. A mixed compound
 (`x-kb`) yields only its qualifying parts (`[kb]`); the dropped
-1-character part also loses its AND constraint in pass 2, so `x-kb`
+1-byte part also loses its AND constraint in pass 2, so `x-kb`
 matches every block containing `kb` — broader than a whole-term lookup,
 the same set the surviving component matches on its own.
 

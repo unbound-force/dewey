@@ -196,10 +196,22 @@ func TestSearchIndex_CompoundIDForms(t *testing.T) {
 		mkBlock("single", "Use the a-b test pattern"),
 	)
 
-	for _, query := range []string{"KB-REVIEW-ADJUD-01", "KB-REVIEW-ADJUD", "KB REVIEW ADJUD 01", "kb-review-adjud-01"} {
-		results, _ := si.Search(query, 20)
+	forms := []struct {
+		query     string
+		wantExact int
+	}{
+		{"KB-REVIEW-ADJUD-01", 1},
+		{"KB-REVIEW-ADJUD", 0},
+		{"KB REVIEW ADJUD 01", 1},
+		{"kb-review-adjud-01", 1},
+	}
+	for _, form := range forms {
+		results, exact := si.Search(form.query, 20)
 		if len(results) != 1 || results[0].UUID != "claim" {
-			t.Errorf("Search(%q) = %v, want only the claim block", query, results)
+			t.Errorf("Search(%q) = %v, want only the claim block", form.query, results)
+		}
+		if exact != form.wantExact {
+			t.Errorf("Search(%q) reported %d pass-one exact matches, want %d", form.query, exact, form.wantExact)
 		}
 	}
 	if results, _ := si.Search("crap_load", 20); len(results) != 1 || results[0].UUID != "snake" {
@@ -222,7 +234,10 @@ func TestSearchIndex_CompoundExactMatchesFirst(t *testing.T) {
 		mkBlock("apart", "foo is near bar here"),
 		mkBlock("exact", "the foo-bar widget"),
 	)
-	results, _ := si.Search("foo-bar", 20)
+	results, exact := si.Search("foo-bar", 20)
+	if exact != 1 {
+		t.Errorf("Search(foo-bar) reported %d pass-one exact matches, want 1 (the foo-bar block)", exact)
+	}
 	if len(results) != 2 {
 		t.Fatalf("Search(foo-bar) returned %d results, want 2 (each block once): %v", len(results), results)
 	}

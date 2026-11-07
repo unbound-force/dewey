@@ -3851,6 +3851,55 @@ func TestFullTextSearch_RespectsLimitAcrossMerge(t *testing.T) {
 	}
 }
 
+func TestFullTextSearch_ComponentFillsDoNotDisplaceStoreExactID(t *testing.T) {
+	// Store-merge precedence regression test (search-compound-terms review,
+	// item 4): a truncated compound query with zero exact in-memory matches
+	// can saturate the limit with pass-two component fills. A store-only
+	// page holding the full compound ID must still surface, ranking ahead
+	// of the component-only fills — the merge is gated on the pass-one
+	// exact-match count, not the total hit count, so component matches
+	// cannot displace a store page the query's full ID lives on.
+	c, s := newStoreBackedClient(t, map[string]string{
+		"comp1.md": "# Comp1\n\nkb review adjud one\n",
+		"comp2.md": "# Comp2\n\nkb review adjud two\n",
+		"comp3.md": "# Comp3\n\nkb review adjud three\n",
+	})
+	c.BuildBacklinks()
+
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "compiled/registry", OriginalName: "registry", SourceID: "compiled"},
+		&store.Block{UUID: "store-full-id", PageName: "compiled/registry", Content: "Decision record KB-REVIEW-ADJUD-01 final", Position: 0},
+	)
+
+	// In-memory: zero exact matches (no vault block holds the whole
+	// hyphenated ID) and three component-only fills (kb AND review AND
+	// adjud) — enough to saturate the limit on their own.
+	hits, err := c.FullTextSearch(context.Background(), "KB-REVIEW-ADJUD", 3)
+	if err != nil {
+		t.Fatalf("FullTextSearch: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %d, want 3 (limit respected): %+v", len(hits), hits)
+	}
+	if hits[0].PageName != "compiled/registry" || hits[0].UUID != "store-full-id" {
+		t.Errorf("first hit = %s/%s, want the store-only page holding the full compound ID (compiled/registry/store-full-id): %+v",
+			hits[0].PageName, hits[0].UUID, hits[0])
+	}
+	// The remaining slots are component fills from the vault files.
+	fillCount := 0
+	for _, h := range hits[1:] {
+		switch h.PageName {
+		case "comp1", "comp2", "comp3":
+			fillCount++
+		default:
+			t.Errorf("unexpected tail hit for page %q: %+v", h.PageName, h)
+		}
+	}
+	if fillCount != 2 {
+		t.Errorf("component-fill tail = %d hits, want 2 (the store hit consumed one slot): %+v", fillCount, hits)
+	}
+}
+
 func TestFullTextSearch_EmptyQueryNoStoreHits(t *testing.T) {
 	// An empty or whitespace-only query must return no hits even with a
 	// store configured: SearchStoreBlocks("") would otherwise run LIKE '%%'

@@ -1965,7 +1965,12 @@ func (c *Client) SearchJournals(_ context.Context, query, from, to string) ([]ba
 // store configured. When no limit pressure applies, all matching blocks of a
 // surfacing store page are returned; under limit pressure the merge stops at
 // the effective limit, so a store-only page may serve a prefix of its
-// matching blocks. Nothing is cached into c.pages or the search index
+// matching blocks. When the in-memory query used pass-two component fills
+// (compound-term search), the merge is gated on the pass-one exact-match
+// count rather than the total hit count, and store-only exact-substring
+// hits rank ahead of component-only fills — component matches cannot
+// displace a store-only page holding the full compound ID. Nothing is
+// cached into c.pages or the search index
 // (design D2 — live lookups). A nil store returns the in-memory hits exactly
 // as before (Constitution II parity).
 func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]backend.SearchHit, error) {
@@ -1976,7 +1981,7 @@ func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]b
 	// The search index is internally synchronized (its own RWMutex), so no
 	// c.mu is held here — the store query below already satisfies the D2
 	// locking discipline that store I/O never runs under c.mu.
-	results := c.searchIndex.Search(query, limit)
+	results, exact := c.searchIndex.Search(query, limit)
 
 	hits := make([]backend.SearchHit, len(results))
 	for i, r := range results {
@@ -2002,8 +2007,8 @@ func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]b
 	if limit <= 0 {
 		limit = 20
 	}
-	if len(hits) >= limit {
-		return hits, nil // in-memory hits already fill the limit
+	if exact >= limit {
+		return hits, nil // pass-one exact matches already fill the limit
 	}
 
 	// Membership-based dedupe seed (design D3/D4, spec: Unified Full-Text
@@ -2030,16 +2035,26 @@ func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]b
 	if err != nil {
 		return nil, err
 	}
+	// Store-only exact-substring hits rank ahead of pass-two component
+	// fills: keep the exact matches, merge store pages in next, then
+	// append the component fills. Search orders pass-one hits before
+	// pass-two fills, so hits[:exact] is the exact portion.
+	merged := make([]backend.SearchHit, 0, limit)
+	merged = append(merged, hits[:exact]...)
 	for _, h := range storeHits {
-		if len(hits) >= limit {
+		if len(merged) >= limit {
 			break
 		}
 		if seen[strings.ToLower(h.PageName)] {
 			continue // vault-file precedence: never duplicate a mirrored row
 		}
-		hits = append(hits, h)
+		merged = append(merged, h)
 	}
-	return hits, nil
+	merged = append(merged, hits[exact:]...)
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
 }
 
 // searchBlocksForText recursively searches blocks for text content.

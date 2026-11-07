@@ -9,7 +9,7 @@
 
 - [x] 2.1 CI parity: build, vet, `go test -race -count=1
   -coverprofile=coverage.out ./...`, gaze crap gate, golangci-lint
-- [ ] 2.2 `/uf.review-council` (OpenCode), draft PR
+- [x] 2.2 `/uf.review-council` (OpenCode), draft PR
 - [x] 2.3 Verify constitution alignment: Composability First
   (Ollama stays optional), Autonomous Collaboration (diagnostic
   output only), Observable Quality (accurate provider

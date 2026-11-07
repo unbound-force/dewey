@@ -5220,6 +5220,9 @@ func TestDoctorCmd_EmbeddingVertexMisconfigured(t *testing.T) {
 	if !strings.Contains(section, "❌ config") || !strings.Contains(section, "incomplete") || !strings.Contains(section, "project") {
 		t.Errorf("Embedding Layer should report incomplete config naming project, got:\n%s", section)
 	}
+	if strings.Contains(section, "✅") {
+		t.Errorf("Embedding Layer must not render a PASS check for incomplete config, got:\n%s", section)
+	}
 	if strings.Contains(strings.ToLower(section), "ollama") {
 		t.Errorf("Vertex Embedding Layer must not suggest Ollama, got:\n%s", section)
 	}

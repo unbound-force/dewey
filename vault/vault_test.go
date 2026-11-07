@@ -2885,6 +2885,10 @@ func TestGetPage_BareNameResolvesInternalStorePages(t *testing.T) {
 	insertBareNamePage(t, s, "learning/auth-1", store.SourceLearning, "Auth learning")
 	insertBareNamePage(t, s, "compiled/both", store.SourceCompiled, "# Compiled both")
 	insertBareNamePage(t, s, "learning/both", store.SourceLearning, "Learning both")
+	// An exact store page competing with compiled/<same-bare-name>: the
+	// exact page must win, pinning findStorePage's exact-vs-prefix order.
+	insertBareNamePage(t, s, "plain", "disk-local", "Exact plain page")
+	insertBareNamePage(t, s, "compiled/plain", store.SourceCompiled, "# Compiled plain")
 	ctx := context.Background()
 
 	for name, want := range map[string]string{
@@ -2893,6 +2897,7 @@ func TestGetPage_BareNameResolvesInternalStorePages(t *testing.T) {
 		"compiled/gateway": "compiled/gateway",
 		"auth-1":           "learning/auth-1",
 		"both":             "compiled/both",
+		"plain":            "plain",
 	} {
 		page, err := c.GetPage(ctx, name)
 		if err != nil || page == nil {
@@ -2947,7 +2952,7 @@ func TestGetPage_VaultFileBeatsBareStoreName(t *testing.T) {
 	}
 }
 
-func TestBareNameResolutionDoesNotReachWrites(t *testing.T) {
+func TestCheckStoreBackedWrite_BareNameNotResolved(t *testing.T) {
 	c, s := newStoreBackedClient(t, nil)
 	insertBareNamePage(t, s, "compiled/gateway", store.SourceCompiled, "# Compiled gateway")
 
@@ -2964,6 +2969,14 @@ func TestBareNameResolutionDoesNotReachWrites(t *testing.T) {
 func TestGetPage_StoreErrorSurfaces(t *testing.T) {
 	// A store failure must surface as an error, not be masked as a
 	// not-found result (design D6 honest-error philosophy).
+	//
+	// Coverage note: closing the store fails every query uniformly, so
+	// this technique reaches only findStorePage's initial exact-lookup
+	// guard. The prefix-loop error branch needs a split outcome (exact
+	// lookup misses, prefixed lookup fails) that a closed store cannot
+	// produce, and the store field is a concrete *store.Store with no
+	// fault-injection seam; that branch mirrors the tested first-lookup
+	// guard line-for-line, which bounds the risk.
 	c, s := newStoreBackedClient(t, nil)
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close store: %v", err)

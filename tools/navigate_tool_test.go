@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
+	"github.com/unbound-force/dewey/v3/vault"
 )
 
 func TestGetPage_Success(t *testing.T) {
@@ -506,6 +508,73 @@ func TestGetLinks_ForwardOnly(t *testing.T) {
 
 	if parsed["backlinks"] != nil {
 		t.Error("expected no backlinks for forward-only direction")
+	}
+}
+
+// TestGetLinks_BareNameResolvesStorePage pins the consumer-level broadening
+// of bare-name resolution: get_links passes the raw tool input to the vault
+// client, so the shared store fallback behind GetPageBlocksTree resolves a
+// bare name to compiled/<name>. The mock backend the other GetLinks tests
+// use bypasses the fallback entirely, so this fixture runs against a real
+// store-backed vault client — the level where the fallback executes.
+func TestGetLinks_BareNameResolvesStorePage(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	c := vault.New(dir, vault.WithStore(s))
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// A compiled article with one outgoing link, read by its bare topic.
+	if err := s.InsertPage(&store.Page{
+		Name:         "compiled/gateway",
+		OriginalName: "gateway",
+		SourceID:     store.SourceCompiled,
+		SourceDocID:  "gateway",
+		Tier:         "draft",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+	if err := s.InsertBlock(&store.Block{
+		UUID:     "gateway-root",
+		PageName: "compiled/gateway",
+		Content:  "Links to [[Target]]",
+		Position: 0,
+	}); err != nil {
+		t.Fatalf("InsertBlock: %v", err)
+	}
+
+	nav := NewNavigate(c)
+	result, _, err := nav.GetLinks(context.Background(), nil, types.GetLinksInput{
+		Name:      "gateway",
+		Direction: "forward",
+	})
+	if err != nil {
+		t.Fatalf("GetLinks() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("GetLinks() returned error result")
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if parsed["page"] != "gateway" {
+		t.Errorf("page = %v, want the requested bare name %q", parsed["page"], "gateway")
+	}
+	outgoing, ok := parsed["outgoingLinks"].([]any)
+	if !ok {
+		t.Fatal("expected outgoingLinks array")
+	}
+	if len(outgoing) != 1 {
+		t.Fatalf("expected 1 outgoing link from compiled/gateway via the bare name, got %d", len(outgoing))
 	}
 }
 

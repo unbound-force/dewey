@@ -1,3 +1,7 @@
+## ADDED Requirements
+
+_None._
+
 ## MODIFIED Requirements
 
 ### Requirement: Provider-Aware Vertex Embedding Diagnostics
@@ -23,3 +27,8 @@ Ollama reachability and model-pull paths.
 - **THEN** the Embedding Layer MUST report FAIL naming the missing
   field
 - **AND** the section MUST NOT suggest `ollama pull`
+
+## REMOVED Requirements
+
+_None._
+<!-- scaffolded by uf vdev -->

@@ -5,6 +5,13 @@
 Layer already has a dedicated `vertex` case that validates config via
 the provider factory without live calls.
 
+Constitution alignment is assessed in the proposal (I Composability
+First PASS, II Autonomous Collaboration N/A, III Observable Quality
+PASS, IV Testability PASS). This design reinforces it: D2 validates
+through the provider factory with no network calls (IV — no external
+services in tests), and the dedicated branch leaves Ollama
+diagnostics untouched (I — Ollama stays optional).
+
 ## Goals / Non-Goals
 
 ### Goals

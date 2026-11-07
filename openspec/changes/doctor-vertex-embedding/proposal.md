@@ -41,6 +41,11 @@ search; live credential checks.
 
 - `cli.go` — new `printVertexEmbeddingChecks` helper; one switch case.
 - `cli_test.go` — configured and misconfigured Vertex embedding.
+- `README.md` — doctor section description updated for the
+  provider-aware Embedding Layer.
+- Website docs-sync issue in unbound-force/website for the doctor
+  Embedding Layer output change (`docs` label, per the website#249
+  precedent).
 - No change for `ollama`, empty, or `openai-compatible` providers.
 
 ## Constitution Alignment

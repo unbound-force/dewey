@@ -376,7 +376,7 @@ dewey status [--vault PATH] [--json]
 
 ### dewey doctor
 
-Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), embedding layer configuration (Ollama availability and model status; Vertex checked for configuration completeness), synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, model and credential presence — only Ollama availability is probed; Vertex and OpenAI-compatible gateways are checked for configuration completeness), MCP server process, and opencode.json configuration.
+Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), embedding layer configuration (Ollama availability and model status; Vertex checked for configuration completeness; OpenAI-compatible checked for configuration, connectivity, and credentials), synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, model and credential presence — only Ollama availability is probed; Vertex and OpenAI-compatible gateways are checked for configuration completeness), MCP server process, and opencode.json configuration.
 
 ```bash
 dewey doctor [--vault PATH]

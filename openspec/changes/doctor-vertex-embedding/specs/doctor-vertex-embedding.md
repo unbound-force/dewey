@@ -1,3 +1,12 @@
+<!--
+Requirement numbering: this change allocates DVE-FR-001 for the
+doctor-vertex-embedding capability; DVE-FR-002 through DVE-FR-010
+are reserved for future changes to the same capability. Sibling
+diagnostics capabilities keep their requirements in their own
+change deltas (for example, doctor-synthesis-section under the
+doctor-synthesis-diagnostics change); capabilities with a main
+spec live under openspec/specs/.
+-->
 ## ADDED Requirements
 
 _None._
@@ -5,6 +14,9 @@ _None._
 ## MODIFIED Requirements
 
 ### Requirement: Provider-Aware Vertex Embedding Diagnostics
+
+Requirement DVE-FR-001: provider-aware Vertex embedding
+diagnostics.
 
 When `embedding.provider` is `vertex`, `dewey doctor`'s Embedding
 Layer section MUST report configuration completeness without network

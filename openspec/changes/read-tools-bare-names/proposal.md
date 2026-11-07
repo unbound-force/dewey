@@ -38,7 +38,7 @@ precedence on reads.
 ## Impact
 
 - `vault/vault_store.go` — `findStorePage`, used by `GetStorePage`.
-- `vault/vault_store_test.go`, `vault/vault_test.go`.
+- `vault/vault_test.go`; consumer-level tests in `tools/navigate_tool_test.go` and `tools/whiteboard_test.go`.
 - `server.go`, `types/tools.go` descriptions; README.
 - No store query changes; a miss costs up to two more indexed lookups.
 

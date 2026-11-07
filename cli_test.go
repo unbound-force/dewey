@@ -5195,7 +5195,7 @@ func TestDoctorCmd_EmbeddingVertexConfigured(t *testing.T) {
 	runDoctorChecks(&buf, tmpDir)
 	section := embeddingLayerSection(t, buf.String())
 
-	for _, want := range []string{"text-embedding-005 via vertex", "project=my-test-project", "region=us-central1", "model=text-embedding-005"} {
+	for _, want := range []string{"✅ config", "text-embedding-005 via vertex", "project=my-test-project", "region=us-central1", "model=text-embedding-005"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("Embedding Layer should contain %q, got:\n%s", want, section)
 		}
@@ -5216,10 +5216,10 @@ func TestDoctorCmd_EmbeddingVertexMisconfigured(t *testing.T) {
 	runDoctorChecks(&buf, tmpDir)
 	section := embeddingLayerSection(t, buf.String())
 
-	if !strings.Contains(section, "incomplete") || !strings.Contains(section, "project") {
+	if !strings.Contains(section, "❌ config") || !strings.Contains(section, "incomplete") || !strings.Contains(section, "project") {
 		t.Errorf("Embedding Layer should report incomplete config naming project, got:\n%s", section)
 	}
-	if strings.Contains(section, "ollama pull") || strings.Contains(strings.ToLower(section), "ollama") {
+	if strings.Contains(strings.ToLower(section), "ollama") {
 		t.Errorf("Vertex Embedding Layer must not suggest Ollama, got:\n%s", section)
 	}
 }

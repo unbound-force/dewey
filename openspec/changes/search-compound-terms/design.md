@@ -14,7 +14,8 @@ list under its whole spelling only.
 ### Non-Goals
 - General prefix or fuzzy matching (`adj` does not match `adjud`).
 - Relevance ranking beyond exact-first.
-- Changing the store-backed `LIKE` merge.
+- Changing the store-backed `LIKE` query or its dedupe semantics (the
+  merge gate now keys on exact matches — see D4).
 
 ## Decisions
 
@@ -36,7 +37,19 @@ with no compound terms is a single pass, identical to today.
 ### D3 Components-only compounds
 
 A compound whose parts are all shorter than 2 characters (`a-b`)
-yields no components and stays a whole-term lookup.
+yields no components and stays a whole-term lookup. A mixed compound
+(`x-kb`) yields only its qualifying parts (`[kb]`); the dropped
+1-character part also loses its AND constraint in pass 2, so `x-kb`
+matches every block containing `kb` — broader than a whole-term lookup,
+the same set the surviving component matches on its own.
+
+### D4 Store merge keys on exact matches
+
+`FullTextSearch` gates the store merge on the pass-one exact-match
+count rather than the total hit count, and interleaves store-only
+exact-substring hits ahead of pass-two component fills: a store-only
+page holding the full compound ID cannot be displaced by
+component-only matches. The `LIKE` query itself is unchanged.
 
 ## Risks / Trade-offs
 

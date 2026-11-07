@@ -73,14 +73,16 @@ func (si *SearchIndex) RemovePage(lowerName string) {
 // (containing `-` or `_`) and exact matches do not fill the limit, the
 // rest is filled with blocks matching every component of those terms,
 // so truncated and space-split forms of hyphenated IDs still find them
-// (issue #149).
-func (si *SearchIndex) Search(query string, limit int) []SearchResult {
+// (issue #149). The second return value is the number of pass-one
+// exact-term matches, letting callers distinguish them from pass-two
+// component fills when running higher-precision fallbacks.
+func (si *SearchIndex) Search(query string, limit int) ([]SearchResult, int) {
 	si.mu.RLock()
 	defer si.mu.RUnlock()
 
 	terms := tokenize(query)
 	if len(terms) == 0 {
-		return nil
+		return nil, 0
 	}
 
 	if limit <= 0 {
@@ -88,15 +90,17 @@ func (si *SearchIndex) Search(query string, limit int) []SearchResult {
 	}
 
 	results := si.matchAllLocked(terms, limit, nil)
+	exact := len(results)
 	expanded, compound := expandCompoundTerms(terms)
 	if !compound || len(results) >= limit {
-		return results
+		return results, exact
 	}
+
 	seen := make(map[string]bool, len(results))
 	for _, r := range results {
 		seen[r.UUID] = true
 	}
-	return append(results, si.matchAllLocked(expanded, limit-len(results), seen)...)
+	return append(results, si.matchAllLocked(expanded, limit-len(results), seen)...), exact
 }
 
 // matchAllLocked returns up to limit blocks whose terms include every
@@ -284,11 +288,21 @@ func splitCompound(term string) []string {
 
 // withCompoundComponents returns terms followed by the components of each
 // compound term, so a block is indexed under both `kb-review-adjud-01`
-// and `kb`, `review`, `adjud`, `01`.
+// and `kb`, `review`, `adjud`, `01`. When no term is compound, terms is
+// returned unchanged.
 func withCompoundComponents(terms []string) []string {
-	out := append([]string(nil), terms...)
+	out := terms
+	copied := false
 	for _, t := range terms {
-		out = append(out, splitCompound(t)...)
+		parts := splitCompound(t)
+		if len(parts) == 0 {
+			continue
+		}
+		if !copied {
+			out = append([]string(nil), terms...)
+			copied = true
+		}
+		out = append(out, parts...)
 	}
 	return out
 }

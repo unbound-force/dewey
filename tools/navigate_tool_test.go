@@ -511,13 +511,23 @@ func TestGetLinks_ForwardOnly(t *testing.T) {
 	}
 }
 
-// TestGetLinks_BareNameResolvesStorePage pins the consumer-level broadening
-// of bare-name resolution: get_links passes the raw tool input to the vault
-// client, so the shared store fallback behind GetPageBlocksTree resolves a
-// bare name to compiled/<name>. The mock backend the other GetLinks tests
-// use bypasses the fallback entirely, so this fixture runs against a real
-// store-backed vault client — the level where the fallback executes.
-func TestGetLinks_BareNameResolvesStorePage(t *testing.T) {
+// newBareNameStoreClient builds a real store-backed vault client seeded with
+// one compiled article (compiled/gateway) whose only addressable form is the
+// bare topic: the page lives in the store, not on disk, so reading it by name
+// exercises the shared store fallback behind GetPageBlocksTree. The
+// mockBackend the other tool tests use implements backend.Backend directly
+// and bypasses that fallback entirely, so the consumer-level sharing tests
+// below run against this client instead.
+//
+// bulk_update_properties also routes its page read through GetPageBlocksTree
+// and therefore shares the resolution, but it has no consumer-level pin
+// here: the write that follows the read always fails for store-only pages
+// (their blocks are not in the vault block index, and store pages promoted
+// into the vault index by LoadExternalPages are read-only), so the tool
+// reports the page in its failed list whether or not the bare name resolved
+// — an assertion on that list cannot distinguish the two outcomes.
+func newBareNameStoreClient(t *testing.T) *vault.Client {
+	t.Helper()
 	dir := t.TempDir()
 	s, err := store.New(":memory:")
 	if err != nil {
@@ -529,7 +539,7 @@ func TestGetLinks_BareNameResolvesStorePage(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	// A compiled article with one outgoing link, read by its bare topic.
+	// A compiled article with one outgoing link, addressable by bare topic.
 	if err := s.InsertPage(&store.Page{
 		Name:         "compiled/gateway",
 		OriginalName: "gateway",
@@ -547,8 +557,15 @@ func TestGetLinks_BareNameResolvesStorePage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("InsertBlock: %v", err)
 	}
+	return c
+}
 
-	nav := NewNavigate(c)
+// TestGetLinks_BareNameResolvesStorePage pins the consumer-level broadening
+// of bare-name resolution: get_links passes the raw tool input to the vault
+// client, so the shared store fallback behind GetPageBlocksTree resolves a
+// bare name to compiled/<name>.
+func TestGetLinks_BareNameResolvesStorePage(t *testing.T) {
+	nav := NewNavigate(newBareNameStoreClient(t))
 	result, _, err := nav.GetLinks(context.Background(), nil, types.GetLinksInput{
 		Name:      "gateway",
 		Direction: "forward",
@@ -573,8 +590,47 @@ func TestGetLinks_BareNameResolvesStorePage(t *testing.T) {
 	if !ok {
 		t.Fatal("expected outgoingLinks array")
 	}
-	if len(outgoing) != 1 {
-		t.Fatalf("expected 1 outgoing link from compiled/gateway via the bare name, got %d", len(outgoing))
+	if len(outgoing) != 1 || outgoing[0] != "Target" {
+		t.Fatalf("expected outgoing links [Target] from compiled/gateway via the bare name, got %v", outgoing)
+	}
+}
+
+// TestTraverse_BareNameResolvesStorePage pins the same shared fallback for
+// traverse start pages: the breadth-first walk resolves its start page
+// through GetPageBlocksTree, so a bare start topic reaches the compiled
+// article's outgoing [[Target]] link and reports the path.
+func TestTraverse_BareNameResolvesStorePage(t *testing.T) {
+	nav := NewNavigate(newBareNameStoreClient(t))
+	result, _, err := nav.Traverse(context.Background(), nil, types.TraverseInput{
+		From: "gateway",
+		To:   "Target",
+	})
+	if err != nil {
+		t.Fatalf("Traverse() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Traverse() returned error result")
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if parsed["pathsFound"] != float64(1) {
+		t.Fatalf("pathsFound = %v, want 1 path from the bare start name", parsed["pathsFound"])
+	}
+	paths, ok := parsed["paths"].([]any)
+	if !ok || len(paths) != 1 {
+		t.Fatalf("expected paths array with 1 entry, got %v", parsed["paths"])
+	}
+	path, ok := paths[0].([]any)
+	if !ok {
+		t.Fatalf("expected path array, got %v", paths[0])
+	}
+	if len(path) != 2 || path[0] != "gateway" || path[1] != "Target" {
+		t.Fatalf("expected path [gateway Target], got %v", path)
 	}
 }
 

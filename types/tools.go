@@ -24,7 +24,7 @@ type ListPagesInput struct {
 }
 
 type GetLinksInput struct {
-	Name      string `json:"name" jsonschema:"Page name to get links for"`
+	Name      string `json:"name" jsonschema:"Page name to get links for. A bare name also finds compiled/<name> and learning/<name>."`
 	Direction string `json:"direction,omitempty" jsonschema:"Link direction: forward or backward or both. Default: both"`
 }
 
@@ -33,7 +33,7 @@ type GetReferencesInput struct {
 }
 
 type TraverseInput struct {
-	From    string `json:"from" jsonschema:"Starting page name"`
+	From    string `json:"from" jsonschema:"Starting page name. A bare name also finds compiled/<name> and learning/<name>."`
 	To      string `json:"to" jsonschema:"Target page name"`
 	MaxHops int    `json:"maxHops,omitempty" jsonschema:"Maximum traversal depth. Default: 4"`
 }
@@ -140,7 +140,7 @@ type RenamePageInput struct {
 }
 
 type BulkUpdatePropertiesInput struct {
-	Pages    []string `json:"pages" jsonschema:"List of page names to update"`
+	Pages    []string `json:"pages" jsonschema:"List of page names to update. Bare names also find compiled/<name> and learning/<name>, but writes to store-only pages fail."`
 	Property string   `json:"property" jsonschema:"Property key to set"`
 	Value    string   `json:"value" jsonschema:"Property value to set"`
 }
@@ -172,7 +172,7 @@ type FlashcardCreateInput struct {
 type ListWhiteboardsInput struct{}
 
 type GetWhiteboardInput struct {
-	Name string `json:"name" jsonschema:"Whiteboard name"`
+	Name string `json:"name" jsonschema:"Whiteboard name. A bare name also finds compiled/<name> and learning/<name>."`
 }
 
 // --- Decision tool inputs ---

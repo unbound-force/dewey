@@ -366,3 +366,52 @@ func TestListWhiteboards_NoWhiteboards(t *testing.T) {
 		t.Fatal("no whiteboards is not an error")
 	}
 }
+
+// TestGetWhiteboard_BareNameResolvesStorePage pins the consumer-level
+// sharing of bare-name resolution for get_whiteboard: the tool reads its
+// page through GetPageBlocksTree, so a bare topic resolves to the compiled
+// article in the store and its elements are served instead of a
+// "whiteboard not found" error. The fixture (newBareNameStoreClient, in
+// navigate_tool_test.go) runs against a real store-backed vault client
+// because mock-backend tests bypass the store fallback entirely.
+func TestGetWhiteboard_BareNameResolvesStorePage(t *testing.T) {
+	w := NewWhiteboard(newBareNameStoreClient(t))
+
+	result, _, err := w.GetWhiteboard(context.Background(), nil, types.GetWhiteboardInput{
+		Name: "gateway",
+	})
+	if err != nil {
+		t.Fatalf("GetWhiteboard() error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("GetWhiteboard() returned error result")
+	}
+
+	var parsed map[string]any
+	text := extractText(t, result)
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+
+	if parsed["name"] != "gateway" {
+		t.Errorf("name = %v, want the requested bare name %q", parsed["name"], "gateway")
+	}
+	if parsed["elementCount"] != float64(1) {
+		t.Fatalf("elementCount = %v, want 1 element from compiled/gateway via the bare name", parsed["elementCount"])
+	}
+	elements, ok := parsed["elements"].([]any)
+	if !ok || len(elements) != 1 {
+		t.Fatalf("expected elements array with 1 entry, got %v", parsed["elements"])
+	}
+	element, ok := elements[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected element object, got %v", elements[0])
+	}
+	if element["content"] != "Links to [[Target]]" {
+		t.Errorf("element content = %v, want the compiled article's block", element["content"])
+	}
+	embedded, ok := parsed["embeddedPages"].([]any)
+	if !ok || len(embedded) != 1 || embedded[0] != "Target" {
+		t.Errorf("embeddedPages = %v, want [Target] from the block's [[Target]] link", parsed["embeddedPages"])
+	}
+}

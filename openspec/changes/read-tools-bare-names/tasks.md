@@ -10,5 +10,5 @@
 - [x] 2.1 tool descriptions and README
 - [x] 2.2 CI parity: build, vet, `go test -race -count=1
   -coverprofile=coverage.out ./...`, gaze crap gate, golangci-lint
-- [x] 2.3 `/uf.review-council` (OpenCode), website docs issue, draft
-  PR
+- [x] 2.3 `/uf.review-council` (OpenCode), website docs issue
+  (unbound-force/website#391), draft PR

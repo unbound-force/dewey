@@ -5163,6 +5163,7 @@ func newGatewayDoctorVault(t *testing.T, configYAML string) string {
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "")
 	t.Setenv("DEWEY_SYNTHESIS_ENDPOINT", "")
 	t.Setenv("DEWEY_GENERATION_MODEL", "")
 	t.Setenv("OLLAMA_HOST", "")

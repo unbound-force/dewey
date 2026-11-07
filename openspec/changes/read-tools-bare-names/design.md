@@ -22,20 +22,6 @@ with its own exact lookup.
   names, so both still miss on a bare topic. Whether they join the read
   fallback is a separate follow-up decision, not part of this change.
 
-### Trade-offs
-
-- `get_links` echoes the requested bare name (`page: "gateway"`) in its result
-  while serving the links of the canonical page (`compiled/gateway`);
-  `get_page` reports the canonical name in its page entity. After this change
-  two tools report different name forms for the same underlying resolution,
-  and a `get_links` result no longer identifies which page its links came
-  from when the shorthand fires. This mirrors the accepted backlinks
-  trade-off: echoing the request keeps the tool output predictable without a
-  second canonical lookup. `traverse` paths carry the same ambiguity — BFS
-  seeds the walk with the requested name, so a bare-name traverse reports
-  `gateway` as the first path element while the walk read `compiled/gateway`
-  (pinned by TestTraverse_BareNameResolvesStorePage).
-
 ## Decisions
 
 ### D1 Resolve in the store fallback
@@ -69,3 +55,15 @@ before.
   Promote reports ambiguity; a read serves the compiled article.
 - **`get_page` backlinks** still use the requested name, so a bare
   request lists links to the bare name only.
+- **`get_links` echoes the requested bare name** (`page: "gateway"`) in
+  its result while serving the links of the canonical page
+  (`compiled/gateway`); `get_page` reports the canonical name in its
+  page entity. After this change two tools report different name forms
+  for the same underlying resolution, and a `get_links` result no longer
+  identifies which page its links came from when the shorthand fires.
+  This mirrors the accepted backlinks trade-off: echoing the request
+  keeps the tool output predictable without a second canonical lookup.
+- **`traverse` paths carry the same ambiguity** — BFS seeds the walk with
+  the requested name, so a bare-name traverse reports `gateway` as the
+  first path element while the walk read `compiled/gateway` (pinned by
+  TestTraverse_BareNameResolvesStorePage).

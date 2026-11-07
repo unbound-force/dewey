@@ -45,7 +45,7 @@ Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `sear
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `search` | Both | Full-text search with parent chain + sibling context; hyphenated and snake_case terms also match by component (`KB-REVIEW-ADJUD`, `KB REVIEW ADJUD 01`), after exact matches |
+| `search` | Both | Full-text search with parent chain + sibling context; on the vault in-memory index, hyphenated and snake_case terms also match by component (`KB-REVIEW-ADJUD`, `KB REVIEW ADJUD 01`), after exact matches |
 | `query_properties` | Both | Find by property values with operators (eq, contains, gt, lt) |
 | `query_datalog` | Logseq | Raw DataScript/Datalog queries against the Logseq database |
 | `find_by_tag` | Both | Tag search with child tag hierarchy support |

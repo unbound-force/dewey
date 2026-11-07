@@ -24,7 +24,7 @@ type ListPagesInput struct {
 }
 
 type GetLinksInput struct {
-	Name      string `json:"name" jsonschema:"Page name to get links for. A bare name also finds compiled/<name> and learning/<name>."`
+	Name      string `json:"name" jsonschema:"Page name to get links for. In the forward direction, a bare name also finds compiled/<name> and learning/<name>."`
 	Direction string `json:"direction,omitempty" jsonschema:"Link direction: forward or backward or both. Default: both"`
 }
 

@@ -45,8 +45,15 @@ still ranks its exact matches first.
 - `vault/search_index.go` — component indexing; two-pass query.
 - `vault/search_index_test.go` — the three issue forms, ordering,
   dedupe, limit.
+- `vault/vault.go` — store merge in `FullTextSearch` now gated on
+  the exact-match (pass-1) count instead of total hits, so
+  store-only exact-ID pages surface before component-only matches
+  consume the limit; the `LIKE` query itself is unchanged.
 - README search row.
-- No change to the store's `LIKE` merge, `semantic_search`, or
+- Website docs-sync issue: unbound-force/website#390 (user-facing
+  search behavior change; `search` MCP tool and `dewey search` CLI
+  now match compound IDs by component).
+- No change to `semantic_search` or
   `find_by_tag`.
 
 Index size grows by the component terms of compound words only.

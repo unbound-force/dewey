@@ -1,3 +1,7 @@
+## ADDED Requirements
+
+_None._
+
 ## MODIFIED Requirements
 
 ### Requirement: Compound Terms Are Searchable by Component
@@ -33,3 +37,7 @@ spelling matched.
 - **WHEN** searching `foo-bar`
 - **THEN** the `foo-bar` block MUST come first and each block MUST
   appear once
+
+## REMOVED Requirements
+
+_None._

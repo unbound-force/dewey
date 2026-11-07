@@ -63,7 +63,7 @@ before.
   identifies which page its links came from when the shorthand fires.
   This mirrors the accepted backlinks trade-off: echoing the request
   keeps the tool output predictable without a second canonical lookup.
-- **`traverse` paths carry the same ambiguity** — BFS seeds the walk with
-  the requested name, so a bare-name traverse reports `gateway` as the
-  first path element while the walk read `compiled/gateway` (pinned by
-  TestTraverse_BareNameResolvesStorePage).
+- **`traverse` paths carry the same ambiguity** — BFS seeds the walk
+  with the requested name, so a bare-name traverse reports `gateway` as
+  the first path element while the walk read `compiled/gateway` (pinned
+  by TestTraverse_BareNameResolvesStorePage).

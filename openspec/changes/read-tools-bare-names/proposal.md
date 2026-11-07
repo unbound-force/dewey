@@ -29,10 +29,11 @@ precedence on reads.
 ### Modified Capabilities
 - `get_page`: resolve bare names of compiled articles and learnings from
   the store. Every name-based read through the vault client — including
-  `get_links` forward direction, `traverse` start pages, `get_whiteboard`,
-  `bulk_update_properties`, and `journal_range`'s slash-free journal
-  names — shares the resolution. The list is illustrative; the blast
-  radius is every `GetPage`/`GetPageBlocksTree` caller.
+  `get_links` forward direction, `traverse` start pages,
+  `get_whiteboard`, `bulk_update_properties`, and `journal_range`'s
+  slash-free journal names — shares the resolution. The list is
+  illustrative; the blast radius is every `GetPage`/`GetPageBlocksTree`
+  caller.
 
 ### Removed Capabilities
 - None.

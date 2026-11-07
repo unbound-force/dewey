@@ -7,7 +7,8 @@ _None._
 ### Requirement: Compound Terms Are Searchable by Component
 
 The in-memory search index MUST index each term containing `-` or
-`_` both whole and as its components of at least 2 characters.
+`_` both whole and as its components of at least 2 bytes (matching
+`tokenize`'s term-length convention).
 `search` MUST return exact-term matches first, unchanged. When the
 query contains a compound term and exact matches number fewer than
 the limit, `search` MUST append blocks matching every component of

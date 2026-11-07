@@ -270,9 +270,10 @@ func tokenize(text string) []string {
 	return terms
 }
 
-// splitCompound returns the components (at least 2 characters each) of a
-// term containing `-` or `_`, or nil when the term is not compound or has
-// no component long enough to index (issue #149).
+// splitCompound returns the components (at least 2 bytes each, matching
+// tokenize's term-length convention) of a term containing `-` or `_`, or
+// nil when the term is not compound or has no component long enough to
+// index (issue #149).
 func splitCompound(term string) []string {
 	if !strings.ContainsAny(term, "-_") {
 		return nil

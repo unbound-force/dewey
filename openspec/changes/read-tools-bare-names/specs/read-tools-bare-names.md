@@ -5,9 +5,11 @@
 When a page name without `/` misses the in-memory index and the exact
 store lookup, the store fallback MUST try `compiled/<name>` and then
 `learning/<name>`, case-insensitively, and MUST serve the first page
-found. Vault pages MUST take precedence. With no store configured,
-behavior MUST NOT change. The write guard MUST NOT use this
-resolution.
+found. Every name-based read through the vault client (including
+`get_links` forward direction, `traverse` start pages, `get_whiteboard`,
+and `bulk_update_properties`) MUST share this resolution. Vault pages
+MUST take precedence. With no store configured, behavior MUST NOT
+change. The write guard MUST NOT use this resolution.
 
 #### Scenario: Bare compiled topic
 - **GIVEN** `compiled/gateway` is in the store and no vault page has
@@ -18,7 +20,7 @@ resolution.
 
 #### Scenario: Bare learning identity
 - **GIVEN** `learning/auth-1` is in the store
-- **WHEN** `get_page_blocks_tree("auth-1")` is called
+- **WHEN** the block tree for `auth-1` is read via `get_page`
 - **THEN** its blocks MUST be returned
 
 #### Scenario: Compiled wins over learning

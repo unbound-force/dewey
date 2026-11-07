@@ -494,7 +494,7 @@ func (vs *VaultStore) GetStorePage(name string) (*types.PageEntity, []types.Bloc
 
 	sp, err := vs.findStorePage(name)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("look up store page %q: %w", name, err)
+		return nil, nil, false, err
 	}
 	if sp == nil {
 		return nil, nil, false, nil
@@ -512,15 +512,24 @@ func (vs *VaultStore) GetStorePage(name string) (*types.PageEntity, []types.Bloc
 // and the first page found wins (issue #140, design D2). Promote keeps its
 // stricter resolver because it mutates a trust tier; the write guard
 // (StorePageMeta) stays exact so a vault page can still take a bare name.
+// Each failed lookup is wrapped with the key it attempted, so an error names
+// the failing probe rather than the page the caller asked for.
 func (vs *VaultStore) findStorePage(name string) (*store.Page, error) {
 	sp, err := vs.store.GetPageFoldCase(name)
-	if sp != nil || err != nil || strings.Contains(name, "/") {
-		return sp, err
+	if err != nil {
+		return nil, fmt.Errorf("look up store page %q: %w", name, err)
+	}
+	if sp != nil || strings.Contains(name, "/") {
+		return sp, nil
 	}
 	for _, prefix := range []string{store.CompiledPrefix, store.LearningPrefix} {
-		sp, err := vs.store.GetPageFoldCase(prefix + name)
-		if sp != nil || err != nil {
-			return sp, err
+		key := prefix + name
+		sp, err := vs.store.GetPageFoldCase(key)
+		if err != nil {
+			return nil, fmt.Errorf("look up store page %q: %w", key, err)
+		}
+		if sp != nil {
+			return sp, nil
 		}
 	}
 	return nil, nil

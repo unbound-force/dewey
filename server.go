@@ -198,12 +198,12 @@ func registerNavigateTools(srv *mcp.Server, nav *tools.Navigate, hasDataScript b
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_links",
-		Description: "Get forward links (pages this page links to) and backlinks (pages that link to this page) for any page. Each link includes the specific block containing it.",
+		Description: "Get forward links (pages this page links to) and backlinks (pages that link to this page) for any page. Each link includes the specific block containing it. In the forward direction, a bare name also finds compiled/<name> and learning/<name>.",
 	}, nav.GetLinks)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "traverse",
-		Description: "Find paths between two pages through the link graph using BFS. Discovers how concepts are connected through intermediate pages. Returns all paths up to max_hops length.",
+		Description: "Find paths between two pages through the link graph using BFS. Discovers how concepts are connected through intermediate pages. Returns all paths up to max_hops length. A bare start name also finds compiled/<name> and learning/<name>.",
 	}, nav.Traverse)
 
 	if hasDataScript {
@@ -327,7 +327,7 @@ func registerWriteTools(srv *mcp.Server, write *tools.Write) int {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "bulk_update_properties",
-		Description: "Set a property (key:: value) on multiple pages at once. Useful for backfilling metadata like type::, status::, etc. across many pages in one call.",
+		Description: "Set a property (key:: value) on multiple pages at once. Useful for backfilling metadata like type::, status::, etc. across many pages in one call. Bare page names resolve compiled/<name> and learning/<name> on the read, but writes to store-only pages fail.",
 	}, write.BulkUpdateProperties)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -420,7 +420,7 @@ func registerWhiteboardTools(srv *mcp.Server, whiteboard *tools.Whiteboard) int 
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "get_whiteboard",
-		Description: "Get a whiteboard's content including embedded pages, block references, visual connections between elements, and any text content. Reveals how concepts are spatially organized.",
+		Description: "Get a whiteboard's content including embedded pages, block references, visual connections between elements, and any text content. Reveals how concepts are spatially organized. A bare name also finds compiled/<name> and learning/<name>.",
 	}, whiteboard.GetWhiteboard)
 
 	return 2

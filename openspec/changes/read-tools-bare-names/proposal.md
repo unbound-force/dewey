@@ -10,8 +10,8 @@ returns "page not found". The PR #138 review council found this gap.
 
 ## What Changes
 
-On a miss, the store fallback behind `get_page` and
-`get_page_blocks_tree` tries, in order: the exact name (case-folded,
+On a miss, the store fallback behind `get_page` (and every internal
+name-based read it shares) tries, in order: the exact name (case-folded,
 as today), `compiled/<name>`, then `learning/<name>`. The first
 existing page wins. Names containing `/` skip the shorthand.
 
@@ -27,8 +27,10 @@ precedence on reads.
 - None.
 
 ### Modified Capabilities
-- `get_page`, `get_page_blocks_tree`: resolve bare names of compiled
-  articles and learnings from the store.
+- `get_page`: resolve bare names of compiled articles and learnings from
+  the store. Every name-based read through the vault client — `get_links`
+  forward direction, `traverse` start pages, `get_whiteboard`,
+  `bulk_update_properties` — shares the resolution.
 
 ### Removed Capabilities
 - None.

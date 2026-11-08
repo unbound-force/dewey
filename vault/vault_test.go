@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3897,6 +3898,87 @@ func TestFullTextSearch_ComponentFillsDoNotDisplaceStoreExactID(t *testing.T) {
 	}
 	if fillCount != 2 {
 		t.Errorf("component-fill tail = %d hits, want 2 (the store hit consumed one slot): %+v", fillCount, hits)
+	}
+}
+
+func TestFullTextSearch_ExactStoreAndComponentFillsCompose(t *testing.T) {
+	// Design D4 ordering with all three result sources present: pass-one
+	// exact in-memory hits first, then store-only pages, then pass-two
+	// component fills, truncated to the limit. This is the common runtime
+	// shape; the exact=0 case is covered by
+	// TestFullTextSearch_ComponentFillsDoNotDisplaceStoreExactID.
+	c, s := newStoreBackedClient(t, map[string]string{
+		"exact.md": "# Exact\n\ndecision kb-review-adjud recorded\n",
+		"comp1.md": "# Comp1\n\nkb review adjud one\n",
+		"comp2.md": "# Comp2\n\nkb review adjud two\n",
+	})
+	c.BuildBacklinks()
+
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "compiled/registry", OriginalName: "registry", SourceID: "compiled"},
+		&store.Block{UUID: "store-full-id", PageName: "compiled/registry", Content: "Decision record KB-REVIEW-ADJUD-01 final", Position: 0},
+	)
+
+	ctx := context.Background()
+
+	// limit=3: one exact hit, one store hit, one of the two component fills.
+	hits, err := c.FullTextSearch(ctx, "KB-REVIEW-ADJUD", 3)
+	if err != nil {
+		t.Fatalf("FullTextSearch (limit 3): %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("hits = %d, want 3 (limit respected): %+v", len(hits), hits)
+	}
+	if hits[0].PageName != "exact" {
+		t.Errorf("hits[0] = %q, want the pass-one exact in-memory page \"exact\": %+v", hits[0].PageName, hits)
+	}
+	if hits[1].PageName != "compiled/registry" || hits[1].UUID != "store-full-id" {
+		t.Errorf("hits[1] = %s/%s, want the store-only page compiled/registry/store-full-id: %+v",
+			hits[1].PageName, hits[1].UUID, hits)
+	}
+	if p := hits[2].PageName; p != "comp1" && p != "comp2" {
+		t.Errorf("hits[2] = %q, want a component fill (comp1 or comp2): %+v", p, hits)
+	}
+
+	// limit=10: every source fits, still in exact, store, fill order.
+	hits, err = c.FullTextSearch(ctx, "KB-REVIEW-ADJUD", 10)
+	if err != nil {
+		t.Fatalf("FullTextSearch (limit 10): %v", err)
+	}
+	if len(hits) != 4 {
+		t.Fatalf("hits = %d, want 4 (1 exact + 1 store + 2 fills): %+v", len(hits), hits)
+	}
+	if hits[0].PageName != "exact" || hits[1].PageName != "compiled/registry" {
+		t.Errorf("order = %s, %s; want exact, compiled/registry first: %+v", hits[0].PageName, hits[1].PageName, hits)
+	}
+	tail := searchHitPages(hits[2:])
+	if !tail["comp1"] || !tail["comp2"] {
+		t.Errorf("tail = %v, want both component fills comp1 and comp2", tail)
+	}
+}
+
+func TestFullTextSearch_HugeLimitDoesNotPreallocate(t *testing.T) {
+	// limit is caller-supplied with no schema maximum. The merge must size
+	// its buffer from the actual results, not from limit: with math.MaxInt a
+	// limit-sized make panics (cap out of range), and with large finite
+	// values it requests gigabytes and aborts the server.
+	c, s := newStoreBackedClient(t, map[string]string{
+		"comp1.md": "# Comp1\n\nkb review adjud one\n",
+	})
+	c.BuildBacklinks()
+
+	insertStorePageWithBlocks(t, s,
+		&store.Page{Name: "compiled/registry", OriginalName: "registry", SourceID: "compiled"},
+		&store.Block{UUID: "store-full-id", PageName: "compiled/registry", Content: "Decision record KB-REVIEW-ADJUD-01 final", Position: 0},
+	)
+
+	hits, err := c.FullTextSearch(context.Background(), "KB-REVIEW-ADJUD", math.MaxInt)
+	if err != nil {
+		t.Fatalf("FullTextSearch (limit MaxInt): %v", err)
+	}
+	pages := searchHitPages(hits)
+	if len(hits) != 2 || !pages["compiled/registry"] || !pages["comp1"] {
+		t.Errorf("hits = %+v, want the store page and the component fill", hits)
 	}
 }
 

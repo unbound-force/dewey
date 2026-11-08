@@ -2039,7 +2039,11 @@ func (c *Client) FullTextSearch(_ context.Context, query string, limit int) ([]b
 	// fills: keep the exact matches, merge store pages in next, then
 	// append the component fills. Search orders pass-one hits before
 	// pass-two fills, so hits[:exact] is the exact portion.
-	merged := make([]backend.SearchHit, 0, limit)
+	//
+	// Size the capacity from the data, never from limit: limit is
+	// caller-supplied with no schema maximum, and the merged set can never
+	// exceed len(hits)+len(storeHits).
+	merged := make([]backend.SearchHit, 0, len(hits)+len(storeHits))
 	merged = append(merged, hits[:exact]...)
 	for _, h := range storeHits {
 		if len(merged) >= limit {

@@ -1302,18 +1302,18 @@ For each item, compose the reply:
 | REPLY | Acknowledges the finding in a sentence or two and says why it is not changed in this PR (<SEVERITY>) |
 
 File each FILE item's issue before posting its reply, so the reply can
-link it. Write the title and body to temporary files, so quotes,
-newlines, and backslashes in finding text never reach the shell as
-code (a quoted `$(cat ...)` is not re-parsed):
+link it. Write the title and body to temporary files through the host's
+file-write tool — never a shell heredoc. A quoted heredoc neutralizes
+expansion but not content-based termination: it ends at any line that
+exactly matches the delimiter, and the delimiter is published in this
+template, so untrusted finding text containing that line would execute
+as shell. The shell keeps only the fully-quoted `gh issue create`
+invocation (a quoted `$(cat ...)` is not re-parsed):
 
 ```bash
 TITLE_FILE=$(mktemp); BODY_FILE=$(mktemp)
-cat > "$TITLE_FILE" << 'TITLE_EOF'
-<finding summary>
-TITLE_EOF
-cat > "$BODY_FILE" << 'BODY_EOF'
-<finding, severity, file:line, and a link to the review comment on PR #<PR_NUMBER>>
-BODY_EOF
+# Write the finding summary to "$TITLE_FILE" with the host file-write tool, using the exact path mktemp printed
+# Write the finding, severity, file:line, and review-comment link to "$BODY_FILE" with the host file-write tool
 gh issue create --repo {owner}/{repo} --title "$(cat "$TITLE_FILE")" --body-file "$BODY_FILE"
 rm -f "$TITLE_FILE" "$BODY_FILE"
 ```
@@ -1327,14 +1327,11 @@ post that item's reply or resolve its thread: report the error with
 the item, continue with the other items, and leave the item for the
 next run.
 
-Post replies to the correct review thread. Always write the comment body to a temporary file and use `--input` to prevent shell injection from AI-generated or reviewer-authored text:
+Post replies to the correct review thread. Always write the comment body to a temporary file through the host's file-write tool — never a shell heredoc, which terminates on any line matching the published delimiter (see the issue-filing block above) — and use `--input` to prevent shell injection from AI-generated or reviewer-authored text:
 
 ```bash
-# Write reply body to temp file (never interpolate into shell args)
+# Write reply body to temp file with the host file-write tool, using the exact path mktemp prints (never interpolate into shell args)
 REPLY_FILE=$(mktemp)
-cat > "$REPLY_FILE" << 'REPLY_EOF'
-<reply content here>
-REPLY_EOF
 
 # For review comments (inline threads)
 gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments/<comment_id>/replies \

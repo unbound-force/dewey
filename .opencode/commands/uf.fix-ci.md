@@ -181,6 +181,8 @@ Record (each value from the tool's output fields):
 
 - `STATE` — `state` (`OPEN`, `CLOSED`, `MERGED`)
 - `HEAD_REF` — `head_ref`
+- `HEAD_SHA` — `head_sha` (the remote head before any fetch; the
+  Phase 4 force-push lease)
 - `BASE_BRANCH` — `base_ref`
 - `MERGEABLE`, `MERGE_STATE` — `mergeable` and `merge_state_status`
   as returned (Phase 3 selects the rebase path when the PR is
@@ -274,9 +276,9 @@ If the output is not empty: **STOP** with stash guidance:
 > "Working tree has uncommitted changes. Commit or stash them (`git stash push -u` includes untracked files) and re-invoke `/uf.fix-ci <PR_NUMBER>`. A clean tree is required before any rebase."
 
 Phase 1 hands downstream phases: `PR_NUMBER`, `STATE`, `HEAD_REF`,
-`BASE_BRANCH`, `MERGEABLE`, `MERGE_STATE`, `HEAD_REPOSITORY`,
-`BASE_REPOSITORY`, `IS_FORK`, `BASE_REMOTE`, `HEAD_REMOTE`, and the
-failing check list.
+`HEAD_SHA`, `BASE_BRANCH`, `MERGEABLE`, `MERGE_STATE`,
+`HEAD_REPOSITORY`, `BASE_REPOSITORY`, `IS_FORK`, `BASE_REMOTE`,
+`HEAD_REMOTE`, and the failing check list.
 
 > **CHECKPOINT**: Call `checkpoint` with
 > `command: "uf.fix-ci"`, `step: "pr-resolved"`,
@@ -971,6 +973,21 @@ checkpoint (`REBASED`):
   rebase rewrote the branch history: a plain push would be
   rejected and unbounded `--force` is forbidden;
   force-with-lease is the only rewrite-safe push.
+
+Either tool takes `{branch: <HEAD_REF>, remote: <HEAD_REMOTE>}`
+and pushes the HEAD commit to `refs/heads/<HEAD_REF>` with an
+explicit refspec. `git_push_force_with_lease` also takes
+`expected_sha`: pass `<HEAD_SHA>` on the first force-push of
+the invocation, then the `new_sha` the previous push returned.
+Phase 3's fetch may have moved the remote-tracking ref to a
+collaborator's commit, and a fork PR has no tracking ref, so
+the lease MUST NOT rely on it. A `BRANCH_MISMATCH` refusal
+means the checkout left `<HEAD_REF>`: **STOP** and report it —
+never switch branches to retry. A lease rejection means the
+remote head moved: **STOP** — never refresh the lease to
+retry. Success returns `{remote, ref, old_sha, new_sha,
+updated}`; report the SHAs, and treat `updated: false` as
+nothing pushed (CI will not re-run).
 
 The command MUST NEVER merge base into head — no push path
 substitutes a merge, and no option offers it (design D2). Only

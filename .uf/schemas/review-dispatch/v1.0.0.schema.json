@@ -59,6 +59,11 @@
       "maxItems": 512,
       "items": { "$ref": "#/$defs/advisory" }
     },
+    "proposals": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/lessonProposal" }
+    },
     "verdict": { "$ref": "#/$defs/genericVerdict" },
     "verdict_reason": {
       "type": "string",
@@ -833,6 +838,27 @@
           "maxItems": 64,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/uuid" }
+        }
+      }
+    },
+    "lessonProposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "information", "tag"],
+      "properties": {
+        "agent": { "$ref": "#/$defs/agent" },
+        "information": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "category": {
+          "enum": ["decision", "pattern", "gotcha", "context", "reference"]
         }
       }
     },

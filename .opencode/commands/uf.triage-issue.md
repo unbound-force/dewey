@@ -269,62 +269,68 @@ The tool's caller-visible output is a one-line counts summary only:
 dispatch_review_runs: <status> (correlation_id <id>) — <completed> completed, <failed> failed, <skipped> skipped, <findings> findings, <proposals> proposals
 ```
 
-Capture the `correlation_id` reported in that one-line summary and pass
-it as `correlation_id` on every subsequent consolidation call in this
-workflow — the Section 2.3 retrieval, the Section 4.6 finalization, and
-every identical-call retry. Forward it unconditionally, never
-conditioned on in-process session-map state. The machine-readable tool
-metadata carries the same ID as a secondary channel for harnesses that
-surface it.
+A non-ok summary also ends with ` — error: <message> (retryable:
+<bool>)`, the failure message collapsed to one line and cut to at most
+512 characters including the ellipsis, the retryable marker omitted
+when unknown.
+
+Its `<proposals>` count is taken before `consolidate_dispatch` merges
+near-identical proposals, so the artifact may hold fewer. Capture the
+`correlation_id` reported in that one-line summary and pass it as
+`correlation_id` on every subsequent consolidation call in this workflow
+— the Section 4.6 finalization that Section 2.3 runs right after
+dispatch, and every identical-call retry. Forward it unconditionally,
+never conditioned on in-process session-map state. The machine-readable
+tool metadata carries the same ID as a secondary channel for harnesses
+that surface it.
 
 The `findings`, `proposals`, and `warnings` arrays exist only in tool
 metadata, which never reaches the calling model. Never consume them
 from `dispatch_review_runs`.
 
-Immediately after `dispatch_review_runs` completes, retrieve the full
-dispatch result: call `consolidate_dispatch` exactly once WITHOUT
-provenance, passing the captured `correlation_id` from the one-line
-summary. The no-provenance call is the side-effect-free retrieval
-mode — no finalization occurs and no finalization artifacts are
-written. It returns the raw dispatch payload: per-run records with
-the run-recorded `workflow_verdict`, `findings`, `advisories`, run
-counts, and the top-level `proposals` array. Use this single payload
-for Section 2.4 proposal storage, Phase 3 verdict resolution, and
-Phase 4 finalization context; do not re-fetch it.
+**Finalize first.** Immediately after `dispatch_review_runs` completes,
+run the Section 4.6 finalization: the provenance-bearing
+`consolidate_dispatch` call passing the captured `correlation_id` from
+the one-line summary, with its bounded mechanical retry. Finalization
+reads only the persisted dispatch session, never anything a later phase
+computes, so running it now changes no result. Section 4.6 documents
+the call and reports its result; it never calls `consolidate_dispatch`
+a second time. This command makes no no-provenance retrieval call: a
+`detail: "full"` retrieval is unbounded, and the host truncates it at
+ordinary review sizes.
 
-**Truncation check.** Before consolidating the returned `runs` array or
-storing any proposal, parse the entire retrieval output as one JSON
-object. If the parse succeeds, the output is complete: use it and ignore
-any notice-shaped text inside it, such as a finding that mentions
-truncation. If the parse fails, the host truncated the output —
-typically a truncation notice line matching the case-insensitive shape
-`^\[?[^\n]*\btruncat\w*\b[^\n]*\bsaved\b[^\n]*[:=]\s*("[^"]+"|\/[^\s\]]+)\]?$`
-— and the payload is unusable: fail closed and report the retrieval
-failure. Do not consolidate a partial `runs` array, resolve a verdict
-from it, store any proposal from it, or read the saved file.
+On `status: "success"`, read the persisted artifact once through
+`read_dispatch_artifact`, never with the file-read tool, whose line
+limit cuts long artifact lines: call it with the result's
+`correlation_id` and `section` set to `runs` (each run's `run_id`,
+`agent`, terminal state, and run-recorded `workflow_verdict`; findings
+omitted), `findings`, `advisories`, and `proposals`, repeating each with
+`offset: <next_offset>` until `next_offset` is null. If any call returns
+`status: "error"`, fail closed as below. Use this single artifact read
+for Section 2.4 proposal storage, Phase 3 verdict resolution, and the
+Section 4.7 report; do not re-read it.
 
-**Retrieval failure behavior.** The retrieval call is side-effect-free,
-so its failure handling is strict and bounded:
+**Finalization failure behavior.** Finalization failures are bounded
+and never fabricated:
 
-- **Transient failure** (timeout or intermittent tool error): retry the
-  identical no-provenance call exactly once, passing the same captured
-  `correlation_id`. If the retry succeeds, continue with the retrieved
-  payload. If the retry also fails, stop, report the failure, and fail
-  closed — fabricate no run records, verdicts, findings, or proposals,
-  and substitute no child transcripts or improvised session-database
-  reads for the missing payload.
-- **Permanent failure** (a tool-reported error status, or a `not_found`
-  consolidation carrying the forwarded `correlation_id` for a dispatch
-  that executed runs): do not retry. With the ID forwarded, `not_found`
-  means no persisted dispatch session exists — a plugin-process or
-  tool-session split can no longer produce it. A `not_found` lacking
-  the forwarded `correlation_id` indicates the capture step was
-  skipped — that is equally permanent: do not retry, do not improvise
-  the missing ID. Stop, report the failure, and fail closed without
-  fabricating run records, verdicts, findings, or proposals.
+- **Fail-closed finalization** (Section 4.6 retries exhausted, or a
+  non-mechanical failure): no artifact exists. Stop before Phase 4:
+  the native result is `INCONCLUSIVE`, every action is recorded as not
+  executed, no lesson is stored (the proposals stay in the dispatch
+  store; report them as stranded), and no run record, verdict,
+  finding, or proposal is fabricated. Substitute no child transcripts
+  or improvised session-database reads for the missing artifact.
+- **Permanent `not_found`** (a `not_found` consolidation carrying the
+  forwarded `correlation_id` for a dispatch that executed runs): do
+  not retry. With the ID forwarded, `not_found` means no persisted
+  dispatch session exists — a plugin-process or tool-session split can
+  no longer produce it. A `not_found` lacking the forwarded
+  `correlation_id` indicates the capture step was skipped — that is
+  equally permanent: do not retry, do not improvise the missing ID.
+  Stop and fail closed as above.
 - **All-skip dispatch** (the summary reports zero completed and zero
   failed runs — every plan entry skipped — and no dispatch session
-  exists): a valid outcome, not a retrieval failure. Record zero
+  exists): a valid outcome, not a finalization failure. Record zero
   findings, zero proposals, zero persona votes, and the verdict the
   no-vote semantics prescribe for zero successful runs (Section 3.2);
   do not fail closed over the absent dispatch session.
@@ -368,24 +374,30 @@ advisories.
 
 ### 2.4 Store Lesson Proposals
 
-Only the parent command stores lesson proposals. The top-level
-`proposals` array of the no-provenance `consolidate_dispatch` retrieval
-payload fetched in Section 2.3 contains validated proposals already
-submitted by child agents via `submit_lesson_proposal`. Use that single
-payload — do not re-fetch it. `dispatch_review_runs` returns only the
-counts summary.
+Only the parent command stores lesson proposals. The `payload.proposals`
+array of the artifact read in Section 2.3 contains the full-length,
+validated proposals submitted by child agents via
+`submit_lesson_proposal`, with near-identical proposals across personas
+already merged by `consolidate_dispatch` (each merge is reported as a
+`duplicate_proposal_merged` warning). Use that single artifact read —
+do not re-read it, and never store from the compact finalization
+result's capped `proposals` preview. `dispatch_review_runs` returns
+only the counts summary.
 
 Each proposal carries the validated shape `{agent, information, tag,
 category}` as defined by the review-dispatch dispatch artifact schema —
-there is no `reference` field. For each proposal in the `proposals`
-array, call `dewey_store_learning` exactly once using the proposal's
+there is no `reference` field. For each proposal in `payload.proposals`,
+call `dewey_store_learning` exactly once using the proposal's
 `information` and `tag`, with the proposal's `category` as the learning
 category. If Dewey is unavailable, record an informational skip and do
 not change triage results. Never store raw `> learn:` text or
 child-supplied tags, categories, or hashes.
 
-If the `proposals` array is empty, record that no lesson proposals were
-submitted and continue without error.
+If the `proposals` section is empty, record that no lesson proposals
+were submitted and continue without error — unless the compact result's
+`proposals` preview is non-empty, which means the loaded plugin predates
+durable proposals: then store nothing and report the previewed lessons
+as stranded.
 
 ---
 
@@ -398,9 +410,9 @@ become independent panel votes.
 ### 3.1 Verdict Resolution
 
 Verdict votes come from run records, not child prose. Each vote is a
-run-recorded `workflow_verdict` from the `runs` array of the no-provenance
-`consolidate_dispatch` retrieval payload fetched in Section 2.3 — do not
-re-fetch it. Child transcript text never casts a vote: when a transcript's
+run-recorded `workflow_verdict` from the `payload.runs` array of the
+artifact read in Section 2.3 — do not re-read it. Child transcript text
+never casts a vote: when a transcript's
 textual verdict disagrees with its run record, the run-recorded
 `workflow_verdict` governs.
 
@@ -421,7 +433,8 @@ rules with another repository's run-precedence policy.
 
 Category, objectivity, reasoning, and split recommendations come exclusively
 from a single `read_assessment_fields` call with the dispatch's run
-identifiers (the `run_id` values of the Section 2.3 payload's `runs`). That
+identifiers (the `run_id` values of the Section 2.3 artifact's
+`payload.runs`). That
 tool reads each run's persisted child final text from the dispatch store and
 owns the untrusted-input validation as executable, tested code; the command
 prescribes no extraction or validation procedure as prose and performs no
@@ -449,9 +462,10 @@ At least one successful persona assessment is required. If none remains:
 - return **INCONCLUSIVE** for any policy, plan, budget, limit, persistence,
   calculation, or mixed cause.
 
-Both outcomes block automated actions, MUST NOT classify the issue as VALID or
-INVALID, and request retry or human review. Skip label, comment, and child-issue
-mutations. Continue to artifact finalization with every planned run terminal.
+Both outcomes block automated actions, MUST NOT classify the issue as
+VALID or INVALID, and request retry or human review. Skip label,
+comment, and child-issue mutations. The dispatch was already finalized
+in Section 2.3; continue to Sections 4.5 through 4.7.
 
 ### 3.3 Category Resolution
 
@@ -1066,8 +1080,10 @@ Fields may be `null` when not applicable (e.g., `duplicate_of` when the issue is
 ### 4.6 Finalize Review Dispatch (Single Deterministic Call)
 
 Finalize every invocation after a valid issue content profile exists,
-including plan failure, no-success, user abort, and partial GitHub
-mutation failure. Never assemble, restate, or recompute the closed
+including no-success. The call runs once, at the end of Section 2.3
+immediately after `dispatch_review_runs` and before Phase 3 or any
+GitHub mutation; this section documents it and reports its result. User abort and partial GitHub mutation failure happen later and
+never change it. Never assemble, restate, or recompute the closed
 finalization payload: the dispatch session persisted during Section 2.3
 already holds the command, mode, input context, change profile, plan,
 coverage, and every run, and `consolidate_dispatch` reads it directly.
@@ -1091,13 +1107,10 @@ to resolve, **STOP** with an explicit error naming the resolution --
 check out a named branch, or supply the branch explicitly. Never proceed
 with a fabricated, defaulted, or omitted branch.
 
-`consolidate_dispatch` is dual-mode. Without provenance it is the
-side-effect-free retrieval mode sanctioned in Section 2.3: no
-finalization occurs and no finalization artifacts are written. With
-provenance it finalizes. The exactly-once-per-finalization-attempt
-bound applies only to the provenance-bearing finalization call; the
-Section 2.3 no-provenance retrieval call does not count against it,
-and the finalization call remains available after retrieval.
+`consolidate_dispatch` is dual-mode, but this command uses only its
+provenance-bearing finalization mode: the persisted artifact carries
+every run, finding, advisory, and proposal later sections read, so no
+no-provenance retrieval call is made.
 
 Then call `consolidate_dispatch` exactly once per finalization attempt,
 with the captured `correlation_id` from the Section 2.3 one-line
@@ -1118,22 +1131,30 @@ With provenance the tool runs the finalizer internally and returns the
 finalization result directly. Never call `finalize_review_dispatch`
 yourself, and never hand-build or transform a finalization payload.
 
+**Truncation check.** First parse the entire finalization response as
+one JSON object. If the parse succeeds, the response is complete: use
+it and ignore any notice-shaped text inside it. If the parse fails, the
+host truncated the output — typically a truncation notice such as
+`[... truncated ... saved to: /path ...]` — and the result is unusable:
+fail closed as Section 2.3 describes and do not read the saved file.
+
 The compact finalization result is authoritative for the outcome. On
 `status: "success"`, read `operation_verdict`, `correlation_id`,
 `artifact_path`, the scalar review verdict (`review_verdict`), run
 counts, `calculated_assessment.authoritative`, `errors`, and the bounded
 `proposals` and `warnings` arrays directly from the result. Read the
-authoritative full data — findings, advisories, plan, and runs (each
-run's `workflow_verdict` is that persona's native verdict) — once from
-the persisted artifact at `artifact_path` (its `payload.findings` and
-`payload.advisories`). The artifact persists `payload.findings` and
-`payload.advisories` before `plan` and `runs`. When the file-read tool
-returns only part of the file, keep reading from the next offset until
-the closing brace; if the whole file cannot be read and parsed as one
-JSON object, fail closed rather than report partial findings. Do not
-recompute, re-derive, or re-map any of them, and do not alter the
-tool-computed verdict, `verdict_reason`, run counts, findings, or
-advisories.
+authoritative full data — findings, advisories, lesson proposals, and
+runs (each run's `workflow_verdict` is that persona's native verdict) —
+once from the persisted artifact through `read_dispatch_artifact`, never
+with the file-read tool, whose line limit cuts long artifact lines: call
+it with the result's `correlation_id` and `section` set to `findings`,
+`advisories`, `proposals`, or `runs`, repeating with
+`offset: <next_offset>` until `next_offset` is null. Entries arrive
+complete; `runs` entries omit their findings. If any call returns
+`status: "error"`, fail closed rather than report partial data. This is
+the Section 2.3 artifact read; do not repeat it. Do not recompute,
+re-derive, or re-map any of them, and do not alter the tool-computed
+verdict, `verdict_reason`, run counts, findings, or advisories.
 
 Action completion is not part of finalization. The finalizer's closed
 payload has no action field; do not add one, and do not summarize action

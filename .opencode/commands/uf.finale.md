@@ -92,20 +92,13 @@ changes. Use `$ARGUMENTS` as hint if non-empty. Append:
 
 >>> MANDATORY GATE <<<
 
-- **Stage Dewey knowledge artifacts**: Dewey learnings and
-  compiled articles produced during this change are knowledge
-  artifacts that belong in the feature PR. They capture
-  patterns, decisions, and gotchas discovered during the
-  workflow and are essential for team knowledge continuity.
-
-  ```bash
-  git add .uf/dewey/learnings/ .uf/dewey/compiled/ 2>/dev/null
-  ```
-
-  Do NOT skip this step. Even though `git add .` may have
-  already staged these files, this explicit step ensures
-  Dewey artifacts are never accidentally excluded from the
-  commit.
+- **Keep Dewey learnings off the branch**: `uf_finale_stage`
+  stages everything except `.uf/dewey/learnings/`. Learnings
+  stay untracked and reach `main` through a separate
+  `chore/dewey-learnings-*` PR (see the Commit scope rule in
+  `AGENTS.md`). Compiled articles under `.uf/dewey/compiled/`
+  still belong in the feature PR, and `uf_finale_stage` stages
+  them.
 
 **Session-resume guard**: Re-present and re-confirm if
 resumed.
@@ -175,10 +168,10 @@ aheadBy, behindBy}`.
 **Push state failure** (`retryable: true`, code `PUSH_SYNC_COUNT`):
 **soft gate** — warn that the branch's upstream state and
 divergence are unknown, then present the gate with a safe push
-mode: `git_push_force_with_lease` after a step-4 rebase (the
-lease protects any existing remote branch), else `git_push` with
-`{setUpstream: true, branch}` (safe whether or not an upstream
-exists). Never block on a push-state check.
+mode: `git_push_force_with_lease` with `{branch}` after a step-4
+rebase (the lease protects any existing remote branch), else
+`git_push` with `{setUpstream: true, branch}` (safe whether or
+not an upstream exists). Never block on a push-state check.
 
 >>> MANDATORY GATE <<<
 
@@ -188,13 +181,26 @@ resumed. Warn if `diverged` is true.
 **Push mode selection** — read the step-4 `sync-base`
 checkpoint `{behindBy, rebased}` and `upstreamExists`:
 - A step-4 rebase occurred AND `upstreamExists`: "Push to
-  remote" MUST call `git_push_force_with_lease`. The gate
+  remote" MUST call `git_push_force_with_lease` with
+  `{branch}`. The gate
   copy MUST state why: the rebase rewrote history, so the
   remote branch must be replaced under lease protection.
 - A step-4 rebase occurred AND `!upstreamExists` (first
   push): call `git_push` with `{setUpstream: true, branch}`.
-- No rebase occurred: call `git_push` exactly as before
-  (with `{setUpstream: true, branch}` if `!upstreamExists`).
+- No rebase occurred: call `git_push` with `{branch}` (add
+  `setUpstream: true` if `!upstreamExists`).
+
+Every push call in this command passes `branch` (the feature
+branch). Both push tools refuse with `BRANCH_MISMATCH` when the
+checkout is on another branch — **STOP** and report; never
+switch branches to retry. On success they return `{remote, ref,
+old_sha, new_sha, updated}`: report the ref and SHAs, and treat
+`updated: false` as "already up to date", not as a new push.
+Without `expected_sha`, `git_push_force_with_lease` leases on
+the remote-tracking ref with `--force-if-includes`, so a
+collaborator's commit that a fetch pulled in but the rebase did
+not include is never overwritten: on a lease rejection,
+**STOP** and report — never retry with `--force`.
 
 Use **question tool**: `["Push to remote",
 "Abort -- keep commits local"]`.
@@ -317,14 +323,15 @@ Checkpoint `step: "conflict-option"`,
 >>> END GATE <<<
 
 **Option 1 — Merge**: `git_fetch` → `git_merge`. If no
-conflict: `git_push`, then `uf_finale_ci_poll`. If
-conflicted: `git_merge_abort`, report files, **STOP**.
+conflict: `git_push` with `{branch}`, then
+`uf_finale_ci_poll`. If conflicted: `git_merge_abort`, report
+files, **STOP**.
 
 **Option 2 — Rebase**: Warn force push may be blocked.
 `git_fetch` → `git_rebase`. If no conflict:
-`git_push_force_with_lease` (if fails, suggest Option 1,
-**STOP**); on success, `uf_finale_ci_poll`. If
-conflicted: `git_rebase_abort`, report files, **STOP**.
+`git_push_force_with_lease` with `{branch}` (if fails,
+suggest Option 1, **STOP**); on success, `uf_finale_ci_poll`.
+If conflicted: `git_rebase_abort`, report files, **STOP**.
 
 **Option 3 — Stop**: Report conflict, **STOP**.
 
@@ -342,8 +349,8 @@ After return, `git_conflict_files` again. If unresolved:
 show staged diff. Use **question tool**:
 `["Approve, commit, and push", "Request edits",
 "Abort (discard resolution)"]`.
-- **Approve**: `git_commit_no_edit` → `git_push` →
-  `uf_finale_ci_poll`.
+- **Approve**: `git_commit_no_edit` → `git_push` with
+  `{branch}` → `uf_finale_ci_poll`.
 - **Edits**: User edits, re-show diff, re-present menu.
 - **Abort**: `git_merge_abort`, return to 5-option menu.
 

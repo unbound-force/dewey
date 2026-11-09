@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer"
 import { createHash, randomUUID } from "node:crypto"
-import { chmod, link, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
+import { chmod, link, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile, type FileHandle } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 
@@ -628,7 +629,7 @@ const CoverageSchema = z
 interface LessonProposal {
   readonly information: string
   readonly tag: string
-  readonly category?: string
+  readonly category?: (typeof LESSON_CATEGORY_VALUES)[number]
 }
 
 /** Data accumulated from child tool calls during a single dispatch_agent_run. */
@@ -847,6 +848,40 @@ const WorkflowResultSchema = z.discriminatedUnion("kind", [
   TestReviewResultSchema,
 ])
 
+/**
+ * Cardinality bound of the persisted payload.proposals array (RD-FR-054).
+ * consolidate_dispatch keeps the first MAX_PAYLOAD_PROPOSALS deduplicated
+ * proposals and reports the rest as a proposals_overflow warning, so the
+ * bound can never strand finalization.
+ */
+const MAX_PAYLOAD_PROPOSALS = 512
+
+/**
+ * Lesson proposal persisted in the dispatch artifact (RD-FR-054): the
+ * submit_lesson_proposal shape plus the submitting agent, kept at full length
+ * so consumers store complete lessons from the artifact rather than from the
+ * capped tool-result preview.
+ */
+// Single source for the five lesson-category values shared by the
+// payload and submission schemas; both z.enum declarations reference
+// this constant so the two surfaces cannot drift apart.
+const LESSON_CATEGORY_VALUES = [
+  "decision",
+  "pattern",
+  "gotcha",
+  "context",
+  "reference",
+] as const
+
+const PayloadLessonProposalSchema = z
+  .object({
+    agent: AgentNameSchema,
+    information: z.string().min(1).max(16_384),
+    tag: z.string().min(1).max(128),
+    category: z.enum(LESSON_CATEGORY_VALUES).optional(),
+  })
+  .strict()
+
 const ReviewDispatchPayloadSchema = z
   .object({
     command: z.enum(["review-council", "triage-issue", "address-feedback", "speckit-testreview"]),
@@ -860,6 +895,7 @@ const ReviewDispatchPayloadSchema = z
     coverage: CoverageSchema,
     findings: z.array(ConsolidatedFindingSchema).max(512),
     advisories: z.array(AdvisorySchema).max(512),
+    proposals: z.array(PayloadLessonProposalSchema).max(MAX_PAYLOAD_PROPOSALS).optional(),
     verdict: GenericVerdictSchema,
     verdict_reason: z.string().min(1).max(4096),
     run_counts: RunCountsSchema,
@@ -2589,8 +2625,9 @@ function envelopeFor(
 
 /**
  * Reorders a payload for persistence so a reader that only sees the head of
- * the artifact still gets the decision, findings, and advisories: plan and
- * runs (which repeat every run's findings) come last. Values are unchanged.
+ * the artifact still gets the decision, findings, advisories, and lesson
+ * proposals: plan and runs (which repeat every run's findings) come last.
+ * Values are unchanged; an absent proposals array stays absent (RD-FR-054).
  */
 function artifactPayloadOrder(payload: ReviewDispatchPayload): ReviewDispatchPayload {
   return {
@@ -2608,6 +2645,7 @@ function artifactPayloadOrder(payload: ReviewDispatchPayload): ReviewDispatchPay
     workflow_result: payload.workflow_result,
     findings: payload.findings,
     advisories: payload.advisories,
+    ...(payload.proposals === undefined ? {} : { proposals: payload.proposals }),
     plan: payload.plan,
     runs: payload.runs,
   }
@@ -3467,8 +3505,22 @@ export async function executeDispatchRun(
     // non-reclassified run — populated only at the RD-FR-026 hook above.
     post_submission_abort: postSubmissionAbort,
     // Timeout provenance (RD-FR-030, design D5 of derive-per-run-timeout):
-    // key absent when the calling tool did not resolve a timeout.
-    timeout: options.timeoutProvenance,
+    // key absent when the calling tool did not resolve a timeout. When the
+    // run reached the executor and produced timeout details, the executor
+    // outcome is recorded alongside the derived provenance: the derived
+    // effective_ms can overstate the applied limit after the delegation
+    // budget clamp, so executor_effective_ms / executor_budget_clamped are
+    // the authoritative applied values (run-file audit only — the
+    // consolidate_dispatch dispatchRuns mapping deliberately omits them;
+    // readers such as dispatch_status prefer them).
+    timeout:
+      options.timeoutProvenance !== undefined && result.timeout !== undefined
+        ? {
+            ...options.timeoutProvenance,
+            executor_effective_ms: result.timeout.effective_ms,
+            executor_budget_clamped: result.timeout.budget_clamped,
+          }
+        : options.timeoutProvenance,
     // Delivery-mode work signal (RD-FR-036): false for inline-mode runs
     // dispatched through the aggregate tools (the signal is a resolved
     // boolean from build_review_prompts), absent for direct
@@ -3740,7 +3792,7 @@ const SubmitLessonProposalInputSchema = z
     information: z.string().min(1).max(16_384).describe("The learning text to store."),
     tag: z.string().min(1).max(128).describe("Required topic tag (e.g. authentication, review-dispatch)."),
     category: z
-      .enum(["decision", "pattern", "gotcha", "context", "reference"])
+      .enum(LESSON_CATEGORY_VALUES)
       .optional()
       .describe("Optional category for the learning."),
   })
@@ -4050,14 +4102,6 @@ export const SUMMARY_LIMITS = {
   maxBytes: 40 * 1024,
 } as const
 
-const LESSON_CATEGORY_VALUES = [
-  "decision",
-  "pattern",
-  "gotcha",
-  "context",
-  "reference",
-] as const
-
 interface TruncatedText {
   readonly text: string
   readonly truncated: boolean
@@ -4181,6 +4225,12 @@ function projectSummaryWarning(
       break
     case "empty_coverage_attestation":
       detail = `agent=${agent}`
+      break
+    case "proposals_overflow":
+      detail = `kept=${asCount(record.kept_proposals)} dropped=${asCount(record.dropped_proposals)}`
+      break
+    case "duplicate_proposal_merged":
+      detail = `agent=${agent} kept=${typeof record.kept_agent === "string" ? record.kept_agent : ""}`
       break
     default:
       return null
@@ -4416,6 +4466,118 @@ interface InvalidSubmissionsExcludedWarning {
 }
 
 /**
+ * Machine-readable consolidate_dispatch warning: a lesson proposal was dropped
+ * as a near-identical duplicate of another proposal in the same dispatch
+ * (RD-FR-055). `agent` names the dropped entry's agent and `kept_agent` the
+ * surviving entry's, so no merge is silent. This shape is consolidate-result
+ * observability only; it MUST NOT flow into the finalization payload, whose
+ * strict schema rejects unknown top-level keys.
+ */
+interface DuplicateProposalMergedWarning {
+  readonly type: "duplicate_proposal_merged"
+  readonly agent: string
+  readonly kept_agent: string
+}
+
+/**
+ * Machine-readable consolidate_dispatch warning: the deduplicated proposals
+ * exceeded the persisted cardinality bound (MAX_PAYLOAD_PROPOSALS). The first
+ * entries are kept and the dropped remainder is counted, mirroring
+ * consolidated_findings_overflow. Result observability only; it MUST NOT flow
+ * into the finalization payload.
+ */
+interface ProposalsOverflowWarning {
+  readonly type: "proposals_overflow"
+  readonly kept_proposals: number
+  readonly dropped_proposals: number
+}
+
+/**
+ * English function words ignored when comparing proposals (RD-FR-055). Fixed
+ * so deduplication is deterministic; negations are deliberately kept, and
+ * PROPOSAL_NEGATION_WORDS separates a lesson from its opposite.
+ */
+const PROPOSAL_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is",
+  "it", "its", "of", "on", "or", "that", "the", "this", "to", "with",
+])
+
+/**
+ * Negation words: two proposals whose texts disagree on carrying one are never
+ * merged, so "retry is safe" and "retry is not safe" both survive. `t` is the
+ * token the splitter leaves from "n't" contractions.
+ */
+const PROPOSAL_NEGATION_WORDS = new Set(["cannot", "never", "no", "nor", "not", "t", "without"])
+
+/** Minimum token-set size for similarity matching; smaller sets must match exactly. */
+const PROPOSAL_MIN_SIMILARITY_TOKENS = 6
+
+/**
+ * Jaccard similarity at or above which two proposals are near-identical. The
+ * symmetric measure keeps a short lesson whose words mostly recur in a long
+ * one. Calibrated on issue #941's session: its duplicate pair scored 0.39 and
+ * every distinct pair at most 0.10.
+ */
+const PROPOSAL_DUPLICATE_JACCARD = 0.3
+
+/** Normalized content tokens of one proposal's information text. */
+function proposalTokens(information: string): string[] {
+  return information
+    .normalize("NFKC")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((token) => token.length > 0 && !PROPOSAL_STOP_WORDS.has(token))
+}
+
+/** Whether two token lists describe the same lesson (RD-FR-055 rule 2). */
+function nearIdenticalTokens(a: readonly string[], b: readonly string[]): boolean {
+  if (a.some((token) => PROPOSAL_NEGATION_WORDS.has(token)) !== b.some((token) => PROPOSAL_NEGATION_WORDS.has(token))) {
+    return false
+  }
+  const setA = new Set(a)
+  const setB = new Set(b)
+  if (Math.min(setA.size, setB.size) < PROPOSAL_MIN_SIMILARITY_TOKENS) {
+    return a.length === b.length && a.every((token, index) => token === b[index])
+  }
+  let shared = 0
+  for (const token of setA) {
+    if (setB.has(token)) shared += 1
+  }
+  return shared / (setA.size + setB.size - shared) >= PROPOSAL_DUPLICATE_JACCARD
+}
+
+/**
+ * Drop near-identical lesson proposals across personas (RD-FR-055). Visits
+ * proposals in collection order; on the first near-identical kept entry the
+ * longer information text (the kept one on a tie) holds the kept slot. Agent,
+ * tag, and category never affect matching. Each drop yields one warning.
+ * @param proposals Collected proposals in run order.
+ * @returns The kept proposals and one duplicate_proposal_merged warning per drop.
+ */
+export function deduplicateProposals<T extends { readonly agent: string; readonly information: string }>(
+  proposals: readonly T[],
+): { readonly proposals: T[]; readonly warnings: DuplicateProposalMergedWarning[] } {
+  const kept: { proposal: T; tokens: string[] }[] = []
+  const warnings: DuplicateProposalMergedWarning[] = []
+  for (const proposal of proposals) {
+    const tokens = proposalTokens(proposal.information)
+    const match = kept.find((entry) => nearIdenticalTokens(entry.tokens, tokens))
+    if (match === undefined) {
+      kept.push({ proposal, tokens })
+      continue
+    }
+    if (proposal.information.length > match.proposal.information.length) {
+      warnings.push({ type: "duplicate_proposal_merged", agent: match.proposal.agent, kept_agent: proposal.agent })
+      match.proposal = proposal
+      match.tokens = tokens
+    } else {
+      warnings.push({ type: "duplicate_proposal_merged", agent: proposal.agent, kept_agent: match.proposal.agent })
+    }
+  }
+  return { proposals: kept.map((entry) => entry.proposal), warnings }
+}
+
+/**
  * Cardinality bounds the finalizer's payload schemas declare — per-run
  * findings (DispatchRunSchema) and consolidated findings
  * (ReviewDispatchPayloadSchema), both 512. The schema declarations are the
@@ -4594,8 +4756,11 @@ export function createConsolidateDispatchTool(
       "to 256, categories, tags, and agents to 128, warning kinds to 64 and details to 256, any shortened " +
       "entry carries truncated: true, and trailing entries are dropped until the compact JSON is under " +
       "40,960 bytes. detail: \"summary\" combined with provenance is rejected. " +
-      "Lesson proposals submitted by child agents are collected and returned in a top-level proposals array; " +
-      "call dewey_store_learning for each. " +
+      "Lesson proposals submitted by child agents are collected, near-identical proposals across personas are " +
+      "merged (each merge reported as a duplicate_proposal_merged warning naming agent and kept_agent), and " +
+      "the full-length proposals are persisted in the artifact's payload.proposals (after advisories, before " +
+      "plan and runs) on finalization. The proposals arrays in tool results are a capped preview: store lessons " +
+      "with dewey_store_learning from the artifact's payload.proposals, never from the preview. " +
       "Findings and proposals harvested from non-success runs are excluded from the payload and reported in a " +
       "top-level warnings array as orphaned_submissions_excluded entries (agent, run_id, discarded counts); " +
       "harvested findings or proposals that fail their schemas are likewise excluded and reported as " +
@@ -4606,7 +4771,7 @@ export function createConsolidateDispatchTool(
       "successful manifest-mode runs whose persisted final text carries a missing or empty `**Files Reviewed**:` " +
       "coverage attestation are reported as empty_coverage_attestation warnings (advisory quality signal only, " +
       "no finding and no verdict change); when " +
-      "finalizing externally, submit the payload without the top-level proposals and warnings observability fields. " +
+      "finalizing externally, submit the payload without the top-level warnings observability field. " +
       "Automatically resolves the dispatch session from prior dispatch_agent_run calls; pass correlation_id " +
       "explicitly to consolidate a dispatch started by a different session (e.g. after a restart).",
     args: ConsolidateDispatchInputSchema.shape,
@@ -4772,6 +4937,8 @@ export function createConsolidateDispatchTool(
         | InvalidSubmissionsExcludedWarning
         | RunFindingsOverflowWarning
         | ConsolidatedFindingsOverflowWarning
+        | DuplicateProposalMergedWarning
+        | ProposalsOverflowWarning
       )[] = [
         ...runs
           .filter((run) => run.status !== "success" && (run.findings.length > 0 || run.proposals.length > 0))
@@ -4789,10 +4956,28 @@ export function createConsolidateDispatchTool(
         ...findingsOverflowWarnings,
       ]
 
-      // Collect lesson proposals from successful runs only, tagged with agent name.
-      const collectedProposals = validatedSuccessRuns.flatMap((run) =>
-        run.proposals.map((p) => ({ agent: run.agent, information: p.information, tag: p.tag, category: p.category })),
+      // Collect lesson proposals from successful runs only, tagged with agent
+      // name, then merge near-identical lessons across personas once so the
+      // artifact and every tool result carry the same set (RD-FR-055).
+      const deduplicated = deduplicateProposals(
+        validatedSuccessRuns.flatMap((run) =>
+          run.proposals.map((p) => ({
+            agent: run.agent,
+            information: p.information,
+            tag: p.tag,
+            category: p.category,
+          })),
+        ),
       )
+      warnings.push(...deduplicated.warnings)
+      const collectedProposals = deduplicated.proposals.slice(0, MAX_PAYLOAD_PROPOSALS)
+      if (deduplicated.proposals.length > MAX_PAYLOAD_PROPOSALS) {
+        warnings.push({
+          type: "proposals_overflow",
+          kept_proposals: collectedProposals.length,
+          dropped_proposals: deduplicated.proposals.length - MAX_PAYLOAD_PROPOSALS,
+        })
+      }
 
       // Deduplicate findings across successful runs only, then enforce the
       // finalizer's top-level cardinality bound (ReviewDispatchPayloadSchema
@@ -4907,6 +5092,9 @@ export function createConsolidateDispatchTool(
         coverage: sessionMetadata.coverage,
         findings: consolidatedFindings,
         advisories,
+        // Full-length proposals persist in the artifact (RD-FR-054); the
+        // tool-result arrays below are a capped preview.
+        ...(collectedProposals.length > 0 ? { proposals: collectedProposals } : {}),
         verdict: projectedVerdict,
         verdict_reason: verdictReason,
         run_counts: runCounts,
@@ -4922,9 +5110,10 @@ export function createConsolidateDispatchTool(
         )
         return {
           output: JSON.stringify(
-            // warnings and proposals ride along on the compact finalization
-            // wrapper only — the payload handed to finalizeReviewDispatch
-            // stays schema-exact (RD-FR-051).
+            // warnings ride along on the compact finalization wrapper only —
+            // the payload handed to finalizeReviewDispatch stays schema-exact
+            // (RD-FR-051). The proposals here are a capped preview of the
+            // persisted payload.proposals (RD-FR-054).
             buildCompactFinalization(
               result,
               runCounts,
@@ -6056,6 +6245,187 @@ function createReadDiffChunkTool(projectRoot: string): ReturnType<typeof tool> {
   })
 }
 
+// ── read_dispatch_artifact ───────────────────────────────────
+
+/**
+ * Byte budget of one read_dispatch_artifact page (RD-FR-057): the same
+ * 40 KiB bound the summary retrieval uses, under the host's ~50 KiB
+ * tool-output window. A page always carries at least one entry so paging
+ * always advances.
+ */
+const ARTIFACT_PAGE_MAX_BYTES = 40 * 1024
+
+/** Largest artifact file read_dispatch_artifact will parse. */
+const ARTIFACT_MAX_FILE_BYTES = 64 * 1024 * 1024
+
+const ReadDispatchArtifactInputSchema = z
+  .object({
+    correlation_id: UUIDSchema.describe("correlation_id of a finalized dispatch (the compact result's correlation_id)."),
+    section: z
+      .enum(["summary", "findings", "advisories", "proposals", "runs"])
+      .describe("summary for scalars and counts, or one array to page through."),
+    offset: z.number().int().nonnegative().optional().describe("Entry offset to start from; pass the previous next_offset."),
+  })
+  .strict()
+
+/** Fail-closed read_dispatch_artifact result. */
+function artifactReadError(code: "invalid_input" | "not_found" | "invalid_artifact", message: string): Record<string, unknown> {
+  return { status: "error", code, message }
+}
+
+/**
+ * Read one bounded section of a persisted review-dispatch artifact
+ * (RD-FR-057). The path is derived from the correlation ID inside the
+ * project's dispatch store, so no caller-supplied path is read; the file is
+ * opened with O_NOFOLLOW and O_NONBLOCK, inspected and read through the same
+ * handle, and bounded at ARTIFACT_MAX_FILE_BYTES against the live stream, so
+ * a symlink, FIFO, or same-path swap cannot redirect, stall, or oversize the
+ * read. The envelope must parse as review-dispatch and pass the strict
+ * payload schema. Array sections page by entry under
+ * ARTIFACT_PAGE_MAX_BYTES of compact JSON; runs omit their findings (each
+ * finding lives once in the findings section with its run_ids) and carry a
+ * finding_count instead.
+ * @param rawInput Untrusted tool arguments.
+ * @param projectRoot Project worktree holding `.uf/artifacts/dispatch/`.
+ * @returns A structured page, summary, or fail-closed error.
+ */
+export async function readDispatchArtifact(rawInput: unknown, projectRoot: string): Promise<Record<string, unknown>> {
+  const parsed = ReadDispatchArtifactInputSchema.safeParse(rawInput)
+  if (!parsed.success) {
+    return artifactReadError("invalid_input", `input validation failed: ${formatValidationError(parsed.error)}`)
+  }
+  const { correlation_id: correlationId, section } = parsed.data
+  const offset = parsed.data.offset ?? 0
+  const path = join(resolve(projectRoot, DISPATCH_ARTIFACT_DIRECTORY), `${correlationId}.json`)
+  let text: string
+  let handle: FileHandle | undefined
+  try {
+    // Inspect and read through the same handle so a same-path swap
+    // cannot redirect content between stat and read (TOCTOU).
+    // O_NOFOLLOW rejects a symlinked final component (ELOOP) and
+    // O_NONBLOCK keeps the open from blocking on a FIFO or device;
+    // both flags are feature-detected because not every platform
+    // defines them. The stat must then prove a regular file.
+    const openFlags = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)
+    handle = await open(path, openFlags)
+    const info = await handle.stat()
+    if (!info.isFile()) {
+      return artifactReadError("invalid_artifact", "artifact is not a regular file")
+    }
+    if (info.size > ARTIFACT_MAX_FILE_BYTES) {
+      return artifactReadError("invalid_artifact", `artifact exceeds ${ARTIFACT_MAX_FILE_BYTES} bytes`)
+    }
+    // Read bounded against the live stream so growth after the stat
+    // still cannot exceed the byte budget.
+    const chunks: Buffer[] = []
+    const chunk = Buffer.alloc(64 * 1024)
+    let total = 0
+    for (;;) {
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null)
+      if (bytesRead === 0) {
+        break
+      }
+      total += bytesRead
+      if (total > ARTIFACT_MAX_FILE_BYTES) {
+        return artifactReadError("invalid_artifact", `artifact exceeds ${ARTIFACT_MAX_FILE_BYTES} bytes`)
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, bytesRead)))
+    }
+    text = Buffer.concat(chunks).toString("utf8")
+  } catch (error: unknown) {
+    return isErrno(error, "ENOENT")
+      ? artifactReadError("not_found", `no finalized artifact for correlation_id ${correlationId}`)
+      : artifactReadError("invalid_artifact", `read artifact: ${errorMessage(error)}`)
+  } finally {
+    if (handle) {
+      await handle.close().catch(() => undefined)
+    }
+  }
+  let envelope: Record<string, unknown>
+  try {
+    envelope = asRecord(JSON.parse(text))
+  } catch (error: unknown) {
+    return artifactReadError("invalid_artifact", `parse artifact: ${errorMessage(error)}`)
+  }
+  if (envelope.artifact_type !== REVIEW_DISPATCH_ARTIFACT_TYPE) {
+    return artifactReadError("invalid_artifact", "artifact_type is not review-dispatch")
+  }
+  const payload = ReviewDispatchPayloadSchema.safeParse(envelope.payload)
+  if (!payload.success) {
+    return artifactReadError("invalid_artifact", `payload validation failed: ${formatValidationError(payload.error)}`)
+  }
+  const data = payload.data
+  const proposals = data.proposals ?? []
+  if (section === "summary") {
+    return {
+      status: "ok",
+      correlation_id: data.correlation_id,
+      section,
+      command: data.command,
+      mode: data.mode,
+      verdict: data.verdict,
+      verdict_reason: data.verdict_reason,
+      run_counts: data.run_counts,
+      coverage: data.coverage,
+      workflow_result: data.workflow_result,
+      counts: {
+        findings: data.findings.length,
+        advisories: data.advisories.length,
+        proposals: proposals.length,
+        runs: data.runs.length,
+      },
+    }
+  }
+  const entries: readonly unknown[] =
+    section === "findings"
+      ? data.findings
+      : section === "advisories"
+        ? data.advisories
+        : section === "proposals"
+          ? proposals
+          : data.runs.map(({ findings, ...run }) => ({ ...run, finding_count: findings.length }))
+  const page: unknown[] = []
+  const result: Record<string, unknown> = {
+    status: "ok",
+    correlation_id: data.correlation_id,
+    section,
+    total: entries.length,
+    offset,
+    entries: page,
+    next_offset: null,
+  }
+  let index = offset
+  while (index < entries.length) {
+    page.push(entries[index])
+    if (page.length > 1 && Buffer.byteLength(JSON.stringify(result), "utf8") >= ARTIFACT_PAGE_MAX_BYTES) {
+      page.pop()
+      break
+    }
+    index += 1
+  }
+  result.next_offset = index < entries.length ? index : null
+  return result
+}
+
+/** Creates the read_dispatch_artifact tool (RD-FR-057). */
+function createReadDispatchArtifactTool(projectRoot: string): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Read one bounded section of a finalized review-dispatch artifact by correlation_id, instead of reading " +
+      "the artifact file (its pretty-printed lines can exceed the file-read tool's line limit). section " +
+      "\"summary\" returns command, mode, verdict, verdict_reason, run_counts, coverage, workflow_result, and " +
+      "the entry counts of findings, advisories, proposals, and runs. section \"findings\", \"advisories\", " +
+      "\"proposals\", or \"runs\" returns { total, offset, entries, next_offset } with full, untruncated entries " +
+      "under 40,960 bytes of compact JSON per page (at least one entry); call again with offset: next_offset " +
+      "until next_offset is null. runs entries omit findings and carry finding_count. Errors return " +
+      "{ status: \"error\", code: invalid_input | not_found | invalid_artifact, message }; fail closed on any error.",
+    args: ReadDispatchArtifactInputSchema.shape,
+    async execute(args): Promise<{ readonly output: string }> {
+      return { output: JSON.stringify(await readDispatchArtifact(args, projectRoot)) }
+    },
+  })
+}
+
 // ── dispatch_review_runs implementation ──────────────────────
 
 /**
@@ -6424,7 +6794,10 @@ function createDispatchReviewRunsTool(
       "When per_run_timeout_ms is omitted, each run's timeout is derived from the work being dispatched " +
       "(review-matrix base window, prompt size, plan tier, and parallelism), bounded by 1,800,000 ms. " +
       "Capture the correlation_id this tool reports (in the one-line summary and machine-readable metadata) " +
-      "and pass it as correlation_id on every subsequent consolidate_dispatch call in the same workflow.",
+      "and pass it as correlation_id on every subsequent consolidate_dispatch call in the same workflow. " +
+      "An error summary also ends with \" — error: <message> (retryable: <bool>)\", the failure message " +
+      "collapsed to one line and cut to at most 512 characters including the ellipsis. Its proposals count is " +
+      "taken before consolidate_dispatch merges near-identical proposals, so the artifact may hold fewer.",
     args: DispatchReviewRunsInputSchema.shape,
     async execute(
       args,
@@ -6434,10 +6807,34 @@ function createDispatchReviewRunsTool(
       // D3: the summary carries the correlation ID (rendered as "none" for
       // the pre-parse validation-failure result, which mints nothing) so the
       // dispatch session is addressable from the prose output alone.
-      const summary = `dispatch_review_runs: ${result.status} (correlation_id ${result.correlation_id ?? "none"}) — ${result.runs_completed} completed, ${result.runs_failed} failed, ${result.runs_skipped} skipped, ${result.findings.length} findings, ${result.proposals.length} proposals`
-      return { output: summary, metadata: result }
+      return { output: dispatchSummaryLine(result), metadata: result }
     },
   })
+}
+
+/** Maximum characters of a failure message carried on the summary line (issue #946). */
+const DISPATCH_SUMMARY_MESSAGE_CHARS = 512
+
+/**
+ * Render the one-line dispatch_review_runs summary. The documented prefix
+ * (status, correlation_id, counts) is stable; a non-ok result appends its
+ * failure message, collapsed to one line and bounded, plus `retryable` when
+ * known, because the metadata channel never reaches the calling model
+ * (issue #946).
+ * @param result Aggregate dispatch result.
+ * @returns The caller-visible summary line.
+ */
+export function dispatchSummaryLine(result: z.infer<typeof DispatchReviewRunsOutputSchema>): string {
+  const summary = `dispatch_review_runs: ${result.status} (correlation_id ${result.correlation_id ?? "none"}) — ${result.runs_completed} completed, ${result.runs_failed} failed, ${result.runs_skipped} skipped, ${result.findings.length} findings, ${result.proposals.length} proposals`
+  if (result.status === "ok") return summary
+  const flat = (result.message ?? "no failure message reported").replace(/\s+/g, " ").trim()
+  // A cut message keeps DISPATCH_SUMMARY_MESSAGE_CHARS in total, ellipsis included.
+  const message =
+    flat.length > DISPATCH_SUMMARY_MESSAGE_CHARS
+      ? `${truncateText(flat, DISPATCH_SUMMARY_MESSAGE_CHARS - 1).text}…`
+      : flat
+  const retryable = result.retryable === undefined ? "" : ` (retryable: ${result.retryable})`
+  return `${summary} — error: ${message}${retryable}`
 }
 
 // ── Operation window records (RD-FR-031) ─────────────────────
@@ -6630,10 +7027,17 @@ function createDispatchStatusTool(): ReturnType<typeof tool> {
           // Effective per-run timeout (RD-FR-030, design D5 of
           // derive-per-run-timeout): surfaced when the run file carries
           // timeout provenance; null for older run files and unreadable
-          // entries. Strictly observational — never feeds status or
-          // verdict computation.
+          // entries. executor_effective_ms (the post-clamp applied value
+          // copied from the executor result) is preferred over the derived
+          // effective_ms, which can overstate the applied limit after the
+          // delegation budget clamp. Strictly observational — never feeds
+          // status or verdict computation.
           timeout_effective_ms:
-            typeof result.run.timeout?.effective_ms === "number" ? result.run.timeout.effective_ms : null,
+            typeof result.run.timeout?.executor_effective_ms === "number"
+              ? result.run.timeout.executor_effective_ms
+              : typeof result.run.timeout?.effective_ms === "number"
+                ? result.run.timeout.effective_ms
+                : null,
         })
       }
 
@@ -8921,6 +9325,335 @@ function createFetchPrChecksTool(): ReturnType<typeof tool> {
   })
 }
 
+// ── resolve_review_mode ──────────────────────────────────────
+
+/**
+ * Re-review evaluator limits (feedback-loop-scope, RPR-FR-002). A light
+ * check replaces the council only for a push this small and contained.
+ */
+export const LIGHT_CHECK_MAX_CHANGED_LINES = 200
+
+/**
+ * The compare API lists at most 300 files. A response at that size may
+ * be truncated, so it can never qualify for a light check.
+ */
+export const COMPARE_FILE_LIMIT = 300
+
+/**
+ * Paths whose changes always get the full council: workflows and
+ * repository settings, the agent instructions, the constitution, the
+ * convention packs, and anything naming auth, tokens, secrets, or
+ * credentials.
+ */
+export const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
+  /^\.github\//,
+  /(^|\/)AGENTS\.md$/,
+  /(^|\/)constitution\.md$/,
+  /^\.opencode\/uf\/packs\//,
+  /auth|token|secret|credential/i,
+]
+
+/** File statuses in a compare response that rule out a light check. */
+const STRUCTURAL_FILE_STATUSES = new Set(["added", "removed", "renamed", "copied"])
+
+/** Severity marker at the start of a finding (`**HIGH — ...`). */
+const FINDING_SEVERITY_PATTERN = /^\s*\*\*(CRITICAL|HIGH|MEDIUM|LOW)\b/
+
+/** Any bold CRITICAL marker in a review body or comment. */
+const CRITICAL_MARKER_PATTERN = /\*\*CRITICAL\b/
+
+/** A review as `GET /pulls/{n}/reviews` returns it (fields used here). */
+export interface ReviewModeReview {
+  readonly id: number
+  readonly user: string
+  readonly state: string
+  readonly commit_id: string
+  readonly submitted_at: string
+  readonly body: string
+}
+
+/** An inline comment as `GET /pulls/{n}/comments` returns it (fields used here). */
+export interface ReviewModeComment {
+  readonly id: number
+  readonly review_id: number | null
+  readonly path: string
+  readonly line: number | null
+  readonly body: string
+}
+
+/** The fields of `GET /compare/{base}...{head}` the evaluator reads. */
+export interface ReviewModeCompare {
+  readonly status: string
+  readonly files: readonly { readonly filename: string; readonly status: string; readonly changes: number }[]
+}
+
+export interface ReviewModeInput {
+  readonly headSha: string
+  readonly viewer: string
+  readonly reviews: readonly ReviewModeReview[]
+  readonly comments: readonly ReviewModeComment[]
+  /** Null when the compare call failed. */
+  readonly compare: ReviewModeCompare | null
+  /** Check buckets from `gh pr checks`, or null when they could not be read. */
+  readonly checkBuckets: readonly string[] | null
+}
+
+/** A CRITICAL or HIGH finding of the prior review, for the light check to verify. */
+export interface PriorFinding {
+  readonly comment_id: number
+  readonly path: string
+  readonly line: number | null
+  /** `UNKNOWN` when the comment carries no severity marker; it counts as HIGH. */
+  readonly severity: "CRITICAL" | "HIGH" | "UNKNOWN"
+}
+
+export interface ReviewModeDecision {
+  readonly mode: "full" | "light"
+  readonly reason: string
+  readonly prior_review: { readonly id: number; readonly commit_id: string; readonly state: string } | null
+  readonly delta: { readonly files: number; readonly changed_lines: number } | null
+  readonly prior_findings: readonly PriorFinding[]
+}
+
+/**
+ * Decide between the full council and a light check (feedback-loop-scope
+ * RPR-FR-001, RPR-FR-002). Every failure to read an input decides `full`: the light
+ * check is an optimisation, so missing data never earns it.
+ *
+ * The prior review is the viewer's latest submitted review (dismissed
+ * included: branch rules dismiss stale approvals on push) whose commit
+ * is not the head. Review and comment text is untrusted; it is only
+ * matched against severity markers, never interpreted.
+ */
+export function decideReviewMode(input: ReviewModeInput): ReviewModeDecision {
+  const viewer = input.viewer.toLowerCase()
+  const prior = [...input.reviews]
+    .filter((review) => review.user.toLowerCase() === viewer && review.state !== "PENDING")
+    .filter((review) => review.commit_id !== input.headSha)
+    .sort((a, b) => a.submitted_at.localeCompare(b.submitted_at))
+    .at(-1)
+
+  const full = (reason: string, delta: ReviewModeDecision["delta"] = null): ReviewModeDecision => ({
+    mode: "full",
+    reason,
+    prior_review: prior === undefined ? null : { id: prior.id, commit_id: prior.commit_id, state: prior.state },
+    delta,
+    prior_findings: [],
+  })
+
+  if (input.viewer === "") return full("the current user could not be read")
+  if (prior === undefined) return full(`no earlier review by ${input.viewer} on another commit`)
+
+  const priorComments = input.comments.filter((comment) => comment.review_id === prior.id)
+  if (CRITICAL_MARKER_PATTERN.test(prior.body) || priorComments.some((c) => CRITICAL_MARKER_PATTERN.test(c.body))) {
+    return full("the prior review raised a CRITICAL finding")
+  }
+
+  if (input.compare === null) return full("the changes since the prior review could not be read")
+  if (input.compare.status !== "ahead") {
+    return full(`the reviewed commit is no longer an ancestor of the head (compare status ${input.compare.status})`)
+  }
+  const files = input.compare.files
+  const changedLines = files.reduce((sum, file) => sum + file.changes, 0)
+  const delta = { files: files.length, changed_lines: changedLines }
+  if (files.length >= COMPARE_FILE_LIMIT) return full("the compare response may be truncated", delta)
+  if (changedLines > LIGHT_CHECK_MAX_CHANGED_LINES) {
+    return full(`${changedLines} changed lines exceed ${LIGHT_CHECK_MAX_CHANGED_LINES}`, delta)
+  }
+  const structural = files.find((file) => STRUCTURAL_FILE_STATUSES.has(file.status))
+  if (structural !== undefined) return full(`${structural.filename} was ${structural.status}`, delta)
+  const sensitive = files.find((file) => SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(file.filename)))
+  if (sensitive !== undefined) return full(`${sensitive.filename} is a sensitive path`, delta)
+
+  if (input.checkBuckets === null) return full("the PR checks could not be read", delta)
+  if (input.checkBuckets.includes("fail")) return full("a check is failing", delta)
+
+  const priorFindings: PriorFinding[] = []
+  for (const comment of priorComments) {
+    const severity = FINDING_SEVERITY_PATTERN.exec(comment.body)?.[1]
+    if (severity === "MEDIUM" || severity === "LOW") continue
+    priorFindings.push({
+      comment_id: comment.id,
+      path: comment.path,
+      line: comment.line,
+      severity: severity === "HIGH" || severity === "CRITICAL" ? severity : "UNKNOWN",
+    })
+  }
+
+  return {
+    mode: "light",
+    reason: `${files.length} files, ${changedLines} lines since ${prior.commit_id.slice(0, 7)}`,
+    prior_review: { id: prior.id, commit_id: prior.commit_id, state: prior.state },
+    delta,
+    prior_findings: priorFindings,
+  }
+}
+
+const ResolveReviewModeInputSchema = z
+  .object({
+    pr_number: z.number().int().min(1).max(999_999),
+  })
+  .strict()
+
+/** Flatten `gh api --paginate --slurp` output (an array of pages). */
+function flattenPages(text: string): unknown[] | null {
+  const pages = tryParseJsonArray(text.trim())
+  if (pages === null) return null
+  return pages.flatMap((page) => (Array.isArray(page) ? page : [page]))
+}
+
+/**
+ * Gather the evaluator's inputs with gh and decide. Each gh call that
+ * fails leaves its input empty, which decides `full`; only a missing
+ * PR or gh itself is an error.
+ */
+async function resolveReviewMode(
+  prNumber: number,
+): Promise<(ReviewModeDecision & { readonly pr_number: number; readonly head_sha: string; readonly viewer: string }) | FetchContextError> {
+  try {
+    await runGhCommand(["auth", "status"])
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "gh auth status failed"
+    return { error: true, code: "gh_auth_failed", message, retryable: false }
+  }
+
+  let headSha: string
+  let repository: string
+  try {
+    const meta = JSON.parse(await runGhCommand(["pr", "view", String(prNumber), "--json", "headRefOid,url"])) as {
+      headRefOid?: string
+      url?: string
+    }
+    headSha = meta.headRefOid ?? ""
+    repository = deriveBaseRepository(meta.url ?? "") ?? ""
+  } catch (error: unknown) {
+    return classifyError(error, "pr_not_found", `Failed to read PR #${prNumber}`)
+  }
+  if (!/^[0-9a-f]{40}$/.test(headSha) || repository === "") {
+    return { error: true, code: "api_error", message: `PR #${prNumber} returned no head SHA or repository`, retryable: false }
+  }
+
+  const read = async (args: readonly string[]): Promise<string | null> => {
+    try {
+      return await runGhCommand(args)
+    } catch {
+      return null
+    }
+  }
+
+  const viewer = ((await read(["api", "user", "--jq", ".login"])) ?? "").trim()
+  const reviewPages = flattenPages((await read(["api", `repos/${repository}/pulls/${prNumber}/reviews`, "--paginate", "--slurp"])) ?? "")
+  const commentPages = flattenPages((await read(["api", `repos/${repository}/pulls/${prNumber}/comments`, "--paginate", "--slurp"])) ?? "")
+
+  const reviews: ReviewModeReview[] = (reviewPages ?? []).map((entry) => {
+    const review = (entry ?? {}) as Partial<{ id: number; user: { login?: string }; state: string; commit_id: string; submitted_at: string; body: string }>
+    return {
+      id: review.id ?? 0,
+      user: review.user?.login ?? "",
+      state: review.state ?? "",
+      commit_id: review.commit_id ?? "",
+      submitted_at: review.submitted_at ?? "",
+      body: review.body ?? "",
+    }
+  })
+  const comments: ReviewModeComment[] = (commentPages ?? []).map((entry) => {
+    const comment = (entry ?? {}) as Partial<{ id: number; pull_request_review_id: number | null; path: string; line: number | null; original_line: number | null; body: string }>
+    return {
+      id: comment.id ?? 0,
+      review_id: comment.pull_request_review_id ?? null,
+      path: comment.path ?? "",
+      line: comment.line ?? comment.original_line ?? null,
+      body: comment.body ?? "",
+    }
+  })
+
+  if (reviewPages === null || commentPages === null) {
+    return {
+      pr_number: prNumber,
+      head_sha: headSha,
+      viewer,
+      mode: "full",
+      reason: "the existing reviews could not be read",
+      prior_review: null,
+      delta: null,
+      prior_findings: [],
+    }
+  }
+  // A first pass finds the prior review, whose commit the compare needs.
+  const first = decideReviewMode({ headSha, viewer, reviews, comments, compare: null, checkBuckets: [] })
+  if (first.prior_review === null) {
+    return { pr_number: prNumber, head_sha: headSha, viewer, ...first }
+  }
+
+  let compare: ReviewModeCompare | null = null
+  const compareText = await read(["api", `repos/${repository}/compare/${first.prior_review.commit_id}...${headSha}`])
+  if (compareText !== null) {
+    try {
+      const parsed = JSON.parse(compareText) as Partial<{ status: string; files: { filename?: string; status?: string; changes?: number }[] }>
+      compare = {
+        status: parsed.status ?? "",
+        files: (parsed.files ?? []).map((file) => ({
+          filename: file.filename ?? "",
+          status: file.status ?? "",
+          changes: file.changes ?? 0,
+        })),
+      }
+    } catch {
+      compare = null
+    }
+  }
+
+  let checkBuckets: string[] | null = null
+  try {
+    const result = await runGhCommandTolerant(["pr", "checks", String(prNumber), "--json", "bucket"])
+    const stdout = result.stdout.trim()
+    if (stdout === "" && NO_CHECKS_REPORTED_PATTERN.test(result.stderr)) {
+      checkBuckets = []
+    } else {
+      const parsed = tryParseJsonArray(stdout)
+      checkBuckets = parsed === null ? null : parsed.map((entry) => String((entry as { bucket?: unknown } | null)?.bucket ?? ""))
+    }
+  } catch {
+    checkBuckets = null
+  }
+
+  const decision = decideReviewMode({ headSha, viewer, reviews, comments, compare, checkBuckets })
+  return { pr_number: prNumber, head_sha: headSha, viewer, ...decision }
+}
+
+/**
+ * Creates the resolve_review_mode OpenCode tool: the `/uf.review-pr`
+ * Step 3.11 re-review evaluator.
+ */
+function createResolveReviewModeTool(): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Decide whether a /uf.review-pr re-review needs the full council or a light check. Finds the " +
+      "current user's latest review on an earlier commit and returns mode `light` only when the " +
+      "reviewed commit is an ancestor of the head, the delta is at most 200 changed lines with no " +
+      "added, removed, or renamed file and no sensitive path, the prior review raised no CRITICAL " +
+      "finding, and no check is failing. Any input that cannot be read decides `full`. Also returns " +
+      "the prior review's CRITICAL, HIGH, and unlabelled inline findings for the light check.",
+    args: {
+      pr_number: ResolveReviewModeInputSchema.shape.pr_number,
+    },
+    async execute(args): Promise<{ readonly output: string }> {
+      const parsed = ResolveReviewModeInputSchema.safeParse(args)
+      if (!parsed.success) {
+        const result: FetchContextError = {
+          error: true,
+          code: "api_error",
+          message: `Invalid input: ${formatValidationError(parsed.error)}`,
+          retryable: false,
+        }
+        return { output: JSON.stringify(result, null, 2) }
+      }
+      const result = await resolveReviewMode(parsed.data.pr_number)
+      return { output: JSON.stringify(result, null, 2) }
+    },
+  })
+}
+
 // ── fetch_failed_run_logs ────────────────────────────────────
 
 /**
@@ -9163,6 +9896,7 @@ export const ReviewDispatchPlugin = {
       tool: {
         build_review_prompts: createBuildReviewPromptsTool(projectRoot),
         read_diff_chunk: createReadDiffChunkTool(projectRoot),
+        read_dispatch_artifact: createReadDispatchArtifactTool(projectRoot),
         plan_review_dispatch: createPlanReviewDispatchTool(dependencies),
         finalize_review_dispatch: createFinalizeReviewDispatchTool(createFinalizationDependencies(projectRoot)),
         acquire_sibling_evidence: createAcquireSiblingEvidenceTool(
@@ -9192,6 +9926,7 @@ export const ReviewDispatchPlugin = {
         }),
         fetch_pr_review_context: createFetchPrReviewContextTool(),
         fetch_pr_checks: createFetchPrChecksTool(),
+        resolve_review_mode: createResolveReviewModeTool(),
         fetch_failed_run_logs: createFetchFailedRunLogsTool(),
         capture_review_diff: createCaptureReviewDiffTool(createReviewDiffDependencies(projectRoot)),
       },

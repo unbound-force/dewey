@@ -164,12 +164,15 @@ parented child sessions:
    demo step. Omit `task_classification` (command-path
    delegation), `checkpoint_step`, and
    `expected_artifact` — the delegated command owns its
-   durable progress state. Set `timeout: 1800000` (the
-   `uf_delegate_command` maximum); whole-pipeline runs
-   have hit this cap (learning
-   `uf-workflow-20261026T182050`), so a timeout routes
-   through gate-timeout recovery below rather than a
-   hard failure.
+   durable progress state. Set `timeout: 14400000` (the
+   4-hour command-path ceiling) and omit `idle_timeout`
+   (the 10-minute default applies). Whole-pipeline runs
+   hit the old 30-minute cap mid-work (issue #930); the
+   idle timeout now detects a stalled child, the wall
+   clock is a backstop, and nested delegations inside
+   the child are clamped to its remaining budget. A
+   timeout routes through Delegation timeout recovery
+   below rather than a hard failure.
 
 2. **Delegation 2** (`/uf.finale`): DELEGATE with
    `command_path: ".opencode/commands/uf.finale.md"` and a
@@ -192,12 +195,15 @@ parented child sessions:
    outcome on disk: a PR URL; the PR stays open for
    human review; `Closes #N` threads via
    `originating_issue` in `.openspec.yaml`; the tree
-   returns to `main`. Set `timeout: 600000` (10 minutes):
-   the child's work before the commit-approval gate is
-   bounded (branch gate, staging, commit message prep),
-   and the wedge at that gate is the designed handoff —
-   the timeout bounds the orchestrator's wait before
-   gate-timeout recovery engages. Omit
+   returns to `main`. Set `timeout: 600000` (10 minutes)
+   and `idle_timeout: 300000` (5 minutes): the child's
+   work before the commit-approval gate is bounded
+   (branch gate, staging, commit message prep), and the
+   wedge at that gate is the designed handoff — the idle
+   timeout ends the wait at the gate with
+   `timeout.pending_question: true`, and the wall clock
+   bounds the rest before gate-timeout recovery engages.
+   Omit
    `task_classification`, `checkpoint_step`, and
    `expected_artifact` as above.
 
@@ -249,6 +255,42 @@ the consented step; the orchestrator MUST NOT commit,
 push, or open a PR on its own authority. Re-delegating
 without clearing the gate re-hangs at the same gate.
 
+**Delegation timeout recovery**: a `DELEGATE_FAILED`
+envelope that ended by a limit carries a `timeout`
+object (`kind`, `child_active`, `pending_question`)
+beside `child_session_id`, and command-path
+delegations add `resume` (`last_checkpoint_step`,
+`completed_steps`). Branch on those fields:
+
+- `timeout.pending_question: true` — the child wedged
+  at a question gate: apply gate-timeout recovery
+  above.
+- `timeout.kind: "idle"` without a pending question —
+  the child stalled (typically provider latency):
+  re-delegate the same command once as a resume (for
+  `/uf.unleash`, the mid-pipeline re-run class in
+  Unleash Paused-Exit Handling step 4), with the prompt
+  also naming `resume.last_checkpoint_step`. When that
+  step is null, no durable progress exists and the
+  re-run is effectively a fresh start: the prompt MUST
+  re-carry the description and issue reference(s), as
+  for the tier-routing variants. A second idle timeout
+  on the same item routes through the blocked-item
+  protocol.
+- `timeout.kind: "wall_clock"` — the wall-clock
+  backstop fired: route through the blocked-item
+  protocol and relay `child_session_id`,
+  `timeout.child_active`, and
+  `resume.last_checkpoint_step`.
+- `timeout.kind: "budget"` — not expected at the
+  orchestrator (it has no budgeted parent); treat it
+  as `wall_clock`.
+
+When `resume.last_checkpoint_step` is non-null, NEVER
+restart the item fresh on `main`: durable progress
+exists on the feature branch, and the re-run resumes
+from it.
+
 The orchestrator's own `question` tool use is limited
 to Phase 0 triage (non-mechanical item resolution and
 the work-item confirmation table) and pause-relay
@@ -268,7 +310,8 @@ the heading selects the re-run class in step 4 below.
 
 On a paused exit — or a hard delegation failure (an
 error envelope carrying neither exit text nor a demo
-block):
+block; a `timeout` envelope first takes Delegation
+timeout recovery, which routes here when it says so):
 
 1. **Relay**: emit the exit text verbatim.
 2. **Block**: mark the todowrite entry `in_progress`

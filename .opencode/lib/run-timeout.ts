@@ -115,6 +115,17 @@ export interface TimeoutProvenanceRecord {
   readonly retrieval_allowance_ms?: number
   readonly ceiling_ms?: number
   readonly clamped?: boolean
+  /**
+   * Executor outcome fields (run-file audit only): the effective
+   * timeout the agent executor actually applied after its
+   * delegation-budget clamp, copied from the executor result's
+   * `timeout` details. Present only when the run reached the
+   * executor and produced timeout details; readers preferring
+   * the applied value over the derived one should read these
+   * first.
+   */
+  readonly executor_effective_ms?: number
+  readonly executor_budget_clamped?: boolean
 }
 
 /** The derivation result: effective window plus its provenance. */

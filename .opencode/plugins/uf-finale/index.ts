@@ -182,8 +182,14 @@ export function createUfFinaleStartupTool(
 }
 
 // ---------------------------------------------------------------------------
-// 2. uf_finale_stage — Stage all changes
+// 2. uf_finale_stage — Stage all changes except Dewey learnings
 // ---------------------------------------------------------------------------
+
+/**
+ * Dewey learnings never ride a feature branch: they reach the default
+ * branch through a separate learnings PR (AGENTS.md Commit scope).
+ */
+const LEARNINGS_DIR = ".uf/dewey/learnings"
 
 /**
  * Factory for the uf_finale_stage tool.
@@ -198,11 +204,13 @@ export function createUfFinaleStageTool(
 ): ReturnType<typeof tool> {
   return tool({
     description:
-      "Stage all changes in the working tree via `git add .` and return " +
-      "the count of staged files.",
+      "Stage all changes in the working tree except .uf/dewey/learnings/ " +
+      "and return the count of staged files. Learnings stay untracked for " +
+      "the separate learnings PR.",
     execute: async () => {
       try {
-        exec(["add", "."], cwd)
+        exec(["add", "--", ".", `:(exclude)${LEARNINGS_DIR}`], cwd)
+        exec(["reset", "-q", "--", LEARNINGS_DIR], cwd)
         const stagedOutput = exec(["diff", "--cached", "--name-only"], cwd)
         const files = stagedOutput
           .split("\n")

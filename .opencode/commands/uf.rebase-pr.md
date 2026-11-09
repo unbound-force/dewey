@@ -69,7 +69,7 @@ identifiers MUST NOT be hardcoded.
 ## Phase 2: Fetch the PR
 
 ```bash
-gh pr view <PR_NUMBER> --json number,title,state,headRefName,baseRefName,mergeable,mergeStateStatus,baseRepository,headRepository
+gh pr view <PR_NUMBER> --json number,title,state,headRefName,headRefOid,baseRefName,mergeable,mergeStateStatus,baseRepository,headRepository
 ```
 
 **If the PR does not exist**: **STOP** with the `gh` error output.
@@ -79,6 +79,7 @@ gh pr view <PR_NUMBER> --json number,title,state,headRefName,baseRefName,mergeab
 
 Record:
 - `HEAD_BRANCH` = `headRefName` (the branch that needs the conflict resolved)
+- `HEAD_SHA` = `headRefOid` (the head commit before the rebase; the Phase 5 push lease)
 - `BASE_BRANCH` = `baseRefName` (the branch to rebase onto)
 - `BASE_REPO` = `<baseRepository.owner.login>/<baseRepository.name>` (the repository the PR targets)
 - `HEAD_REPO` = `<headRepository.owner.login>/<headRepository.name>` (the repository holding the head branch; may differ from `BASE_REPO` for fork PRs)
@@ -166,28 +167,29 @@ report the situation rather than forcing a bad resolution.
 
 The rebase rewrites history, so the head branch must be force-pushed
 to the PR's head repository — under lease protection, with the push
-target verified first. The `git_push_force_with_lease` plugin tool
-takes no refspec: it pushes the current branch to its configured
-upstream, which is not guaranteed to be the head remote (the Phase 3
-checkout fallback leaves no upstream configured, and a pre-existing
-local branch may carry stale tracking).
+target pinned. Call the `git_push_force_with_lease` plugin tool with
+`{branch: <HEAD_BRANCH>, remote: <HEAD_REMOTE>, expected_sha:
+<HEAD_SHA>}`. It pushes `HEAD:refs/heads/<HEAD_BRANCH>` to
+`<HEAD_REMOTE>` with an explicit refspec, independent of any
+configured upstream (the Phase 3 checkout fallback leaves none, and
+a pre-existing local branch may carry stale tracking), and leases on
+`<HEAD_SHA>`, the head the PR reported before the rebase.
 
-Verify the checked-out branch's upstream:
-
-```bash
-git rev-parse --abbrev-ref @{u}
-```
-
-- If the upstream is exactly `<HEAD_REMOTE>/<HEAD_BRANCH>`: call the
-  `git_push_force_with_lease` plugin tool — it pushes the current
-  branch to the verified upstream under lease protection.
-- If the command reports no upstream, or any other remote or branch:
-  fall back to the explicit refspec command, which pins the push
-  target regardless of tracking state:
-
-```bash
-git push --force-with-lease <HEAD_REMOTE> <HEAD_BRANCH>
-```
+- `BRANCH_MISMATCH`: the checkout is not on a local branch named
+  `<HEAD_BRANCH>` (for example, `gh pr checkout` chose another local
+  name, or the checkout was switched). **STOP** and report the
+  current branch — never switch branches or push another ref to
+  recover.
+- Lease rejection (`GIT_PUSH_FORCE_ERROR`, stale info): the remote
+  head moved since Phase 2. **STOP** and report; never retry with a
+  refreshed lease or `--force`.
+- `EXPECTED_SHA_UNKNOWN`: `<HEAD_SHA>` is not a local commit, so
+  nothing was pushed and the remote may not have moved. Fetch the
+  head ref from `HEAD_REPO` (as in Phase 3) and call again with the
+  same `<HEAD_SHA>`.
+- Success returns `{remote, ref, old_sha, new_sha, updated}`. Report
+  them; `updated: false` means the remote already held the rebased
+  head, and nothing was pushed.
 
 MUST use `--force-with-lease`, never `--force`. Push only to
 `HEAD_REMOTE` (the remote resolved for `HEAD_REPO`) and the PR's head

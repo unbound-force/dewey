@@ -155,7 +155,9 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	}
 
 	// Check 8: Anchor drift and missing anchors (issue #147).
-	anchorFindings, err := l.checkAnchors()
+	// The outcome is reported as anchor_checks so MCP clients can tell a
+	// clean pass from a skipped or failed one.
+	anchorFindings, anchorOutcome, err := l.checkAnchors(ctx)
 	if err != nil {
 		lintLogger.Warn("anchor check failed", "err", err)
 	} else {
@@ -205,8 +207,9 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	// Marking drifted learnings stale-unverified is mechanical: the drift
 	// is deterministic and tiers are never touched (issue #147).
 	fixedAnchors := 0
+	var anchorFixWarnings []string
 	if input.Fix {
-		fixedAnchors = l.fixAnchorDrift(anchorFindings)
+		fixedAnchors, anchorFixWarnings = l.fixAnchorDrift(anchorFindings)
 	}
 
 	// Build the response.
@@ -257,6 +260,8 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		"summary":  summary,
 		"findings": allFindings,
 		"message":  message,
+		// anchor_checks: checked, skipped, or failed, with the reason (#147).
+		"anchor_checks": anchorOutcome,
 	}
 
 	// Include fix results when fix was requested.
@@ -264,6 +269,11 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		result["fixed"] = map[string]any{
 			"embedding_gaps": fixedEmbeddings,
 			"anchor_drift":   fixedAnchors,
+		}
+		// Learnings that could not be marked, or were marked in the store
+		// but not in their markdown backup (#147).
+		if len(anchorFixWarnings) > 0 {
+			result["anchor_fix_warnings"] = anchorFixWarnings
 		}
 	}
 

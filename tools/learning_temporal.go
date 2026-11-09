@@ -192,11 +192,9 @@ func (l *Learning) resolveSupersedesTarget(ref string) (*store.Page, error) {
 	if page == nil || page.SourceID != store.SourceLearning {
 		return nil, fmt.Errorf("supersedes: learning %q not found", identity)
 	}
-	var props map[string]any
-	if page.Properties != "" {
-		if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
-			return nil, fmt.Errorf("supersedes: learning %q has unreadable properties: %w", identity, err)
-		}
+	props, err := decodeLearningProperties(page.Properties)
+	if err != nil {
+		return nil, fmt.Errorf("supersedes: learning %q has unreadable properties: %w", identity, err)
 	}
 	if successor, ok := props["superseded_by"].(string); ok && successor != "" {
 		return nil, fmt.Errorf("supersedes: learning %q is already superseded by %q", identity, successor)
@@ -212,14 +210,9 @@ func (l *Learning) linkSuperseded(target *store.Page, successor string) string {
 	if target == nil {
 		return ""
 	}
-	props := map[string]any{}
-	if target.Properties != "" {
-		if err := json.Unmarshal([]byte(target.Properties), &props); err != nil {
-			return fmt.Sprintf("failed to mark %s superseded: unreadable stored properties: %v", target.Name, err)
-		}
-		if props == nil {
-			props = map[string]any{} // literal JSON null decodes to a nil map
-		}
+	props, err := decodeLearningProperties(target.Properties)
+	if err != nil {
+		return fmt.Sprintf("failed to mark %s superseded: unreadable stored properties: %v", target.Name, err)
 	}
 	props["superseded_by"] = successor
 	props["validity"] = "superseded"
@@ -235,28 +228,56 @@ func (l *Learning) linkSuperseded(target *store.Page, successor string) string {
 // a learning's markdown backup. A missing file (no vault, or a store-only
 // learning) is not an error. Returns a warning on failure, else "".
 func (l *Learning) markSupersededFile(identity, successor string) string {
-	if l.vaultPath == "" {
-		return ""
-	}
-	if !ValidLearningIdentity(identity) {
-		return fmt.Sprintf("skipped marking %q superseded in its backup: unsafe learning identity", identity)
-	}
-	path := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings", identity+".md")
-	content, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return ""
-	}
-	if err == nil {
-		var updated string
-		updated, err = setFrontmatterKeys(string(content), [][2]string{{"superseded_by", successor}, {"validity", "superseded"}})
-		if err == nil {
-			err = os.WriteFile(path, []byte(updated), 0o644)
-		}
-	}
-	if err != nil {
-		return fmt.Sprintf("marked %s superseded in the store, but not in %s: %v", identity, path, err)
+	if err := updateLearningBackup(l.vaultPath, identity, [][2]string{{"superseded_by", successor}, {"validity", "superseded"}}); err != nil {
+		return fmt.Sprintf("marked %s superseded in the store, but not in its markdown backup: %v", identity, err)
 	}
 	return ""
+}
+
+// decodeLearningProperties decodes a page's properties JSON into a non-nil
+// map: empty text and a literal JSON null both yield an empty map. It is
+// the one decoder for learning properties that are read to be rewritten.
+func decodeLearningProperties(raw string) (map[string]any, error) {
+	props := map[string]any{}
+	if raw == "" {
+		return props, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &props); err != nil {
+		return nil, err
+	}
+	if props == nil {
+		props = map[string]any{}
+	}
+	return props, nil
+}
+
+// updateLearningBackup sets top-level frontmatter keys in a learning's
+// markdown backup under vaultPath. It is the shared write path for every
+// flow that updates a learning's store properties and then its backup
+// (#146 supersession, #147 anchor fix): callers write the store first and
+// report an error from here as a warning, since the store write stands.
+// No vault and a missing file are not errors; an identity that is unsafe
+// to embed in a path is, and nothing is written.
+func updateLearningBackup(vaultPath, identity string, keys [][2]string) error {
+	if vaultPath == "" {
+		return nil
+	}
+	if !ValidLearningIdentity(identity) {
+		return fmt.Errorf("unsafe learning identity %q", identity)
+	}
+	path := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", identity+".md")
+	content, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	updated, err := setFrontmatterKeys(string(content), keys)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return os.WriteFile(path, []byte(updated), 0o644)
 }
 
 // resolveAsOf returns the resolver's `<repo>@<sha>` pin, or "" when the

@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/unbound-force/dewey/v3/store"
 )
@@ -35,15 +35,36 @@ var anchorLineSuffix = regexp.MustCompile(`:\d+(-\d+)?$`)
 // revision, so anything else (for example "--output=x") is never a pin.
 var anchorCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]+$`)
 
-// anchorGitTimeout bounds each git subprocess run by the anchor checker.
-const anchorGitTimeout = 5 * time.Second
+const (
+	// anchorGitTimeout bounds each git subprocess run by the anchor checker.
+	anchorGitTimeout = 5 * time.Second
+	// anchorCheckBudget bounds one whole anchor-check pass. Evidence can
+	// arrive through re-ingested frontmatter that bypassed store_learning's
+	// limits, so the pass is bounded in total, not only per call.
+	anchorCheckBudget = 60 * time.Second
+)
 
-// anchorChecker answers the git questions the anchor checks need.
+// errAnchorNoRepo reports that the vault is not a git repository with a
+// commit, which skips the anchor checks rather than failing them.
+var errAnchorNoRepo = errors.New("vault is not a git repository")
+
+// Anchor-check outcomes reported in the lint result's anchor_checks.
+const (
+	anchorChecked = "checked"
+	anchorSkipped = "skipped"
+	anchorFailed  = "failed"
+)
+
+// anchorChecker answers the git questions the anchor checks need. Every
+// call honors ctx: a cancelled or expired context stops the pass.
 type anchorChecker interface {
-	Head() (string, error)
-	CommitExists(sha string) (bool, error)
-	PathExists(sha, path string) (bool, error)
-	PathChanged(fromSHA, toSHA, path string) (bool, error)
+	Head(ctx context.Context) (string, error)
+	// Repo names the repository the way as_of pins do: the base name of
+	// its top-level directory (see productionAsOfResolver).
+	Repo(ctx context.Context) (string, error)
+	CommitExists(ctx context.Context, sha string) (bool, error)
+	PathExists(ctx context.Context, sha, path string) (bool, error)
+	PathChanged(ctx context.Context, fromSHA, toSHA, path string) (bool, error)
 }
 
 // gitAnchorChecker implements anchorChecker with `git -C dir`.
@@ -51,27 +72,49 @@ type gitAnchorChecker struct {
 	dir string
 }
 
-// Head returns the full HEAD commit of the repository.
-func (g gitAnchorChecker) Head() (string, error) {
-	return gitOutput(g.dir, "rev-parse", "HEAD")
+// Head returns the full HEAD commit of the repository, or errAnchorNoRepo
+// when git runs but finds no repository or no commit.
+func (g gitAnchorChecker) Head(ctx context.Context) (string, error) {
+	out, code, err := g.run(ctx, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", errAnchorNoRepo
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// Repo returns the base name of the repository's top-level directory.
+func (g gitAnchorChecker) Repo(ctx context.Context) (string, error) {
+	out, code, err := g.run(ctx, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", errAnchorNoRepo
+	}
+	return filepath.Base(strings.TrimSpace(out)), nil
 }
 
 // CommitExists reports whether sha names a commit in the repository.
-func (g gitAnchorChecker) CommitExists(sha string) (bool, error) {
-	code, err := g.exitCode("cat-file", "-e", sha+"^{commit}")
+func (g gitAnchorChecker) CommitExists(ctx context.Context, sha string) (bool, error) {
+	_, code, err := g.run(ctx, "cat-file", "-e", sha+"^{commit}")
 	return code == 0, err
 }
 
 // PathExists reports whether path exists in the tree of commit sha.
-func (g gitAnchorChecker) PathExists(sha, path string) (bool, error) {
-	code, err := g.exitCode("cat-file", "-e", sha+":"+path)
+func (g gitAnchorChecker) PathExists(ctx context.Context, sha, path string) (bool, error) {
+	_, code, err := g.run(ctx, "cat-file", "-e", sha+":"+path)
 	return code == 0, err
 }
 
 // PathChanged reports whether path differs between two commits (deletion
-// counts as a change). `git diff --quiet` exits 1 on a difference.
-func (g gitAnchorChecker) PathChanged(fromSHA, toSHA, path string) (bool, error) {
-	code, err := g.exitCode("diff", "--quiet", fromSHA, toSHA, "--", path)
+// counts as a change). `git diff --quiet` exits 1 on a difference. External
+// diff drivers and textconv filters are disabled: they come from repository
+// config and would run commands chosen by whoever controls the vault.
+func (g gitAnchorChecker) PathChanged(ctx context.Context, fromSHA, toSHA, path string) (bool, error) {
+	_, code, err := g.run(ctx, "diff", "--quiet", "--no-ext-diff", "--no-textconv", fromSHA, toSHA, "--", path)
 	if err != nil {
 		return false, err
 	}
@@ -81,20 +124,21 @@ func (g gitAnchorChecker) PathChanged(fromSHA, toSHA, path string) (bool, error)
 	return code == 1, nil
 }
 
-// exitCode runs git and returns its exit code. An error is returned only
-// when git could not be run (not found, timeout), never for a non-zero exit.
-func (g gitAnchorChecker) exitCode(args ...string) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), anchorGitTimeout)
+// run runs git with anchorGitTimeout under ctx and returns its stdout and
+// exit code. An error is returned only when git could not be run (not
+// found, timeout, cancelled), never for a non-zero exit.
+func (g gitAnchorChecker) run(ctx context.Context, args ...string) (string, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, anchorGitTimeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, "git", append([]string{"-C", g.dir}, args...)...).Run()
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", g.dir}, args...)...).Output()
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && ctx.Err() == nil {
-		return exitErr.ExitCode(), nil
+		return string(out), exitErr.ExitCode(), nil
 	}
 	if err != nil {
-		return -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return "", -1, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
-	return 0, nil
+	return string(out), 0, nil
 }
 
 // splitAsOf splits an `<repo>@<sha>` pin. ok is false when either part is
@@ -119,11 +163,19 @@ func parseAnchor(locator, repo string) string {
 	return strings.TrimPrefix(path, "./")
 }
 
-// learningAnchors returns the pin commit and anchor paths of a learning
-// eligible for anchor checks: it has an as_of pin, at least one anchor for
-// the pinned repository, and a validity other than superseded or
-// historical (historical knowledge is immune to code evolution).
-func learningAnchors(p *store.Page) (string, []string, bool) {
+// learningAnchors returns the pin commit and distinct anchor paths of a
+// learning eligible for anchor checks against repository repo: it has an
+// as_of pin to repo, at least one `<repo>:<path>` anchor, and a validity
+// other than superseded or historical (historical knowledge is immune to
+// code evolution). A learning pinned to another repository is not checked
+// here, even when its commit is absent, and neither is one whose evidence
+// cites no path in repo: there is nothing in this repository to compare.
+//
+// Evidence is re-validated against store_learning's limits here because
+// re-ingested learnings bypass them: a learning with more than
+// maxEvidenceEntries locators, or any locator over maxEvidenceLen, is not
+// checked at all.
+func learningAnchors(p *store.Page, repo string) (string, []string, bool) {
 	var props map[string]any
 	if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
 		return "", nil, false
@@ -132,15 +184,23 @@ func learningAnchors(p *store.Page) (string, []string, bool) {
 		return "", nil, false
 	}
 	asOf, _ := props["as_of"].(string)
-	repo, sha, ok := splitAsOf(asOf)
-	if !ok || !anchorCommitSHA.MatchString(sha) {
+	pinRepo, sha, ok := splitAsOf(asOf)
+	if !ok || pinRepo != repo || !anchorCommitSHA.MatchString(sha) {
 		return "", nil, false
 	}
 	evidence, _ := props["evidence"].([]any)
+	if len(evidence) > maxEvidenceEntries {
+		return "", nil, false
+	}
 	var paths []string
+	seen := make(map[string]bool)
 	for _, e := range evidence {
 		locator, _ := e.(string)
-		if path := parseAnchor(locator, repo); path != "" {
+		if utf8.RuneCountInString(locator) > maxEvidenceLen {
+			return "", nil, false
+		}
+		if path := parseAnchor(locator, repo); path != "" && !seen[path] {
+			seen[path] = true
 			paths = append(paths, path)
 		}
 	}
@@ -167,41 +227,60 @@ func anchorFinding(kind string, p *store.Page, description, remediation string) 
 	}
 }
 
+// anchorReport is the outcome of one anchor-check pass, reported to MCP
+// clients as anchor_checks so "checked and clean" is distinguishable from
+// "never checked".
+type anchorReport struct {
+	Status string `json:"status"`           // checked, skipped, or failed
+	Reason string `json:"reason,omitempty"` // why the pass was skipped or failed
+}
+
 // checkAnchors reports anchor_missing and anchor_drift findings for every
-// eligible learning. Skipped (no findings, no error) when there is no
-// checker or the vault is not a git repository.
-func (l *Lint) checkAnchors() ([]Finding, error) {
+// eligible learning, within anchorCheckBudget. It is skipped when there is
+// no checker or the vault is not a git repository, and fails as a whole
+// (no findings) when git cannot answer or the budget runs out.
+func (l *Lint) checkAnchors(ctx context.Context) ([]Finding, anchorReport, error) {
 	if l.anchors == nil {
-		return nil, nil
+		return nil, anchorReport{Status: anchorSkipped, Reason: "no vault path"}, nil
 	}
-	head, err := l.anchors.Head()
+	ctx, cancel := context.WithTimeout(ctx, anchorCheckBudget)
+	defer cancel()
+	head, err := l.anchors.Head(ctx)
+	var repo string
+	if err == nil {
+		repo, err = l.anchors.Repo(ctx)
+	}
+	if errors.Is(err, errAnchorNoRepo) {
+		lintLogger.Debug("anchor checks skipped", "reason", err)
+		return nil, anchorReport{Status: anchorSkipped, Reason: err.Error()}, nil
+	}
 	if err != nil {
-		lintLogger.Debug("anchor checks skipped: vault is not a git repository", "err", err)
-		return nil, nil
+		return nil, anchorReport{Status: anchorFailed, Reason: err.Error()}, err
 	}
 	pages, err := l.store.ListLearningPages()
 	if err != nil {
-		return nil, fmt.Errorf("list learning pages: %w", err)
+		err = fmt.Errorf("list learning pages: %w", err)
+		return nil, anchorReport{Status: anchorFailed, Reason: err.Error()}, err
 	}
 	var findings []Finding
 	for _, p := range pages {
-		sha, paths, ok := learningAnchors(p)
+		sha, paths, ok := learningAnchors(p, repo)
 		if !ok {
 			continue
 		}
-		pageFindings, err := checkLearningAnchors(l.anchors, p, sha, head, paths)
+		pageFindings, err := checkLearningAnchors(ctx, l.anchors, p, sha, head, paths)
 		if err != nil {
-			return nil, err
+			return nil, anchorReport{Status: anchorFailed, Reason: err.Error()}, err
 		}
 		findings = append(findings, pageFindings...)
 	}
-	return findings, nil
+	return findings, anchorReport{Status: anchorChecked}, nil
 }
 
 // checkLearningAnchors checks one learning's anchors against its pin and
 // HEAD. An unknown pin yields a single anchor_missing finding.
-func checkLearningAnchors(c anchorChecker, p *store.Page, sha, head string, paths []string) ([]Finding, error) {
-	known, err := c.CommitExists(sha)
+func checkLearningAnchors(ctx context.Context, c anchorChecker, p *store.Page, sha, head string, paths []string) ([]Finding, error) {
+	known, err := c.CommitExists(ctx, sha)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +291,7 @@ func checkLearningAnchors(c anchorChecker, p *store.Page, sha, head string, path
 	}
 	var findings []Finding
 	for _, path := range paths {
-		present, err := c.PathExists(sha, path)
+		present, err := c.PathExists(ctx, sha, path)
 		if err != nil {
 			return nil, err
 		}
@@ -222,13 +301,13 @@ func checkLearningAnchors(c anchorChecker, p *store.Page, sha, head string, path
 				"Correct the evidence locator in an updated learning that supersedes this one."))
 			continue
 		}
-		changed, err := c.PathChanged(sha, head, path)
+		changed, err := c.PathChanged(ctx, sha, head, path)
 		if err != nil {
 			return nil, err
 		}
 		if changed {
 			findings = append(findings, anchorFinding("anchor_drift", p,
-				fmt.Sprintf("Learning '%s' cites %s, which changed between %s and HEAD %s.", strings.TrimPrefix(p.Name, store.LearningPrefix), path, shortSHA(sha), shortSHA(head)),
+				fmt.Sprintf("Learning '%s' cites %s, which changed or was removed between %s and HEAD %s.", strings.TrimPrefix(p.Name, store.LearningPrefix), path, shortSHA(sha), shortSHA(head)),
 				fmt.Sprintf("Re-verify the learning against the current code; store an updated learning with supersedes: %s, or run lint with fix to mark it stale-unverified.", strings.TrimPrefix(p.Name, store.LearningPrefix))))
 		}
 	}
@@ -236,88 +315,64 @@ func checkLearningAnchors(c anchorChecker, p *store.Page, sha, head string, path
 }
 
 // fixAnchorDrift marks every learning with an anchor_drift finding as
-// validity: stale-unverified. Returns the number of learnings marked.
-func (l *Lint) fixAnchorDrift(findings []Finding) int {
+// validity: stale-unverified. It returns the number of learnings marked in
+// the store, and a warning for each learning that could not be marked or
+// whose markdown backup could not be updated after the store was.
+func (l *Lint) fixAnchorDrift(findings []Finding) (int, []string) {
 	marked := 0
+	var warnings []string
 	seen := make(map[string]bool)
 	for _, f := range findings {
 		if f.Type != "anchor_drift" || seen[f.Page] {
 			continue
 		}
 		seen[f.Page] = true
-		if err := l.markStaleUnverified(f.Page); err != nil {
+		warning, err := l.markStaleUnverified(f.Page)
+		if err != nil {
 			lintLogger.Warn("failed to mark learning stale-unverified", "page", f.Page, "err", err)
+			warnings = append(warnings, fmt.Sprintf("failed to mark %s stale-unverified: %v", f.Page, err))
 			continue
 		}
 		marked++
+		if warning != "" {
+			lintLogger.Warn("learning backup not updated", "page", f.Page, "warning", warning)
+			warnings = append(warnings, warning)
+		}
 	}
-	return marked
+	return marked, warnings
 }
 
 // markStaleUnverified sets validity: stale-unverified on a learning in the
 // store and in its markdown backup when one exists. Tier and content are
 // untouched. It fails closed before writing anything when the identity is
 // unsafe to embed in a path or the stored properties are unreadable, so
-// corrupt properties are never replaced wholesale.
-func (l *Lint) markStaleUnverified(pageName string) error {
+// corrupt properties are never replaced wholesale. Once the store is
+// written the learning counts as marked: a backup failure after that is
+// returned as a warning, not an error.
+func (l *Lint) markStaleUnverified(pageName string) (string, error) {
 	identity := strings.TrimPrefix(pageName, store.LearningPrefix)
 	if !ValidLearningIdentity(identity) {
-		return fmt.Errorf("unsafe learning identity: %q", identity)
+		return "", fmt.Errorf("unsafe learning identity: %q", identity)
 	}
 	page, err := l.store.GetPage(pageName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if page == nil {
-		return fmt.Errorf("page not found: %s", pageName)
+		return "", fmt.Errorf("page not found: %s", pageName)
 	}
 	props, err := decodeLearningProperties(page.Properties)
 	if err != nil {
-		return fmt.Errorf("unreadable stored properties on %s: %w", pageName, err)
+		return "", fmt.Errorf("unreadable stored properties on %s: %w", pageName, err)
 	}
 	props["validity"] = "stale-unverified"
 	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
 	page.Properties = string(data)
 	if err := l.store.UpdatePage(page); err != nil {
-		return err
+		return "", err
 	}
-	return l.markStaleFile(identity)
-}
-
-// decodeLearningProperties decodes a page's properties JSON into a non-nil
-// map: empty text and a literal JSON null both yield an empty map.
-func decodeLearningProperties(raw string) (map[string]any, error) {
-	props := map[string]any{}
-	if raw == "" {
-		return props, nil
+	if err := updateLearningBackup(l.vaultPath, identity, [][2]string{{"validity", "stale-unverified"}}); err != nil {
+		return fmt.Sprintf("marked %s stale-unverified in the store, but not in its markdown backup: %v", identity, err), nil
 	}
-	if err := json.Unmarshal([]byte(raw), &props); err != nil {
-		return nil, err
-	}
-	if props == nil {
-		props = map[string]any{}
-	}
-	return props, nil
-}
-
-// markStaleFile sets validity: stale-unverified in the frontmatter of a
-// learning's markdown backup. A missing file or vault is not an error. The
-// caller has validated identity.
-func (l *Lint) markStaleFile(identity string) error {
-	if l.vaultPath == "" {
-		return nil
-	}
-	path := filepath.Join(l.vaultPath, deweyWorkspaceDir, "learnings", identity+".md")
-	content, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	updated, err := setFrontmatterKeys(string(content), [][2]string{{"validity", "stale-unverified"}})
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(updated), 0o644)
+	return "", nil
 }

@@ -127,7 +127,7 @@ Read tools (`get_page`, `get_block`, `get_page_blocks_tree`, `list_pages`, `sear
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `lint` | Both | Scan knowledge base for quality issues (stale decisions, embedding gaps, knowledge store quality) |
+| `lint` | Both | Scan knowledge base for quality issues (stale decisions, embedding gaps, knowledge store quality, anchor drift and missing anchors on pinned learnings) |
 
 ### Promote
 
@@ -439,12 +439,12 @@ Scan the knowledge base for quality issues: stale decisions, embedding gaps, con
 dewey lint [--vault PATH] [--fix]
 ```
 
-**Anchor checks.** For learnings pinned with `as_of` (see [Temporal Validity](#temporal-validity)), lint checks each `<repo>:<path>` evidence locator for the vault's own repository against local git:
+**Anchor checks.** For learnings pinned with `as_of` to the vault's own repository (see [Temporal Validity](#temporal-validity)), lint checks each `<repo>:<path>` evidence locator for that repository against local git:
 
-- `anchor_missing`: the path does not exist at the `as_of` commit, or that commit is not in the repository.
-- `anchor_drift`: the path changed between the `as_of` commit and `HEAD`.
+- `anchor_missing`: the path does not exist at the `as_of` commit, or that commit is not in the repository (one finding per learning).
+- `anchor_drift`: the path changed, or was removed, between the `as_of` commit and `HEAD`.
 
-`--fix` marks drifted learnings `validity: stale-unverified` (store and markdown file); tiers are never changed. Skipped outside a git repository. Not checked: `<repo>#<n>` locators (no network), other repositories, and learnings marked `superseded` or `historical`. The 30-day `stale_decision` check remains as a secondary signal.
+`--fix` marks drifted learnings `validity: stale-unverified` (store and markdown file); tiers are never changed. `fixed.anchor_drift` counts learnings marked in the store; a markdown file that could not be updated is listed in `anchor_fix_warnings`. Every result reports `anchor_checks` (`checked`, `skipped`, or `failed`, with a `reason`), so a skipped pass is never mistaken for a clean one. Skipped outside a git repository. Not checked: `<repo>#<n>` locators (no network), other repositories, learnings pinned to another repository, learnings whose evidence exceeds `store_learning`'s limits, and learnings marked `superseded` or `historical`. The 30-day `stale_decision` check remains as a secondary signal.
 
 ### dewey promote
 

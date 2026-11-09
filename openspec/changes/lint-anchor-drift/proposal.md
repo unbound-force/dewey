@@ -48,15 +48,22 @@ pinned learnings.
 
 - `tools/lint_anchors.go` (new) — locator parsing, git-backed checks
   behind an interface, fix.
-- `tools/lint.go` — wiring, summary counters, fix result.
+- `tools/lint.go` — wiring, summary counters, `anchor_checks`
+  outcome, fix result and warnings.
+- `tools/learning_temporal.go` — the markdown-backup write and the
+  properties decoder are shared with the #146 supersession flow
+  (`updateLearningBackup`, `decodeLearningProperties`).
 - Tests: `tools/lint_anchors_test.go` (real temp git repository plus
   a fake checker for error paths).
-- README lint section.
+- README lint section and MCP tools table; AGENTS.md CLI table and
+  Recent Changes.
+- Website tracking: docs sync website#398, blog website#399.
 
 **Not checked:** `<repo>#<n>` locators (resolving them needs the
 GitHub API; Dewey processes locally by default), locators for other
-repositories (#106), learnings without `as_of`, and learnings whose
-validity is `superseded` or `historical`.
+repositories (#106), learnings pinned to another repository,
+learnings without `as_of`, and learnings whose validity is
+`superseded` or `historical`.
 
 ## Constitution Alignment
 
@@ -81,6 +88,10 @@ agent can re-verify and store a superseding learning.
 **Assessment**: PASS
 
 Machine-parseable findings and summary counters; fixes are reported.
+Every result carries `anchor_checks` (`checked`, `skipped`, or
+`failed`, with a reason), so a skipped or failed pass is never read
+as clean, and backup failures during `fix` are reported in
+`anchor_fix_warnings`.
 
 ### IV. Testability
 

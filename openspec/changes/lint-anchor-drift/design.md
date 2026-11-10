@@ -54,10 +54,16 @@ The production checker runs `git -C <vault>` with a 5-second timeout
 per call (`anchorGitTimeout`): `rev-parse --verify HEAD`,
 `rev-parse --show-toplevel`, `cat-file -e <sha>^{commit}`,
 `cat-file -e <sha>:<path>`, and `diff --quiet --no-ext-diff
---no-textconv <from> <to> -- <path>` (exit 1 means changed; external
-diff drivers and textconv filters come from repository config and are
-never run). Every call derives from the lint request's context, and
-the whole pass is bounded by `anchorCheckBudget` (60 seconds).
+--no-textconv <from> <to> -- :(literal)<path>` (exit 1 means changed;
+external diff drivers and textconv filters come from repository config
+and are never run; the path is a literal pathspec, so glob characters
+or pathspec magic in a file name match only that file). Every call
+derives from the lint request's context, and the whole pass is bounded
+by `anchorCheckBudget` (60 seconds). Both bounds are fields
+(`gitAnchorChecker.timeout`, `Lint.anchorBudget`) so tests can expire
+them without waiting. `gitOutput`, which resolves `as_of` for
+`store_learning`, runs through the same runner with its 2-second
+timeout.
 
 The outcome is reported in the result as `anchor_checks`:
 `skipped` when there is no vault path or git finds no repository or
@@ -86,8 +92,14 @@ succeeds. A backup failure afterward is reported in
 `anchor_fix_warnings` rather than dropping the count, the same
 contract #146's supersession flow reports as `supersedes_warning`.
 Both flows write the backup through one helper,
-`updateLearningBackup`, and decode properties through
-`decodeLearningProperties`.
+`updateLearningBackup`, and rewrite stored properties through
+`updateLearningProperties`. That helper re-reads the page, decodes it
+with `decodeLearningProperties`, applies the change, and writes it
+back under one process-wide lock. Concurrent MCP calls (`lint` with
+`fix` and `store_learning` with `supersedes`) therefore cannot drop
+each other's change. `fix` re-reads validity under that lock, and
+leaves a learning that became `superseded` or `historical` after the
+check unchanged, reporting it in `anchor_fix_warnings`.
 
 ### D5 Fail closed on untrusted input
 

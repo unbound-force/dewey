@@ -50,14 +50,19 @@ pinned learnings.
   behind an interface, fix.
 - `tools/lint.go` — wiring, summary counters, `anchor_checks`
   outcome, fix result and warnings.
-- `tools/learning_temporal.go` — the markdown-backup write and the
-  properties decoder are shared with the #146 supersession flow
-  (`updateLearningBackup`, `decodeLearningProperties`).
+- `tools/learning_temporal.go` — the markdown-backup write, the
+  locked properties rewrite, and the properties decoder are shared
+  with the #146 supersession flow (`updateLearningBackup`,
+  `updateLearningProperties`, `decodeLearningProperties`); `gitOutput`
+  uses the anchor checker's git runner.
+- `server.go`, `types/tools.go` — the `lint` tool description and the
+  `fix` schema describe the anchor checks.
 - Tests: `tools/lint_anchors_test.go` (real temp git repository plus
   a fake checker for error paths).
 - README lint section and MCP tools table; AGENTS.md CLI table and
   Recent Changes.
-- Website tracking: docs sync website#398, blog website#399.
+- Website tracking: docs sync website#398, blog website#399, tutorial
+  website#402.
 
 **Not checked:** `<repo>#<n>` locators (resolving them needs the
 GitHub API; Dewey processes locally by default), locators for other

@@ -1077,7 +1077,9 @@ func TestNewServer_PromoteSchemaIncludesPages(t *testing.T) {
 	if !ok {
 		t.Fatalf("schema missing 'pages' property: %v", props)
 	}
-	if pagesProp["type"] != "array" {
+	// go-sdk 1.4 (jsonschema-go 0.4) marks slice fields nullable, so the
+	// type is "array" or ["null", "array"]; either way it is an array.
+	if !schemaTypeIncludes(pagesProp["type"], "array") {
 		t.Errorf("pages type = %v, want array", pagesProp["type"])
 	}
 	if !strings.Contains(promoteTool.Description, "pages") {
@@ -1608,4 +1610,20 @@ func storeAccessAssertPromoted(t *testing.T, label, text, wantPage string) {
 	if result["new_tier"] != "validated" {
 		t.Errorf("%s: new_tier = %v, want validated", label, result["new_tier"])
 	}
+}
+
+// schemaTypeIncludes reports whether a JSON Schema "type" value, a string
+// or a list of strings, includes want.
+func schemaTypeIncludes(typ any, want string) bool {
+	switch v := typ.(type) {
+	case string:
+		return v == want
+	case []any:
+		for _, t := range v {
+			if t == want {
+				return true
+			}
+		}
+	}
+	return false
 }

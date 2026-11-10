@@ -125,3 +125,43 @@ When `compile.model` is empty or not configured, the compile tool operates in pr
 5. Response body MUST be capped at 50MB (same safety limit as `OllamaEmbedder`)
 6. `NoopSynthesizer` MUST be exported for use in tool tests
 7. The `llm` package MUST NOT import any Dewey packages (leaf dependency)
+
+### Known divergences from invariant 7
+
+Invariant 7 records the spec-as-written contract. The shipped tree
+departs from it once, and a second departure was planned and later
+reversed. This note records both in the 013 contract so a reader of
+this file does not have to search other specs.
+
+- **`llm → embed`** (current tree). `llm/config.go` and
+  `llm/provider.go` import
+  `github.com/unbound-force/dewey/v3/embed` for a single constant,
+  `embed.DefaultOllamaEndpoint`; the in-package
+  `llm/provider_test.go` imports it too. The `ollama-host-fallback`
+  OpenSpec change introduced the import on 2026-06-18: its
+  design.md D5 defines the constant and directs `embed/`, `llm/`
+  and `cli.go` to use it, and its trade-off notes record the
+  `llm/config.go` reference. `synthesis-endpoint-env` design.md
+  D1/D3 (2026-08-17) restates that `llm` imports `embed` only for
+  that constant. Spec 017's research.md R13 later recorded the
+  edge but attributed it to spec 016's provider-config
+  consolidation; 016 (created 2026-05-05) predates the import, so
+  that attribution does not hold. This note follows the verified
+  history.
+- **`llm → openaicompat`** (planned in spec 017, reversed later).
+  `specs/017-openai-compatible-providers/research.md` R13 and
+  `specs/017-openai-compatible-providers/plan.md`'s Structure
+  Decision recorded the intent to add the edge. The dewey-distill
+  OpenSpec change reversed it: its knowledge-distillation spec
+  carries the scenario "openaicompat transport is embedding-only",
+  which states that the synthesis provider MUST own its transport
+  inside `llm` and MUST NOT import `openaicompat`. The shipped
+  tree follows that requirement, so `llm` does not import
+  `openaicompat`; the 017 record stands as history, not as a
+  statement of the current graph.
+
+`openaicompat` itself remains a true leaf: its package imports only
+the standard library and `github.com/charmbracelet/log`, as stated
+in `openaicompat/doc.go` (external `_test` packages do not count
+toward the leaf property). The live outbound edges are therefore
+`llm → embed` and `embed → openaicompat`, with no import cycle.

@@ -23,3 +23,4 @@
 - [x] 4.2 CI parity: build, vet, `go test -race -count=1
   -coverprofile=coverage.out ./...`, gaze crap gate, golangci-lint
 - [ ] 4.3 `/uf.review-council` (OpenCode), draft PR
+- [x] 4.4 Website docs-sync issue filed: unbound-force/website#403

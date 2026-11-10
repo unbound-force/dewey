@@ -225,7 +225,7 @@ Phase 1 (Schema + Store)
 - [P] tasks = different files, no dependencies
 - [Story] label maps task to specific user story for traceability
 - Each phase has a checkpoint — validate before proceeding
-- The `llm/` package (Phase 4) is a leaf dependency — it MUST NOT import any Dewey packages
+- The `llm/` package (Phase 4) is a leaf dependency — it MUST NOT import any Dewey packages (shipped divergences: see `contracts/llm-interface.md`, "Known divergences from invariant 7")
 - Compiled articles are ephemeral — full rebuild replaces the entire `.uf/dewey/compiled/` directory
 - The `/unleash` integration (Phase 8) is a documentation change, not a code change
 - Schema migration must be idempotent — running v1→v2 twice must not error

@@ -40,3 +40,16 @@
   properties, other-repository pin, post-failure state
 - [x] 5.5 README MCP table and AGENTS.md; website#398 (docs),
   website#399 (blog)
+
+## 6. Review feedback, round 2 (PR #159)
+
+- [x] 6.1 `lint` tool description, `Lint` GoDoc, and `fix` schema
+  describe the anchor checks
+- [x] 6.2 literal pathspec for `PathChanged`; one git runner shared
+  with `gitOutput`; injectable per-call and per-pass bounds
+- [x] 6.3 locked re-read for stored property rewrites;
+  `fix` leaves learnings superseded mid-pass unchanged
+- [x] 6.4 tests: escape canary at the real target, path dedup,
+  at-limit evidence, both time bounds, glob-named file, warning
+  attribution, concurrent fix and supersede
+- [x] 6.5 tutorial website#402

@@ -18,7 +18,11 @@ git repository.
 
 A learning whose evidence exceeds `store_learning`'s limits (more
 than 50 entries, or an entry over 512 characters) MUST NOT be
-checked: re-ingested learnings bypass those limits. One anchor-check
+checked: re-ingested learnings bypass those limits; a learning at
+exactly those limits MUST be checked. Repeated locators for one path
+(for example with and without a line suffix) MUST yield one anchor.
+A cited path MUST be compared as a literal path, never as a pattern.
+One anchor-check
 pass MUST be bounded in total time as well as per git call, and MUST
 stop when the request is cancelled.
 
@@ -59,6 +63,12 @@ Every lint result MUST report `anchor_checks` with `status`
 - **WHEN** `lint` runs
 - **THEN** it MUST NOT report an anchor finding for it
 
+#### Scenario: File name with glob characters
+- **GIVEN** a learning citing `repo:pkg/[ab].go`, a file unchanged
+  since the pin, while `pkg/a.go` changed
+- **WHEN** `lint` runs
+- **THEN** it MUST NOT report `anchor_drift` for that learning
+
 #### Scenario: Pass not run
 - **GIVEN** a vault that is not a git repository, or a git failure
   during the pass
@@ -77,8 +87,15 @@ content.
 identity fails `ValidLearningIdentity` or whose properties are
 unreadable. A learning marked in the store MUST count in
 `fixed.anchor_drift` even when its backup cannot be updated; that
-failure MUST be reported in `anchor_fix_warnings`. A pin that is not hexadecimal MUST NOT be passed to git;
-such a learning MUST be skipped.
+failure MUST be reported in `anchor_fix_warnings`. A pin that is not
+hexadecimal MUST NOT be passed to git; such a learning MUST be
+skipped.
+
+`fix` MUST NOT overwrite a learning that became `superseded` or
+`historical` after the check ran; it MUST report it in
+`anchor_fix_warnings` instead. Rewrites of a learning's stored
+properties by `fix` and by `store_learning`'s supersession link MUST
+NOT lose each other's changes when they run concurrently.
 
 #### Scenario: Unreadable properties
 - **GIVEN** a learning whose stored properties are not valid JSON
@@ -97,6 +114,13 @@ such a learning MUST be skipped.
 - **THEN** its stored validity MUST be `stale-unverified`, it MUST
   count in `fixed.anchor_drift`, the backup MUST be unchanged, and
   `anchor_fix_warnings` MUST name it
+
+#### Scenario: Superseded during the pass
+- **GIVEN** a drifted learning that is superseded before `fix`
+  writes it
+- **WHEN** `lint` runs with `fix: true`
+- **THEN** it MUST keep `validity: superseded` and its
+  `superseded_by`, and `anchor_fix_warnings` MUST name it
 
 #### Scenario: Fix a drifted learning
 - **GIVEN** a learning with an `anchor_drift` finding

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -210,15 +210,12 @@ func (l *Learning) linkSuperseded(target *store.Page, successor string) string {
 	if target == nil {
 		return ""
 	}
-	props, err := decodeLearningProperties(target.Properties)
+	err := updateLearningProperties(l.store, target.Name, func(props map[string]any) error {
+		props["superseded_by"] = successor
+		props["validity"] = "superseded"
+		return nil
+	})
 	if err != nil {
-		return fmt.Sprintf("failed to mark %s superseded: unreadable stored properties: %v", target.Name, err)
-	}
-	props["superseded_by"] = successor
-	props["validity"] = "superseded"
-	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
-	target.Properties = string(data)
-	if err := l.store.UpdatePage(target); err != nil {
 		return fmt.Sprintf("failed to mark %s superseded in the store: %v", target.Name, err)
 	}
 	return l.markSupersededFile(supersedesIdentity(target.Name), successor)
@@ -232,6 +229,38 @@ func (l *Learning) markSupersededFile(identity, successor string) string {
 		return fmt.Sprintf("marked %s superseded in the store, but not in its markdown backup: %v", identity, err)
 	}
 	return ""
+}
+
+// learningPropsMu serializes read-modify-write updates of stored learning
+// properties within this process. MCP calls run concurrently, and lint's
+// fix and store_learning's supersession link both rewrite whole property
+// sets, so without it one could silently drop the other's change.
+var learningPropsMu sync.Mutex
+
+// updateLearningProperties re-reads a learning page, applies mutate to its
+// decoded properties, and writes the page back, all under learningPropsMu.
+// Nothing is written when the page is missing, its properties are
+// unreadable, or mutate returns an error.
+func updateLearningProperties(s *store.Store, pageName string, mutate func(props map[string]any) error) error {
+	learningPropsMu.Lock()
+	defer learningPropsMu.Unlock()
+	page, err := s.GetPage(pageName)
+	if err != nil {
+		return err
+	}
+	if page == nil {
+		return fmt.Errorf("page not found: %s", pageName)
+	}
+	props, err := decodeLearningProperties(page.Properties)
+	if err != nil {
+		return fmt.Errorf("unreadable stored properties on %s: %w", pageName, err)
+	}
+	if err := mutate(props); err != nil {
+		return err
+	}
+	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
+	page.Properties = string(data)
+	return s.UpdatePage(page)
 }
 
 // decodeLearningProperties decodes a page's properties JSON into a non-nil
@@ -317,15 +346,17 @@ func productionAsOfResolver(vaultPath string) func() (string, error) {
 }
 
 // gitOutput runs `git -C dir args...` with a 2-second timeout and returns
-// its trimmed stdout.
+// its trimmed stdout. A non-zero exit is an error. It shares the anchor
+// checker's runner so the package has one git subprocess path.
 func gitOutput(dir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	out, code, err := gitAnchorChecker{dir: dir, timeout: 2 * time.Second}.run(context.Background(), args...)
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	if code != 0 {
+		return "", fmt.Errorf("git %s: exit status %d", strings.Join(args, " "), code)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // setFrontmatterKeys sets top-level scalar keys in a markdown file's YAML

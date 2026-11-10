@@ -812,7 +812,7 @@ For each file:
   the current Git remote. NEVER create issues in
   unrelated repositories.
 - **Content portability**: Issue titles and bodies MUST
-  use language appropriate to the target repository's
+  use language that matches the target repository's
   language and project type. Read README.md or AGENTS.md
   to determine the project type. MUST NOT reference
   tools or concepts specific to a different repository

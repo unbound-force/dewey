@@ -891,7 +891,7 @@ rm -f "$COMMENT_FILE"
 This section applies only when Phase 3.5 produced split recommendations.
 
 **Content portability**: Child issue titles and bodies
-MUST use language appropriate to this repository's
+MUST use language that matches this repository's
 language and project type (as described in README.md
 and AGENTS.md). MUST NOT use terminology specific to
 a different repository type (e.g., do not reference

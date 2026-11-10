@@ -204,8 +204,8 @@ mark genuinely optional practice.
   technical context, a Constitution Check gate that passes
   before research and is re-checked after design, the
   project structure with real paths, and a
-  complexity-tracking table for any constitution violations
-  that must be justified.
+  complexity-tracking table justifying any constitution
+  violations.
 
 ---
 

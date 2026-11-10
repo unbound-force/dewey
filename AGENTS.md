@@ -222,17 +222,24 @@ Exempt from this requirement:
 - Test-only changes
 - Spec artifact updates (these live in the dewey repo, not the website)
 
-### Learnings Direct-Commit Practice
+### Commit Scope (Learnings)
 
 Learnings written to `.uf/dewey/learnings/` (by `store_learning`, review-dispatch
-proposal storage, or `dewey compile` runs) are deliberately stageable — they are
-non-rebuildable knowledge artifacts, and gitignoring them would risk silent data
-loss when `graph.db` is deleted without a backup remote (dewey-publish design).
-Direct-committing them in feature PRs is the accepted practice:
+proposal storage, or `dewey compile` runs) are non-rebuildable knowledge
+artifacts, so they stay tracked on `main`: gitignoring them would risk silent
+data loss when `graph.db` is deleted without a backup remote (dewey-publish
+design). They MUST NOT be committed on a feature or PR branch:
 
+- Leave new learnings untracked on feature branches. They reach `main`
+  through a separate `chore/dewey-learnings-*` PR, which gh-hud opens once a
+  day per checkout (open one by hand without it). `uf_finale_stage` and
+  `/uf.address-feedback` never stage them.
+- Compiled articles (`.uf/dewey/compiled/*.md`) produced during a change
+  still ride the feature PR.
 - Keep `.uf/dewey/learnings/` OUT of `.gitignore`.
-- Before committing, screen the files for credentials/secrets (the gitleaks
-  MegaLinter job scans `.uf/` as a backstop, but do not rely on it alone).
+- Before committing learnings, screen them for credentials/secrets (the
+  gitleaks MegaLinter job scans `.uf/` as a backstop, but do not rely on it
+  alone).
 - Prefer `dewey artifacts plan` to review what would be published, and use
   `dewey artifacts sync` when publishing stranded artifacts deliberately —
   it adds credential screening and audit trailers behind a human gate.

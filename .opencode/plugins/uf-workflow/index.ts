@@ -43,6 +43,17 @@ import {
   type PreflightDeclaredDependencies,
   type ProcessResult,
 } from "../../lib/preflight-declared.js"
+import {
+  FeedbackOperationError,
+  FileFeedbackIssueInputSchema,
+  PostFeedbackRepliesInputSchema,
+  defaultFeedbackGhExec,
+  feedbackFailure,
+  feedbackSuccess,
+  fileFeedbackIssue,
+  postFeedbackReplies,
+  type FeedbackReplyDeps,
+} from "../../lib/feedback-replies.js"
 import { createBunYamlParser, type YamlParser } from "../../lib/reviewer-manifest.js"
 import {
   BASE_REF_CANDIDATES,
@@ -1818,6 +1829,384 @@ export function createUnleashResolveIssueTool(runner: GhRunner, cwd: string): Re
       }
     },
   })
+}
+
+// ---------------------------------------------------------------------------
+// checkout_pr_head tool
+// ---------------------------------------------------------------------------
+
+/**
+ * Failure codes checkout_pr_head returns (OpenSpec change checkout-pr-head,
+ * issue #965). Each maps to one STOP condition the /uf.address-feedback
+ * Section 1.2.1 prose carried before the extraction.
+ */
+export const CHECKOUT_PR_HEAD_ERROR_CODES = [
+  "DIRTY_TREE",
+  "CHECKOUT_FAILED",
+  "UNRELATED_BRANCH",
+  "READ_ONLY_MERGE_REF",
+  "NO_PUSH_TARGET",
+  "UNSAFE_PUSH_TARGET",
+] as const
+
+/** One checkout_pr_head failure code. */
+export type CheckoutPrHeadErrorCode = (typeof CHECKOUT_PR_HEAD_ERROR_CODES)[number]
+
+/** Structured output from checkout_pr_head. */
+export interface CheckoutPrHeadData {
+  /**
+   * The actual checked-out branch name. It may differ from head_ref: a
+   * cross-repo PR whose head is the fork's default branch checks out as
+   * `<owner>/<branch>` (for example `contrib/main`).
+   */
+  branch: string
+  /** `branch.<branch>.remote`: a remote name or an https URL. */
+  head_remote: string
+  /** `branch.<branch>.merge`: always `refs/heads/<head_ref>` on success. */
+  merge_ref: string
+  /**
+   * True when HEAD is a strict descendant of head_sha (unpushed commits
+   * from a prior run, for example a failed-push retry).
+   */
+  ahead_of_head_sha: boolean
+  /** True when the tool ran `gh pr checkout` to reach the PR head. */
+  checked_out: boolean
+}
+
+/**
+ * Conservative refname charset for PR-derived values that later reach a
+ * rendered shell template (Section 4.4 push/fetch): `$`, backtick, and `"`
+ * are legal git refname characters that stay active inside double quotes,
+ * so quoting alone does not neutralize them.
+ */
+const SAFE_REFNAME_PATTERN = /^[A-Za-z0-9._/-]+$/
+
+/** A push remote is a plain remote name or an https URL without userinfo. */
+const SAFE_REMOTE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/
+const SAFE_REMOTE_URL_PATTERN = /^https:\/\/[A-Za-z0-9._/-]+$/
+
+/** git's message when untracked files collide with tracked files on checkout. */
+const UNTRACKED_COLLISION_PATTERN = /untracked working tree files would be overwritten/i
+
+/**
+ * Whether a remote value is safe to render into the Section 4.4 templates.
+ * `.` and `..` match the name charset but resolve as local repository
+ * paths, so they are rejected like RemoteNameSchema rejects them.
+ */
+function isSafePushRemote(remote: string): boolean {
+  if (remote === "." || remote === "..") return false
+  return SAFE_REMOTE_NAME_PATTERN.test(remote) || SAFE_REMOTE_URL_PATTERN.test(remote)
+}
+
+/**
+ * Extract the most specific error text from a thrown exec error: the
+ * child's stderr when execFileSync captured it, else the error message.
+ */
+function execErrorDetail(err: unknown): string {
+  if (typeof err === "object" && err !== null && "stderr" in err) {
+    const stderr = (err as { stderr?: unknown }).stderr
+    const text = typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : ""
+    if (text.trim() !== "") return text.trim()
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Read a git config value; an unset key (git exits 1) reads as "".
+ * The key is passed as one argv element, so no branch character can
+ * reach a shell.
+ */
+function readGitConfig(exec: GitExec, cwd: string, key: string): string {
+  try {
+    return exec(["config", "--get", key], cwd).trim()
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Classify HEAD against the frozen head SHA: `equal`, `descendant`
+ * (`git merge-base --is-ancestor <head_sha> HEAD` exits 0), or
+ * `unrelated` (any non-zero exit, including an unknown head_sha object).
+ */
+function classifyHeadIdentity(
+  exec: GitExec,
+  cwd: string,
+  head: string,
+  headSha: string,
+): "equal" | "descendant" | "unrelated" {
+  if (head === headSha) return "equal"
+  try {
+    exec(["merge-base", "--is-ancestor", headSha, "HEAD"], cwd)
+    return "descendant"
+  } catch {
+    return "unrelated"
+  }
+}
+
+/** Build a checkout_pr_head failure output. */
+function checkoutFailure(code: CheckoutPrHeadErrorCode, message: string, retryable = false): { output: string } {
+  return { output: JSON.stringify(failure(message, { retryable, code })) }
+}
+
+/**
+ * Factory that creates the checkout_pr_head tool with injectable git and
+ * gh executors (argument arrays, no shell) for testability.
+ *
+ * Decision sequence (the /uf.address-feedback Section 1.2.1 contract):
+ * 1. Identity is keyed on HEAD, not the branch name: HEAD equal to or
+ *    descending from head_sha continues without a checkout.
+ * 2. Otherwise a dirty tracked tree (`git status --porcelain
+ *    --untracked-files=no`) fails DIRTY_TREE; else `gh pr checkout <N>`
+ *    runs. A failed checkout (including its implicit fetch) fails
+ *    CHECKOUT_FAILED with the specific git/gh error, and names the
+ *    `git stash -u` remediation for the untracked-file collision.
+ * 3. After a checkout, HEAD is re-verified; a branch unrelated to
+ *    head_sha fails UNRELATED_BRANCH with both SHAs.
+ * 4. The push target is read from the actual checked-out branch:
+ *    detached HEAD or an unset remote/merge fails NO_PUSH_TARGET; a
+ *    `refs/pull/` merge ref fails READ_ONLY_MERGE_REF; a merge ref other
+ *    than `refs/heads/<head_ref>` fails UNRELATED_BRANCH (ancestry alone
+ *    cannot reject a `main` that absorbed the merged PR); values outside
+ *    the conservative charsets fail UNSAFE_PUSH_TARGET.
+ *
+ * Local commits are never reset or discarded.
+ *
+ * @param exec Git executor (argument array).
+ * @param gh gh executor (argument array).
+ * @param cwd Repository root.
+ * @returns The checkout_pr_head tool.
+ */
+export function createCheckoutPrHeadTool(exec: GitExec, gh: GhRunner, cwd: string): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Put the working tree on a PR's head branch and resolve its push target. " +
+      "Verifies HEAD identity against the frozen head SHA (equal or descendant), " +
+      "gates on a dirty tree, runs gh pr checkout when needed, and reads the push " +
+      "remote/merge ref from the actual checked-out branch name. Returns " +
+      "{branch, head_remote, merge_ref, ahead_of_head_sha, checked_out}; failure " +
+      "codes DIRTY_TREE, CHECKOUT_FAILED, UNRELATED_BRANCH, READ_ONLY_MERGE_REF, " +
+      "NO_PUSH_TARGET, UNSAFE_PUSH_TARGET. Never resets or discards local commits.",
+    args: {
+      pr_number: z.number().int().positive().describe("PR number from the frozen input context"),
+      head_ref: z.string().min(1).describe("Frozen PR head branch name (headRefName)"),
+      head_sha: z
+        .string()
+        .regex(/^[0-9a-f]{40}$/, "must be a 40-character lowercase commit SHA")
+        .describe("Frozen PR head commit SHA (headRefOid)"),
+    },
+    execute: async (args: { pr_number: number; head_ref: string; head_sha: string }) => {
+      try {
+        let head = exec(["rev-parse", "HEAD"], cwd).trim()
+        let identity = classifyHeadIdentity(exec, cwd, head, args.head_sha)
+        let checkedOut = false
+
+        if (identity === "unrelated") {
+          const dirty = exec(["status", "--porcelain", "--untracked-files=no"], cwd).trim()
+          if (dirty !== "") {
+            return checkoutFailure(
+              "DIRTY_TREE",
+              `Working tree has uncommitted changes. Commit or stash them, then rerun \`/uf.address-feedback ${args.pr_number}\`.`,
+            )
+          }
+          try {
+            gh(["pr", "checkout", String(args.pr_number)], cwd)
+          } catch (err: unknown) {
+            const detail = execErrorDetail(err)
+            if (UNTRACKED_COLLISION_PATTERN.test(detail)) {
+              return checkoutFailure(
+                "CHECKOUT_FAILED",
+                `gh pr checkout ${args.pr_number} failed: untracked working tree files would be overwritten ` +
+                  "by tracked files on the PR branch (the dirty check excludes untracked files). Remove, " +
+                  "rename, or stash them (`git stash -u` includes untracked files; plain `git stash` " +
+                  `skips them), then rerun \`/uf.address-feedback ${args.pr_number}\`. Git error: ${detail}`,
+              )
+            }
+            return checkoutFailure(
+              "CHECKOUT_FAILED",
+              `gh pr checkout ${args.pr_number} failed (fetch or checkout error): ${detail}`,
+              true,
+            )
+          }
+          checkedOut = true
+          head = exec(["rev-parse", "HEAD"], cwd).trim()
+          identity = classifyHeadIdentity(exec, cwd, head, args.head_sha)
+          if (identity === "unrelated") {
+            return checkoutFailure(
+              "UNRELATED_BRANCH",
+              `After gh pr checkout ${args.pr_number}, HEAD ${head} is neither equal to nor a descendant of ` +
+                `the PR head ${args.head_sha}: the branch is unrelated to the PR head. Local commits were not ` +
+                "reset or discarded.",
+            )
+          }
+        }
+
+        const branch = exec(["branch", "--show-current"], cwd).trim()
+        if (branch === "") {
+          return checkoutFailure(
+            "NO_PUSH_TARGET",
+            `HEAD ${head} is detached: the PR head has no configured push target. Run ` +
+              `\`gh pr checkout ${args.pr_number}\` to check out the PR head branch.`,
+          )
+        }
+        if (!SAFE_REFNAME_PATTERN.test(branch)) {
+          return checkoutFailure(
+            "UNSAFE_PUSH_TARGET",
+            "Checked-out branch name contains characters outside the conservative set A-Za-z0-9._/- " +
+              "and cannot be rendered into the push templates.",
+          )
+        }
+
+        const headRemote = readGitConfig(exec, cwd, `branch.${branch}.remote`)
+        const mergeRef = readGitConfig(exec, cwd, `branch.${branch}.merge`)
+        if (headRemote === "" || mergeRef === "") {
+          return checkoutFailure(
+            "NO_PUSH_TARGET",
+            `The PR head has no configured push target: branch.${branch}.remote or ` +
+              `branch.${branch}.merge is unset.`,
+          )
+        }
+        if (mergeRef.startsWith("refs/pull/")) {
+          return checkoutFailure(
+            "READ_ONLY_MERGE_REF",
+            `Branch ${branch} merges from the read-only ref ${mergeRef} (a fork PR with maintainer edits ` +
+              "disabled), so a push would always be rejected: the PR head cannot be pushed to from this clone.",
+          )
+        }
+        const expectedMergeRef = `refs/heads/${args.head_ref}`
+        if (mergeRef !== expectedMergeRef) {
+          return checkoutFailure(
+            "UNRELATED_BRANCH",
+            `The working tree is on branch ${branch} whose push target is ${mergeRef}, not the PR head ` +
+              `branch ${args.head_ref} (${expectedMergeRef}). Never push this PR's commits to a different ` +
+              "branch: ancestry alone cannot make this distinction, since any branch that merely contains " +
+              "head_sha passes the descendant check.",
+          )
+        }
+        if (!SAFE_REFNAME_PATTERN.test(mergeRef) || !isSafePushRemote(headRemote)) {
+          return checkoutFailure(
+            "UNSAFE_PUSH_TARGET",
+            "The push target contains characters outside the conservative sets (merge ref A-Za-z0-9._/-; " +
+              "remote a plain name A-Za-z0-9._- or an https URL without userinfo) and cannot be rendered " +
+              "into the push templates.",
+          )
+        }
+
+        const data: CheckoutPrHeadData = {
+          branch,
+          head_remote: headRemote,
+          merge_ref: mergeRef,
+          ahead_of_head_sha: identity === "descendant",
+          checked_out: checkedOut,
+        }
+        return { output: JSON.stringify(success(data)) }
+      } catch (err: unknown) {
+        return { output: failureFromError(err, "CHECKOUT_PR_HEAD_ERROR") }
+      }
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// post_feedback_replies and file_feedback_issue tools (feedback-reply-tools)
+// ---------------------------------------------------------------------------
+
+/** Render a zod validation failure as the feedback tools' invalid_input envelope. */
+function feedbackInvalidInput(error: z.ZodError): string {
+  const details = error.issues
+    .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+    .join("; ")
+  return JSON.stringify(feedbackFailure("invalid_input", details))
+}
+
+/** Render a thrown error as the feedback tools' failure envelope. */
+function feedbackErrorOutput(err: unknown): string {
+  if (err instanceof FeedbackOperationError) {
+    return JSON.stringify(feedbackFailure(err.code, err.message, err.retryable))
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  return JSON.stringify(feedbackFailure("internal_error", message))
+}
+
+/**
+ * Factory for the post_feedback_replies tool (issue #966): files each
+ * FILE item's issue, posts every confirmed reply, and resolves the
+ * approved review threads in one call. Judgment products (reply text,
+ * decisions, the resolve decision) arrive as parameters; the chain runs
+ * in lib/feedback-replies.ts. Failures use the fetch-tool error
+ * contract (`error: true`, code, message, retryable) alongside
+ * `status: "error"`.
+ *
+ * @param deps gh executor, repository root, and checkpoint recorder.
+ * @returns The post_feedback_replies tool.
+ */
+export function createPostFeedbackRepliesTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "Post /uf.address-feedback replies and resolve addressed review threads in one call. " +
+      "Files each file item's issue first (one retry, cached so a re-run never files twice), " +
+      "posts each reply through a temp-file request body to the review-thread or PR-conversation " +
+      "endpoint, stops posting at the first failed post, maps review comments to GraphQL thread " +
+      "IDs, and, when resolve_threads is true, resolves the threads of accept, modify, file, and " +
+      "reply review items whose replies are posted. Progress is recorded per item in " +
+      ".uf/feedback/pr-<N>/state.json, so re-running with the same items resumes. Records the " +
+      "reply-comments checkpoint when nothing is left to do. Returns per-item outcomes and a " +
+      "rendered summary line.",
+    args: PostFeedbackRepliesInputSchema.shape,
+    async execute(args) {
+      const parsed = PostFeedbackRepliesInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(postFeedbackReplies(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+/**
+ * Factory for the file_feedback_issue tool (issue #998): files one
+ * finding as a GitHub issue with one retry, returning the issue number
+ * and URL. A finding already filed for the same comment (per the
+ * feedback cache) is returned without filing again.
+ *
+ * @param deps gh executor and repository root.
+ * @returns The file_feedback_issue tool.
+ */
+export function createFileFeedbackIssueTool(deps: FeedbackReplyDeps): ReturnType<typeof tool> {
+  return tool({
+    description:
+      "File one /uf.address-feedback finding as a GitHub issue. The title and body reach gh " +
+      "as an argument-array element and a temp file, never shell text. Retries gh issue create " +
+      "once; if the feedback cache already records an issue for the same comment, returns it " +
+      "with deduplicated true instead of filing again. Returns issue_number and issue_url and " +
+      "records them in .uf/feedback/pr-<N>/state.json.",
+    args: FileFeedbackIssueInputSchema.shape,
+    async execute(args) {
+      const parsed = FileFeedbackIssueInputSchema.safeParse(args)
+      if (!parsed.success) {
+        return { output: feedbackInvalidInput(parsed.error) }
+      }
+      try {
+        return { output: JSON.stringify(feedbackSuccess(fileFeedbackIssue(parsed.data, deps))) }
+      } catch (err: unknown) {
+        return { output: feedbackErrorOutput(err) }
+      }
+    },
+  })
+}
+
+/** Production dependencies for the feedback reply tools. */
+function feedbackReplyDeps(cwd: string): FeedbackReplyDeps {
+  return {
+    gh: defaultFeedbackGhExec,
+    cwd,
+    recordCheckpoint: (step, data) =>
+      recordAutoCheckpoint(cwd, resolveKey(defaultGitExec, cwd), "uf.address-feedback", step, data),
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5887,6 +6276,9 @@ const UfWorkflowPlugin = {
         uf_preflight_declared_checks: createPreflightDeclaredChecksTool(cwd, createPreflightDeclaredDependencies()),
         uf_unleash_route_decision: createUnleashRouteDecisionTool(defaultGitExec, cwd),
         uf_unleash_resolve_issue: createUnleashResolveIssueTool(defaultGhRunner, cwd),
+        checkout_pr_head: createCheckoutPrHeadTool(defaultGitExec, defaultGhRunner, cwd),
+        post_feedback_replies: createPostFeedbackRepliesTool(feedbackReplyDeps(cwd)),
+        file_feedback_issue: createFileFeedbackIssueTool(feedbackReplyDeps(cwd)),
         uf_delegate_command: createDelegateCommandTool(defaultGitExec, cwd, {
           client: input.client,
           readText: (path: string) => readFile(path, "utf8"),

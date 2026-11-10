@@ -210,7 +210,7 @@ precedence on overlapping concerns.
 
 - **CP-001** [MUST] Generated content (issue bodies,
   comments, checklists, verification plans) MUST use
-  language appropriate to the target repository's
+  language that matches the target repository's
   language and project type. MUST NOT assume the target
   is an organization-configuration repository unless
   the repository's README or AGENTS.md explicitly

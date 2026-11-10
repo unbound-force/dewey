@@ -76,8 +76,8 @@ language, because every project may have CI workflows.
 
 - **CI-020** [MUST] Workflows MUST follow the principle
   of least privilege. Write permissions MUST be avoided;
-  when necessary, they MUST be defined in the minimal
-  possible scope. Prefer explicit `permissions` blocks
+  when a job requires a write permission, it MUST be
+  granted in the minimal possible scope. Prefer explicit `permissions` blocks
   over relying on the default token permissions.
 
 - **CI-021** [SHOULD] Permissions SHOULD be defined at

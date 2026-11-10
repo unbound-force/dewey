@@ -88,7 +88,7 @@ sections relevant to its domain:
   complete content.
 
 - **TD-004** [MUST] Every page or section MUST establish
-  what it covers and why the reader should care in the
+  what it covers and why it matters to the reader in the
   first paragraph. A reader who stops after the opening
   MUST understand the purpose.
 
@@ -159,7 +159,7 @@ sections relevant to its domain:
 
 - **PR-001** [MUST] External communications MUST
   maintain a consistent brand voice across all channels.
-  Every piece should feel like it comes from the same
+  Every piece reads as coming from the same
   team.
 
 - **PR-002** [MUST] Press releases MUST lead with the
@@ -183,7 +183,7 @@ sections relevant to its domain:
   not an audience.
 
 - **PR-006** [MUST] External communications MUST NOT
-  announce unbuilt features. Every claim must trace back
+  announce unbuilt features. Every claim MUST trace back
   to a verified, shipped capability.
 
 - **PR-007** [SHOULD] Key message discipline: each
@@ -213,8 +213,8 @@ sections relevant to its domain:
   primary discovery mechanism. Dewey indexes all sibling
   repositories and the org workspace.
 
-- **FA-004** [MUST] After discovering relevant content
-  via Dewey, agents MUST use the Read tool for targeted
+- **FA-004** [MUST] After Dewey returns content on the
+  topic being written, agents MUST use the Read tool for targeted
   file access to confirm exact numbers, flags, and
   capabilities before writing.
 
@@ -238,8 +238,8 @@ sections relevant to its domain:
 
 - **FT-001** [MUST] Use fenced code blocks (triple
   backticks) with a language identifier for all code
-  examples: ` ```bash `, ` ```yaml `, ` ```json `,
-  ` ```go `, etc.
+  examples, for example ` ```bash `, ` ```yaml `,
+  ` ```json `, or ` ```go `.
 
 - **FT-002** [MUST] Use inline code spans (single
   backticks) for commands (`uf setup`), filenames

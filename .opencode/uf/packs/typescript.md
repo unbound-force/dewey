@@ -190,8 +190,8 @@ and [MAY] for optional best practices.
   on test execution order. Each test MUST set up
   its own fixtures and tear them down.
 
-- **TC-006** [MUST] Async tests MUST properly await
-  all asynchronous operations. Use `async`/`await`
+- **TC-006** [MUST] Async tests MUST await
+  every asynchronous operation (no floating Promises). Use `async`/`await`
   in test functions. Ensure the test framework is
   configured to detect unhandled Promise rejections.
   Never return a Promise without awaiting it in the
@@ -199,9 +199,9 @@ and [MAY] for optional best practices.
 
 - **TC-007** [SHOULD] Test descriptions SHOULD be
   meaningful and describe the expected behavior, not
-  the implementation. Use the pattern: "should [verb]
-  when [condition]" (e.g., `"should return 404 when
-  user not found"`).
+  the implementation. Use the pattern:
+  `should [verb] when [condition]` (e.g.,
+  `"should return 404 when user not found"`).
 
 - **TC-008** [SHOULD] Test files SHOULD be co-located
   with their source files (e.g., `user.service.ts`

@@ -15,8 +15,10 @@ Depends on #146. Part of #153 (umbrella).
 
 ## What Changes
 
-- `semantic_search` and `semantic_search_filtered` results include
-  `validity` and `as_of` when the page carries them.
+- `semantic_search`, `semantic_search_filtered`, and `similar` results
+  include `validity` and `as_of` when the page carries them (`similar`
+  enrichment-only: it shares the `toSemanticResults` converter that
+  already enriched it with tier / category / created_at).
 - `semantic_search_filtered` accepts a `validity` filter.
 - Both rank by validity-weighted similarity by default:
   `superseded` × 0.6, `stale-unverified` × 0.85, everything else
@@ -34,6 +36,7 @@ Depends on #146. Part of #153 (umbrella).
 ### Modified Capabilities
 - `semantic_search`, `semantic_search_filtered`: result fields,
   input fields, default ordering.
+- `similar`: result fields (`validity`, `as_of`; enrichment only).
 
 ### Removed Capabilities
 - None.
@@ -44,12 +47,15 @@ Depends on #146. Part of #153 (umbrella).
 - `tools/semantic.go` — enrichment, filter, ranking, fetch limit.
 - `tools/semantic_validity.go` (new) — pure helpers.
 - Tests: `tools/semantic_validity_test.go`.
-- README semantic search rows.
+- README semantic search and `similar` rows.
 
-**Not covered:** keyword `search` and `similar` results (block hits
-without page metadata today), and validity written inside a page
-body rather than its properties (for example per-claim validity in a
-multi-claim markdown file).
+**Not covered:** keyword `search` results (block hits without page
+metadata), validity-weighted ranking, validity filtering, and
+over-fetch for `similar` (its results do carry `validity` / `as_of` —
+they flow through the same `toSemanticResults` converter, which
+already enriched them with tier / category / created_at), and
+validity written inside a page body rather than its properties (for
+example per-claim validity in a multi-claim markdown file).
 
 ## Constitution Alignment
 

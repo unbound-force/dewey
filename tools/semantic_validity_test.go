@@ -106,6 +106,75 @@ func TestSemanticSearchFiltered_ValidityFilter(t *testing.T) {
 	}
 }
 
+// TestSimilar_ValidityEnrichment pins the enrichment-only reach of
+// validity metadata into the similar tool: results carry validity and
+// as_of when the page has them, omit the fields when it does not, and
+// stay in raw similarity order — no validity weighting, filtering, or
+// over-fetch applies (review feedback, PR #160).
+func TestSimilar_ValidityEnrichment(t *testing.T) {
+	s := newValidityStore(t)
+	e := newMockEmbedder(true)
+	sem := NewSemantic(e, s)
+
+	// gate-plain has no validity properties (the absence branch).
+	// gate-stale is stale-unverified with the highest raw similarity —
+	// it comes first only while ordering stays raw.
+	for _, p := range []struct {
+		name, props string
+		vec         []float32
+	}{
+		{"learning/gate-plain", `{"tag":"gate"}`, []float32{0.95, 0.1, 0}},
+		{"learning/gate-stale", `{"tag":"gate","validity":"stale-unverified","as_of":"kb@ccc"}`, []float32{0.99, 0.02, 0}},
+	} {
+		if err := s.InsertPage(&store.Page{Name: p.name, OriginalName: p.name, SourceID: store.SourceLearning, SourceDocID: p.name, Properties: p.props, Tier: "draft"}); err != nil {
+			t.Fatalf("InsertPage: %v", err)
+		}
+		uuid := p.name + "-b"
+		if err := s.InsertBlock(&store.Block{UUID: uuid, PageName: p.name, Content: "gate layers"}); err != nil {
+			t.Fatalf("InsertBlock: %v", err)
+		}
+		if err := s.InsertEmbedding(uuid, "test-model", p.vec, "gate layers"); err != nil {
+			t.Fatalf("InsertEmbedding: %v", err)
+		}
+	}
+
+	res, _, err := sem.Similar(context.Background(), nil, types.SimilarInput{UUID: "learning/gate-old-b"})
+	if err != nil || res.IsError {
+		t.Fatalf("Similar = %v, %v", resultText(res), err)
+	}
+	got := semanticPages(t, resultText(res))
+	if len(got) != 3 {
+		t.Fatalf("similar results = %+v, want gate-stale, gate-plain, gate-new (gate-old excluded)", got)
+	}
+	if got[0].Page != "learning/gate-stale" || got[1].Page != "learning/gate-plain" || got[2].Page != "learning/gate-new" {
+		t.Fatalf("similar order = %+v, want raw similarity order (validity weighting must not reach similar)", got)
+	}
+	if got[0].Validity != "stale-unverified" || got[0].AsOf != "kb@ccc" {
+		t.Errorf("similar enrichment = %+v, want validity stale-unverified / as_of kb@ccc", got[0])
+	}
+	if got[2].Validity != "current" || got[2].AsOf != "kb@bbb" {
+		t.Errorf("similar enrichment = %+v, want validity current / as_of kb@bbb", got[2])
+	}
+
+	// The absence branch: a page without validity must omit both fields
+	// from the JSON payload entirely (omitempty), not emit empty values.
+	var raw []map[string]any
+	if err := json.Unmarshal([]byte(resultText(res)), &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	for _, r := range raw {
+		if r["page"] != "learning/gate-plain" {
+			continue
+		}
+		if _, ok := r["validity"]; ok {
+			t.Errorf("page without validity must omit validity, got %v", r)
+		}
+		if _, ok := r["as_of"]; ok {
+			t.Errorf("page without validity must omit as_of, got %v", r)
+		}
+	}
+}
+
 func TestValidityHelpers(t *testing.T) {
 	for v, want := range map[string]float64{"superseded": 0.6, "stale-unverified": 0.85, "current": 1, "historical": 1, "": 1} {
 		if got := validityWeight(v); got != want {

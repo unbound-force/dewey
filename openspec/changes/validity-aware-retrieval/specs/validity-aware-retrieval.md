@@ -2,13 +2,20 @@
 
 ### Requirement: Validity in Semantic Results
 
-`semantic_search` and `semantic_search_filtered` results MUST include
-`validity` and `as_of` when the result's page properties carry them.
+`semantic_search`, `semantic_search_filtered`, and `similar` results
+MUST include `validity` and `as_of` when the result's page properties
+carry them. For `similar` this is enrichment-only: no validity-weighted
+ranking, validity filtering, or over-fetch applies.
 
 #### Scenario: Learning with validity
 - **GIVEN** a learning with `validity: current` and `as_of: r@abc`
 - **WHEN** a semantic search returns one of its blocks
 - **THEN** the result MUST include both values
+
+#### Scenario: Similar results carry validity
+- **GIVEN** a learning with `validity: current` and `as_of: r@abc`
+- **WHEN** a similar lookup returns one of its blocks
+- **THEN** the result MUST include both values, in raw similarity order
 
 ### Requirement: Validity Filter
 

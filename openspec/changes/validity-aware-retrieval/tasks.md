@@ -14,8 +14,8 @@
 ## 3. Tests
 
 - [x] 3.1 `tools/semantic_validity_test.go`: weights, stable ranking,
-  filter, fetch limit, enrichment, both tools end to end with a stub
-  embedder
+  filter, fetch limit, enrichment, both search tools and `similar`
+  end to end with a stub embedder
 
 ## 4. Docs and verification
 

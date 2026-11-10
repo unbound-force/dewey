@@ -67,9 +67,11 @@ type anchorChecker interface {
 	PathChanged(ctx context.Context, fromSHA, toSHA, path string) (bool, error)
 }
 
-// gitAnchorChecker implements anchorChecker with `git -C dir`.
+// gitAnchorChecker implements anchorChecker with `git -C dir`. Each git
+// run is bounded by timeout, or anchorGitTimeout when it is zero.
 type gitAnchorChecker struct {
-	dir string
+	dir     string
+	timeout time.Duration
 }
 
 // Head returns the full HEAD commit of the repository, or errAnchorNoRepo
@@ -112,9 +114,11 @@ func (g gitAnchorChecker) PathExists(ctx context.Context, sha, path string) (boo
 // PathChanged reports whether path differs between two commits (deletion
 // counts as a change). `git diff --quiet` exits 1 on a difference. External
 // diff drivers and textconv filters are disabled: they come from repository
-// config and would run commands chosen by whoever controls the vault.
+// config and would run commands chosen by whoever controls the vault. The
+// path is passed as a literal pathspec, so glob characters or pathspec
+// magic in a file name match only that file.
 func (g gitAnchorChecker) PathChanged(ctx context.Context, fromSHA, toSHA, path string) (bool, error) {
-	_, code, err := g.run(ctx, "diff", "--quiet", "--no-ext-diff", "--no-textconv", fromSHA, toSHA, "--", path)
+	_, code, err := g.run(ctx, "diff", "--quiet", "--no-ext-diff", "--no-textconv", fromSHA, toSHA, "--", ":(literal)"+path)
 	if err != nil {
 		return false, err
 	}
@@ -124,11 +128,15 @@ func (g gitAnchorChecker) PathChanged(ctx context.Context, fromSHA, toSHA, path 
 	return code == 1, nil
 }
 
-// run runs git with anchorGitTimeout under ctx and returns its stdout and
-// exit code. An error is returned only when git could not be run (not
-// found, timeout, cancelled), never for a non-zero exit.
+// run runs git under ctx, bounded by the checker's timeout, and returns
+// its stdout and exit code. An error is returned only when git could not
+// be run (not found, timeout, cancelled), never for a non-zero exit.
 func (g gitAnchorChecker) run(ctx context.Context, args ...string) (string, int, error) {
-	ctx, cancel := context.WithTimeout(ctx, anchorGitTimeout)
+	timeout := g.timeout
+	if timeout <= 0 {
+		timeout = anchorGitTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", g.dir}, args...)...).Output()
 	var exitErr *exec.ExitError
@@ -236,14 +244,18 @@ type anchorReport struct {
 }
 
 // checkAnchors reports anchor_missing and anchor_drift findings for every
-// eligible learning, within anchorCheckBudget. It is skipped when there is
+// eligible learning, within l.anchorBudget (anchorCheckBudget when zero). It is skipped when there is
 // no checker or the vault is not a git repository, and fails as a whole
 // (no findings) when git cannot answer or the budget runs out.
 func (l *Lint) checkAnchors(ctx context.Context) ([]Finding, anchorReport, error) {
 	if l.anchors == nil {
 		return nil, anchorReport{Status: anchorSkipped, Reason: "no vault path"}, nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, anchorCheckBudget)
+	budget := l.anchorBudget
+	if budget <= 0 {
+		budget = anchorCheckBudget
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	head, err := l.anchors.Head(ctx)
 	var repo string
@@ -348,27 +360,23 @@ func (l *Lint) fixAnchorDrift(findings []Finding) (int, []string) {
 // unsafe to embed in a path or the stored properties are unreadable, so
 // corrupt properties are never replaced wholesale. Once the store is
 // written the learning counts as marked: a backup failure after that is
-// returned as a warning, not an error.
+// returned as a warning, not an error. A learning that became superseded
+// or historical after the check is left unchanged and reported as an error.
 func (l *Lint) markStaleUnverified(pageName string) (string, error) {
 	identity := strings.TrimPrefix(pageName, store.LearningPrefix)
 	if !ValidLearningIdentity(identity) {
 		return "", fmt.Errorf("unsafe learning identity: %q", identity)
 	}
-	page, err := l.store.GetPage(pageName)
+	// Validity is re-read under the update lock: a learning superseded
+	// (or made historical) since the check ran keeps that validity.
+	err := updateLearningProperties(l.store, pageName, func(props map[string]any) error {
+		if v, _ := props["validity"].(string); v == "superseded" || v == "historical" {
+			return fmt.Errorf("learning is now %s", v)
+		}
+		props["validity"] = "stale-unverified"
+		return nil
+	})
 	if err != nil {
-		return "", err
-	}
-	if page == nil {
-		return "", fmt.Errorf("page not found: %s", pageName)
-	}
-	props, err := decodeLearningProperties(page.Properties)
-	if err != nil {
-		return "", fmt.Errorf("unreadable stored properties on %s: %w", pageName, err)
-	}
-	props["validity"] = "stale-unverified"
-	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
-	page.Properties = string(data)
-	if err := l.store.UpdatePage(page); err != nil {
 		return "", err
 	}
 	if err := updateLearningBackup(l.vaultPath, identity, [][2]string{{"validity", "stale-unverified"}}); err != nil {

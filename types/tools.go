@@ -335,9 +335,11 @@ type CurateInput struct {
 
 // LintInput is the input for the dewey_lint MCP tool.
 type LintInput struct {
-	// Fix enables auto-repair of mechanical issues (e.g., regenerate
-	// missing embeddings). Does not fix semantic issues.
-	Fix bool `json:"fix,omitempty" jsonschema:"Auto-repair mechanical issues (missing embeddings). Default: false"`
+	// Fix enables auto-repair of mechanical issues: regenerate missing
+	// embeddings, and mark learnings with anchor_drift findings
+	// validity stale-unverified in the store and markdown backup.
+	// Does not fix semantic issues and never changes tiers.
+	Fix bool `json:"fix,omitempty" jsonschema:"Auto-repair mechanical issues: regenerate missing embeddings and mark learnings with anchor_drift findings validity stale-unverified (tiers unchanged). Default: false"`
 }
 
 // --- Promote tool inputs ---

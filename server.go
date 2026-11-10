@@ -515,7 +515,7 @@ func registerCurateTools(srv *mcp.Server, curateTool *tools.Curate) int {
 func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "lint",
-		Description: "Scan the knowledge base for quality issues: stale decisions, uncompiled learnings, embedding gaps, and potential contradictions.",
+		Description: "Scan the knowledge base for quality issues: stale decisions, uncompiled learnings, embedding gaps, potential contradictions, knowledge-store quality, stale knowledge stores, sanitization findings, and learnings whose cited code changed (anchor_drift) or is absent at the pinned commit (anchor_missing). The anchor_checks field reports whether the anchor checks ran, were skipped, or failed. With fix=true, regenerates missing embeddings and marks drifted learnings validity stale-unverified (tiers are never changed).",
 	}, lint.Lint)
 
 	return 1

@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -141,6 +144,8 @@ func TestLint_AnchorChecks(t *testing.T) {
 		"as_of": "kb@" + first,
 		"evidence": []string{
 			"kb:pkg/a.go",       // changed since the pin → drift
+			"kb:pkg/a.go:3",     // same path again → no second finding
+			"kb:./pkg/a.go",     // same path again → no second finding
 			"kb:pkg/b.go:10-20", // unchanged; line suffix stripped
 			"kb:nope.go",        // never existed → missing
 			"other:pkg/a.go",    // another repository → skipped
@@ -171,14 +176,23 @@ func TestLint_AnchorChecks(t *testing.T) {
 	}
 	insertPinnedLearning(t, s, "flood-1", map[string]any{"tag": "flood", "as_of": "kb@" + first, "evidence": flood})
 	insertPinnedLearning(t, s, "long-1", map[string]any{"tag": "long", "as_of": "kb@" + first, "evidence": []string{"kb:pkg/a.go", "kb:" + strings.Repeat("x", maxEvidenceLen)}})
+	// Exactly at the limits is still checked: 50 entries, and a locator of
+	// exactly 512 runes (multi-byte, so runes are counted, not bytes).
+	atLimit := make([]string, maxEvidenceEntries)
+	for i := range atLimit {
+		atLimit[i] = "kb:pkg/b.go"
+	}
+	atLimit[0] = "kb:pkg/a.go"
+	insertPinnedLearning(t, s, "edge-1", map[string]any{"tag": "edge", "as_of": "kb@" + first, "evidence": atLimit})
+	insertPinnedLearning(t, s, "edge-2", map[string]any{"tag": "edge", "as_of": "kb@" + first, "evidence": []string{"kb:pkg/b.go", "kb:" + strings.Repeat("é", maxEvidenceLen-len("kb:"))}})
 
 	parsed := runLint(t, NewLint(s, nil, repo, 0), false)
 	if status, reason := anchorChecksOf(t, parsed); status != anchorChecked || reason != "" {
 		t.Errorf("anchor_checks = %q (%q), want checked", status, reason)
 	}
 	got := anchorFindingsOf(t, parsed)
-	if len(got) != 5 {
-		t.Fatalf("anchor findings = %d, want 5:\n%s", len(got), strings.Join(got, "\n"))
+	if len(got) != 7 {
+		t.Fatalf("anchor findings = %d, want 7:\n%s", len(got), strings.Join(got, "\n"))
 	}
 	joined := strings.Join(got, "\n")
 	for _, want := range []string{
@@ -187,14 +201,16 @@ func TestLint_AnchorChecks(t *testing.T) {
 		"anchor_missing Learning 'lost-1' is pinned to commit 0000000",
 		"anchor_missing Learning 'lost-2' is pinned to commit 1111111",
 		"anchor_drift Learning 'deleted-1' cites pkg/c.go, which changed or was removed",
+		"anchor_drift Learning 'edge-1' cites pkg/a.go, which changed",
+		"anchor_missing Learning 'edge-2' cites éé",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing finding %q in:\n%s", want, joined)
 		}
 	}
 	summary, _ := parsed["summary"].(map[string]any)
-	if summary["anchor_drift"] != float64(2) || summary["anchor_missing"] != float64(3) {
-		t.Errorf("summary anchor counts = %v / %v, want 2 / 3", summary["anchor_drift"], summary["anchor_missing"])
+	if summary["anchor_drift"] != float64(3) || summary["anchor_missing"] != float64(4) {
+		t.Errorf("summary anchor counts = %v / %v, want 3 / 4", summary["anchor_drift"], summary["anchor_missing"])
 	}
 }
 
@@ -472,7 +488,9 @@ func TestMarkStaleUnverified_RejectsUnsafeIdentity(t *testing.T) {
 	vault := t.TempDir()
 	l := NewLint(s, nil, vault, 0)
 	insertRawLearning(t, s, "../../escape", `{"tag":"x"}`)
-	outside := filepath.Join(vault, deweyWorkspaceDir, "..", "..", "escape.md")
+	// The backup path is vault/.uf/dewey/learnings/<identity>.md, so the
+	// identity's two ".." land on vault/.uf/escape.md.
+	outside := filepath.Join(vault, deweyWorkspaceDir, "..", "escape.md")
 	original := "---\ntag: x\n---\n\nOutside.\n"
 	if err := os.MkdirAll(filepath.Dir(outside), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -549,6 +567,131 @@ func TestMarkStaleUnverified_Errors(t *testing.T) {
 		{Type: "anchor_missing", Page: "learning/x"},
 	})
 	if marked != 1 || len(warnings) != 2 {
-		t.Errorf("fixAnchorDrift = %d, %v; want 1 marked and 2 warnings", marked, warnings)
+		t.Fatalf("fixAnchorDrift = %d, %v; want 1 marked and 2 warnings", marked, warnings)
+	}
+	// Each warning names its own learning and says what happened to it.
+	if !strings.Contains(warnings[0], "marked bare-1 stale-unverified in the store, but not in its markdown backup") {
+		t.Errorf("backup warning = %q", warnings[0])
+	}
+	if !strings.Contains(warnings[1], "failed to mark learning/absent-1 stale-unverified: page not found") {
+		t.Errorf("failure warning = %q", warnings[1])
+	}
+
+	// A learning superseded after the check ran keeps its validity.
+	insertPinnedLearning(t, s, "late-1", map[string]any{"tag": "late", "validity": "superseded", "superseded_by": "late-2"})
+	if _, err := l.markStaleUnverified("learning/late-1"); err == nil || !strings.Contains(err.Error(), "now superseded") {
+		t.Errorf("superseded learning: err = %v, want a now-superseded error", err)
+	}
+	if _, props := pageProps(t, s, "learning/late-1"); props["validity"] != "superseded" || props["superseded_by"] != "late-2" {
+		t.Errorf("superseded learning after fix = %v", props)
+	}
+}
+
+func TestLearningPropertyUpdates_ConcurrentFixAndSupersede(t *testing.T) {
+	s := newTestStore(t)
+	vault := t.TempDir()
+	lint := NewLint(s, nil, vault, 0)
+	learning := NewLearning(nil, s, vault, 0)
+	for i := 0; i < 20; i++ {
+		id := fmt.Sprintf("race-%d", i)
+		insertPinnedLearning(t, s, id, map[string]any{"tag": "race", "validity": "current"})
+		target, err := s.GetPage(store.LearningPrefix + id)
+		if err != nil || target == nil {
+			t.Fatalf("GetPage = %v, %v", target, err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = lint.markStaleUnverified(store.LearningPrefix + id)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = learning.linkSuperseded(target, "next-"+id)
+		}()
+		wg.Wait()
+		// In either order the supersession survives: the fix never drops
+		// the back-link, and never overwrites superseded validity.
+		if _, props := pageProps(t, s, store.LearningPrefix+id); props["superseded_by"] != "next-"+id || props["validity"] != "superseded" {
+			t.Errorf("%s properties = %v, want superseded by next-%s", id, props, id)
+		}
+	}
+}
+
+// blockingAnchors is an anchorChecker whose Head waits for its context.
+type blockingAnchors struct{ fakeAnchors }
+
+func (blockingAnchors) Head(ctx context.Context) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+func TestCheckAnchors_BudgetBoundsThePass(t *testing.T) {
+	l := NewLint(newTestStore(t), nil, "", 0)
+	l.anchors = blockingAnchors{}
+	l.anchorBudget = 10 * time.Millisecond
+	type outcome struct {
+		report anchorReport
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		_, report, err := l.checkAnchors(context.Background())
+		done <- outcome{report, err}
+	}()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.DeadlineExceeded) || got.report.Status != anchorFailed {
+			t.Errorf("checkAnchors past its budget = %v, %v; want failed, deadline exceeded", got.report, got.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("anchor-check pass was not bounded by its budget")
+	}
+}
+
+func TestGitAnchorChecker_TimeoutBoundsEachCall(t *testing.T) {
+	repo, _ := anchorRepo(t)
+	g := gitAnchorChecker{dir: repo, timeout: time.Nanosecond}
+	if _, err := g.Head(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Head with an expired per-call timeout = %v, want deadline exceeded", err)
+	}
+}
+
+func TestGitAnchorChecker_PathIsLiteral(t *testing.T) {
+	repo, _ := anchorRepo(t)
+	git := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	// pkg/[ab].go is a real file; as a glob it would also match pkg/a.go.
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "[ab].go"), []byte("package pkg\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "glob-named file")
+	pin, err := gitOutput(repo, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("rev-parse: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "pkg", "a.go"), []byte("package pkg // v3\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	git("commit", "-q", "-am", "change a.go only")
+	g := gitAnchorChecker{dir: repo}
+	ctx := context.Background()
+	head, err := g.Head(ctx)
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	for _, path := range []string{"pkg/[ab].go", ":(exclude)pkg/b.go", "pkg/*.go"} {
+		if changed, err := g.PathChanged(ctx, pin, head, path); err != nil || changed {
+			t.Errorf("PathChanged(%q) = %v, %v; want false (only pkg/a.go changed)", path, changed, err)
+		}
+	}
+	if changed, err := g.PathChanged(ctx, pin, head, "pkg/a.go"); err != nil || !changed {
+		t.Errorf("PathChanged(pkg/a.go) = %v, %v; want true", changed, err)
 	}
 }

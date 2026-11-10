@@ -57,6 +57,7 @@ type Lint struct {
 	vaultPath     string
 	maxChunkChars int           // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
 	anchors       anchorChecker // git-backed anchor checks (issue #147); nil skips them
+	anchorBudget  time.Duration // bound on one anchor-check pass; 0 uses anchorCheckBudget
 }
 
 // NewLint creates a new Lint tool handler with the given store, embedder,
@@ -86,9 +87,19 @@ func NewLint(s *store.Store, e embed.Embedder, vaultPath string, maxChunkChars i
 //  3. Embedding gaps: pages with blocks but no embeddings
 //  4. Semantic contradictions: learning pairs with high similarity but
 //     potentially different conclusions (same tag, different content)
+//  5. Knowledge-store quality metrics (requires vaultPath)
+//  6. Stale knowledge stores (requires vaultPath)
+//  7. Content sanitization findings
+//  8. Anchor checks (issue #147): anchor_drift when a learning's cited
+//     file changed or was removed since its as_of commit, anchor_missing
+//     when a cited file is absent at that commit. The pass outcome is
+//     reported as anchor_checks (checked, skipped, or failed).
 //
-// When fix=true, auto-repairs embedding gaps by regenerating embeddings.
-// Semantic issues (contradictions, staleness) require human/agent judgment.
+// When fix=true, auto-repairs embedding gaps by regenerating embeddings,
+// and marks learnings with anchor_drift findings validity
+// stale-unverified in the store and markdown backup; tiers are never
+// changed. Other semantic issues (contradictions, staleness) require
+// human/agent judgment.
 func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.LintInput) (*mcp.CallToolResult, any, error) {
 	if l.store == nil {
 		return errorResult(persistentStorageError("lint").Error()), nil, nil

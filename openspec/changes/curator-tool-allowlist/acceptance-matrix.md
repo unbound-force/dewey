@@ -10,9 +10,15 @@ docs commit 8b1dba1 in the tree.
 `opencode run --agent` cannot invoke `mode: subagent` agents (it falls back
 to the default agent with a visible warning), so the matrix ran against a
 throwaway probe agent: a byte-identical copy of `.opencode/agents/curator.md`
-with only `mode: subagent` → `mode: primary`. Agent permission evaluation is
-mode-independent; the `tools:` map under test was identical. The probe file
-was deleted after the matrix.
+with only `mode: subagent` → `mode: primary`. Caveat: this substitutes a
+primary-mode agent for the shipped subagent — mode-independence of agent
+permission evaluation is an assumption of this matrix, not something it
+demonstrates (host documentation was not available to cite, and the actual
+subagent spawn path used by `/dewey-distill` was not exercised
+end-to-end). The at-rest shape and parity tests are mode-independent, and
+the design's documented failure mode for inert globs is exactly the
+pre-change behavior (no privilege gain, only failure to restrict). The
+probe file was deleted after the matrix.
 
 ## Results
 
@@ -21,7 +27,7 @@ was deleted after the matrix.
 | 1 | Allowlisted Dewey MCP call succeeds | **PASS** | `dewey_list_pages` (limit 5) executed and returned 5 real pages from the vault store. `dewey_lint` was also permitted and executed; it returned a dewey-domain storage error (see environmental notes) — the permission layer granted both calls. |
 | 2 | Non-allowlisted Dewey MCP call refused by frontmatter | **PASS** | `dewey_delete_page` is absent from the agent's toolset entirely. Asked to attempt the call, the agent reported the tool "is not present in my available tools" — host-level enforcement (the tool is never offered to the model), not prompt discipline. |
 | 3 | `replicator_*` MCP call refused | **PASS** | Toolset enumeration showed zero `replicator_*` tools — the entire replicator server is denied by `"replicator_*": false`. |
-| 4 | Human-gate questions remain askable | **PASS** | The `permission:` block (`question: allow`) is byte-identical to the pre-change frontmatter — the change touched only the `tools:` block, and `TestCuratorAgent_FrontmatterToolAllowlist` asserts the permission block's exact entries. |
+| 4 | Human-gate questions remain askable | **PASS (verified at-rest)** | No runtime observation was captured for this check. At-rest justification: the question tool is governed by `permission.question: allow`, which the `tools:` globs cannot match, and the `permission:` block is byte-identical to the pre-change frontmatter (the change touched only the `tools:` block); `TestCuratorAgent_FrontmatterToolAllowlist` asserts the permission block's exact key set and values, including `question: allow`. |
 | 5 | `dewey gate auto-answer` bash carve-out unaffected | **PASS** | The exact command `dewey gate auto-answer` was permitted by the nested bash map, and any variant (e.g. appending `; echo $?`) was denied by the `"*": deny` rule — the carve-out's allow-exact-one-command shape is enforced. The command itself failed with `unknown command "gate"` because the installed dewey binary (v3.5.3 via mise) predates the gate subcommand from #152 — environmental version skew, unrelated to this change (gate.go and the bash map are untouched by it). |
 
 ## Design-D4 glob verification

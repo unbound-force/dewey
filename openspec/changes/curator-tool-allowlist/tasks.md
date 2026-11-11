@@ -111,6 +111,17 @@
   what changed and which `content/docs/` pages need updating. Do not
   create a duplicate.
 
+  **Outcome (2026-11-11): all three prior issues were open and were
+  extended by comment — no duplicate filed.** docs
+  unbound-force/website#371
+  ([comment](https://github.com/unbound-force/website/issues/371#issuecomment-6802159535)),
+  tutorial unbound-force/website#376
+  ([comment](https://github.com/unbound-force/website/issues/376#issuecomment-6802159380)),
+  blog unbound-force/website#377
+  ([comment](https://github.com/unbound-force/website/issues/377#issuecomment-6802159568)).
+  Each comment records the frontmatter enforcement (deny-all-then-allow-six,
+  other-server denies) and the server-key coupling.
+
 **Checkpoint** (exact ci.yml Test step):
 `go test -race -v -count=1 -coverprofile=coverage.out ./...`
 

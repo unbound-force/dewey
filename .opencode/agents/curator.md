@@ -19,6 +19,7 @@ tools:
   dewey_compile: true
   dewey_curate: true
   dewey_store_compiled: true
+  dewey_verify_candidates: true
   dewey_promote: true
 permission:
   question: allow

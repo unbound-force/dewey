@@ -12,6 +12,14 @@ tools:
   write: false
   edit: false
   webfetch: false
+  "dewey_*": false
+  "replicator_*": false
+  dewey_lint: true
+  dewey_list_pages: true
+  dewey_compile: true
+  dewey_curate: true
+  dewey_store_compiled: true
+  dewey_promote: true
 permission:
   question: allow
   task: deny

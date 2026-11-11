@@ -17,14 +17,14 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Confirm the change artifacts under
+- [x] 0.1 Confirm the change artifacts under
   `openspec/changes/curator-tool-allowlist/` are committed and
   pushed on `opsx/curator-tool-allowlist` (Spec Commit Gate), with
   `originating_issue: 192` recorded in the change's `.openspec.yaml`.
 
 ## 1. Curator Frontmatter Enforcement
 
-- [ ] 1.1 Edit `.opencode/agents/curator.md`: append to the frontmatter
+- [x] 1.1 Edit `.opencode/agents/curator.md`: append to the frontmatter
   `tools:` block, after the existing five entries and with the denies
   grouped before the allows, exactly these entries — `"dewey_*": false`,
   `"replicator_*": false`, then `dewey_lint: true`,
@@ -35,7 +35,7 @@
   `edit: false`, `webfetch: false`), the `permission:` block, or the
   Markdown body. The broad `"dewey_*"` deny MUST precede the six allow
   entries (design D2).
-- [ ] 1.2 Mirror the edited file byte-for-byte into the
+- [x] 1.2 Mirror the edited file byte-for-byte into the
   `deweyAgentDefinitions["curator.md"]` raw string literal in
   `agents.go` (the new entries contain no backticks, so the raw literal
   form is unaffected). The tracked file and the map entry MUST stay
@@ -48,7 +48,7 @@
 
 ## 2. Mechanical Verification
 
-- [ ] 2.1 Add `TestCuratorAgent_FrontmatterToolAllowlist` to
+- [x] 2.1 Add `TestCuratorAgent_FrontmatterToolAllowlist` to
   `cli_test.go`: split the tracked `.opencode/agents/curator.md`
   frontmatter (`splitFrontmatter`) and parse the `tools:` mapping in
   entry order with `gopkg.in/yaml.v3` `yaml.Node` (already a
@@ -66,13 +66,13 @@
   with `"*": deny` preceding the single `dewey gate auto-answer`
   allow). Run the same shape assertions against the
   `deweyAgentDefinitions["curator.md"]` map entry.
-- [ ] 2.2 Add `TestCuratorAgent_AllowlistParity` to `cli_test.go`:
+- [x] 2.2 Add `TestCuratorAgent_AllowlistParity` to `cli_test.go`:
   collect the frontmatter `dewey_*` `true` keys, strip the `dewey_`
   prefix, and assert set-equality with `agentAllowlistEntries(body)`
   over the tracked file's body (reuse the existing extractor and
   `sameStringSet`), so the prompt-text allowlist and the frontmatter
   list cannot drift apart in either direction.
-- [ ] 2.3 Confirm the existing guards stay green with the new
+- [x] 2.3 Confirm the existing guards stay green with the new
   frontmatter: `TestInitCmd_ScaffoldsCuratorAgentFromMap` (byte
   identity of tracked, map entry, and scaffolded copy — the acceptance
   criterion's byte-identical test, now covering the new shape

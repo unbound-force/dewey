@@ -4866,7 +4866,7 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 	// the line uses the uppercase token plus one ASCII space (CA-FR-006).
 	gateSections := map[string]bool{
 		"### 3. Scope Gate (MANDATORY)":  true,
-		"### 5. Review Gate (MANDATORY)": true,
+		"### 6. Review Gate (MANDATORY)": true,
 	}
 	counts := map[string]int{}
 	current := ""
@@ -4895,7 +4895,7 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 	// Every Dewey MCP tool referenced must be within the allowlist. The
 	// candidate set is derived from the server's tool registry, so a
 	// newly referenced tool fails rather than passing unnoticed.
-	allowlist := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "promote"}
+	allowlist := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "promote"}
 	allowedSet := make(map[string]bool, len(allowlist))
 	for _, tool := range allowlist {
 		allowedSet[tool] = true
@@ -4911,7 +4911,7 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 		}
 	}
 
-	// The agent body's allowlist section names exactly the six tools,
+	// The agent body's allowlist section names exactly the seven tools,
 	// order-independent.
 	agent, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
 	if err != nil {

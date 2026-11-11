@@ -38,6 +38,12 @@ import (
 // layer or expire the budget without a repository. As in lint, the
 // per-call git timeout is injectable through the checker itself
 // (gitAnchorChecker.timeout, anchorGitTimeout when zero).
+//
+// The tool is read-only (KV-FR-005): it reads pages and runs local-git
+// queries only — it never writes the store, a markdown backup, or a page
+// property, and never calls promote, so a passing check cannot advance a
+// tier. Verification is not endorsement: anchors_ok states code
+// correspondence only.
 type Verify struct {
 	store        *store.Store
 	vaultPath    string
@@ -49,6 +55,9 @@ type Verify struct {
 // The store must be non-nil for the tool to function; a clear error is
 // returned at call time if it is nil, as in NewLint. The vaultPath anchors
 // local-git anchor checks; when it is empty they are skipped.
+//
+// The constructed handler performs no writes — verification never mutates
+// tiers, validity, content, or files.
 func NewVerify(s *store.Store, vaultPath string) *Verify {
 	v := &Verify{store: s, vaultPath: vaultPath}
 	if vaultPath != "" {

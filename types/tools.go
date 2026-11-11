@@ -283,7 +283,7 @@ type StoreLearningInput struct {
 	// automatically from the vault's git HEAD.
 	Evidence   []string `json:"evidence,omitempty" jsonschema:"Optional evidence locators backing the learning (max 50, each max 512 chars), e.g. 'dewey:tools/lint.go', 'dewey#147', 'learning/<identity>', 'session:<id>'"`
 	Validity   string   `json:"validity,omitempty" jsonschema:"Optional validity status: current, stale-unverified, superseded, historical. Omit when unknown."`
-	Supersedes string   `json:"supersedes,omitempty" jsonschema:"Optional identity (or learning/<identity> page name) of an existing learning this one replaces. The target gains superseded_by and validity: superseded; it is never deleted."`
+	Supersedes string   `json:"supersedes,omitempty" jsonschema:"Optional identity (or learning/<identity> page name) of an existing learning this one replaces. The target gains superseded_by and validity: superseded; it is never deleted. Concurrent same-target supersessions are serialized; a losing claim yields supersedes_warning naming the winner."`
 }
 
 // --- Journal tool inputs ---

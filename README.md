@@ -812,6 +812,8 @@ Learnings carry metadata about the code state they were true against, in their p
 | `validity` | `validity` input | `current`, `stale-unverified`, `superseded`, or `historical`. Absent means unknown. |
 | `supersedes` / `superseded_by` | `supersedes` input | Two-way link. Storing a learning with `supersedes: <identity>` marks the target `superseded_by` the new learning and `validity: superseded`, in the store and in its markdown file. The target is never deleted and its tier is unchanged; a learning can be superseded once. |
 
+Concurrent supersessions of the same target are serialized at write time — the store claim is a compare-and-swap guarded on the target recording no successor, and the markdown backup is re-read and re-checked before it is rewritten — so exactly one successor is recorded. A call whose claim loses keeps its own learning and its `supersedes` claim, reports a non-empty `supersedes_warning` naming the winning successor, and does not overwrite the recorded successor.
+
 Validity is separate from trust tiers: a tier says who vouched for a learning, validity says whether it still holds as the code evolves. All fields round-trip through re-ingestion.
 
 ### Content Sanitization

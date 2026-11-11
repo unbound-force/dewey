@@ -354,33 +354,63 @@ func (l *Lint) fixAnchorDrift(findings []Finding) (int, []string) {
 	return marked, warnings
 }
 
+// refuseStaleBackup is the lint file leg's refusal policy
+// (serialize-supersession-writes design D3): the fix must never overwrite
+// a backup that already records a successor — a superseded_by value, or a
+// validity of superseded — with stale-unverified. Such a backup is
+// pre-fix residue (the store leg already skips a learning whose validity
+// became superseded), so the file leg leaves the durable record unchanged
+// and the refusal is surfaced as a warning instead.
+func refuseStaleBackup(content string) string {
+	if recorded, found := frontmatterScalar(content, "superseded_by"); found && recorded != "" {
+		return fmt.Sprintf("backup already records superseded_by %q", recorded)
+	}
+	if validity, found := frontmatterScalar(content, "validity"); found && strings.Trim(validity, `"' `) == "superseded" {
+		return "backup already records validity superseded"
+	}
+	return ""
+}
+
 // markStaleUnverified sets validity: stale-unverified on a learning in the
 // store and in its markdown backup when one exists. Tier and content are
 // untouched. It fails closed before writing anything when the identity is
 // unsafe to embed in a path or the stored properties are unreadable, so
-// corrupt properties are never replaced wholesale. Once the store is
-// written the learning counts as marked: a backup failure after that is
-// returned as a warning, not an error. A learning that became superseded
-// or historical after the check is left unchanged and reported as an error.
+// corrupt properties are never replaced wholesale. The store leg and the
+// file leg run under a single withLearningPropsLock hold, so a concurrent
+// supersession cannot land between them and have this fix's late file leg
+// overwrite its validity in the durable backup. The file leg is guarded by
+// refuseStaleBackup: a backup that already records a successor or
+// validity: superseded is left unchanged, the refusal reported as a
+// warning like any other backup failure. Once the store is written
+// the learning counts as marked: a backup failure after that is returned
+// as a warning, not an error. A learning that became superseded or
+// historical after the check is left unchanged and reported as an error.
 func (l *Lint) markStaleUnverified(pageName string) (string, error) {
 	identity := strings.TrimPrefix(pageName, store.LearningPrefix)
 	if !ValidLearningIdentity(identity) {
 		return "", fmt.Errorf("unsafe learning identity: %q", identity)
 	}
-	// Validity is re-read under the update lock: a learning superseded
-	// (or made historical) since the check ran keeps that validity.
-	err := updateLearningProperties(l.store, pageName, func(props map[string]any) error {
-		if v, _ := props["validity"].(string); v == "superseded" || v == "historical" {
-			return fmt.Errorf("learning is now %s", v)
+	var warning string
+	// Validity is re-read under the caller-level hold: a learning
+	// superseded (or made historical) since the check ran keeps that
+	// validity, in the store and in the backup alike.
+	err := withLearningPropsLock(func() error {
+		if err := updateLearningProperties(l.store, pageName, func(props map[string]any) error {
+			if v, _ := props["validity"].(string); v == "superseded" || v == "historical" {
+				return fmt.Errorf("learning is now %s", v)
+			}
+			props["validity"] = "stale-unverified"
+			return nil
+		}); err != nil {
+			return err
 		}
-		props["validity"] = "stale-unverified"
+		if err := updateLearningBackup(l.vaultPath, identity, [][2]string{{"validity", "stale-unverified"}}, refuseStaleBackup); err != nil {
+			warning = fmt.Sprintf("marked %s stale-unverified in the store, but not in its markdown backup: %v", identity, err)
+		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	if err := updateLearningBackup(l.vaultPath, identity, [][2]string{{"validity", "stale-unverified"}}); err != nil {
-		return fmt.Sprintf("marked %s stale-unverified in the store, but not in its markdown backup: %v", identity, err), nil
-	}
-	return "", nil
+	return warning, nil
 }

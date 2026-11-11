@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -204,46 +205,176 @@ func (l *Learning) resolveSupersedesTarget(ref string) (*store.Page, error) {
 
 // linkSuperseded records successor as the target's superseded_by and sets
 // its validity to superseded, in the store and in its markdown backup when
-// one exists. The target's tier and content are untouched. Returns a
-// warning describing a failure, or "" on success or a nil target.
+// one exists. The store leg is a guarded claim (Store.ClaimSupersession):
+// when another writer recorded a successor between validation and this
+// write, nothing is written, the file leg does not run, and the returned
+// warning names the recorded winner rather than the generic store-leg
+// failure. The file leg is guarded by refuseSupersededBackup: a backup
+// that already records a different successor is left byte-for-byte
+// unchanged and the refusal is returned as the warning, so a forked
+// durable record is surfaced rather than silently rewritten. Both legs
+// run under a single withLearningPropsLock hold, so a concurrent lint fix
+// cannot interleave between them. The target's tier and content are
+// untouched. Returns a warning describing a failure, a refusal, or a lost
+// claim, or "" on success or a nil target.
 func (l *Learning) linkSuperseded(target *store.Page, successor string) string {
 	if target == nil {
 		return ""
 	}
-	err := updateLearningProperties(l.store, target.Name, func(props map[string]any) error {
-		props["superseded_by"] = successor
-		props["validity"] = "superseded"
+	var warning string
+	err := withLearningPropsLock(func() error {
+		claimed, winner, claimErr := l.claimSuperseded(target, successor)
+		if claimErr != nil {
+			return claimErr
+		}
+		if !claimed {
+			// Lost claim. Both loss routes — the in-closure re-read
+			// fast-fail and the zero-row CAS refusal — converge on
+			// claimSuperseded's (false, winner, nil) result, so the
+			// warning names the recorded winner rather than surfacing
+			// as the generic store-leg error (SSW-FR-002, design D2).
+			warning = lostClaimWarning(target.Name, winner)
+			return nil
+		}
+		warning = l.markSupersededFile(supersedesIdentity(target.Name), successor)
 		return nil
 	})
 	if err != nil {
 		return fmt.Sprintf("failed to mark %s superseded in the store: %v", target.Name, err)
 	}
-	return l.markSupersededFile(supersedesIdentity(target.Name), successor)
+	return warning
+}
+
+// lostClaimWarning renders the supersedes_warning for a supersession
+// claim that lost to a concurrent writer: targetIdentity now records
+// winner as its successor, so this call's learning is kept with a
+// dangling supersedes claim (SSW-FR-002, design D2). Both arguments
+// are normalized with supersedesIdentity — the target arrives as a
+// page name carrying the "learning/" prefix, and a winner recorded
+// through re-ingested frontmatter may carry one too — so the warning
+// always names bare identities.
+func lostClaimWarning(targetIdentity, winner string) string {
+	return fmt.Sprintf("learning %q was concurrently superseded by %q; this learning's supersedes claim is dangling",
+		supersedesIdentity(targetIdentity), supersedesIdentity(winner))
+}
+
+// claimSuperseded records successor as the target's superseded_by and sets
+// its validity to superseded through the guarded store claim. It MUST be
+// called only inside a withLearningPropsLock section: it re-reads the
+// target page and decodes its properties — the validation-time snapshot
+// supplies the target's identity only, never its properties — so keys
+// preserved by other mutex-held writers survive the write. The re-read
+// carries the in-closure superseded_by fast-fail (the markStaleUnverified
+// precedent for validity): a recorded non-empty string successor routes
+// through the lost-claim outcome (false, recorded winner, nil), never a
+// generic store-leg error, while a present non-string value is an error.
+// Otherwise the mutated properties are marshaled and handed to
+// Store.ClaimSupersession, whose (claimed, winner, err) result is returned
+// unchanged — the SQL guard remains the authority over writers that
+// bypass the mutex.
+func (l *Learning) claimSuperseded(target *store.Page, successor string) (claimed bool, winner string, err error) {
+	page, err := l.store.GetPage(target.Name)
+	if err != nil {
+		return false, "", err
+	}
+	if page == nil {
+		return false, "", fmt.Errorf("page not found: %s", target.Name)
+	}
+	props, err := decodeLearningProperties(page.Properties)
+	if err != nil {
+		return false, "", fmt.Errorf("unreadable stored properties on %s: %w", target.Name, err)
+	}
+	if recorded, present := props["superseded_by"]; present {
+		recordedWinner, isString := recorded.(string)
+		if !isString {
+			return false, "", fmt.Errorf("learning %q records a non-string superseded_by value", target.Name)
+		}
+		if recordedWinner != "" {
+			return false, recordedWinner, nil
+		}
+	}
+	props["superseded_by"] = successor
+	props["validity"] = "superseded"
+	data, _ := json.Marshal(props) // a map of JSON-decoded values always marshals
+	return l.store.ClaimSupersession(target.Name, string(data))
+}
+
+// refuseSupersededBackup returns the supersession file leg's refusal
+// policy (serialize-supersession-writes design D3): the backup's recorded
+// superseded_by, read with frontmatterScalar, is compared against the
+// successor about to be written, both normalized with supersedesIdentity
+// so a recorded "learning/<identity>" page name equals the bare identity.
+// An absent or empty value is unclaimed and proceeds; an equal value
+// proceeds, so an idempotent rewrite also repairs a missing validity key.
+// Any other value — a differing successor, or an unparseable or block-form
+// scalar frontmatterScalar returns verbatim — yields a reason naming it,
+// so updateLearningBackup leaves the file byte-for-byte unchanged rather
+// than clobbering the durable record.
+func refuseSupersededBackup(successor string) func(content string) string {
+	return func(content string) string {
+		recorded, found := frontmatterScalar(content, "superseded_by")
+		if !found || recorded == "" {
+			return ""
+		}
+		if supersedesIdentity(recorded) == supersedesIdentity(successor) {
+			return ""
+		}
+		return fmt.Sprintf("backup already records superseded_by %q", recorded)
+	}
 }
 
 // markSupersededFile sets superseded_by and validity in the frontmatter of
 // a learning's markdown backup. A missing file (no vault, or a store-only
-// learning) is not an error. Returns a warning on failure, else "".
+// learning) is not an error. The write is guarded by
+// refuseSupersededBackup: a backup that already records a different
+// successor is left byte-for-byte unchanged and the refusal is returned as
+// a warning naming the recorded value — the file is the durable record
+// after graph.db loss, so a fork is surfaced to the operator rather than
+// silently rewritten. Returns a warning on failure or refusal, else "".
 func (l *Learning) markSupersededFile(identity, successor string) string {
-	if err := updateLearningBackup(l.vaultPath, identity, [][2]string{{"superseded_by", successor}, {"validity", "superseded"}}); err != nil {
-		return fmt.Sprintf("marked %s superseded in the store, but not in its markdown backup: %v", identity, err)
+	err := updateLearningBackup(l.vaultPath, identity,
+		[][2]string{{"superseded_by", successor}, {"validity", "superseded"}},
+		refuseSupersededBackup(successor))
+	if err == nil {
+		return ""
 	}
-	return ""
+	var refusal *backupRefusalError
+	if errors.As(err, &refusal) {
+		return fmt.Sprintf("learning %q was not marked superseded in its markdown backup: %s", identity, refusal)
+	}
+	return fmt.Sprintf("marked %s superseded in the store, but not in its markdown backup: %v", identity, err)
 }
 
 // learningPropsMu serializes read-modify-write updates of stored learning
-// properties within this process. MCP calls run concurrently, and lint's
-// fix and store_learning's supersession link both rewrite whole property
-// sets, so without it one could silently drop the other's change.
+// properties within this process, across each caller's store leg and file
+// leg. MCP calls run concurrently, and lint's fix and store_learning's
+// supersession link both rewrite whole property sets, so without it one
+// could silently drop the other's change. The lock is acquired only
+// through withLearningPropsLock; updateLearningProperties requires its
+// caller to already hold it.
 var learningPropsMu sync.Mutex
 
-// updateLearningProperties re-reads a learning page, applies mutate to its
-// decoded properties, and writes the page back, all under learningPropsMu.
-// Nothing is written when the page is missing, its properties are
-// unreadable, or mutate returns an error.
-func updateLearningProperties(s *store.Store, pageName string, mutate func(props map[string]any) error) error {
+// withLearningPropsLock runs fn while holding learningPropsMu and returns
+// fn's result once the section ends. Callers wrap their store leg and file
+// leg in one section — linkSuperseded's claim plus backup write,
+// markStaleUnverified's property update plus backup write — so a
+// concurrent learning-property writer cannot interleave between the legs
+// and drop either leg's changes. Code inside the section (notably
+// updateLearningProperties) relies on the caller holding the lock and must
+// not acquire it again.
+func withLearningPropsLock(fn func() error) error {
 	learningPropsMu.Lock()
 	defer learningPropsMu.Unlock()
+	return fn()
+}
+
+// updateLearningProperties re-reads a learning page, applies mutate to its
+// decoded properties, and writes the page back. The caller MUST already
+// hold learningPropsMu via withLearningPropsLock: this function is
+// lock-free so its callers can span their store leg and file leg with a
+// single hold. Nothing is written when the page is missing, its properties
+// are unreadable, or mutate returns an error.
+func updateLearningProperties(s *store.Store, pageName string, mutate func(props map[string]any) error) error {
 	page, err := s.GetPage(pageName)
 	if err != nil {
 		return err
@@ -280,14 +411,28 @@ func decodeLearningProperties(raw string) (map[string]any, error) {
 	return props, nil
 }
 
+// backupRefusalError reports that a guarded backup write left the file
+// unchanged because its recorded frontmatter already carried a successor
+// (or a superseded validity). Callers treat it as a reported refusal.
+type backupRefusalError struct{ reason string }
+
+// Error returns the refusal reason, which names the recorded value the
+// guard refused to clobber.
+func (e *backupRefusalError) Error() string { return e.reason }
+
 // updateLearningBackup sets top-level frontmatter keys in a learning's
-// markdown backup under vaultPath. It is the shared write path for every
-// flow that updates a learning's store properties and then its backup
-// (#146 supersession, #147 anchor fix): callers write the store first and
-// report an error from here as a warning, since the store write stands.
-// No vault and a missing file are not errors; an identity that is unsafe
-// to embed in a path is, and nothing is written.
-func updateLearningBackup(vaultPath, identity string, keys [][2]string) error {
+// markdown backup under vaultPath, after the caller's refusal policy has
+// approved the write. It is the shared write path for every flow that
+// updates a learning's store properties and then its backup (#146
+// supersession, #147 anchor fix): callers write the store first, run both
+// legs inside one withLearningPropsLock hold, and report an error from
+// here as a warning, since the store write stands. After the file is read,
+// refuse is consulted with its content; a non-empty reason returns a
+// *backupRefusalError and nothing is written, so a backup whose recorded
+// frontmatter must survive keeps its value byte-for-byte. A nil policy
+// never refuses. No vault and a missing file are not errors; an identity
+// that is unsafe to embed in a path is, and nothing is written.
+func updateLearningBackup(vaultPath, identity string, keys [][2]string, refuse func(content string) string) error {
 	if vaultPath == "" {
 		return nil
 	}
@@ -301,6 +446,11 @@ func updateLearningBackup(vaultPath, identity string, keys [][2]string) error {
 	}
 	if err != nil {
 		return err
+	}
+	if refuse != nil {
+		if reason := refuse(string(content)); reason != "" {
+			return &backupRefusalError{reason: reason}
+		}
 	}
 	updated, err := setFrontmatterKeys(string(content), keys)
 	if err != nil {
@@ -391,4 +541,72 @@ func replaceOrAppendKey(lines []string, key, line string) []string {
 		}
 	}
 	return append(lines, line)
+}
+
+// frontmatterScalar reads a top-level scalar key from a markdown file's
+// YAML frontmatter — the read-side counterpart of setFrontmatterKeys, so
+// the guarded file leg re-reads exactly what the writer emits
+// (serialize-supersession-writes design D3, step 2). It returns
+// ("", false) when the content has no frontmatter or the key is absent,
+// and (value, true) when a top-level `key:` line exists. A key line with
+// nothing after it is an empty (unclaimed) value. A key line with nothing
+// but whitespace after the colon whose immediately following line is
+// indented is BLOCK FORM: the text after the colon plus the indented
+// children is returned as non-empty junk no valid learning identity can
+// equal, so the caller's comparison refuses it — reading a block as
+// unclaimed would let setFrontmatterKeys replace only the key line and
+// leave the children attached to a scalar, producing invalid YAML. Scalar
+// values are decoded to value semantics: double-quoted via
+// strconv.Unquote (%q escapes, matching the writer), single-quoted by
+// stripping the quotes and collapsing each doubled quote into one, bare
+// text trimmed. A double-quoted value Unquote cannot
+// parse is returned verbatim so the caller treats it as claimed — fail
+// closed rather than clobber. There is no error return; the caller owns
+// the fail-closed decision.
+func frontmatterScalar(content, key string) (value string, found bool) {
+	if !strings.HasPrefix(content, "---\n") {
+		return "", false
+	}
+	end := strings.Index(content[4:], "\n---")
+	if end < 0 {
+		return "", false
+	}
+	lines := strings.Split(content[4:4+end], "\n")
+	prefix := key + ":"
+	for i, line := range lines {
+		// Top-level only: an indented line cannot start with the prefix,
+		// the same scan replaceOrAppendKey uses.
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		rest := line[len(prefix):]
+		if strings.TrimSpace(rest) != "" {
+			raw := strings.TrimPrefix(rest, " ") // the writer emits one space
+			switch {
+			case strings.HasPrefix(raw, `"`):
+				if decoded, err := strconv.Unquote(raw); err == nil {
+					return decoded, true
+				}
+				return raw, true // unparseable: verbatim, the caller treats it as claimed
+			case len(raw) >= 2 && strings.HasPrefix(raw, `'`) && strings.HasSuffix(raw, `'`):
+				return strings.ReplaceAll(raw[1:len(raw)-1], "''", `'`), true
+			default:
+				return strings.TrimSpace(raw), true
+			}
+		}
+		// Nothing after the colon: block form when indented children
+		// follow, else an unclaimed empty value.
+		block := []string{rest}
+		for j := i + 1; j < len(lines); j++ {
+			if lines[j] == "" || (lines[j][0] != ' ' && lines[j][0] != '\t') {
+				break
+			}
+			block = append(block, lines[j])
+		}
+		if len(block) > 1 {
+			return strings.Join(block, "\n"), true
+		}
+		return "", true
+	}
+	return "", false
 }

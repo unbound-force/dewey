@@ -5,6 +5,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1090,6 +1091,92 @@ func (s *Store) GetPagesWithProperty(key string) ([]*Page, error) {
 		return []*Page{}, nil
 	}
 	return pages, nil
+}
+
+// ClaimSupersession atomically claims the supersession slot of a stored
+// learning. It writes only the properties and updated_at columns of the
+// named page, guarded on the row still being a learning (source_id =
+// SourceLearning) whose properties record no superseded_by successor —
+// the compare-and-swap that PromotePagesTiers pioneered for this store:
+// the guard lives in the conditional UPDATE's WHERE clause with a
+// rows-affected check, so a page that was concurrently replaced or
+// already superseded changes no rows regardless of which writer raced.
+// The SQL predicate defeats every writer to the row, including ones that
+// bypass tools-package locking; a read-then-write under a mutex cannot.
+// The NULL and empty-string disjuncts mirror GetPagesWithProperty's guard
+// because json_extract raises a malformed-JSON error on an empty-string
+// document rather than returning NULL, so COALESCE alone cannot absorb
+// it. updated_at is written in Unix milliseconds, matching every other
+// writer in the store; a single UPDATE is atomic, so no transaction is
+// needed.
+//
+// It returns claimed=true when the row updated (winner empty). When zero
+// rows updated, the refusal is disambiguated by re-reading the page with
+// GetPage: a recorded non-empty string superseded_by yields claimed=false
+// with that successor identity as winner; a missing page, a page that is
+// no longer a learning, a superseded_by that is not a string, properties
+// that cannot be decoded, or an unclaimed row despite the guard (the slot
+// was cleared between the UPDATE and the re-read) each yield a hard
+// error.
+func (s *Store) ClaimSupersession(pageName, propertiesJSON string) (claimed bool, winner string, err error) {
+	result, err := s.db.Exec(`
+		UPDATE pages SET properties = ?, updated_at = ?
+		WHERE name = ?
+			AND source_id = ?
+			AND (properties IS NULL
+				OR properties = ''
+				OR COALESCE(json_extract(properties, '$.superseded_by'), '') = '')`,
+		propertiesJSON, time.Now().UnixMilli(), pageName, SourceLearning,
+	)
+	if err != nil {
+		return false, "", fmt.Errorf("claim supersession for %q: %w", pageName, err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, "", fmt.Errorf("check supersession claim for %q: %w", pageName, err)
+	}
+	if rows > 0 {
+		return true, "", nil
+	}
+
+	// Zero rows: the guard refused the claim. Re-read the row so the
+	// refusal can name the recorded winner rather than surface as a bare
+	// failure (serialize-supersession-writes D2).
+	page, err := s.GetPage(pageName)
+	if err != nil {
+		return false, "", fmt.Errorf("re-read %q after refused supersession claim: %w", pageName, err)
+	}
+	if page == nil {
+		return false, "", fmt.Errorf("learning %q not found for supersession claim", pageName)
+	}
+	if page.SourceID != SourceLearning {
+		return false, "", fmt.Errorf("page %q is no longer a learning (source_id %q)", pageName, page.SourceID)
+	}
+
+	// Decode with tools.decodeLearningProperties' semantics — empty text
+	// and a JSON null document both decode to an empty, non-nil map — so
+	// the re-read classifies the same values the SQL guard does.
+	props := map[string]any{}
+	if page.Properties != "" {
+		if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+			return false, "", fmt.Errorf("decode properties of %q after refused supersession claim: %w", pageName, err)
+		}
+		if props == nil {
+			props = map[string]any{}
+		}
+	}
+
+	if recorded, present := props["superseded_by"]; present {
+		successor, isString := recorded.(string)
+		if !isString {
+			return false, "", fmt.Errorf("learning %q records a non-string superseded_by value", pageName)
+		}
+		if successor != "" {
+			return false, successor, nil
+		}
+	}
+	return false, "", fmt.Errorf("learning %q is unclaimed despite the supersession guard; its properties may have been rewritten concurrently", pageName)
 }
 
 // IsDiskSpaceError returns true if the given error indicates disk space

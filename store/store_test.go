@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestStore creates an in-memory store for testing.
@@ -2114,5 +2115,302 @@ func TestUpdatePage_PreservesValidatedTier(t *testing.T) {
 	na, _ := s.GetPage("compiled/normal")
 	if na.Tier != "draft" {
 		t.Errorf("normal tier = %q, want draft", na.Tier)
+	}
+}
+
+// --- Supersession claim (CAS) operations ---
+
+// insertClaimTarget inserts a page seeded for ClaimSupersession tests and
+// fails the test on insert errors. UpdatedAt is seeded to a deliberately old
+// timestamp (1) so assertions that a landed claim advances updated_at cannot
+// pass merely because the insert and the claim landed in the same
+// millisecond — no sleeps needed.
+func insertClaimTarget(t *testing.T, s *Store, name, sourceID, properties string) {
+	t.Helper()
+	if err := s.InsertPage(&Page{
+		Name:         name,
+		OriginalName: name,
+		SourceID:     sourceID,
+		SourceDocID:  name,
+		Properties:   properties,
+		ContentHash:  "claim-hash",
+		Tier:         "draft",
+		Category:     "gotcha",
+		CreatedAt:    1,
+		UpdatedAt:    1,
+	}); err != nil {
+		t.Fatalf("InsertPage(%q): %v", name, err)
+	}
+}
+
+// TestClaimSupersession_ClaimLands verifies the happy path of the
+// compare-and-swap: an unclaimed learning's slot is taken, the claimed
+// properties JSON replaces the column verbatim, updated_at advances in Unix
+// milliseconds, and every other column keeps its seeded value — the claim
+// writes only the properties and updated_at columns, never the whole row.
+func TestClaimSupersession_ClaimLands(t *testing.T) {
+	s := newTestStore(t)
+	const target = "learning/auth-20260502T143022-alice"
+	insertClaimTarget(t, s, target, SourceLearning, `{"validity":"current"}`)
+	claimProps := `{"validity":"superseded","superseded_by":"auth-20260601T120000-bob"}`
+
+	before := time.Now().UnixMilli()
+	claimed, winner, err := s.ClaimSupersession(target, claimProps)
+	after := time.Now().UnixMilli()
+	if err != nil {
+		t.Fatalf("ClaimSupersession: %v", err)
+	}
+	if !claimed {
+		t.Fatal("claimed = false, want true for an unclaimed slot")
+	}
+	if winner != "" {
+		t.Errorf("winner = %q, want empty on a landed claim", winner)
+	}
+
+	got, err := s.GetPage(target)
+	if err != nil || got == nil {
+		t.Fatalf("GetPage after claim: %v (page=%v)", err, got)
+	}
+	if got.Properties != claimProps {
+		t.Errorf("properties = %q, want the claimed %q verbatim", got.Properties, claimProps)
+	}
+
+	// updated_at must advance in Unix milliseconds: strictly past the seeded
+	// 1, and bracketed by wall-clock UnixMilli readings around the claim —
+	// a seconds-precision write would sit three orders of magnitude below
+	// the bracket.
+	if got.UpdatedAt <= 1 {
+		t.Errorf("updated_at = %d, want it advanced past the seeded 1", got.UpdatedAt)
+	}
+	if got.UpdatedAt < before || got.UpdatedAt > after {
+		t.Errorf("updated_at = %d, want Unix milliseconds within [%d, %d]", got.UpdatedAt, before, after)
+	}
+
+	// The claim writes only properties and updated_at; every other column
+	// keeps its seeded value.
+	if got.Name != target || got.OriginalName != target {
+		t.Errorf("name/original_name = %q/%q, want %q untouched", got.Name, got.OriginalName, target)
+	}
+	if got.SourceID != SourceLearning {
+		t.Errorf("source_id = %q, want %q untouched", got.SourceID, SourceLearning)
+	}
+	if got.SourceDocID != target {
+		t.Errorf("source_doc_id = %q, want %q untouched", got.SourceDocID, target)
+	}
+	if got.ContentHash != "claim-hash" {
+		t.Errorf("content_hash = %q, want the seeded claim-hash untouched", got.ContentHash)
+	}
+	if got.Tier != "draft" {
+		t.Errorf("tier = %q, want the seeded draft untouched", got.Tier)
+	}
+	if got.Category != "gotcha" {
+		t.Errorf("category = %q, want the seeded gotcha untouched", got.Category)
+	}
+	if got.CreatedAt != 1 {
+		t.Errorf("created_at = %d, want the seeded 1 untouched", got.CreatedAt)
+	}
+	if got.IsJournal {
+		t.Error("is_journal = true, want false untouched")
+	}
+}
+
+// TestClaimSupersession_SecondClaimRefusesWithWinner verifies the lost-claim
+// outcome: a second claim on a taken slot refuses without error and reports
+// the recorded successor identity as the winner, leaving the first claim's
+// write — properties and updated_at — intact.
+func TestClaimSupersession_SecondClaimRefusesWithWinner(t *testing.T) {
+	s := newTestStore(t)
+	const target = "learning/auth-20260502T143022-alice"
+	insertClaimTarget(t, s, target, SourceLearning, `{"validity":"current"}`)
+
+	first := `{"validity":"superseded","superseded_by":"auth-20260601T120000-bob"}`
+	claimed, winner, err := s.ClaimSupersession(target, first)
+	if err != nil {
+		t.Fatalf("first ClaimSupersession: %v", err)
+	}
+	if !claimed || winner != "" {
+		t.Fatalf("first claim: claimed=%v winner=%q, want true/empty", claimed, winner)
+	}
+	afterFirst, err := s.GetPage(target)
+	if err != nil || afterFirst == nil {
+		t.Fatalf("GetPage after first claim: %v (page=%v)", err, afterFirst)
+	}
+	if afterFirst.UpdatedAt == 1 {
+		t.Fatal("first claim did not advance updated_at")
+	}
+
+	second := `{"validity":"superseded","superseded_by":"auth-20260602T130000-carol"}`
+	claimed, winner, err = s.ClaimSupersession(target, second)
+	if err != nil {
+		t.Fatalf("second ClaimSupersession: %v (a refused claim with a recorded winner is not an error)", err)
+	}
+	if claimed {
+		t.Error("claimed = true, want false — the slot is already taken")
+	}
+	if want := "auth-20260601T120000-bob"; winner != want {
+		t.Errorf("winner = %q, want the first claim's successor %q", winner, want)
+	}
+
+	// The refused claim must leave the first claim's write intact.
+	got, err := s.GetPage(target)
+	if err != nil || got == nil {
+		t.Fatalf("GetPage after second claim: %v (page=%v)", err, got)
+	}
+	if got.Properties != first {
+		t.Errorf("properties = %q, want the first claim's %q untouched", got.Properties, first)
+	}
+	if got.UpdatedAt != afterFirst.UpdatedAt {
+		t.Errorf("updated_at = %d, want %d from the landed claim (a refused claim must not bump it)", got.UpdatedAt, afterFirst.UpdatedAt)
+	}
+}
+
+// TestClaimSupersession_UnclaimedPropertiesPassGuard verifies every
+// unclaimed properties form passes the SQL guard and takes the slot: SQL
+// NULL, empty string, a JSON null document, and a missing key, plus the
+// boundary forms where the key exists but holds an unclaimed value. The
+// empty-string row exercises the dedicated disjunct for an empty-string
+// column — json_extract raises a malformed-JSON error on an empty-string
+// document rather than returning NULL (the GetPagesWithProperty precedent),
+// so COALESCE alone cannot absorb it.
+func TestClaimSupersession_UnclaimedPropertiesPassGuard(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties string
+		// sqlNull rewrites the column to SQL NULL after insert; InsertPage
+		// binds Go "" as SQL '', not NULL.
+		sqlNull bool
+	}{
+		{name: "sql null", sqlNull: true},
+		{name: "empty string", properties: ""},
+		{name: "json null document", properties: "null"},
+		{name: "empty object", properties: "{}"},
+		{name: "superseded_by key absent", properties: `{"validity":"current","author":"alice"}`},
+		// json_extract yields SQL NULL for a JSON null value and '' for an
+		// empty string — both unclaimed, matching decodeLearningProperties.
+		{name: "superseded_by json null", properties: `{"superseded_by": null}`},
+		{name: "superseded_by empty string", properties: `{"superseded_by": ""}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			const target = "learning/auth-20260502T143022-alice"
+			insertClaimTarget(t, s, target, SourceLearning, tc.properties)
+			if tc.sqlNull {
+				if _, err := s.db.Exec(`UPDATE pages SET properties = NULL WHERE name = ?`, target); err != nil {
+					t.Fatalf("set properties to NULL: %v", err)
+				}
+			}
+
+			claimProps := `{"validity":"superseded","superseded_by":"auth-20260601T120000-bob"}`
+			claimed, winner, err := s.ClaimSupersession(target, claimProps)
+			if err != nil {
+				t.Fatalf("ClaimSupersession: %v", err)
+			}
+			if !claimed {
+				t.Fatal("claimed = false, want true — unclaimed properties must pass the guard")
+			}
+			if winner != "" {
+				t.Errorf("winner = %q, want empty on a landed claim", winner)
+			}
+
+			got, err := s.GetPage(target)
+			if err != nil || got == nil {
+				t.Fatalf("GetPage: %v (page=%v)", err, got)
+			}
+			if got.Properties != claimProps {
+				t.Errorf("properties = %q, want the claimed %q — the row must actually update", got.Properties, claimProps)
+			}
+			if got.UpdatedAt <= 1 {
+				t.Errorf("updated_at = %d, want it advanced past the seeded 1", got.UpdatedAt)
+			}
+		})
+	}
+}
+
+// TestClaimSupersession_RefusalFailsClosed verifies every zero-row refusal
+// that is not a lost race surfaces as a hard error rather than an empty
+// winner, and that the refused or failed claim leaves the target row
+// untouched.
+func TestClaimSupersession_RefusalFailsClosed(t *testing.T) {
+	tests := []struct {
+		name            string
+		properties      string
+		sourceID        string
+		missing         bool
+		wantErrContains string
+	}{
+		{name: "missing page", missing: true, wantErrContains: "not found for supersession claim"},
+		// The recorded successor on a non-learning row must error, not
+		// surface as the winner — the source_id guard re-asserts row
+		// identity the way PromotePagesTiers' tier predicate does.
+		{
+			name:            "non-learning source_id",
+			properties:      `{"superseded_by":"auth-20260601T120000-bob"}`,
+			sourceID:        "disk-local",
+			wantErrContains: "is no longer a learning",
+		},
+		// json_extract returns the raw JSON value for each non-string
+		// shape; the re-read's comma-ok assertion must hard-error instead
+		// of yielding an empty winner.
+		{name: "non-string superseded_by number", properties: `{"superseded_by": 42}`, sourceID: SourceLearning, wantErrContains: "non-string superseded_by"},
+		{name: "non-string superseded_by boolean", properties: `{"superseded_by": true}`, sourceID: SourceLearning, wantErrContains: "non-string superseded_by"},
+		{name: "non-string superseded_by object", properties: `{"superseded_by": {}}`, sourceID: SourceLearning, wantErrContains: "non-string superseded_by"},
+		{name: "non-string superseded_by array", properties: `{"superseded_by": []}`, sourceID: SourceLearning, wantErrContains: "non-string superseded_by"},
+		// SQLite's JSON parser accepts \x hex escapes (a JSON5 extension)
+		// that Go's encoding/json rejects, so this document is parseable
+		// by the SQL guard — json_extract reads superseded_by = "winner"
+		// and refuses the claim — while the disambiguating re-read fails
+		// json.Unmarshal: the fail-closed decode path.
+		{
+			name:            "undecodable properties on re-read",
+			properties:      `{"superseded_by": "winner", "note": "a\x01b"}`,
+			sourceID:        SourceLearning,
+			wantErrContains: "decode properties of",
+		},
+		// Malformed non-empty JSON makes json_extract itself error, so the
+		// UPDATE fails closed before any row is written.
+		{name: "malformed properties", properties: `{not json`, sourceID: SourceLearning, wantErrContains: "claim supersession for"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			const target = "learning/auth-20260502T143022-alice"
+			if !tc.missing {
+				insertClaimTarget(t, s, target, tc.sourceID, tc.properties)
+			}
+
+			claimed, winner, err := s.ClaimSupersession(target, `{"validity":"superseded","superseded_by":"auth-20260602T130000-carol"}`)
+			if err == nil {
+				t.Fatalf("ClaimSupersession error = nil, want a failure containing %q", tc.wantErrContains)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrContains) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErrContains)
+			}
+			if claimed {
+				t.Error("claimed = true, want false")
+			}
+			if winner != "" {
+				t.Errorf("winner = %q, want empty — the refusal must error rather than yield a winner", winner)
+			}
+			if tc.missing {
+				return
+			}
+
+			// A refused or failed claim must leave the target row
+			// untouched.
+			got, err := s.GetPage(target)
+			if err != nil || got == nil {
+				t.Fatalf("GetPage after refused claim: %v (page=%v)", err, got)
+			}
+			if got.Properties != tc.properties {
+				t.Errorf("properties = %q, want the seeded %q untouched", got.Properties, tc.properties)
+			}
+			if got.UpdatedAt != 1 {
+				t.Errorf("updated_at = %d, want the seeded 1 (a refused claim must not bump it)", got.UpdatedAt)
+			}
+			if got.Tier != "draft" || got.ContentHash != "claim-hash" {
+				t.Errorf("tier = %q, content_hash = %q, want the seeded draft/claim-hash untouched", got.Tier, got.ContentHash)
+			}
+		})
 	}
 }

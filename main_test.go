@@ -1575,6 +1575,229 @@ func TestReIngestLearnings_RoundTripFromStoreLearning(t *testing.T) {
 	}
 }
 
+// storeOneLearning drives the real Learning.StoreLearning writer and returns
+// its parsed JSON result map, failing t on transport errors or MCP error
+// results. The re-ingestion seam tests use it so the markdown backups under
+// test come from the production write path — successor file creation, the
+// guarded store claim, the guarded backup write — rather than hand-written
+// fixtures (determinism pack DE-007: write→read round-trip).
+func storeOneLearning(t *testing.T, l *tools.Learning, information, tag, supersedes string) map[string]any {
+	t.Helper()
+	res, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: information,
+		Tag:         tag,
+		Supersedes:  supersedes,
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning(%s): %v", tag, err)
+	}
+	var text string
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+			text = tc.Text
+		}
+	}
+	parsed := map[string]any{}
+	if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+		t.Fatalf("unmarshal StoreLearning(%s) result %q: %v", tag, text, err)
+	}
+	if res.IsError {
+		t.Fatalf("StoreLearning(%s) error result: %s", tag, text)
+	}
+	return parsed
+}
+
+// learningPageProps fetches a learning page from s and decodes its
+// properties JSON, failing t when the page is missing or unreadable.
+func learningPageProps(t *testing.T, s *store.Store, name string) map[string]any {
+	t.Helper()
+	page, err := s.GetPage(name)
+	if err != nil || page == nil {
+		t.Fatalf("GetPage(%q) = %v, %v; want the learning page", name, page, err)
+	}
+	props := map[string]any{}
+	if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+		t.Fatalf("unmarshal properties of %q: %v", name, err)
+	}
+	return props
+}
+
+// TestReIngestLearnings_SupersededByChainSurvivesGraphDBLoss pins
+// SSW-FR-004 across packages: after a supersession driven through the real
+// tools writer, a fresh store plus reIngestLearnings (the real main parser)
+// restores exactly one superseded_by — the winner — with validity
+// superseded and the winner's supersedes forward-link intact. The second
+// sub-case covers the refusal scenario: when the file leg refused because
+// the backup already named a different successor, the durable backup wins
+// over the claim that landed in the deleted store.
+func TestReIngestLearnings_SupersededByChainSurvivesGraphDBLoss(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "alice")
+
+	t.Run("chain survives graph.db loss", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		s, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+		l := tools.NewLearning(nil, s, vaultPath, 0).WithAsOfResolver(func() (string, error) {
+			return "dewey@abc123", nil
+		})
+
+		target := storeOneLearning(t, l, "Chain target body.", "auth", "")
+		targetIdentity, _ := target["identity"].(string)
+		winner := storeOneLearning(t, l, "Chain winner body.", "authnext", targetIdentity)
+		winnerIdentity, _ := winner["identity"].(string)
+		if targetIdentity == "" || winnerIdentity == "" {
+			t.Fatalf("identities missing from results: %q, %q", targetIdentity, winnerIdentity)
+		}
+		if warning, present := winner["supersedes_warning"]; present {
+			t.Fatalf("winner reported %v; the file leg must have written cleanly", warning)
+		}
+
+		// The GIVEN of SSW-FR-004: the supersession's file leg wrote the
+		// target's guarded backup.
+		backup, err := os.ReadFile(filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", targetIdentity+".md"))
+		if err != nil {
+			t.Fatalf("read target backup: %v", err)
+		}
+		if !strings.Contains(string(backup), fmt.Sprintf("superseded_by: %q", winnerIdentity)) ||
+			!strings.Contains(string(backup), `validity: "superseded"`) {
+			t.Errorf("target backup does not record the guarded supersession:\n%s", backup)
+		}
+
+		// graph.db loss: a fresh store, then the real main parser.
+		fresh, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = fresh.Close() }()
+		if count, err := reIngestLearnings(fresh, nil, vaultPath, 0); err != nil || count != 2 {
+			t.Fatalf("reIngestLearnings = %d, %v; want 2, nil", count, err)
+		}
+
+		targetProps := learningPageProps(t, fresh, "learning/"+targetIdentity)
+		if targetProps["superseded_by"] != winnerIdentity {
+			t.Errorf("restored target superseded_by = %v, want the winner %q", targetProps["superseded_by"], winnerIdentity)
+		}
+		if targetProps["validity"] != "superseded" {
+			t.Errorf("restored target validity = %v, want %q", targetProps["validity"], "superseded")
+		}
+		winnerProps := learningPageProps(t, fresh, "learning/"+winnerIdentity)
+		if winnerProps["supersedes"] != targetIdentity {
+			t.Errorf("restored winner supersedes = %v, want the target %q", winnerProps["supersedes"], targetIdentity)
+		}
+
+		// Exactly one successor: across every restored learning, the only
+		// recorded superseded_by is the target's, naming the winner — no
+		// restored page may name a different successor for that target.
+		pages, err := fresh.ListLearningPages()
+		if err != nil {
+			t.Fatalf("ListLearningPages: %v", err)
+		}
+		if len(pages) != 2 {
+			t.Fatalf("restored %d learning pages, want 2", len(pages))
+		}
+		recordedSuccessors := 0
+		for _, page := range pages {
+			props := map[string]any{}
+			if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+				t.Fatalf("unmarshal properties of %q: %v", page.Name, err)
+			}
+			successor, recorded := props["superseded_by"].(string)
+			if !recorded || successor == "" {
+				continue
+			}
+			recordedSuccessors++
+			if page.Name != "learning/"+targetIdentity || successor != winnerIdentity {
+				t.Errorf("page %q records superseded_by %q; only the target may record one, naming the winner %q",
+					page.Name, successor, winnerIdentity)
+			}
+		}
+		if recordedSuccessors != 1 {
+			t.Errorf("restored learnings record %d superseded_by values, want exactly 1 (the winner)", recordedSuccessors)
+		}
+	})
+
+	t.Run("file-leg refusal stays with the recorded successor", func(t *testing.T) {
+		vaultPath := t.TempDir()
+		s, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+		l := tools.NewLearning(nil, s, vaultPath, 0).WithAsOfResolver(func() (string, error) {
+			return "dewey@abc123", nil
+		})
+
+		target := storeOneLearning(t, l, "Refusal target body.", "keep", "")
+		targetIdentity, _ := target["identity"].(string)
+		if targetIdentity == "" {
+			t.Fatalf("target identity missing from result: %v", target)
+		}
+
+		// Pre-seed the backup with a different successor in the same shape
+		// the writer emits — a %q-quoted top-level key inserted before the
+		// closing delimiter (SSW-FR-003's differing-successor scenario).
+		backupPath := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", targetIdentity+".md")
+		content, err := os.ReadFile(backupPath)
+		if err != nil {
+			t.Fatalf("read target backup: %v", err)
+		}
+		preSeeded := strings.Replace(string(content), "\n---\n", "\nsuperseded_by: \"old-1\"\n---\n", 1)
+		if preSeeded == string(content) {
+			t.Fatalf("no frontmatter closing delimiter found in %s", backupPath)
+		}
+		if err := os.WriteFile(backupPath, []byte(preSeeded), 0o644); err != nil {
+			t.Fatalf("write pre-seeded backup: %v", err)
+		}
+
+		// The store claim lands; the file leg refuses, so the call warns
+		// and the backup keeps old-1 byte-for-byte.
+		successor := storeOneLearning(t, l, "Refusal successor body.", "keep2", targetIdentity)
+		successorIdentity, _ := successor["identity"].(string)
+		if successorIdentity == "" {
+			t.Fatalf("successor identity missing from result: %v", successor)
+		}
+		warning, warned := successor["supersedes_warning"].(string)
+		if !warned || !strings.Contains(warning, "old-1") {
+			t.Fatalf("supersedes_warning = %v, want a file-leg refusal naming old-1", successor["supersedes_warning"])
+		}
+		after, err := os.ReadFile(backupPath)
+		if err != nil {
+			t.Fatalf("re-read target backup: %v", err)
+		}
+		if string(after) != preSeeded {
+			t.Errorf("target backup changed across the refused file leg:\n got %q\nwant %q", after, preSeeded)
+		}
+		storeProps := learningPageProps(t, s, "learning/"+targetIdentity)
+		if storeProps["superseded_by"] != successorIdentity {
+			t.Errorf("store superseded_by = %v, want the landed claim %q", storeProps["superseded_by"], successorIdentity)
+		}
+
+		// graph.db loss: the fresh store follows the durable backup, not
+		// the claim that landed in the deleted store.
+		fresh, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = fresh.Close() }()
+		if count, err := reIngestLearnings(fresh, nil, vaultPath, 0); err != nil || count != 2 {
+			t.Fatalf("reIngestLearnings = %d, %v; want 2, nil", count, err)
+		}
+		targetProps := learningPageProps(t, fresh, "learning/"+targetIdentity)
+		if targetProps["superseded_by"] != "old-1" {
+			t.Errorf("restored target superseded_by = %v, want the backup's recorded successor %q", targetProps["superseded_by"], "old-1")
+		}
+		if targetProps["superseded_by"] == successorIdentity {
+			t.Errorf("restored target superseded_by = the refused claim %q; the durable backup must win", successorIdentity)
+		}
+		if validity, ok := targetProps["validity"].(string); ok && validity != "" {
+			t.Errorf("restored target validity = %q; the refused file leg must not set it", validity)
+		}
+	})
+}
+
 // TestReIngestLearnings_SkipsUnsafeIdentity verifies that a learning file
 // whose frontmatter identity contains path traversal is skipped at
 // re-ingestion, so a forged page name cannot later direct supersession

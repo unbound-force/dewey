@@ -8,6 +8,9 @@
   Allocated by the prior change (curator-agent-human-gates):
     CA-FR-001 .. CA-FR-008
   Reserved for future curator-agent changes: CA-FR-013 .. CA-FR-099
+  Sibling capabilities (e.g., knowledge-distillation, doctor) keep
+  their requirements in their own deltas; capabilities with an archived
+  main spec live under openspec/specs/<capability>/.
   The capability has no archived main spec yet (the
   curator-agent-human-gates change is pending archive), so this delta
   is expressed as ADDED requirements rather than MODIFIED ones.

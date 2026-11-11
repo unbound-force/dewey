@@ -4925,7 +4925,7 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 // registeredMCPToolNames derives the Dewey MCP tool names registered in
 // server.go so allowlist tests assert an invariant over the full
 // registry rather than a hand-maintained sample.
-func registeredMCPToolNames(t *testing.T) []string {
+func registeredMCPToolNames(t testing.TB) []string {
 	t.Helper()
 	data, err := os.ReadFile("server.go")
 	if err != nil {
@@ -4998,8 +4998,12 @@ func agentAllowlistEntries(body string) []string {
 // built-in flags and the permission block are unchanged from
 // curator-agent-human-gates, and every non-dewey MCP server configured in
 // the repository-root opencode.json has a wholesale deny entry (CA-FR-010).
-// The same shape assertions run against the deweyAgentDefinitions map entry
-// so both shipped copies carry the boundary (CA-FR-011).
+// Every allow entry is anchored against the tool names registered in
+// server.go, and the tools key set is pinned exactly, so a typo, a rename,
+// or an inert extra entry fails the test. The same shape assertions run
+// against the deweyAgentDefinitions map entry so both shipped copies carry
+// the boundary (CA-FR-011); TestCuratorAgent_GuardsRejectDoctoredDocuments
+// executes the guards' rejection paths against doctored documents.
 func TestCuratorAgent_FrontmatterToolAllowlist(t *testing.T) {
 	serverKeys := configuredMCPServerKeys(t)
 
@@ -5053,15 +5057,20 @@ func configuredMCPServerKeys(t *testing.T) []string {
 	return keys
 }
 
-// assertCuratorFrontmatterShape asserts the curator agent frontmatter shape
-// on one shipped copy (the tracked file or the deweyAgentDefinitions map
-// entry). The tools: and permission: mappings are parsed with yaml.Node,
-// which preserves key order, so the deny-before-allow ordering is asserted
-// rather than assumed.
-func assertCuratorFrontmatterShape(t *testing.T, label, content string, serverKeys []string) {
-	t.Helper()
+// curatorToolFlag is one ordered tools: entry of the curator frontmatter.
+type curatorToolFlag struct {
+	key   string
+	grant bool
+}
 
-	frontBlock, _, err := splitFrontmatter(content)
+// curatorFrontmatter parses one shipped curator copy into its ordered
+// frontmatter root pairs, ordered tools: flags, and Markdown body. It is
+// the shared parse preamble of the shape and parity assertions, so quoted
+// glob keys, duplicate-key rejection, and nesting are handled uniformly
+// for both guards.
+func curatorFrontmatter(t testing.TB, label, content string) (root []yamlPair, flags []curatorToolFlag, body string) {
+	t.Helper()
+	frontBlock, body, err := splitFrontmatter(content)
 	if err != nil {
 		t.Fatalf("%s: split frontmatter: %v", label, err)
 	}
@@ -5072,30 +5081,49 @@ func assertCuratorFrontmatterShape(t *testing.T, label, content string, serverKe
 	if len(doc.Content) == 0 {
 		t.Fatalf("%s: frontmatter parsed to an empty document", label)
 	}
-	root := yamlMappingPairs(t, label, "frontmatter", doc.Content[0])
-
-	// tools: block — deny-all-then-allow-six (CA-FR-009).
-
+	root = yamlMappingPairs(t, label, "frontmatter", doc.Content[0])
 	toolsPairs := yamlMappingPairs(t, label, "tools", yamlPairValue(root, "tools"))
 	if len(toolsPairs) == 0 {
 		t.Fatalf("%s: tools block has no entries", label)
 	}
-	type toolFlag struct {
-		key   string
-		grant bool
-	}
-	flags := make([]toolFlag, 0, len(toolsPairs))
 	for _, pair := range toolsPairs {
 		var grant bool
 		if err := pair.value.Decode(&grant); err != nil {
 			t.Fatalf("%s: tools entry %q is not a boolean: %v", label, pair.key, err)
 		}
-		flags = append(flags, toolFlag{key: pair.key, grant: grant})
+		flags = append(flags, curatorToolFlag{key: pair.key, grant: grant})
 	}
+	return root, flags, body
+}
+
+// curatorAllowedDeweyTools returns the dewey_-prefixed tools entries
+// carrying true, prefix stripped — the frontmatter allow set.
+func curatorAllowedDeweyTools(flags []curatorToolFlag) []string {
+	var tools []string
+	for _, flag := range flags {
+		if flag.grant && strings.HasPrefix(flag.key, "dewey_") {
+			tools = append(tools, strings.TrimPrefix(flag.key, "dewey_"))
+		}
+	}
+	return tools
+}
+
+// assertCuratorFrontmatterShape asserts the curator agent frontmatter shape
+// on one shipped copy (the tracked file or the deweyAgentDefinitions map
+// entry). The tools: and permission: mappings are parsed with yaml.Node,
+// which preserves key order, so the deny-before-allow ordering is asserted
+// rather than assumed.
+func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKeys []string) {
+	t.Helper()
+
+	root, flags, _ := curatorFrontmatter(t, label, content)
+
 	flagByKey := make(map[string]bool, len(flags))
 	for _, flag := range flags {
 		flagByKey[flag.key] = flag.grant
 	}
+
+	// tools: block — deny-all-then-allow-six (CA-FR-009).
 
 	// Built-in entries are unchanged from curator-agent-human-gates: read
 	// and bash stay true; write, edit, and webfetch stay false.
@@ -5142,14 +5170,27 @@ func assertCuratorFrontmatterShape(t *testing.T, label, content string, serverKe
 	// Exactly the six allowlisted tools carry true; the set comparison also
 	// rejects any other dewey_*-matching key carrying true (CA-FR-009).
 	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "promote"}
-	var allowedTools []string
-	for _, flag := range flags {
-		if flag.grant && strings.HasPrefix(flag.key, "dewey_") {
-			allowedTools = append(allowedTools, strings.TrimPrefix(flag.key, "dewey_"))
-		}
-	}
+	allowedTools := curatorAllowedDeweyTools(flags)
 	if !sameStringSet(allowedTools, wantTools) {
 		t.Errorf("%s: dewey_* tools carrying true = %v, want exactly %v", label, allowedTools, wantTools)
+	}
+
+	// Ground-truth anchoring: every allow entry in the document must
+	// resolve to a tool actually registered in server.go. Copy-to-copy
+	// parity (frontmatter, prompt text, distill command) cannot see a
+	// typo or a server.go rename — the derived copies would agree on a
+	// stale name while the glob denies the real tool, silently dropping
+	// a distill capability with green CI. Anchoring the document's allow
+	// set to the registry closes that direction.
+	registered := registeredMCPToolNames(t)
+	registeredSet := make(map[string]bool, len(registered))
+	for _, name := range registered {
+		registeredSet[name] = true
+	}
+	for _, tool := range allowedTools {
+		if !registeredSet[tool] {
+			t.Errorf("%s: allowlisted tool %q is not registered in server.go (typo or rename?); the frontmatter allow is inert", label, tool)
+		}
 	}
 
 	// Grant exhaustiveness, fail closed: beyond the built-in read and bash
@@ -5189,6 +5230,28 @@ func assertCuratorFrontmatterShape(t *testing.T, label, content string, serverKe
 		if denied {
 			t.Errorf("%s: deny entry %q for configured MCP server %q is true, want false", label, key, server)
 		}
+	}
+
+	// The tools key set is pinned exactly, fail closed — mirroring the
+	// permission block below: an inert extra entry (a stale <server>_*
+	// deny left behind after a server was removed from opencode.json, or
+	// an explicit per-tool deny accumulated during future editing) must
+	// not pass unnoticed in either shipped copy.
+	wantToolKeys := []string{"read", "bash", "write", "edit", "webfetch", "dewey_*"}
+	for _, server := range serverKeys {
+		if server != "dewey" {
+			wantToolKeys = append(wantToolKeys, server+"_*")
+		}
+	}
+	for _, tool := range wantTools {
+		wantToolKeys = append(wantToolKeys, "dewey_"+tool)
+	}
+	var gotToolKeys []string
+	for _, flag := range flags {
+		gotToolKeys = append(gotToolKeys, flag.key)
+	}
+	if !sameStringSet(gotToolKeys, wantToolKeys) {
+		t.Errorf("%s: tools keys = %v, want exactly %v", label, gotToolKeys, wantToolKeys)
 	}
 
 	// permission: block — unchanged from curator-agent-human-gates.
@@ -5266,7 +5329,7 @@ type yamlPair struct {
 // test on duplicate keys: yaml.Node does not reject them, and a duplicated
 // tools or permission key would otherwise collapse silently in set-based
 // assertions.
-func yamlMappingPairs(t *testing.T, label, mapping string, node *yaml.Node) []yamlPair {
+func yamlMappingPairs(t testing.TB, label, mapping string, node *yaml.Node) []yamlPair {
 	t.Helper()
 	if node == nil || node.Kind != yaml.MappingNode {
 		t.Fatalf("%s: %s is missing or not a YAML mapping", label, mapping)
@@ -5321,47 +5384,147 @@ func TestCuratorAgent_AllowlistParity(t *testing.T) {
 // agent definition, that the frontmatter allow set and the prompt-text
 // allowlist name the same Dewey tools: the set of dewey_-prefixed tools:
 // keys carrying true (prefix stripped) must equal agentAllowlistEntries
-// applied to the same copy's Markdown body. Parsing reuses the same
-// helpers as the frontmatter shape assertions (splitFrontmatter,
-// yamlMappingPairs, yamlPairValue), so quoted glob keys and nesting are
-// handled uniformly across both tests.
-func assertCuratorAllowlistParity(t *testing.T, label, content string) {
+// applied to the same copy's Markdown body. Parsing goes through the same
+// curatorFrontmatter helper as the frontmatter shape assertions, so quoted
+// glob keys and nesting are handled uniformly across both guards.
+func assertCuratorAllowlistParity(t testing.TB, label, content string) {
 	t.Helper()
 
-	frontBlock, body, err := splitFrontmatter(content)
-	if err != nil {
-		t.Fatalf("%s: split frontmatter: %v", label, err)
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(frontBlock), &doc); err != nil {
-		t.Fatalf("%s: parse YAML frontmatter: %v", label, err)
-	}
-	if len(doc.Content) == 0 {
-		t.Fatalf("%s: frontmatter parsed to an empty document", label)
-	}
-	root := yamlMappingPairs(t, label, "frontmatter", doc.Content[0])
-	toolsPairs := yamlMappingPairs(t, label, "tools", yamlPairValue(root, "tools"))
-	if len(toolsPairs) == 0 {
-		t.Fatalf("%s: tools block has no entries", label)
-	}
-
-	var frontmatterTools []string
-	for _, pair := range toolsPairs {
-		var grant bool
-		if err := pair.value.Decode(&grant); err != nil {
-			t.Fatalf("%s: tools entry %q is not a boolean: %v", label, pair.key, err)
-		}
-		// The "dewey_*" glob deny matches the prefix but carries false,
-		// so only genuine per-tool allows are collected.
-		if grant && strings.HasPrefix(pair.key, "dewey_") {
-			frontmatterTools = append(frontmatterTools, strings.TrimPrefix(pair.key, "dewey_"))
-		}
-	}
+	_, flags, body := curatorFrontmatter(t, label, content)
+	frontmatterTools := curatorAllowedDeweyTools(flags)
 
 	bodyTools := agentAllowlistEntries(body)
 	if !sameStringSet(frontmatterTools, bodyTools) {
 		t.Errorf("%s: frontmatter dewey_* allows = %v, prompt-body allowlist = %v; the two lists must name the same tools", label, frontmatterTools, bodyTools)
 	}
+}
+
+// problemRecorder executes the curator guard helpers without failing the
+// test: Errorf and Fatalf calls are recorded as problems instead, and
+// every other method delegates to the wrapped testing.TB. Negative-path
+// tests use it to run the guards against doctored curator documents and
+// assert the guards reject them. Fatalf degrades to record-and-continue,
+// so fixtures must keep the frontmatter structurally parseable — the
+// guards' structural fatal paths assume FailNow semantics.
+type problemRecorder struct {
+	testing.TB
+	problems []string
+}
+
+func (r *problemRecorder) Helper() {}
+
+func (r *problemRecorder) Errorf(format string, args ...any) {
+	r.problems = append(r.problems, fmt.Sprintf(format, args...))
+}
+
+func (r *problemRecorder) Fatalf(format string, args ...any) {
+	r.Errorf(format, args...)
+}
+
+// TestCuratorAgent_GuardsRejectDoctoredDocuments executes the frontmatter
+// shape and parity guards against doctored curator documents, so the
+// guards' rejection behavior is verified by execution rather than code
+// inspection (the CA-FR-009/010/011 drift scenarios). Each fixture doctors
+// the tracked curator.md in one specific way and asserts the guards report
+// the expected problem.
+func TestCuratorAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read tracked curator.md: %v", err)
+	}
+	serverKeys := configuredMCPServerKeys(t)
+
+	cases := []struct {
+		name   string
+		doctor func(string) string
+		expect string // substring of a recorded problem
+	}{
+		{
+			name: "seventh dewey allow (CA-FR-009)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  dewey_promote: true\n", "  dewey_promote: true\n  dewey_search: true\n", 1)
+			},
+			expect: `dewey_* tools carrying true`,
+		},
+		{
+			name: "dewey_* deny reordered after the allows (design D2)",
+			doctor: func(s string) string {
+				s = strings.Replace(s, "  \"dewey_*\": false\n", "", 1)
+				return strings.Replace(s, "  dewey_promote: true\n", "  dewey_promote: true\n  \"dewey_*\": false\n", 1)
+			},
+			expect: `precedes the "dewey_*" deny`,
+		},
+		{
+			name: "missing replicator_* deny (CA-FR-010)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  \"replicator_*\": false\n", "", 1)
+			},
+			expect: `missing deny entry "replicator_*"`,
+		},
+		{
+			name: "unexpected true grant from another server (CA-FR-010)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  \"replicator_*\": false\n", "  \"replicator_*\": false\n  replicator_comms_send: true\n", 1)
+			},
+			expect: `tools entries carrying true`,
+		},
+		{
+			name: "inert extra deny entry (exact key-set pinning)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  \"replicator_*\": false\n", "  \"replicator_*\": false\n  \"stablehelm_*\": false\n", 1)
+			},
+			expect: `tools keys =`,
+		},
+		{
+			name: "allow entry with a typo'd tool name (registry anchoring)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  dewey_promote: true\n", "  dewey_promte: true\n", 1)
+			},
+			expect: `is not registered in server.go`,
+		},
+		{
+			name: "duplicate tools key",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  \"dewey_*\": false\n", "  \"dewey_*\": false\n  \"dewey_*\": false\n", 1)
+			},
+			expect: `duplicate key`,
+		},
+		{
+			name: "permission entry weakened (question: deny)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  question: allow\n", "  question: deny\n", 1)
+			},
+			expect: `permission entry "question"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &problemRecorder{TB: t}
+			assertCuratorFrontmatterShape(rec, "doctored curator.md", tc.doctor(string(tracked)), serverKeys)
+			if len(rec.problems) == 0 {
+				t.Fatalf("shape guard accepted a doctored curator document; expected a problem containing %q", tc.expect)
+			}
+			if !strings.Contains(strings.Join(rec.problems, "\n"), tc.expect) {
+				t.Errorf("shape guard problems = %v, want one containing %q", rec.problems, tc.expect)
+			}
+		})
+	}
+
+	// Parity guard (CA-FR-011): dropping a tool from the prompt-text
+	// allowlist must be caught by the parity assertion, not only by the
+	// frontmatter shape guard.
+	t.Run("prompt-text allowlist loses a tool (CA-FR-011)", func(t *testing.T) {
+		doctored := strings.Replace(string(tracked), "- promote\n", "", 1)
+		rec := &problemRecorder{TB: t}
+		assertCuratorAllowlistParity(rec, "doctored curator.md", doctored)
+		if len(rec.problems) == 0 {
+			t.Fatal("parity guard accepted a doctored curator document; expected a frontmatter/body mismatch")
+		}
+		if !strings.Contains(strings.Join(rec.problems, "\n"), "frontmatter dewey_* allows") {
+			t.Errorf("parity guard problems = %v, want the frontmatter/body mismatch problem", rec.problems)
+		}
+	})
 }
 
 // TestPromoteCmd_MultiplePages verifies the CLI accepts multiple page names

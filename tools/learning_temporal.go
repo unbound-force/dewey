@@ -555,14 +555,9 @@ func replaceOrAppendKey(lines []string, key, line string) []string {
 // children is returned as non-empty junk no valid learning identity can
 // equal, so the caller's comparison refuses it — reading a block as
 // unclaimed would let setFrontmatterKeys replace only the key line and
-// leave the children attached to a scalar, producing invalid YAML. Scalar
-// values are decoded to value semantics: double-quoted via
-// strconv.Unquote (%q escapes, matching the writer), single-quoted by
-// stripping the quotes and collapsing each doubled quote into one, bare
-// text trimmed. A double-quoted value Unquote cannot
-// parse is returned verbatim so the caller treats it as claimed — fail
-// closed rather than clobber. There is no error return; the caller owns
-// the fail-closed decision.
+// leave the children attached to a scalar, producing invalid YAML. A
+// non-empty scalar is decoded to value semantics by decodeScalarValue.
+// There is no error return; the caller owns the fail-closed decision.
 func frontmatterScalar(content, key string) (value string, found bool) {
 	if !strings.HasPrefix(content, "---\n") {
 		return "", false
@@ -582,17 +577,7 @@ func frontmatterScalar(content, key string) (value string, found bool) {
 		rest := line[len(prefix):]
 		if strings.TrimSpace(rest) != "" {
 			raw := strings.TrimPrefix(rest, " ") // the writer emits one space
-			switch {
-			case strings.HasPrefix(raw, `"`):
-				if decoded, err := strconv.Unquote(raw); err == nil {
-					return decoded, true
-				}
-				return raw, true // unparseable: verbatim, the caller treats it as claimed
-			case len(raw) >= 2 && strings.HasPrefix(raw, `'`) && strings.HasSuffix(raw, `'`):
-				return strings.ReplaceAll(raw[1:len(raw)-1], "''", `'`), true
-			default:
-				return strings.TrimSpace(raw), true
-			}
+			return decodeScalarValue(raw)
 		}
 		// Nothing after the colon: block form when indented children
 		// follow, else an unclaimed empty value.
@@ -609,4 +594,32 @@ func frontmatterScalar(content, key string) (value string, found bool) {
 		return "", true
 	}
 	return "", false
+}
+
+// decodeScalarValue decodes the raw text following `key: ` on a scalar
+// frontmatter line into value semantics — the read-side counterpart of
+// setFrontmatterKeys's double-quoted writes: double-quoted values go
+// through strconv.Unquote (%q escapes, matching the writer), values in
+// single quotes strip the quotes and collapse each doubled quote into
+// one, and bare text is trimmed. A double-quoted value Unquote cannot
+// parse is returned verbatim so the caller treats it as claimed — fail
+// closed rather than clobber — which is why ok is always true: every
+// raw form yields a claimed value, never an absence, and the return
+// pair matches frontmatterScalar's (value, found) so the caller
+// forwards it directly. Split out of frontmatterScalar to keep each
+// function's cyclomatic complexity below the Gaze CRAP flag threshold
+// the CI ratchet enforces. There is no error return; the caller owns
+// the fail-closed decision.
+func decodeScalarValue(raw string) (decoded string, ok bool) {
+	switch {
+	case strings.HasPrefix(raw, `"`):
+		if decoded, err := strconv.Unquote(raw); err == nil {
+			return decoded, true
+		}
+		return raw, true // unparseable: verbatim, the caller treats it as claimed
+	case len(raw) >= 2 && strings.HasPrefix(raw, `'`) && strings.HasSuffix(raw, `'`):
+		return strings.ReplaceAll(raw[1:len(raw)-1], "''", `'`), true
+	default:
+		return strings.TrimSpace(raw), true
+	}
 }

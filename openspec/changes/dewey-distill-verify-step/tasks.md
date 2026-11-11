@@ -67,7 +67,7 @@ go test -race -count=1 ./...` passes.
 
 ## 3. Tests
 
-- [ ] 3.1 `tools/verify_test.go`: enumeration and scope — `pages`,
+- [x] 3.1 `tools/verify_test.go`: enumeration and scope — `pages`,
   `tags`, both selectors rejected, default queue across
   `learning/`, `compiled/`, and `knowledge/` (including a draft
   `knowledge/` page and exclusion of a `curated`-tier one), exact
@@ -75,13 +75,13 @@ go test -race -count=1 ./...` passes.
   `knowledge/` pages match only via the `tag` property),
   non-draft exclusion, deduplication, and missing/non-draft
   requested pages reported as `skipped` with a reason.
-- [ ] 3.2 `tools/verify_test.go`: anchor outcomes against a real
+- [x] 3.2 `tools/verify_test.go`: anchor outcomes against a real
   temporary git repository (`anchors_ok`, `drifted`, `missing`,
   unknown pin) plus a fake `anchorChecker` for error paths, and
   compiled-article aggregation including an unresolvable source
   and per-source identity reporting (each source identity and its
   individual result present alongside the aggregate).
-- [ ] 3.3 `tools/verify_test.go`: degraded and failure modes
+- [x] 3.3 `tools/verify_test.go`: degraded and failure modes
   (non-repository vault skipped, git failure `failed` plus
   `IsError`, cancellation, exhausted budget, and no candidate
   from a failed pass presented as verified — partial results ride
@@ -89,10 +89,10 @@ go test -race -count=1 ./...` passes.
   non-mutation of tier, validity, content, and files.
 - [ ] 3.4 [P] `server_test.go`: registration surface and
   input-schema parity for `verify_candidates` (DE-007 layer 1).
-- [ ] 3.5 `tools/verify_test.go`: golden `checked` output shape —
+- [x] 3.5 `tools/verify_test.go`: golden `checked` output shape —
   pass status, per-candidate fields, result enum, summary counts
   (DE-007 layer 2).
-- [ ] 3.6 `tools/verify_test.go`: round-trip non-mutation audit —
+- [x] 3.6 `tools/verify_test.go`: round-trip non-mutation audit —
   verification leaves store content and tiers unchanged (DE-007
   layer 3).
 - [ ] 3.7 [P] `cli_test.go`: tracked command file byte-identical to

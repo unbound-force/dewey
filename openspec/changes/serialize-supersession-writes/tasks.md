@@ -156,3 +156,9 @@ audit are already green from phase 4._
   the PR (closes #166 via `originating_issue`)
 - [x] 6.3 Phase 6 checkpoint — CI parity green and review-council
   APPROVE recorded in the change's completion notes
+- [x] 6.4 Post-approval CI fix — extract `decodeScalarValue` from
+  `frontmatterScalar` (`tools/learning_temporal.go`) so the function's
+  cyclomatic complexity drops below the Gaze CRAP flag threshold,
+  clearing the `build-and-test` CRAPload ratchet failure (49 > 48) on
+  PR #188; byte-for-byte value semantics preserved, both functions at
+  100% line coverage from the existing table tests

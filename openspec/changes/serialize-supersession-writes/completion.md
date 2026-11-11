@@ -78,3 +78,10 @@ implementation:
   overwrite a backup already naming a successor) is implemented and
   tested; declaring it as a formal `lint-anchor-drift` MODIFIED delta is
   left for a follow-up spec-sync, since the review phase had closed.
+
+## Post-approval CI fix (task 6.4)
+
+- Extracted `decodeScalarValue` from `frontmatterScalar`
+  (`tools/learning_temporal.go`) to clear PR #188's CI CRAPload ratchet
+  failure (49 > 48); value semantics preserved byte-for-byte, both
+  functions at 100% line coverage, local gate 47/48 PASS.

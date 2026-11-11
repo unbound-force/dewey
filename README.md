@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-50 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+51 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. Read store-backed pages by their canonical names (`compiled/<tag>` for compiled articles, `learning/<identity>` for learnings) or by the bare name: `list_pages` shows compiled articles under their bare topic, and `get_page` tries the exact name, then `compiled/<name>`, then `learning/<name>`. Every name-based read through the vault client — including `get_links` forward direction, `traverse` start pages, `get_whiteboard`, `bulk_update_properties`, and `journal_range`, whose journal-format page names are slash-free — shares the resolution. The blast radius is every `GetPage`/`GetPageBlocksTree` caller, so the list is illustrative, not exhaustive. Name-based tools that resolve through other paths — `similar` and `find_connections` — still need the canonical name. `promote` accepts either form, but reports a name that matches both namespaces as ambiguous, while reads serve the compiled article. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
 
@@ -134,6 +134,12 @@ Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) retu
 | Tool | Backend | Description |
 |------|---------|-------------|
 | `promote` | Both | Promote draft content to validated after human review; names resolve exact, then case-insensitive, then bare-tag shorthand (`name` tries `compiled/name`, `learning/name`, and `knowledge/*` pages), then source doc IDs; ambiguous matches are refused; batch promotion is all-or-nothing |
+
+### Verify
+
+| Tool | Backend | Description |
+|------|---------|-------------|
+| `verify_candidates` | Both | Read-only verification of the promotable candidate queue (draft pages under `learning/`, `compiled/`, and `knowledge/`) ahead of the human promotion gate; checks each candidate's evidence locators against its `as_of` pin and `HEAD` via local git and reports `anchors_ok`, `drifted`, `missing`, `no_anchors`, or `skipped` per candidate with summary counts; compiled articles aggregate their sources; nothing is mutated — verification is not endorsement, and promotion stays a human decision |
 
 ### Indexing
 
@@ -447,7 +453,7 @@ dewey lint [--vault PATH] [--fix]
 - `anchor_missing`: the path does not exist at the `as_of` commit, or that commit is not in the repository (one finding per learning).
 - `anchor_drift`: the path changed, or was removed, between the `as_of` commit and `HEAD`. Paths are compared literally, so a file name containing glob characters matches only that file.
 
-`--fix` marks drifted learnings `validity: stale-unverified` (store and markdown file); tiers are never changed, and a learning superseded in the meantime keeps `superseded`. `fixed.anchor_drift` counts learnings marked in the store; a markdown file that could not be updated is listed in `anchor_fix_warnings`. Every result reports `anchor_checks` (`checked`, `skipped`, or `failed`, with a `reason`), so a skipped pass is never mistaken for a clean one. Skipped outside a git repository. Not checked: `<repo>#<n>` locators (no network), other repositories, learnings pinned to another repository, learnings whose evidence exceeds `store_learning`'s limits, and learnings marked `superseded` or `historical`. The 30-day `stale_decision` check remains as a secondary signal.
+`--fix` marks drifted learnings `validity: stale-unverified` (store and markdown file); tiers are never changed, and a learning superseded in the meantime keeps `superseded`. `fixed.anchor_drift` counts learnings marked in the store; a markdown file that could not be updated is listed in `anchor_fix_warnings`. Every result reports `anchor_checks` (`checked`, `skipped`, or `failed`, with a `reason`), so a skipped pass is never mistaken for a clean one. Skipped outside a git repository. Not checked: `<repo>#<n>` locators (no network), other repositories, learnings pinned to another repository, learnings whose evidence exceeds `store_learning`'s limits, and learnings marked `superseded` or `historical`. The 30-day `stale_decision` check remains as a secondary signal. The same anchor checks back `/dewey-distill`'s verify step — the `verify_candidates` MCP tool reports them per candidate at the review gate.
 
 ### dewey promote
 
@@ -760,11 +766,11 @@ When a synthesis provider is configured, the running MCP server performs compila
 
 Learning markdown files are treated as untrusted backups during startup re-ingestion: a file that claims `tier: validated` is re-ingested as `draft` until a human promotes it again.
 
-Use `/dewey-distill` to run lint → compile → curate → promote through the running MCP server. It gates the synthesis scope and the promotion list on human approval, and it falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable. The command binds to the `curator` agent (`agent:` frontmatter) and runs `dewey gate auto-answer` at startup, refusing before any stage when the curator is configured for automatic question answering or the configuration cannot be verified; both mandatory gate questions carry the `HUMAN_GATE:` marker, which auto-answer plugins honoring the external contract leave for a human.
+Use `/dewey-distill` to run lint → compile → curate → verify → promote through the running MCP server. The verify step runs `verify_candidates` over the run's candidate queue and presents each candidate's evidence locators and anchor-verification result (`anchors_ok`, `drifted`, `missing`, `no_anchors`, `skipped` with reasons) at the review gate, so the human approves a pre-verified queue; a skipped or failed pass is stated plainly and never presented as verified clean. It gates the synthesis scope and the promotion list on human approval, and it falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable. The command binds to the `curator` agent (`agent:` frontmatter) and runs `dewey gate auto-answer` at startup, refusing before any stage when the curator is configured for automatic question answering or the configuration cannot be verified; both mandatory gate questions carry the `HUMAN_GATE:` marker, which auto-answer plugins honoring the external contract leave for a human.
 
-The `curator` agent is a least-privilege identity for knowledge work: `read` is enabled, `write`/`edit`/`webfetch` are denied, subagent spawning is denied, and the only shell command it may run is `dewey gate auto-answer`. Its Dewey MCP surface is limited to `lint`, `list_pages`, `compile`, `curate`, `store_compiled`, and `promote`; every other Dewey MCP tool is denied. Any supervisor guard relaxation for the curator belongs in the user's global supervisor configuration, never in a repository's committed config. Dewey ships the agent definition; `dewey init` scaffolds it into `.opencode/agents/` when `.opencode/` exists and never overwrites an existing file.
+The `curator` agent is a least-privilege identity for knowledge work: `read` is enabled, `write`/`edit`/`webfetch` are denied, subagent spawning is denied, and the only shell command it may run is `dewey gate auto-answer`. Its Dewey MCP surface is limited to `lint`, `list_pages`, `compile`, `curate`, `store_compiled`, `verify_candidates`, and `promote`; every other Dewey MCP tool is denied. Any supervisor guard relaxation for the curator belongs in the user's global supervisor configuration, never in a repository's committed config. Dewey ships the agent definition; `dewey init` scaffolds it into `.opencode/agents/` when `.opencode/` exists and never overwrites an existing file.
 
-That boundary is enforced by the agent's frontmatter `tools:` map, not prompt-only policy: `"dewey_*": false` denies every Dewey MCP tool, the six `true` entries that follow (`dewey_lint`, `dewey_list_pages`, `dewey_compile`, `dewey_curate`, `dewey_store_compiled`, `dewey_promote`) re-enable exactly the allowlisted tools, and `"replicator_*": false` denies tools from the other MCP servers configured in the repository-root `opencode.json`. The embedded `deweyAgentDefinitions["curator.md"]` copy in `agents.go` — the content `dewey init` scaffolds — ships byte-identical to the tracked file, and tests in `cli_test.go` assert the frontmatter shape and the parity between the frontmatter allow set and the prompt-text allowlist so the two lists cannot drift apart. The tool glob keys carry the MCP server key (`dewey`) from `opencode.json`; a repository configuring the Dewey MCP server under a different key must adjust the glob entries in the agent frontmatter.
+That boundary is enforced by the agent's frontmatter `tools:` map, not prompt-only policy: `"dewey_*": false` denies every Dewey MCP tool, the seven `true` entries that follow (`dewey_lint`, `dewey_list_pages`, `dewey_compile`, `dewey_curate`, `dewey_store_compiled`, `dewey_promote`, `dewey_verify_candidates`) re-enable exactly the allowlisted tools, and `"replicator_*": false` denies tools from the other MCP servers configured in the repository-root `opencode.json`. The embedded `deweyAgentDefinitions["curator.md"]` copy in `agents.go` — the content `dewey init` scaffolds — ships byte-identical to the tracked file, and tests in `cli_test.go` assert the frontmatter shape and the parity between the frontmatter allow set and the prompt-text allowlist so the two lists cannot drift apart. The tool glob keys carry the MCP server key (`dewey`) from `opencode.json`; a repository configuring the Dewey MCP server under a different key must adjust the glob entries in the agent frontmatter.
 
 ### Trust Tiers
 
@@ -875,7 +881,7 @@ cli.go               CLI subcommands: journal, add, search, init, index, reindex
                      source, doctor, manifest, compile, lint, promote, curate, artifacts
 gate.go              CLI gate subcommands: dewey gate auto-answer (deterministic startup gates)
 agents.go            Shipped agent definitions scaffolded by dewey init
-server.go            MCP server setup — 50 tool registrations
+server.go            MCP server setup — 51 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
 vault/
@@ -903,7 +909,7 @@ graph/
 parser/content.go    Regex extraction of [[links]], ((refs)), #tags, properties
 types/
   logseq.go          Shared types with custom JSON unmarshaling
-  tools.go           Input types for all 50 tools
+  tools.go           Input types for all 51 tools
   semantic.go        Semantic search types
 llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, OpenAICompatibleSynthesizer, NoopSynthesizer)
 openaicompat/        Shared OpenAI-compatible transport (endpoint, auth, retry, errors, client, availability)

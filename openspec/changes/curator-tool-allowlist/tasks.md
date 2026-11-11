@@ -189,5 +189,5 @@
 
 ## 5. Review
 
-- [ ] 5.1 Run `/uf.review-council` and resolve findings until all
+- [x] 5.1 Run `/uf.review-council` and resolve findings until all
   reviewers return APPROVE; re-run the Phase 4 checks after any fix.

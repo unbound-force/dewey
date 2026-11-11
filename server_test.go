@@ -1130,7 +1130,8 @@ func TestNewServer_VerifyCandidatesSchema(t *testing.T) {
 			t.Errorf("schema missing or malformed %q property: %v", name, props[name])
 			continue
 		}
-		if prop["type"] != "array" {
+		// go-sdk 1.4 marks slice fields nullable: "array" or ["null", "array"].
+		if !schemaTypeIncludes(prop["type"], "array") {
 			t.Errorf("%s type = %v, want array", name, prop["type"])
 		}
 		items, ok := prop["items"].(map[string]any)

@@ -421,6 +421,41 @@ sources:
 				}
 			}
 
+			// Scaffold Dewey-specific agent definitions into
+			// .opencode/agents/ when the .opencode/ directory exists
+			// (composability — only scaffold when OpenCode is present).
+			// Idempotent via O_CREATE|O_EXCL: an existing user-customized
+			// agent is never overwritten. A failed or partial write is
+			// rolled back so a later run does not mistake the residue for a
+			// user-owned file and skip it; the failure is surfaced as an
+			// init error naming the target path.
+			if fileExists(filepath.Join(vaultPath, ".opencode")) {
+				agentsDir := filepath.Join(vaultPath, ".opencode", "agents")
+				if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+					return fmt.Errorf("create agents directory %s: %w", agentsDir, err)
+				}
+				for name, content := range deweyAgentDefinitions {
+					agentPath := filepath.Join(agentsDir, name)
+					f, err := os.OpenFile(agentPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+					if err != nil {
+						if os.IsExist(err) {
+							continue // Preserve user customization.
+						}
+						return fmt.Errorf("scaffold agent %s: %w", agentPath, err)
+					}
+					if _, writeErr := f.WriteString(content); writeErr != nil {
+						_ = f.Close()
+						_ = os.Remove(agentPath)
+						return fmt.Errorf("scaffold agent %s: %w", agentPath, writeErr)
+					}
+					if closeErr := f.Close(); closeErr != nil {
+						_ = os.Remove(agentPath)
+						return fmt.Errorf("scaffold agent %s: %w", agentPath, closeErr)
+					}
+					logger.Info("scaffolded agent", "path", agentPath)
+				}
+			}
+
 			// Scaffold DCP configuration (.opencode/dcp.jsonc) to enable
 			// protectTags for slash command <protect> blocks.
 			// Composability guard: only scaffold when .opencode/ exists.

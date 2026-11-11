@@ -146,6 +146,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.AddCommand(newLintCmd())
 	rootCmd.AddCommand(newPromoteCmd())
 	rootCmd.AddCommand(newArtifactsCmd())
+	rootCmd.AddCommand(newGateCmd())
 
 	return rootCmd
 }
@@ -1171,20 +1172,33 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 func parseLearningFrontmatter(content string) (learningFrontmatter, string, error) {
 	var fm learningFrontmatter
 
-	// Split on "---" delimiters. Expected format: ["", frontmatter, body].
-	parts := strings.SplitN(content, "---", 3)
-	if len(parts) < 3 {
-		return fm, content, fmt.Errorf("no YAML frontmatter found")
+	frontBlock, body, err := splitFrontmatter(content)
+	if err != nil {
+		return fm, content, err
 	}
 
 	// Parse the YAML frontmatter section.
-	if err := yaml.Unmarshal([]byte(parts[1]), &fm); err != nil {
+	if err := yaml.Unmarshal([]byte(frontBlock), &fm); err != nil {
 		return fm, content, fmt.Errorf("parse YAML frontmatter: %w", err)
 	}
 
-	// The body is everything after the closing "---", trimmed of leading whitespace.
-	body := strings.TrimSpace(parts[2])
 	return fm, body, nil
+}
+
+// splitFrontmatter splits a Markdown document into its YAML
+// frontmatter block and body. The document must open with a `---`
+// delimiter; the frontmatter is the text between the first two
+// delimiters and the body is everything after them.
+func splitFrontmatter(content string) (string, string, error) {
+	content = strings.TrimPrefix(content, "\ufeff")
+	if !strings.HasPrefix(content, "---") {
+		return "", content, fmt.Errorf("no YAML frontmatter found")
+	}
+	parts := strings.SplitN(content, "---", 3)
+	if len(parts) < 3 {
+		return "", content, fmt.Errorf("no YAML frontmatter found")
+	}
+	return parts[1], strings.TrimSpace(parts[2]), nil
 }
 
 // initLogseqBackend initializes the Logseq backend by creating a client

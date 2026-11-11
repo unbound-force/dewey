@@ -87,7 +87,7 @@ go test -race -count=1 ./...` passes.
   from a failed pass presented as verified — partial results ride
   the error as context only), deterministic repeat, and
   non-mutation of tier, validity, content, and files.
-- [ ] 3.4 [P] `server_test.go`: registration surface and
+- [x] 3.4 [P] `server_test.go`: registration surface and
   input-schema parity for `verify_candidates` (DE-007 layer 1).
 - [x] 3.5 `tools/verify_test.go`: golden `checked` output shape —
   pass status, per-candidate fields, result enum, summary counts
@@ -95,7 +95,7 @@ go test -race -count=1 ./...` passes.
 - [x] 3.6 `tools/verify_test.go`: round-trip non-mutation audit —
   verification leaves store content and tiers unchanged (DE-007
   layer 3).
-- [ ] 3.7 [P] `cli_test.go`: tracked command file byte-identical to
+- [x] 3.7 [P] `cli_test.go`: tracked command file byte-identical to
   the scaffold entry, `.opencode/agents/curator.md` byte-identical
   to the `agents.go` scaffold mirror, both `HUMAN_GATE:` questions
   present, and the curator allowlist (in both agent copies)

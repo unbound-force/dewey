@@ -15,7 +15,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -444,12 +443,21 @@ func pageMatchesTag(p *store.Page, tag string) bool {
 	return ok && pageTag == tag
 }
 
+// pageProperties decodes a store page's properties JSON for read-only
+// inspection. It delegates to decodeLearningProperties so verify.go shares
+// the tools package's one properties decoder: empty text and a literal JSON
+// null both yield an empty map, and a malformed document returns an error
+// the caller tolerates as "no properties".
+func pageProperties(p *store.Page) (map[string]any, error) {
+	return decodeLearningProperties(p.Properties)
+}
+
 // pageTagProperty returns the page's `tag` property when it is present as
 // a string. Unreadable properties carry no tag: one malformed page never
 // fails the whole enumeration.
 func pageTagProperty(p *store.Page) (string, bool) {
-	var props map[string]any
-	if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
+	props, err := pageProperties(p)
+	if err != nil {
 		return "", false
 	}
 	tag, ok := props["tag"].(string)
@@ -798,8 +806,8 @@ func boundSources(sources []verifySourceResult) (reported []verifySourceResult, 
 // re-ingested files bypass that validation — so they are only ever
 // presented through presentEvidence's bounds.
 func pageEvidence(p *store.Page) []string {
-	var props map[string]any
-	if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
+	props, err := pageProperties(p)
+	if err != nil {
 		return nil
 	}
 	raw, _ := props["evidence"].([]any)
@@ -864,8 +872,8 @@ func truncateLocator(locator string) string {
 // for stored-but-ineligible sources. It returns a reason naming the
 // missing path-form anchors when p looks otherwise eligible.
 func learningIneligibilityReason(p *store.Page, repo string) string {
-	var props map[string]any
-	if err := json.Unmarshal([]byte(p.Properties), &props); err != nil {
+	props, err := pageProperties(p)
+	if err != nil {
 		return "properties are unreadable"
 	}
 	if validity, _ := props["validity"].(string); validity == "superseded" || validity == "historical" {

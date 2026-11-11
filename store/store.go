@@ -333,7 +333,9 @@ func (s *Store) ListKnowledgePagesFoldCase() ([]*Page, error) {
 
 // listDraftCandidatePagesSQL is the index-backed statement behind
 // ListDraftCandidatePages, hoisted to a constant for the EXPLAIN QUERY PLAN
-// tests (same convention as listKnowledgePagesFoldCaseSQL).
+// test (same convention as listKnowledgePagesFoldCaseSQL). The tier
+// predicate drives an index SEARCH on idx_pages_tier; the three NOCASE name
+// ranges filter within that seek, and ORDER BY name adds a temp B-tree.
 const listDraftCandidatePagesSQL = `
 		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
 		FROM pages
@@ -350,9 +352,9 @@ const listDraftCandidatePagesSQL = `
 // resolves against, with the same tier-based eligibility. Each prefix is
 // matched case-insensitively through the same range predicate as
 // ListKnowledgePagesFoldCase (name >= '<ns>/' AND name < '<ns>0' under NOCASE
-// collation), so SQLite can seek an index range on idx_pages_name_nocase
-// instead of evaluating a LIKE pattern per row. Results are ordered by name,
-// the deterministic lexicographic order the verification queue requires.
+// collation) instead of a per-row LIKE. The tier filter seeks idx_pages_tier;
+// the name ranges filter the matching rows. Results are ordered by name, the
+// deterministic lexicographic order the verification queue requires.
 func (s *Store) ListDraftCandidatePages() ([]*Page, error) {
 	rows, err := s.db.Query(listDraftCandidatePagesSQL)
 	if err != nil {

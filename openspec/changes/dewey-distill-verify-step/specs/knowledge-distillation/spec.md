@@ -20,8 +20,9 @@
     - knowledge-verification (prefix KV): KV-FR-001 .. KV-FR-005
       own the `verify_candidates` tool contract this delta's
       command-side requirements call.
-    - curator-agent (prefix CA): CA-FR-009 .. CA-FR-010 add
-      `verify_candidates` to the curator allowlist.
+    - curator-agent (prefix CA): CA-FR-013 .. CA-FR-014 add
+      `verify_candidates` to the curator allowlist. CA-FR-009 ..
+      CA-FR-012 belong to the curator-tool-allowlist change.
   The capability's main spec is not archived yet: its existing
   pipeline contract is the named requirement "Gated Distill
   Workflow" in the dewey-distill change. Because no target spec

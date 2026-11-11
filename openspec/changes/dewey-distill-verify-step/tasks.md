@@ -58,7 +58,7 @@ go test -race -count=1 ./...` passes.
   `verify_candidates` to the Dewey MCP tool allowlist in the
   tracked agent file and in the `agents.go` scaffold mirror in the
   same commit, keeping the two byte-identical, and change nothing
-  else (CA-FR-009, CA-FR-010). The extension carries the recorded
+  else (CA-FR-013, CA-FR-014). The extension carries the recorded
   human authorization in proposal.md ("Recorded Human
   Authorizations").
 

@@ -16,8 +16,9 @@
       numbering; KD-FR-101 .. KD-FR-103 belong to the
       curator-agent-human-gates change.
     - curator-agent (prefix CA): the curator allowlist extension is
-      CA-FR-009 .. CA-FR-010 in this change. CA-FR-001 .. CA-FR-008
-      belong to the curator-agent-human-gates change.
+      CA-FR-013 .. CA-FR-014 in this change. CA-FR-001 .. CA-FR-008
+      belong to the curator-agent-human-gates change, and
+      CA-FR-009 .. CA-FR-012 to the curator-tool-allowlist change.
   This capability reuses the anchor-check mechanism specified by the
   lint-anchor-drift change (openspec/changes/lint-anchor-drift:
   `anchorChecker`, `learningAnchors`, `anchor_missing`,

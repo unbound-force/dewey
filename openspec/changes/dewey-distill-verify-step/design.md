@@ -186,13 +186,17 @@ entry, so the scaffold parity rule from CA-FR-005 is preserved.
 ### D8 Curator allowlist extension
 
 The command runs under `agent: curator`, so the allowlist gains
-exactly `verify_candidates` (CA-FR-009) and nothing else.
+exactly `verify_candidates` (CA-FR-013) and nothing else.
 `verify_candidates` is read-only, so the curator's mutation
-boundary is unchanged (CA-FR-010). As with CA-FR-003, the V1 agent
-format enforces the allowlist through the agent's stated policy,
-the command's tool discipline, tracked-file assertions, and the
-manual acceptance matrix; the V2 `permissions` conversion remains
-the future hard-enforcement path.
+boundary is unchanged (CA-FR-014). The sibling
+curator-tool-allowlist change made the allowlist frontmatter-
+enforced (CA-FR-009), so this extension adds
+`dewey_verify_candidates: true` to the `tools:` map in both shipped
+copies, after the `"dewey_*": false` deny, and keeps the
+prompt-text allowlist and the frontmatter allow set in parity
+(CA-FR-011). The command's tool discipline, tracked-file
+assertions, and the manual acceptance matrix remain; the V2
+`permissions` conversion stays the future hard-enforcement path.
 
 Two provenance notes. First, the extension carries a recorded
 human authorization (see proposal.md, "Recorded Human

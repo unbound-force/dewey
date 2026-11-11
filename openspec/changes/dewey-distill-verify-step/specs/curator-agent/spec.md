@@ -4,12 +4,20 @@
   Requirement numbering allocation
   ================================
   Capability: curator-agent (prefix CA)
-  Allocated to this change: CA-FR-009 .. CA-FR-010
-  Reserved for future curator-agent changes: CA-FR-011 .. CA-FR-099
+  Allocated to this change: CA-FR-013 .. CA-FR-014
+  Reserved for future curator-agent changes: CA-FR-015 .. CA-FR-099
   Allocated by curator-agent-human-gates: CA-FR-001 .. CA-FR-008
     in openspec/changes/curator-agent-human-gates/specs/
     curator-agent/spec.md. CA-FR-003 states the exact Dewey MCP
     tool allowlist; this delta extends that enumeration additively.
+  Allocated by curator-tool-allowlist: CA-FR-009 .. CA-FR-012
+    in openspec/changes/curator-tool-allowlist/specs/
+    curator-agent/spec.md. CA-FR-009 states the frontmatter-enforced
+    "deny-all-then-allow-six" tools block this delta extends to
+    seven; CA-FR-010..CA-FR-012 cover the cross-server deny,
+    frontmatter/body parity, and the host acceptance matrix. That
+    change landed on main while this change was in flight, so this
+    delta takes the next free range and never renumbers it.
   Sibling capabilities:
     - knowledge-verification (prefix KV): KV-FR-001 .. KV-FR-005
       define the read-only `verify_candidates` tool this delta
@@ -21,11 +29,12 @@
   be refused at archive time because no target spec exists in
   openspec/specs/. These requirements therefore amend CA-FR-003's
   allowlist by explicit reference rather than restating it.
-  Archive-time reconciliation: if the curator-agent-human-gates
-  change archives first, CA-FR-009's additive extension is folded
-  into the archived CA-FR-003 allowlist text (or kept as the
-  additive CA-FR-009 requirement with a cross-reference), never
-  left as a silent contradiction. The ids never collide.
+  Archive-time reconciliation: if curator-agent-human-gates or
+  curator-tool-allowlist archives first, CA-FR-013's additive
+  extension is folded into the archived allowlist text (CA-FR-003
+  and CA-FR-009 respectively), never left as a silent
+  contradiction. The ids never collide: this change allocates
+  CA-FR-013..CA-FR-014, clear of both siblings.
   Requirement ids MUST stay inside the allocated range.
 -->
 
@@ -33,17 +42,22 @@
 
 ### Requirement: Verification Tool in the Curator Allowlist
 
-**ID**: CA-FR-009
+**ID**: CA-FR-013
 
 The curator's Dewey MCP tool allowlist, stated by CA-FR-003, MUST
-additionally include exactly one tool: `verify_candidates`. The
-allowlist text lives in two tracked places that MUST stay
-byte-identical: the tracked `.opencode/agents/curator.md` and the
-`agents.go` scaffold mirror that `dewey init` writes. Both MUST
-list the tool and MUST continue to forbid every other Dewey MCP
-tool. No other allowlist entry MUST change: `lint`,
-`list_pages`, `compile`, `curate`, `store_compiled`, and `promote`
-remain allowed, and every tool outside that set remains forbidden.
+additionally include exactly one tool: `verify_candidates`, and
+the frontmatter-enforced shape stated by CA-FR-009 (the sibling
+curator-tool-allowlist change) MUST be extended from six to seven
+`true` entries by adding `dewey_verify_candidates` after the
+`"dewey_*": false` deny. The allowlist text lives in two tracked
+places that MUST stay byte-identical: the tracked
+`.opencode/agents/curator.md` and the `agents.go` scaffold mirror
+that `dewey init` writes. Both MUST list the tool in the body
+allowlist and in the `tools:` map and MUST continue to forbid
+every other Dewey MCP tool. No other allowlist entry MUST change:
+`lint`, `list_pages`, `compile`, `curate`, `store_compiled`, and
+`promote` remain allowed, and every tool outside that set remains
+forbidden.
 This extension carries a recorded human authorization (proposal.md,
 "Recorded Human Authorizations"): agent tool-access settings are a
 protected gatekeeping category, and the authorization was issued
@@ -76,9 +90,22 @@ at the 2026-11-11 spec-review pause for issue #151.
 - **THEN** no existing allowlist entry MUST be removed or renamed
 - **AND** no tool outside the extended set MUST become allowed
 
+#### Scenario: Frontmatter allow set extended to seven
+- **GIVEN** the tracked `.opencode/agents/curator.md` and the
+  `agents.go` mirror
+- **WHEN** each frontmatter `tools:` block is parsed in entry
+  order
+- **THEN** `"dewey_*": false` MUST precede every `dewey_*`
+  `true` entry
+- **AND** exactly seven `dewey_*` entries MUST carry `true`:
+  `dewey_lint`, `dewey_list_pages`, `dewey_compile`,
+  `dewey_curate`, `dewey_store_compiled`,
+  `dewey_verify_candidates`, and `dewey_promote`
+- **AND** no other `dewey_*`-matching key MUST carry `true`
+
 ### Requirement: Read-Only Boundary Preserved
 
-**ID**: CA-FR-010
+**ID**: CA-FR-014
 
 `verify_candidates` is read-only: it changes no tier, validity,
 page, or file and never promotes. Granting it MUST NOT widen the

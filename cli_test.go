@@ -5073,13 +5073,20 @@ func curatorFrontmatter(t testing.TB, label, content string) (root []yamlPair, f
 	frontBlock, body, err := splitFrontmatter(content)
 	if err != nil {
 		t.Fatalf("%s: split frontmatter: %v", label, err)
+		// Fatalf under a real *testing.T never returns; under the
+		// problemRecorder it does, so return early to keep a
+		// structurally-broken fixture reporting the recorded problem
+		// instead of panicking below.
+		return nil, nil, ""
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(frontBlock), &doc); err != nil {
 		t.Fatalf("%s: parse YAML frontmatter: %v", label, err)
+		return nil, nil, body
 	}
 	if len(doc.Content) == 0 {
 		t.Fatalf("%s: frontmatter parsed to an empty document", label)
+		return nil, nil, body
 	}
 	root = yamlMappingPairs(t, label, "frontmatter", doc.Content[0])
 	toolsPairs := yamlMappingPairs(t, label, "tools", yamlPairValue(root, "tools"))
@@ -5453,6 +5460,13 @@ func TestCuratorAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
 				return strings.Replace(s, "  dewey_promote: true\n", "  dewey_promote: true\n  \"dewey_*\": false\n", 1)
 			},
 			expect: `precedes the "dewey_*" deny`,
+		},
+		{
+			name: "dewey_* deny deleted outright",
+			doctor: func(s string) string {
+				return strings.Replace(s, "  \"dewey_*\": false\n", "", 1)
+			},
+			expect: `tools block is missing the "dewey_*" deny entry`,
 		},
 		{
 			name: "missing replicator_* deny (CA-FR-010)",

@@ -5234,9 +5234,10 @@ func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKe
 		}
 	}
 
-	// Exactly the six allowlisted tools carry true; the set comparison also
-	// rejects any other dewey_*-matching key carrying true (CA-FR-009).
-	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "promote"}
+	// Exactly the seven allowlisted tools carry true (the #152 six-tool
+	// baseline plus verify_candidates, CA-FR-009); the set comparison also
+	// rejects any other dewey_*-matching key carrying true.
+	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "promote"}
 	allowedTools := curatorAllowedDeweyTools(flags)
 	if !sameStringSet(allowedTools, wantTools) {
 		t.Errorf("%s: dewey_* tools carrying true = %v, want exactly %v", label, allowedTools, wantTools)
@@ -5507,7 +5508,7 @@ func TestCuratorAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
 		expect string // substring of a recorded problem
 	}{
 		{
-			name: "seventh dewey allow (CA-FR-009)",
+			name: "eighth dewey allow (CA-FR-009)",
 			doctor: func(s string) string {
 				return strings.Replace(s, "  dewey_promote: true\n", "  dewey_promote: true\n  dewey_search: true\n", 1)
 			},

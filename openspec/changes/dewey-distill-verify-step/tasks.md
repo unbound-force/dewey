@@ -141,7 +141,7 @@ passes, and `go test -race -count=1 ./...` passes.
   -coverprofile=coverage.out ./...`, and
   `gaze crap --format=json --coverprofile=coverage.out
   --max-crapload=48 --max-gaze-crapload=45 ./...`.
-- [ ] 5.2 Constitution alignment: confirm the four principles
+- [x] 5.2 Constitution alignment: confirm the four principles
   still hold — local-only git (Composability First), tool-call
   surface (Autonomous Collaboration), enum plus pass status
   (Observable Quality), and interface-backed tests (Testability).

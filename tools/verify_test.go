@@ -1710,3 +1710,108 @@ func TestVerify_StoreRoundTripNonMutation(t *testing.T) {
 		t.Errorf("failed pass changed the store:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
+
+// TestLearningIneligibilityReason_Reasons pins every reason
+// learningIneligibilityReason can return, one case per branch in the order
+// its checks run: unreadable properties, superseded and historical
+// validity, an as_of pin that does not parse, pins a foreign repository,
+// or is not a commit SHA, evidence past the re-checked entry-count and
+// locator-length bounds, and the otherwise-eligible page whose evidence
+// holds no <repo>:<path> locators. Each case asserts the exact reason
+// string, because that wording is the context the no_anchors advisory
+// presents for stored-but-ineligible sources.
+func TestLearningIneligibilityReason_Reasons(t *testing.T) {
+	const vaultRepo = "kb"
+	const pinnedSHA = "deadbeef"
+
+	// One rune past the locator bound re-checked here (512 runes).
+	overlongLocator := strings.Repeat("a", maxEvidenceLen+1)
+	// One entry past the entry-count bound re-checked here (50 entries);
+	// every locator is short so only the count can trip the check.
+	oversizedEvidence := make([]string, maxEvidenceEntries+1)
+	for i := range oversizedEvidence {
+		oversizedEvidence[i] = vaultRepo + ":pkg/b.go"
+	}
+
+	cases := []struct {
+		name  string
+		props map[string]any
+		raw   string // raw Properties JSON, used when props is nil
+		want  string
+	}{
+		{
+			name: "unreadable properties",
+			raw:  "{not json",
+			want: "properties are unreadable",
+		},
+		{
+			name:  "superseded validity",
+			props: map[string]any{"validity": "superseded"},
+			want:  "validity is superseded",
+		},
+		{
+			name:  "historical validity",
+			props: map[string]any{"validity": "historical"},
+			want:  "validity is historical",
+		},
+		{
+			name:  "as_of without a pin",
+			props: map[string]any{"as_of": vaultRepo},
+			want:  "no readable as_of pin",
+		},
+		{
+			name:  "as_of pinning another repository",
+			props: map[string]any{"as_of": "other@" + pinnedSHA},
+			want:  `as_of pins repository "other", not the vault repository "kb"`,
+		},
+		{
+			name:  "as_of sha that is not hex",
+			props: map[string]any{"as_of": vaultRepo + "@zorp"},
+			want:  "as_of pin is not a commit SHA",
+		},
+		{
+			name: "evidence past the entry-count bound",
+			props: map[string]any{
+				"as_of":    vaultRepo + "@" + pinnedSHA,
+				"evidence": oversizedEvidence,
+			},
+			want: "evidence has 51 entries; at most 50 are allowed",
+		},
+		{
+			name: "evidence locator past the length bound",
+			props: map[string]any{
+				"as_of":    vaultRepo + "@" + pinnedSHA,
+				"evidence": []string{overlongLocator},
+			},
+			want: "an evidence locator exceeds the re-checked length limit",
+		},
+		{
+			name: "eligible with no path locators",
+			props: map[string]any{
+				"as_of":    vaultRepo + "@" + pinnedSHA,
+				"evidence": []string{"session:abc123"},
+			},
+			want: "no kb:<path> evidence locators",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			properties := tc.raw
+			if tc.props != nil {
+				data, err := json.Marshal(tc.props)
+				if err != nil {
+					t.Fatalf("marshal properties: %v", err)
+				}
+				properties = string(data)
+			}
+			page := &store.Page{
+				Name:       "learning/ineligible-reasons",
+				Properties: properties,
+			}
+			if got := learningIneligibilityReason(page, vaultRepo); got != tc.want {
+				t.Errorf("learningIneligibilityReason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

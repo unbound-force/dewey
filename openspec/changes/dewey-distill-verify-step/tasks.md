@@ -145,5 +145,5 @@ passes, and `go test -race -count=1 ./...` passes.
   still hold — local-only git (Composability First), tool-call
   surface (Autonomous Collaboration), enum plus pass status
   (Observable Quality), and interface-backed tests (Testability).
-- [ ] 5.3 Run `/uf.review-council` until APPROVE, then open the
+- [x] 5.3 Run `/uf.review-council` until APPROVE, then open the
   draft PR (`Closes #151`).

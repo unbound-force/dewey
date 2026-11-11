@@ -132,24 +132,28 @@ Part of #153. Depends on #147 (anchor-drift lint, landed) and #145
 - `curator-agent`: the Dewey MCP tool allowlist is extended to
   include `verify_candidates`. The capability has no archived main
   spec yet, so its delta adds the extension alongside the
-  `curator-agent-human-gates` change's CA-FR-003 allowlist.
+  `curator-agent-human-gates` change's CA-FR-003 allowlist and the
+  `curator-tool-allowlist` change's frontmatter-enforced CA-FR-009
+  shape, which this change extends from six to seven entries.
 
-**Archive-time reconciliation**: both sibling changes this delta
+**Archive-time reconciliation**: three sibling changes this delta
 sits alongside — `dewey-distill` (the "Gated Distill Workflow"
-contract) and `curator-agent-human-gates` (CA-FR-003's allowlist) —
-are pending, not archived. When this change archives, the archive
-step MUST reconcile against whatever has landed first: if
-`curator-agent-human-gates` has already archived, CA-FR-009's
-additive allowlist extension is folded into the archived
-CA-FR-003 text (or kept as the additive CA-FR-009 requirement with
-a cross-reference), never as a silent contradiction; if
-`dewey-distill` has already archived, KD-FR-104's insertion point
-(the step order inside "Gated Distill Workflow") is reconciled so
-the archived pipeline description reads coherently with the verify
-step between compile/curate and the review gate. The requirement
-ids stay inside the ranges each delta header allocates, so
-numbering collisions cannot occur; only prose reconciliation is
-in scope.
+contract), `curator-agent-human-gates` (CA-FR-003's allowlist), and
+`curator-tool-allowlist` (CA-FR-009..CA-FR-012's frontmatter shape,
+which landed on main during this change's rebase) — are pending,
+not archived. When this change archives, the archive step MUST
+reconcile against whatever has landed first: if
+`curator-agent-human-gates` has archived, CA-FR-013's additive
+allowlist extension is folded into the archived CA-FR-003 text; if
+`curator-tool-allowlist` has archived, CA-FR-013 is folded into the
+archived CA-FR-009 shape as the six-to-seven extension; neither is
+left as a silent contradiction. If `dewey-distill` has archived,
+KD-FR-104's insertion point (the step order inside "Gated Distill
+Workflow") is reconciled so the archived pipeline description reads
+coherently with the verify step between compile/curate and the
+review gate. This delta allocates CA-FR-013..CA-FR-014, clear of
+both curator-agent siblings, so numbering collisions cannot
+occur; only prose reconciliation is in scope.
 
 ### Removed Capabilities
 
@@ -215,7 +219,7 @@ final, and not precedent for future changes.
    spec-review pause for issue #151, 2026-11-11 — "Apply all
    recommended fixes, keep OpenSpec."
 2. **Curator allowlist extension** (AGENTS.md Gatekeeping
-   category 5 — agent tool-access settings). CA-FR-009 adds the
+   category 5 — agent tool-access settings). CA-FR-013 adds the
    read-only `verify_candidates` tool to the curator agent's Dewey
    MCP tool allowlist. The human explicitly authorized this
    extension: the tool adds no mutation surface, so the extension

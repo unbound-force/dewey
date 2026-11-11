@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-51 tools across 15 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+51 tools across 16 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. Read store-backed pages by their canonical names (`compiled/<tag>` for compiled articles, `learning/<identity>` for learnings) or by the bare name: `list_pages` shows compiled articles under their bare topic, and `get_page` tries the exact name, then `compiled/<name>`, then `learning/<name>`. Every name-based read through the vault client — including `get_links` forward direction, `traverse` start pages, `get_whiteboard`, `bulk_update_properties`, and `journal_range`, whose journal-format page names are slash-free — shares the resolution. The blast radius is every `GetPage`/`GetPageBlocksTree` caller, so the list is illustrative, not exhaustive. Name-based tools that resolve through other paths — `similar` and `find_connections` — still need the canonical name. `promote` accepts either form, but reports a name that matches both namespaces as ambiguous, while reads serve the compiled article. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
 
@@ -135,7 +135,7 @@ Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) retu
 |------|---------|-------------|
 | `promote` | Both | Promote draft content to validated after human review; names resolve exact, then case-insensitive, then bare-tag shorthand (`name` tries `compiled/name`, `learning/name`, and `knowledge/*` pages), then source doc IDs; ambiguous matches are refused; batch promotion is all-or-nothing |
 
-### Verify
+### Verify Candidates
 
 | Tool | Backend | Description |
 |------|---------|-------------|

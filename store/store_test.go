@@ -2051,6 +2051,43 @@ func TestGetPageBySourceDoc_UsesIndex(t *testing.T) {
 	}
 }
 
+func TestListDraftCandidatePages_UsesIndex(t *testing.T) {
+	s := newTestStore(t)
+	insertResolvePage(t, s, "learning/alpha-20260101T000000-x", "learning", "alpha", "draft")
+	insertResolvePage(t, s, "compiled/beta", "compiled", "beta", "draft")
+	insertResolvePage(t, s, "knowledge/team/gamma", "knowledge-team", "gamma", "draft")
+	// Admitted case-insensitively, like the NOCASE range predicate.
+	insertResolvePage(t, s, "Learning/Caps", "learning", "caps", "draft")
+	// Excluded: not draft, and outside the three candidate namespaces.
+	insertResolvePage(t, s, "compiled/validated", "compiled", "validated", "validated")
+	insertResolvePage(t, s, "notes/elsewhere", "notes", "elsewhere", "draft")
+
+	// The tier predicate must drive an index SEARCH, not a full-table scan.
+	plan := explainQueryPlan(t, s, listDraftCandidatePagesSQL)
+	assertIndexSearch(t, plan, "idx_pages_tier")
+
+	pages, err := s.ListDraftCandidatePages()
+	if err != nil {
+		t.Fatalf("ListDraftCandidatePages: %v", err)
+	}
+	var names []string
+	for _, p := range pages {
+		names = append(names, p.Name)
+	}
+	// ORDER BY name is the BINARY collation of the primary key.
+	want := []string{
+		"Learning/Caps",
+		"compiled/beta",
+		"knowledge/team/gamma",
+		"learning/alpha-20260101T000000-x",
+	}
+	got := "[" + strings.Join(names, " ") + "]"
+	wantJoined := "[" + strings.Join(want, " ") + "]"
+	if got != wantJoined {
+		t.Errorf("ListDraftCandidatePages names = %s, want %s", got, wantJoined)
+	}
+}
+
 // TestDeletePagesBySourceExcludingTier verifies the compiled-page cleanup
 // helper (dewey-distill): it deletes only pages from the given source whose
 // tier differs from the excluded tier, returns the deleted page names so

@@ -4927,13 +4927,13 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 // .opencode/agents/curator.md file and the deweyAgentDefinitions["curator.md"]
 // scaffold mirror in agents.go — extend the six-tool baseline shipped with
 // curator-agent-human-gates (#152) by exactly one entry: verify_candidates.
-// CA-FR-009 records that extension as the one human-authorized addition to
+// CA-FR-013 records that extension as the one human-authorized addition to
 // the curator allowlist (agent tool-access settings are a protected
 // gatekeeping category; the authorization was issued at the 2026-11-11
 // spec-review pause for issue #151), so an eighth tool or a removed
 // baseline tool in either copy must fail.
 func TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition(t *testing.T) {
-	// The #152 six-tool baseline plus the single CA-FR-009 addition.
+	// The #152 six-tool baseline plus the single CA-FR-013 addition.
 	want := []string{
 		"lint",
 		"list_pages",
@@ -5052,9 +5052,9 @@ func agentAllowlistEntries(body string) []string {
 }
 
 // TestCuratorAgent_FrontmatterToolAllowlist verifies the curator agent's
-// frontmatter tools block enforces the deny-all-then-allow-six Dewey MCP
+// frontmatter tools block enforces the deny-all-then-allow-seven Dewey MCP
 // boundary (CA-FR-009): the broad "dewey_*" deny is false and precedes the
-// six allow entries, exactly the six allowlisted tools carry true, the
+// seven allow entries, exactly the seven allowlisted tools carry true, the
 // built-in flags and the permission block are unchanged from
 // curator-agent-human-gates, and every non-dewey MCP server configured in
 // the repository-root opencode.json has a wholesale deny entry (CA-FR-010).
@@ -5190,7 +5190,7 @@ func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKe
 		flagByKey[flag.key] = flag.grant
 	}
 
-	// tools: block — deny-all-then-allow-six (CA-FR-009).
+	// tools: block — deny-all-then-allow-seven (CA-FR-009, extended by CA-FR-013).
 
 	// Built-in entries are unchanged from curator-agent-human-gates: read
 	// and bash stay true; write, edit, and webfetch stay false.
@@ -5235,7 +5235,7 @@ func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKe
 	}
 
 	// Exactly the seven allowlisted tools carry true (the #152 six-tool
-	// baseline plus verify_candidates, CA-FR-009); the set comparison also
+	// baseline plus verify_candidates, CA-FR-013); the set comparison also
 	// rejects any other dewey_*-matching key carrying true.
 	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "promote"}
 	allowedTools := curatorAllowedDeweyTools(flags)

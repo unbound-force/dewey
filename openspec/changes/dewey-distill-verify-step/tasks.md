@@ -12,9 +12,9 @@
 
 ## 1. Verification tool core
 
-- [ ] 1.1 `types/tools.go`: add `VerifyCandidatesInput` with
+- [x] 1.1 `types/tools.go`: add `VerifyCandidatesInput` with
   `pages []string` and `tags []string`.
-- [ ] 1.2 `tools/verify.go`: `Verify` struct, `NewVerify`, and
+- [x] 1.2 `tools/verify.go`: `Verify` struct, `NewVerify`, and
   candidate enumeration — `pages`/`tags` selectors (both is a
   validation error), default queue of tier `draft` pages under
   `learning/`, `compiled/`, and `knowledge/`, tag reading from
@@ -23,13 +23,13 @@
   only via the `tag` property; no substring matches),
   deduplication, and `skipped` entries for missing or non-draft
   requested pages (KV-FR-001, KV-FR-002).
-- [ ] 1.3 `tools/verify.go`: reuse `learningAnchors` and the
+- [x] 1.3 `tools/verify.go`: reuse `learningAnchors` and the
   `anchorChecker` seam for learning outcomes, and aggregate a
   compiled article's `sources` results with a deduplicated union
   of evidence, reporting each source identity with its individual
   result alongside the aggregate (KV-FR-003). Do not extract a
   shared pass runner from lint — see design D2's DRY decision.
-- [ ] 1.4 `tools/verify.go`: fixed result enum, `checked` /
+- [x] 1.4 `tools/verify.go`: fixed result enum, `checked` /
   `skipped` / `failed` pass status with reason, error result
   (`IsError`) on failure with no candidate presented as verified
   from a failed pass, deterministic ordering, per-call timeout and
@@ -41,20 +41,20 @@ go test -race -count=1 ./...` passes.
 
 ## 2. Registration and wiring
 
-- [ ] 2.1 `server.go`: register `verify_candidates` and construct
+- [x] 2.1 `server.go`: register `verify_candidates` and construct
   the handler with `cfg.store` and `cfg.vaultPath`; the input
   schema matches `VerifyCandidatesInput` (DE-007 layer 1)
   (KV-FR-001).
-- [ ] 2.2 `.opencode/commands/dewey-distill.md`: add the verify
+- [x] 2.2 `.opencode/commands/dewey-distill.md`: add the verify
   step between compile/curate and the review gate, renumber the
   later steps, and present per-candidate verification at the
   review gate, including the skipped/failed statement; preserve
   the `HUMAN_GATE:` marker and the no-promotion rule (KD-FR-104
   through KD-FR-107).
-- [ ] 2.3 `slash_commands.go`: update the `dewey-distill.md`
+- [x] 2.3 `slash_commands.go`: update the `dewey-distill.md`
   scaffold entry so it stays byte-identical to the tracked command
   file.
-- [ ] 2.4 `.opencode/agents/curator.md` and `agents.go`: add
+- [x] 2.4 `.opencode/agents/curator.md` and `agents.go`: add
   `verify_candidates` to the Dewey MCP tool allowlist in the
   tracked agent file and in the `agents.go` scaffold mirror in the
   same commit, keeping the two byte-identical, and change nothing

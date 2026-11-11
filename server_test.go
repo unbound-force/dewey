@@ -321,7 +321,7 @@ func TestNewServer_RegistersTools(t *testing.T) {
 		// Indexing
 		"index", "reindex",
 		// Knowledge compilation (013-knowledge-compile)
-		"compile", "store_compiled", "lint", "promote", "curate",
+		"compile", "store_compiled", "lint", "promote", "curate", "verify_candidates",
 		// Health
 		"health",
 	}
@@ -366,9 +366,12 @@ func TestNewServer_ReadOnlyMode(t *testing.T) {
 		"create_page", "append_blocks", "update_block", "delete_block",
 		"upsert_blocks", "move_block", "delete_page", "rename_page",
 		"bulk_update_properties", "link_pages",
-		// Learning, indexing, and knowledge compilation tools are also write-only.
+		// Learning, indexing, and knowledge compilation tools are also write-only;
+		// verify_candidates is read-only by nature but store-backed, so it is
+		// excluded here with the other store-backed knowledge tools.
 		"store_learning", "index", "reindex",
 		"compile", "store_compiled", "lint", "promote", "curate",
+		"verify_candidates",
 	}
 	for _, name := range writeTools {
 		if containsTool(tools, name) {
@@ -1084,6 +1087,81 @@ func TestNewServer_PromoteSchemaIncludesPages(t *testing.T) {
 	}
 	if !strings.Contains(promoteTool.Description, "pages") {
 		t.Errorf("description does not mention batch pages: %q", promoteTool.Description)
+	}
+}
+
+// TestNewServer_VerifyCandidatesSchema is the DE-007 registration-surface
+// seam: verify_candidates must advertise exactly the two optional
+// string-array selectors of types.VerifyCandidatesInput.
+func TestNewServer_VerifyCandidatesSchema(t *testing.T) {
+	srv, _ := newServer(&serverMockBackend{}, false)
+
+	var verifyTool *mcp.Tool
+	for _, tool := range listServerToolDescriptors(t, srv) {
+		if tool.Name == "verify_candidates" {
+			verifyTool = tool
+			break
+		}
+	}
+	if verifyTool == nil {
+		t.Fatal("verify_candidates tool not registered")
+	}
+
+	data, err := json.Marshal(verifyTool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %v", schema["properties"])
+	}
+	// Schema parity with types.VerifyCandidatesInput: exactly the two
+	// selectors, nothing else.
+	if len(props) != 2 {
+		t.Errorf("properties = %v, want exactly pages and tags", props)
+	}
+	for _, name := range []string{"pages", "tags"} {
+		prop, ok := props[name].(map[string]any)
+		if !ok {
+			t.Errorf("schema missing or malformed %q property: %v", name, props[name])
+			continue
+		}
+		if prop["type"] != "array" {
+			t.Errorf("%s type = %v, want array", name, prop["type"])
+		}
+		items, ok := prop["items"].(map[string]any)
+		if !ok {
+			t.Errorf("%s items = %v, want object", name, prop["items"])
+			continue
+		}
+		if items["type"] != "string" {
+			t.Errorf("%s items type = %v, want string", name, items["type"])
+		}
+	}
+	// Both selectors are optional: supplying both is a runtime validation
+	// error in the handler, not a schema constraint. The SDK omits the
+	// required key for omitempty fields; if one ever appears, it must not
+	// name either selector.
+	if required, ok := schema["required"]; ok && required != nil {
+		names, ok := required.([]any)
+		if !ok {
+			t.Fatalf("required = %v (%T), want array", required, required)
+		}
+		for _, name := range names {
+			if s, _ := name.(string); s == "pages" || s == "tags" {
+				t.Errorf("selector %q must not be schema-required; the either-or rule is enforced at runtime", s)
+			}
+		}
+	}
+	if !strings.Contains(verifyTool.Description, "Verification is not endorsement") {
+		t.Errorf("description does not state verification is not endorsement: %q", verifyTool.Description)
+	}
+	if !strings.Contains(verifyTool.Description, "promotion stays a human decision") {
+		t.Errorf("description does not state promotion stays a human decision: %q", verifyTool.Description)
 	}
 }
 

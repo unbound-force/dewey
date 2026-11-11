@@ -116,7 +116,7 @@
 
 ## 4. Verification
 
-- [ ] 4.1 Run the full CI-parity gate, deriving every command from
+- [x] 4.1 Run the full CI-parity gate, deriving every command from
   `.github/workflows/ci.yml` and
   `.github/workflows/mega-linter.yml` (this is the sole full
   CI-parity checkpoint): `go build -v ./...`, `go vet ./...`,
@@ -127,7 +127,7 @@
   `npx mega-linter-runner --flavor go` (gofmt/goimports,
   golangci-lint, markdownlint, yamllint, gitleaks). Failures block
   the task.
-- [ ] 4.2 Perform the manual acceptance matrix and record results:
+- [x] 4.2 Perform the manual acceptance matrix and record results:
   under the installed host with the new curator frontmatter, an
   allowlisted Dewey MCP call (`dewey_lint`) succeeds; a
   non-allowlisted Dewey MCP call (`dewey_delete_page`) is refused by
@@ -142,14 +142,14 @@
   fails when a new MCP tool is registered without a curator deny
   entry, and re-run this matrix; if neither form is honored, stop and
   escalate the gap rather than shipping an inert boundary.
-- [ ] 4.3 Verify constitution alignment (principles I–IV remain PASS);
+- [x] 4.3 Verify constitution alignment (principles I–IV remain PASS);
   confirm `git status --short .opencode/agents/` shows only
   `curator.md` modified with no other agent's tool flags, permission
   rules, mode, or command binding changed; confirm the curator's
   `permission:` block is unchanged from the prior change (the diff
   touches only the `tools:` block); confirm no change to
   `slash_commands.go`, `.opencode/commands/`, or `opencode.json`.
-- [ ] 4.4 Stretch (optional, per issue #192): either implement the
+- [x] 4.4 Stretch (optional, per issue #192): either implement the
   gate-side server-key verification — extend `dewey gate auto-answer`
   in `gate.go` to parse the project OpenCode configuration's `mcp` map
   and refuse (fail-closed, naming the configured and expected keys)
@@ -158,6 +158,20 @@
   deferral decision here. Completing this task means one of the two
   outcomes is recorded; the deferral is acceptable per the issue's
   wording and MUST NOT be silently dropped.
+
+  **Deferral decision (2026-11-11): deferred.** The stretch implementation
+  is not taken, for four reasons: (1) it is optional per issue #192's
+  wording; (2) the change's functional requirements (CA-FR-009..012) are
+  fully satisfied without it; (3) extending `gate.go` would add scope to a
+  file this change does not otherwise touch, after the spec review already
+  approved the current shape — the task-2.1 shape test already fails closed
+  when the repository-root `opencode.json` `mcp` map is missing, empty, or
+  lacks the `dewey`/`replicator` keys, covering this repo's own
+  configuration; (4) the acceptance matrix found the installed dewey
+  binary (mise v3.5.3) predates the `gate` subcommand itself (#152 not yet
+  released), so gate-side verification would not be runtime-testable in
+  this environment. Follow-up: file as a separate change when the gate
+  subcommand ships in a release and a mis-keyed server is a live concern.
 
 **Checkpoint** (exact ci.yml Test step):
 `go test -race -v -count=1 -coverprofile=coverage.out ./...`

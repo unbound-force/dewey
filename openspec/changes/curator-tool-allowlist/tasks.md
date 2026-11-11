@@ -87,7 +87,7 @@
 
 ## 3. Documentation
 
-- [ ] 3.1 [P] Update `AGENTS.md`: add a Recent Changes bullet for
+- [x] 3.1 [P] Update `AGENTS.md`: add a Recent Changes bullet for
   `curator-tool-allowlist` describing the frontmatter-enforced
   deny-all-then-allow-six Dewey MCP allowlist, the other-server denies,
   and the parity tests; update any text describing the curator's MCP
@@ -96,11 +96,11 @@
   prompt-only policy; state the server-key coupling — the glob keys
   assume the `dewey` MCP server key from `opencode.json`, and a repo
   using a different key must adjust the globs.
-- [ ] 3.2 [P] Update `README.md`: extend the curator agent permission
+- [x] 3.2 [P] Update `README.md`: extend the curator agent permission
   model section with the frontmatter tool-glob enforcement (the deny
   entry, the six allows, the other-server denies) and the server-key
   coupling note.
-- [ ] 3.3 [P] Reconcile the website documentation: check whether the
+- [x] 3.3 [P] Reconcile the website documentation: check whether the
   prior change's open issues (unbound-force/website#371 docs, #376
   tutorial, #377 blog) still cover the curator's permission model; if
   any is open, extend it by comment with the frontmatter enforcement

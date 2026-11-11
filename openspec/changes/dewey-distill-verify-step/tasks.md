@@ -106,14 +106,14 @@ go test -race -count=1 ./...` passes.
 
 ## 4. Documentation and website sync
 
-- [ ] 4.1 `README.md`: add `verify_candidates` to the MCP tools
+- [x] 4.1 `README.md`: add `verify_candidates` to the MCP tools
   table and describe the verify step in the distillation and
   lint/anchor text. Exact edits: line 29 (tool count 50 → 51),
   line 765 (`/dewey-distill` pipeline description gains the verify
   step before the review gate), line 876 (`server.go — 50 tool
   registrations` → 51), line 904 (`types/tools.go — input types
   for all 50 tools` → 51).
-- [ ] 4.2 `AGENTS.md`: update the tool/command references and
+- [x] 4.2 `AGENTS.md`: update the tool/command references and
   Recent Changes with the verify step, the tool, and the allowlist
   extension. Exact edits: line 5 (tool count 50 → 51, category
   list gains verification), line 338 (`server.go — 50 tool
@@ -121,12 +121,12 @@ go test -race -count=1 ./...` passes.
   `verify`), line 371 (Server-side synthesis key pattern:
   `/dewey-distill` drives lint → inventory → scope gate →
   compile/curate → verify → review gate → batch promote).
-- [ ] 4.3 [P] Extend the open website sync issue
+- [x] 4.3 [P] Extend the open website sync issue
   `unbound-force/website#371` (dewey-distill documentation) with a
   comment covering `verify_candidates` and the verify step, plus
   the curator allowlist addition — do not open a new issue; the
   tracked docs pages are the same.
-- [ ] 4.4 [P] GoDoc: document every new exported symbol (`Verify`,
+- [x] 4.4 [P] GoDoc: document every new exported symbol (`Verify`,
   `NewVerify`, `VerifyCandidatesInput`) with behavior and
   non-mutation guarantees.
 

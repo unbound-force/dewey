@@ -331,6 +331,38 @@ func (s *Store) ListKnowledgePagesFoldCase() ([]*Page, error) {
 	return scanPages(rows)
 }
 
+// listDraftCandidatePagesSQL is the index-backed statement behind
+// ListDraftCandidatePages, hoisted to a constant for the EXPLAIN QUERY PLAN
+// tests (same convention as listKnowledgePagesFoldCaseSQL).
+const listDraftCandidatePagesSQL = `
+		SELECT name, original_name, source_id, source_doc_id, properties, content_hash, is_journal, created_at, updated_at, tier, category
+		FROM pages
+		WHERE tier = 'draft' AND (
+			(name >= 'learning/' COLLATE NOCASE AND name < 'learning0' COLLATE NOCASE)
+			OR (name >= 'compiled/' COLLATE NOCASE AND name < 'compiled0' COLLATE NOCASE)
+			OR (name >= 'knowledge/' COLLATE NOCASE AND name < 'knowledge0' COLLATE NOCASE)
+		)
+		ORDER BY name`
+
+// ListDraftCandidatePages returns every tier `draft` page in the learning/,
+// compiled/, and knowledge/ namespaces: the promotable candidate queue that
+// verify_candidates enumerates (issue #151) — the same namespaces promote
+// resolves against, with the same tier-based eligibility. Each prefix is
+// matched case-insensitively through the same range predicate as
+// ListKnowledgePagesFoldCase (name >= '<ns>/' AND name < '<ns>0' under NOCASE
+// collation), so SQLite can seek an index range on idx_pages_name_nocase
+// instead of evaluating a LIKE pattern per row. Results are ordered by name,
+// the deterministic lexicographic order the verification queue requires.
+func (s *Store) ListDraftCandidatePages() ([]*Page, error) {
+	rows, err := s.db.Query(listDraftCandidatePagesSQL)
+	if err != nil {
+		return nil, fmt.Errorf("list draft candidate pages: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	return scanPages(rows)
+}
+
 // getPageBySourceDocSQL is the index-backed statement behind
 // GetPageBySourceDoc, hoisted to a constant for the EXPLAIN QUERY PLAN
 // tests (PR 145 review amendment).

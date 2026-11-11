@@ -362,3 +362,24 @@ type PromoteInput struct {
 	// before any tier changes; if one fails, none are promoted.
 	Pages []string `json:"pages,omitempty" jsonschema:"Batch of page names to promote. All pages are validated before any tier changes; if one fails, none are promoted. Provide either page or pages, not both."`
 }
+
+// --- Verify tool inputs ---
+
+// VerifyCandidatesInput is the input for the verify_candidates MCP tool.
+// Provide either Pages or Tags, not both; with neither, the tool verifies
+// every draft candidate in the promotable queue. Supplying both is a
+// validation error, mirroring promote's page/pages rule.
+type VerifyCandidatesInput struct {
+	// Pages names explicit candidates to verify. Names resolve against the
+	// learning/, compiled/, and knowledge/ namespaces; duplicates are
+	// deduplicated. A name that resolves to no stored page, or to a page
+	// whose tier is not draft, is reported as a skipped candidate with a
+	// reason rather than silently dropped.
+	Pages []string `json:"pages,omitempty" jsonschema:"Explicit candidate page names to verify (draft pages under learning/, compiled/, and knowledge/). Duplicates are deduplicated; a name that resolves to no stored page or a non-draft page is reported as skipped with a reason. Provide either pages or tags, not both."`
+
+	// Tags restricts the candidate queue to the named tags. Tag membership
+	// is read from page-name prefixes (learning/{tag}-*, compiled/{tag})
+	// and the tag property, never from prose. Matching is exact, and
+	// knowledge/ pages match only through the tag property.
+	Tags []string `json:"tags,omitempty" jsonschema:"Restrict the candidate queue to these tags. Membership is read from page-name prefixes (learning/{tag}-*, compiled/{tag}) and the tag property; matching is exact and knowledge/ pages match only via the tag property. Provide either pages or tags, not both."`
+}

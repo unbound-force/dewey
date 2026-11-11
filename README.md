@@ -305,6 +305,7 @@ This creates:
 - `.uf/dewey/sources.yaml` — content source configuration (empty by default)
 - `.uf/dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
 - `.uf/dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
+- `.opencode/agents/curator.md` — the least-privilege curator agent for `/dewey-distill` (created only when `.opencode/` already exists; an existing file is never overwritten)
 
 Ignore runtime state, not knowledge. The machine-local runtime state — `.uf/dewey/graph.db` (with its `-shm` and `-wal` sidecars), `dewey.log`, `dewey.lock`, and `cache/` — is rebuilt from source files and belongs in your `.gitignore`; the private configuration files (`config.yaml`, `sources.yaml`, `knowledge-stores.yaml`) should stay out of git too. The knowledge artifact directories (`.uf/dewey/learnings/`, `compiled/`, `knowledge/`) are **not** rebuildable: do not ignore them. Publish them with `/dewey-publish` or `dewey artifacts` instead.
 
@@ -344,6 +345,8 @@ Initialize a Dewey configuration in the current directory. Creates `.uf/dewey/` 
 ```bash
 dewey init [--vault PATH]
 ```
+
+When `.opencode/` already exists, `dewey init` also scaffolds `.opencode/agents/curator.md` (the `/dewey-distill` agent) and the Dewey slash commands. Scaffolding is idempotent: an existing file is never overwritten, so a stale scaffolded agent must be updated deliberately.
 
 ### dewey index
 
@@ -494,6 +497,27 @@ Credential screening is a pre-exposure floor, not a guarantee. The scanner's rul
 When the plan reports gitignore status `bare-dewey-fix`, sync commits a bounded fix that re-ignores runtime state under `.uf/dewey/`-prefixed rules while leaving the artifact directories stageable. After the chore PR merges, artifact files become committable while runtime state stays ignored.
 
 Sync materializes the plan in a dedicated worktree (its path is the sync result's `worktree` field) and leaves the chore branch checked out there. Once the PR is created, remove it with `git worktree remove <worktree>`; the chore branch itself stays for the PR.
+
+### dewey gate
+
+Deterministic startup gates consumed by Dewey commands.
+
+```bash
+dewey gate auto-answer
+```
+
+`auto-answer` evaluates whether the opencode-auto-question plugin is configured to auto-answer questions for the `curator` agent. It reads the plugin's own config (`auto-question.jsonc` in the OpenCode global config directory, JSONC with `{env:VAR}` interpolation) and treats its `agents` key as authoritative, defaulting to `["autonomy"]` when absent. It also verifies that `.opencode/agents/curator.md` exists and declares `mode: subagent`. Exit 0 means pass; exit 1 means refusal. It fails closed: an unreadable, unparseable, or unresolvable configuration, a `curator` or `*` entry, or a missing curator definition all refuse. The verdict is tool-rendered and meant to be relayed verbatim:
+
+```
+Auto-answer gate: PASS
+Config file: /home/me/.config/opencode/auto-question.jsonc
+Effective agents: ["autonomy"]
+Default applied: no
+Curator definition: resolved
+Registration: registered
+```
+
+`/dewey-distill` runs this gate before any pipeline stage and stops on any non-pass verdict.
 
 ## Content Sources
 
@@ -736,7 +760,9 @@ When a synthesis provider is configured, the running MCP server performs compila
 
 Learning markdown files are treated as untrusted backups during startup re-ingestion: a file that claims `tier: validated` is re-ingested as `draft` until a human promotes it again.
 
-Use `/dewey-distill` to run lint → compile → curate → promote through the running MCP server. It gates the synthesis scope and the promotion list on human approval, and it falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable.
+Use `/dewey-distill` to run lint → compile → curate → promote through the running MCP server. It gates the synthesis scope and the promotion list on human approval, and it falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable. The command binds to the `curator` agent (`agent:` frontmatter) and runs `dewey gate auto-answer` at startup, refusing before any stage when the curator is configured for automatic question answering or the configuration cannot be verified; both mandatory gate questions carry the `HUMAN_GATE:` marker, which auto-answer plugins honoring the external contract leave for a human.
+
+The `curator` agent is a least-privilege identity for knowledge work: `read` is enabled, `write`/`edit`/`webfetch` are denied, subagent spawning is denied, and the only shell command it may run is `dewey gate auto-answer`. Its Dewey MCP surface is limited to `lint`, `list_pages`, `compile`, `curate`, `store_compiled`, and `promote`; every other Dewey MCP tool is forbidden by its stated policy. Any supervisor guard relaxation for the curator belongs in the user's global supervisor configuration, never in a repository's committed config. Dewey ships the agent definition; `dewey init` scaffolds it into `.opencode/agents/` when `.opencode/` exists and never overwrites an existing file.
 
 ### Trust Tiers
 
@@ -843,6 +869,8 @@ When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexi
 main.go              Entry point — backend routing, MCP server startup
 cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
                      source, doctor, manifest, compile, lint, promote, curate, artifacts
+gate.go              CLI gate subcommands: dewey gate auto-answer (deterministic startup gates)
+agents.go            Shipped agent definitions scaffolded by dewey init
 server.go            MCP server setup — 50 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff

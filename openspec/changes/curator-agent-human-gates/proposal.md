@@ -215,4 +215,7 @@ It follows the repository's operational-command precedent
 which are MCP tools. The trade-off is acknowledged here rather
 than left implicit; an MCP tool was rejected because the gate must
 run as a pre-session process, ahead of the MCP-dependent pipeline
-it authorizes.
+it authorizes. Because the Protocol clause is a MUST, this
+deviation is presented for explicit human ratification as part of
+this change's review; it is not a standing amendment and does not
+weaken the clause for future capabilities.

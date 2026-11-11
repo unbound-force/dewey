@@ -298,7 +298,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | Command | Description |
 |---------|-------------|
 | `dewey serve` | Start the MCP server (default when no subcommand) |
-| `dewey init` | Initialize `.uf/dewey/` directory with config and sources |
+| `dewey init` | Initialize `.uf/dewey/` directory with config and sources; when `.opencode/` exists, also scaffolds `.opencode/agents/curator.md` (never overwriting an existing file) |
 | `dewey index` | Build or update the knowledge graph index from configured sources |
 | `dewey reindex` | Delete and rebuild the index from scratch |
 | `dewey status` | Show index status (page/block/link counts, source info) |
@@ -313,6 +313,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey promote` | Promote one or more pages from `draft` to `validated` (batch is all-or-nothing; names resolve exact, then case-insensitive, then bare tags against `learning/`, `compiled/`, and `knowledge/`, then source doc IDs; ambiguous matches are refused) |
 | `dewey curate` | Run the curation pipeline to extract structured knowledge from indexed sources into knowledge stores |
 | `dewey artifacts` | Plan and publish stranded knowledge artifacts to git behind a human gate |
+| `dewey gate` | Deterministic startup gates (`dewey gate auto-answer` refuses when the curator agent is configured for automatic question answering) |
 
 ### Content Source Types
 
@@ -332,6 +333,8 @@ MCP server + CLI tool with flat package layout:
 ```text
 main.go              # Entry point, Cobra root command, serve logic
 cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote, curate, artifacts)
+gate.go              # CLI gate subcommands (dewey gate auto-answer — deterministic startup gates)
+agents.go            # Shipped agent definitions (scaffolded into .opencode/agents/ by dewey init)
 server.go            # MCP server setup, 50 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
@@ -365,7 +368,7 @@ artifacts/           # Knowledge-artifact publishing: plan/sync sweep, screening
 - **Background indexing**: The MCP server starts before vault indexing completes. Tools serve from the persistent store (previous session's data) during background indexing. An `atomic.Bool` `indexReady` flag tracks completion (012-background-index).
 - **Ollama auto-start**: `ensureOllama()` detects Ollama state (External/Managed/Unavailable) and auto-starts a subprocess if installed but not running. The subprocess is detached via `Setpgid` so it outlives Dewey (007-ollama-autostart). Only triggered when the embedding provider is `ollama`.
 - **Pluggable providers**: Both `Embedder` and `Synthesizer` interfaces support multiple backends (ollama, vertex, openai-compatible). Configured via `config.yaml` `embedding` and `synthesis` sections. Factory functions `embed.NewEmbedderFromConfig()` and `llm.NewSynthesizerFromConfig()` centralize construction. Embedding speaks the OpenAI v1 wire protocol through the shared `openaicompat/` transport (normalization, environment-only credentials, 429 retry, redacted errors, cached `/models` probe); the synthesis provider owns its own transport in `llm/` and resolves its key from `DEWEY_SYNTHESIS_API_KEY` then `synthesis.api_key`. Backward compatible — existing configs and env vars continue to work.
-- **Server-side synthesis**: `executeServe` builds one synthesizer and passes it through `WithSynthesizer` to `compile` and `curate` (and background curation). Compile shares the pipeline index mutex with indexing and curation. `/dewey-distill` drives lint → inventory → scope gate → compile/curate → review gate → batch promote entirely through MCP tools, because the running server owns the store lock.
+- **Server-side synthesis**: `executeServe` builds one synthesizer and passes it through `WithSynthesizer` to `compile` and `curate` (and background curation). Compile shares the pipeline index mutex with indexing and curation. `/dewey-distill` drives lint → inventory → scope gate → compile/curate → review gate → batch promote entirely through MCP tools, because the running server owns the store lock. The command binds to the `curator` agent (`agent: curator` frontmatter) and runs `dewey gate auto-answer` at startup, refusing on any non-pass verdict; the gate invocation is the single documented shell exception to the MCP-only rule because it never touches the store lock. Both mandatory gates carry the `HUMAN_GATE:` marker so auto-answer plugins honoring the external contract leave them for a human.
 - **Vertex AI rate limiting**: Both `VertexEmbedder` and `VertexSynthesizer` retry on HTTP 429 with exponential backoff (base 1s, max 60s, up to 5 attempts). Respects the `Retry-After` header when present. Context cancellation is honored between retries. Retries are logged at warn level via `charmbracelet/log`.
 
 ### Provider Configuration
@@ -667,6 +670,7 @@ specs/
 - Go 1.25 (per `go.mod`) + `net/http` (OpenAI-compatible chat completions), `github.com/modelcontextprotocol/go-sdk` (MCP tools), `github.com/unbound-force/dewey/v3/llm` (provider factory), `modernc.org/sqlite` (page resolution), `github.com/spf13/cobra` (CLI — multi-page `dewey promote`) (dewey-distill)
 
 ## Recent Changes
+- curator-agent-human-gates (OpenSpec, dewey #152): Added a least-privilege `curator` agent (`.opencode/agents/curator.md`, scaffolded by `dewey init` when `.opencode/` exists, tracked/shipped byte-identical via `agents.go`), bound `/dewey-distill` to it via `agent:` frontmatter, and made its gates human-only. New `dewey gate auto-answer` subcommand (`gate.go`) deterministically resolves the opencode-auto-question plugin config (JSONC with full-entry `{env:VAR}` interpolation, trim + case-fold normalization, documented default `["autonomy"]`), scans plugin registration as advisory context, and fails closed on unreadable/unparseable/unresolvable config or a missing curator definition; both gate questions carry the `HUMAN_GATE:` marker. No guard relaxation is committed to the repo — any curator supervisor override lives in the user's global config. Website: docs website#371, tutorial website#376, blog website#377.
 - read-tools-bare-names (OpenSpec): `get_page` and every name-based read through the vault client (including `get_links` forward direction, `traverse` start pages, `get_whiteboard`, `bulk_update_properties`, and `journal_range` — illustrative, since the seam is every `GetPage`/`GetPageBlocksTree` caller) now resolve bare names on the store fallback — exact match, then `compiled/<name>`, then `learning/<name>`, first match wins; vault files keep precedence, slash-bearing names skip the shorthand, and the write guard plus `promote` stay exact/strict. Per-probe store lookups are wrapped with the key they attempted (dewey #140)
 - lint-anchor-drift (OpenSpec, dewey #147 / PR #159): `lint` gained `anchor_missing` and `anchor_drift` checks for learnings whose `as_of` pins the vault's own repository, comparing each `<repo>:<path>` evidence locator at the pin and `HEAD` via local git (`tools/lint_anchors.go`, `anchorChecker` interface; 5s per call, 60s per pass, request context; `--no-ext-diff --no-textconv`). Every result carries `anchor_checks` (`checked`/`skipped`/`failed` + `reason`). `fix` marks drifted learnings `validity: stale-unverified` in store and backup, never tiers; `fixed.anchor_drift` counts store writes and `anchor_fix_warnings` lists backup failures. Backup writes and property decoding are shared with #146 supersession (`updateLearningBackup`, `decodeLearningProperties`). Website: docs website#398, blog website#399.
 - search-compound-terms (OpenSpec): In-memory search index now indexes hyphenated and snake_case compound terms whole AND by component (≥2 bytes, matching the tokenize term-length convention); queries return exact-term matches first, then fill remaining slots up to the limit with blocks matching every component; the FullTextSearch store merge is gated on the exact-match count so store-only pages holding a full compound ID rank ahead of component-only fills (resolves #149, part of #153)

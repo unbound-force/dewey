@@ -1,5 +1,6 @@
 ---
 description: Lint, compile, curate, and promote knowledge through the running MCP server.
+agent: curator
 ---
 
 # Command: /dewey-distill
@@ -11,9 +12,11 @@ the running Dewey MCP server, with two mandatory human gates. The pipeline
 is lint → inventory → scope gate → compile/curate → review gate → batch
 promote → report. Nothing is promoted without explicit approval.
 
-The command uses MCP tools only. While the server runs it holds an
-exclusive lock on `.uf/dewey/dewey.lock`, so `dewey lint`, `dewey compile`,
-`dewey curate`, and `dewey promote` would fail with a lock error.
+The command uses MCP tools exclusively, with one documented exception:
+the mandatory startup gate runs `dewey gate auto-answer`, which never
+touches the store. While the server runs it holds an exclusive lock on
+`.uf/dewey/dewey.lock`, so `dewey lint`, `dewey compile`, `dewey curate`,
+and `dewey promote` would fail with a lock error.
 
 ## Usage
 
@@ -24,6 +27,37 @@ exclusive lock on `.uf/dewey/dewey.lock`, so `dewey lint`, `dewey compile`,
 
 <protect>
 ## Instructions
+
+### 0. Startup Gate (MANDATORY)
+
+Before any pipeline stage, run `dewey gate auto-answer`. It is the only
+shell command this command invokes. Treat anything other than a pass as a
+refusal: if the command exits non-zero, or cannot run at all (a missing
+`dewey` binary or a shell error producing no verdict), stop before the
+lint stage and relay the tool's output verbatim. Do not retry and do not
+continue. The gate also refuses when the `agent: curator` binding cannot
+be resolved.
+
+A pass renders like this:
+
+```
+Auto-answer gate: PASS
+Config file: /home/me/.config/opencode/auto-question.jsonc
+Effective agents: ["autonomy"]
+Default applied: no
+Curator definition: resolved
+Registration: registered
+```
+
+A refusal renders like this:
+
+```
+Auto-answer gate: REFUSED
+Config file: /home/me/.config/opencode/auto-question.jsonc
+Reason: the "/home/me/.config/opencode/auto-question.jsonc" agent list includes curator
+Fix: Remove curator from the agents list in /home/me/.config/opencode/auto-question.jsonc, then re-run /dewey-distill.
+Registration: registered
+```
 
 ### 1. Lint
 
@@ -45,7 +79,12 @@ from page names (`learning/{tag}-...`, `compiled/{tag}`) and from the
 
 ### 3. Scope Gate (MANDATORY)
 
-Ask the human to choose:
+Present one question line whose remainder states the decision, then the
+choices beneath it:
+
+HUMAN_GATE: Which tags should I compile, is compilation full or incremental, and which knowledge store should I curate (a named store, all stores, or none)?
+
+Choices:
 - which tags to compile (all, or the listed subset — a subset requires
   incremental mode, because a full rebuild always covers every tag), and
 - whether compilation is full or incremental, and
@@ -102,9 +141,10 @@ Present the generated and changed content before promoting anything:
 - learnings that were included in the compiled clusters;
 - curated stores and item counts from the curate result.
 
-Ask the human which pages to promote. Only draft pages are eligible.
-Do not promote anything before the human answers, and do not promote a
-page the human did not select.
+HUMAN_GATE: Which of the listed draft pages should I promote to validated?
+
+Only draft pages are eligible. Do not promote anything before the human
+answers, and do not promote a page the human did not select.
 
 ### 6. Promote
 
@@ -134,6 +174,11 @@ be committed to the repository.
 - Never call `promote` without the review-gate approval.
 - Never invent curated content when `curate` returns `prompt_ready`.
 - Never promote authored or already-validated pages.
+- The human-gate marker is reserved for the two gate questions. Constraint
+  prose and informational lines must not begin a line with the literal
+  marker token.
+- Any supervisor guard relaxation for the curator belongs in the user's
+  global supervisor configuration, never in this repository.
 - Keep the API key out of output. If a synthesis error mentions
   credentials, report only that authentication failed.
 </protect>

@@ -17,13 +17,13 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Confirm the change artifacts under
+- [x] 0.1 Confirm the change artifacts under
   `openspec/changes/curator-agent-human-gates/` are committed and
   pushed on `opsx/curator-agent-human-gates` (Spec Commit Gate).
 
 ## 1. Curator Agent Definition and Shipping
 
-- [ ] 1.1 Create `.opencode/agents/curator.md` in the repository's
+- [x] 1.1 Create `.opencode/agents/curator.md` in the repository's
   V1 agent format. Frontmatter: `description` (states the job and
   the boundary), `mode: subagent`, a `tools:` block (`read: true`,
   `bash: true`, `write: false`, `edit: false`, `webfetch: false` —
@@ -45,7 +45,7 @@
   before any stage. Match the frontmatter shape of the existing
   V1 agents (`.opencode/agents/gaze-reporter.md`,
   `.opencode/agents/divisor-guard.md`).
-- [ ] 1.2 Create `agents.go` with a `deweyAgentDefinitions`
+- [x] 1.2 Create `agents.go` with a `deweyAgentDefinitions`
   `map[string]string` whose `"curator.md"` entry is byte-identical
   to the tracked `.opencode/agents/curator.md`, with GoDoc explaining
   that `dewey init` scaffolds these definitions only when
@@ -54,14 +54,14 @@
   inline code), build the Go string with concatenation around
   backtick literals the way `slash_commands.go` does — a Go raw
   string literal cannot contain a backtick.
-- [ ] 1.3 Edit `cli.go` inside the existing `.opencode/`
+- [x] 1.3 Edit `cli.go` inside the existing `.opencode/`
   composability guard: create `.opencode/agents/` when absent and
   write each `deweyAgentDefinitions` entry only when the target file
   does not exist, using `O_CREATE|O_EXCL` (not stat-then-write) so
   concurrent or racing invocations cannot overwrite. A write failure
   MUST fail `dewey init` with an error naming the target path; log a
   scaffold message only on successful create.
-- [ ] 1.4 Extend `cli_test.go` with
+- [x] 1.4 Extend `cli_test.go` with
   `TestInitCmd_ScaffoldsCuratorAgentFromMap` (scaffolded bytes equal
   the map entry and the tracked file),
   `TestInitCmd_ScaffoldingSkipsExistingCuratorAgent` (sentinel bytes
@@ -77,7 +77,7 @@
 
 ## 2. Auto-Answer Gate Tool
 
-- [ ] 2.1 Create `gate.go` with the deterministic gate evaluation,
+- [x] 2.1 Create `gate.go` with the deterministic gate evaluation,
   factored for testability with injectable paths: resolve the
   OpenCode global config dir (`$XDG_CONFIG_HOME/opencode` when set,
   else `~/.config/opencode`), refusing when neither variable is set
@@ -101,14 +101,14 @@
   segment match, leading `-` disable marker stripped) as advisory
   registration context with warnings for unreadable/unparseable
   scanned configs; return a structured verdict.
-- [ ] 2.2 Register a `dewey gate auto-answer` subcommand in `cli.go`
+- [x] 2.2 Register a `dewey gate auto-answer` subcommand in `cli.go`
   following the existing subcommand pattern: render the tool's own
   verdict output (DE-003 — pass: `Auto-answer gate: PASS` plus the
   config file, effective agents list, default-applied flag, and
   registration status; refuse: `Auto-answer gate: REFUSED` plus the
   reason, the config file, and the fix), exit 0 on pass and 1 on
   refusal, no vault flag required. No `--json` flag.
-- [ ] 2.3 Create `gate_test.go` covering the full matrix over
+- [x] 2.3 Create `gate_test.go` covering the full matrix over
   fixture directories (`t.TempDir()` with crafted configs): absent
   plugin config → pass on documented default; clean list → pass;
   `curator` listed → refuse (case-insensitive, including `Curator`
@@ -132,7 +132,7 @@
 
 ## 3. Command Binding and Human Gates
 
-- [ ] 3.1 Edit `.opencode/commands/dewey-distill.md`: add
+- [x] 3.1 Edit `.opencode/commands/dewey-distill.md`: add
   `agent: curator` to the YAML frontmatter after `description`; add
   `### 0. Startup Gate (MANDATORY)` before `### 1. Lint` instructing
   the agent to run `dewey gate auto-answer` — the only shell command
@@ -149,11 +149,11 @@
   its single documented shell exception; and add a step that treats a
   gate invocation failure (a missing `dewey` binary or a shell error
   producing no verdict) as a refusal.
-- [ ] 3.2 Mirror the exact edited content into the `"dewey-distill.md"`
+- [x] 3.2 Mirror the exact edited content into the `"dewey-distill.md"`
   entry of `deweySlashCommands` in `slash_commands.go`, preserving
   that file's Go string concatenation and `<protect>` escaping so the
   map value stays byte-identical to the tracked command file.
-- [ ] 3.3 Extend the dewey-distill tests in `cli_test.go`: the
+- [x] 3.3 Extend the dewey-distill tests in `cli_test.go`: the
   existing byte-identity test now also asserts both the tracked and
   the scaffolded file contain `agent: curator`; add a structural
   marker test asserting exactly one line beginning with `HUMAN_GATE:`
@@ -170,7 +170,7 @@
 
 ## 4. Documentation
 
-- [ ] 4.1 [P] Update `AGENTS.md`: extend the "Server-side synthesis"
+- [x] 4.1 [P] Update `AGENTS.md`: extend the "Server-side synthesis"
   architecture bullet to state that `/dewey-distill` binds to the
   `curator` agent, runs `dewey gate auto-answer` at startup and
   refuses on a non-pass verdict, and marks both gates with the
@@ -184,7 +184,7 @@
   Architecture section; and extend the "Server-side synthesis" bullet
   to name the startup-gate shell invocation as the documented
   exception to its "entirely through MCP tools" statement.
-- [ ] 4.2 [P] Update `README.md`: extend the `/dewey-distill`
+- [x] 4.2 [P] Update `README.md`: extend the `/dewey-distill`
   paragraph (around the current line 739) to describe the curator
   binding, the human-only gates, the startup refusal, and the
   global-only guard relaxation; add the curator agent, its
@@ -196,7 +196,7 @@
   extend the `### dewey init` section (around the current line 340)
   and its "This creates:" list (around the current line 303) with
   `.opencode/agents/curator.md` scaffolding.
-- [ ] 4.3 [P] Reconcile the website documentation with the open
+- [x] 4.3 [P] Reconcile the website documentation with the open
   issue unbound-force/website#371 ("docs: sync dewey distill
   documentation"), which already covers the `/dewey-distill`
   workflow and both human gates: add a comment extending its scope
@@ -212,7 +212,7 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run the full CI-parity gate, deriving every command from
+- [x] 5.1 Run the full CI-parity gate, deriving every command from
   `.github/workflows/ci.yml` and
   `.github/workflows/mega-linter.yml` (this is the sole full
   CI-parity checkpoint): `go build -v ./...`, `go vet ./...`,
@@ -245,7 +245,15 @@
   gate questions render with the `HUMAN_GATE: ` prefix and an
   auto-answer plugin honoring the external contract leaves them for
   a human.
-- [ ] 5.3 Verify constitution alignment (principles I–IV remain
+  **Results (recorded)**: the deterministic verdicts for `curator`
+  listed, `*` listed, no plugin config, unreadable/unparseable
+  config, JSON-null config, and an unresolved curator definition are
+  covered by `gate_test.go`. The host-enforced behaviors — the
+  binding switch, shell refusals including the adversarial forms, the
+  subagent refusal, and the plugin honoring the marker — require a
+  running OpenCode host and were not executable in this environment;
+  a human must run them before archive.
+- [x] 5.3 Verify constitution alignment (principles I–IV remain
   PASS); confirm `git status --short .opencode/agents/` shows only
   the new `curator.md` with no existing agent tool flag, permission
   rule, mode, or command binding changed; confirm the committed

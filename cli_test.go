@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -4708,6 +4709,284 @@ func TestInitCmd_ScaffoldsDeweyDistillFromMap(t *testing.T) {
 	if string(tracked) != want {
 		t.Errorf("tracked .opencode/commands/dewey-distill.md differs from deweySlashCommands map entry")
 	}
+}
+
+// TestInitCmd_ScaffoldsCuratorAgentFromMap verifies the curator agent
+// definition scaffolds byte-identical to its deweyAgentDefinitions map
+// entry and to the agent file tracked in this repository.
+func TestInitCmd_ScaffoldsCuratorAgentFromMap(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode"), 0o755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	scaffolded, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read scaffolded curator.md: %v", err)
+	}
+
+	want, ok := deweyAgentDefinitions["curator.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing curator.md entry")
+	}
+	if string(scaffolded) != want {
+		t.Errorf("scaffolded curator.md differs from deweyAgentDefinitions map entry")
+	}
+
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read tracked curator.md: %v", err)
+	}
+	if string(tracked) != want {
+		t.Errorf("tracked .opencode/agents/curator.md differs from deweyAgentDefinitions map entry")
+	}
+}
+
+// TestInitCmd_ScaffoldingSkipsExistingCuratorAgent verifies dewey init
+// never overwrites a user-customized curator agent.
+func TestInitCmd_ScaffoldingSkipsExistingCuratorAgent(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+	custom := "# custom curator\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "curator.md"), []byte(custom), 0o644); err != nil {
+		t.Fatalf("write custom agent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(agentsDir, "curator.md"))
+	if err != nil {
+		t.Fatalf("read curator.md: %v", err)
+	}
+	if string(content) != custom {
+		t.Errorf("curator.md was overwritten, got:\n%s", string(content))
+	}
+}
+
+// TestInitCmd_CuratorAgentWriteFailureFailsInit verifies a scaffold
+// write failure fails dewey init with the target path named rather than
+// reporting success with a missing agent file.
+func TestInitCmd_CuratorAgentWriteFailureFailsInit(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only directory does not reject writes")
+	}
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode"), 0o755); err != nil {
+		t.Fatalf("create opencode dir: %v", err)
+	}
+	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o555); err != nil {
+		t.Fatalf("create read-only agents dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(agentsDir, 0o755) })
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected init to fail on a read-only agents directory")
+	}
+	if !strings.Contains(err.Error(), "curator.md") {
+		t.Errorf("init error %q does not name the target path", err.Error())
+	}
+}
+
+// TestInitCmd_NoAgentsDirWhenNoOpenCodeDir verifies no .opencode/agents/
+// directory appears when .opencode/ is absent.
+func TestInitCmd_NoAgentsDirWhenNoOpenCodeDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpDir, ".opencode", "agents")); err == nil {
+		t.Error(".opencode/agents/ should NOT exist when .opencode/ was not present")
+	}
+}
+
+// TestDeweyDistill_CuratorBindingAndHumanGates asserts the tracked
+// dewey-distill command binds the curator agent, marks exactly one
+// question line per mandatory gate section, and references only
+// allowlisted Dewey MCP tools.
+func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill.md"))
+	if err != nil {
+		t.Fatalf("read tracked dewey-distill.md: %v", err)
+	}
+	command := string(data)
+
+	// The binding must be in the YAML frontmatter, not merely present
+	// somewhere in the file (KD-FR-101).
+	frontBlock, _, err := splitFrontmatter(command)
+	if err != nil {
+		t.Fatalf("dewey-distill.md frontmatter: %v", err)
+	}
+	binding := false
+	for _, line := range strings.Split(frontBlock, "\n") {
+		if strings.TrimSpace(line) == "agent: curator" {
+			binding = true
+		}
+	}
+	if !binding {
+		t.Error("dewey-distill.md frontmatter must declare `agent: curator`")
+	}
+
+	// Each mandatory gate section carries exactly one marker line, and
+	// the line uses the uppercase token plus one ASCII space (CA-FR-006).
+	gateSections := map[string]bool{
+		"### 3. Scope Gate (MANDATORY)":  true,
+		"### 5. Review Gate (MANDATORY)": true,
+	}
+	counts := map[string]int{}
+	current := ""
+	for _, line := range strings.Split(command, "\n") {
+		if strings.HasPrefix(line, "### ") {
+			current = strings.TrimRight(line, " ")
+			continue
+		}
+		if !strings.HasPrefix(line, "HUMAN_GATE:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "HUMAN_GATE: ") {
+			t.Errorf("marker line lacks the uppercase token plus one ASCII space: %q", line)
+		}
+		if !gateSections[current] {
+			t.Errorf("marker line found outside a gate section (%q): %q", current, line)
+		}
+		counts[current]++
+	}
+	for section := range gateSections {
+		if counts[section] != 1 {
+			t.Errorf("gate section %q has %d marker lines, want exactly 1", section, counts[section])
+		}
+	}
+
+	// Every Dewey MCP tool referenced must be within the allowlist. The
+	// candidate set is derived from the server's tool registry, so a
+	// newly referenced tool fails rather than passing unnoticed.
+	allowlist := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "promote"}
+	allowedSet := make(map[string]bool, len(allowlist))
+	for _, tool := range allowlist {
+		allowedSet[tool] = true
+	}
+	for _, tool := range registeredMCPToolNames(t) {
+		if !allowedSet[tool] && strings.Contains(command, tool) {
+			t.Errorf("dewey-distill.md references non-allowlisted tool %q", tool)
+		}
+	}
+	for _, tool := range allowlist {
+		if !strings.Contains(command, tool) {
+			t.Errorf("dewey-distill.md does not reference allowlisted tool %q", tool)
+		}
+	}
+
+	// The agent body's allowlist section names exactly the six tools,
+	// order-independent.
+	agent, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read tracked curator.md: %v", err)
+	}
+	if got := agentAllowlistEntries(string(agent)); !sameStringSet(got, allowlist) {
+		t.Errorf("agent allowlist = %v, want %v", got, allowlist)
+	}
+}
+
+// registeredMCPToolNames derives the Dewey MCP tool names registered in
+// server.go so allowlist tests assert an invariant over the full
+// registry rather than a hand-maintained sample.
+func registeredMCPToolNames(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	re := regexp.MustCompile(`Name:\s+"([a-z][a-z0-9_]*)"`)
+	seen := map[string]bool{}
+	var names []string
+	for _, match := range re.FindAllStringSubmatch(string(data), -1) {
+		name := match[1]
+		if name == "dewey" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		t.Fatal("no MCP tool names found in server.go")
+	}
+	return names
+}
+
+// sameStringSet reports whether a and b contain the same elements,
+// ignoring order and duplicates.
+func sameStringSet(a, b []string) bool {
+	as := make(map[string]bool, len(a))
+	for _, v := range a {
+		as[v] = true
+	}
+	bs := make(map[string]bool, len(b))
+	for _, v := range b {
+		bs[v] = true
+	}
+	if len(as) != len(bs) {
+		return false
+	}
+	for v := range as {
+		if !bs[v] {
+			return false
+		}
+	}
+	return true
+}
+
+// agentAllowlistEntries extracts the bullet items under the agent's
+// "## Dewey MCP tool allowlist" heading.
+func agentAllowlistEntries(body string) []string {
+	lines := strings.Split(body, "\n")
+	var entries []string
+	inSection := false
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			inSection = strings.TrimSpace(line) == "## Dewey MCP tool allowlist"
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			entries = append(entries, strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+		}
+	}
+	return entries
 }
 
 // TestPromoteCmd_MultiplePages verifies the CLI accepts multiple page names

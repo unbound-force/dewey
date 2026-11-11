@@ -4922,6 +4922,66 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 	}
 }
 
+// TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition verifies that both
+// tracked copies of the curator agent definition — the tracked
+// .opencode/agents/curator.md file and the deweyAgentDefinitions["curator.md"]
+// scaffold mirror in agents.go — extend the six-tool baseline shipped with
+// curator-agent-human-gates (#152) by exactly one entry: verify_candidates.
+// CA-FR-009 records that extension as the one human-authorized addition to
+// the curator allowlist (agent tool-access settings are a protected
+// gatekeeping category; the authorization was issued at the 2026-11-11
+// spec-review pause for issue #151), so an eighth tool or a removed
+// baseline tool in either copy must fail.
+func TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition(t *testing.T) {
+	// The #152 six-tool baseline plus the single CA-FR-009 addition.
+	want := []string{
+		"lint",
+		"list_pages",
+		"compile",
+		"curate",
+		"store_compiled",
+		"promote",
+		"verify_candidates",
+	}
+
+	cases := []struct {
+		name string
+		body func(t *testing.T) string
+	}{
+		{
+			name: "tracked .opencode/agents/curator.md",
+			body: func(t *testing.T) string {
+				t.Helper()
+				data, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+				if err != nil {
+					t.Fatalf("read tracked .opencode/agents/curator.md: %v", err)
+				}
+				return string(data)
+			},
+		},
+		{
+			name: "agents.go mirror",
+			body: func(t *testing.T) string {
+				t.Helper()
+				mirror, ok := deweyAgentDefinitions["curator.md"]
+				if !ok {
+					t.Fatal("deweyAgentDefinitions missing curator.md entry")
+				}
+				return mirror
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := agentAllowlistEntries(tc.body(t))
+			if !sameStringSet(got, want) {
+				t.Errorf("%s: curator allowlist = %v, want exactly the #152 baseline plus verify_candidates: %v", tc.name, got, want)
+			}
+		})
+	}
+}
+
 // registeredMCPToolNames derives the Dewey MCP tool names registered in
 // server.go so allowlist tests assert an invariant over the full
 // registry rather than a hand-maintained sample.

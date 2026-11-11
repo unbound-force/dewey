@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -31,6 +32,7 @@ import (
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
 	"github.com/unbound-force/dewey/v3/vault"
+	"gopkg.in/yaml.v3"
 )
 
 // TestRootCmd_Version verifies the root command reports the correct version.
@@ -4987,6 +4989,379 @@ func agentAllowlistEntries(body string) []string {
 		}
 	}
 	return entries
+}
+
+// TestCuratorAgent_FrontmatterToolAllowlist verifies the curator agent's
+// frontmatter tools block enforces the deny-all-then-allow-six Dewey MCP
+// boundary (CA-FR-009): the broad "dewey_*" deny is false and precedes the
+// six allow entries, exactly the six allowlisted tools carry true, the
+// built-in flags and the permission block are unchanged from
+// curator-agent-human-gates, and every non-dewey MCP server configured in
+// the repository-root opencode.json has a wholesale deny entry (CA-FR-010).
+// The same shape assertions run against the deweyAgentDefinitions map entry
+// so both shipped copies carry the boundary (CA-FR-011).
+func TestCuratorAgent_FrontmatterToolAllowlist(t *testing.T) {
+	serverKeys := configuredMCPServerKeys(t)
+
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read tracked curator.md: %v", err)
+	}
+	assertCuratorFrontmatterShape(t, "tracked .opencode/agents/curator.md", string(tracked), serverKeys)
+
+	def, ok := deweyAgentDefinitions["curator.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing curator.md entry")
+	}
+	assertCuratorFrontmatterShape(t, `deweyAgentDefinitions["curator.md"]`, def, serverKeys)
+}
+
+// configuredMCPServerKeys derives the MCP server keys configured in this
+// repository's root opencode.json. The path is pinned deliberately: the
+// repository also carries .opencode/opencode.json (agent autonomy
+// permissions, no mcp section), and parsing that file instead would
+// silently yield an empty server list. The helper fails closed — an
+// unreadable file, an unparseable document, or an emptied or renamed-away
+// mcp map fails the test rather than letting the deny-coverage check pass
+// vacuously.
+func configuredMCPServerKeys(t *testing.T) []string {
+	t.Helper()
+	// Repository root only — never .opencode/opencode.json.
+	data, err := os.ReadFile("opencode.json")
+	if err != nil {
+		t.Fatalf("read repository-root opencode.json: %v", err)
+	}
+	var cfg struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse repository-root opencode.json: %v", err)
+	}
+	if len(cfg.MCP) == 0 {
+		t.Fatal("repository-root opencode.json has an empty or missing mcp map; other-server deny coverage would pass vacuously")
+	}
+	keys := make([]string, 0, len(cfg.MCP))
+	for key := range cfg.MCP {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, want := range []string{"dewey", "replicator"} {
+		if _, ok := cfg.MCP[want]; !ok {
+			t.Fatalf("opencode.json mcp keys %v are missing expected server %q; the config source moved or was renamed", keys, want)
+		}
+	}
+	return keys
+}
+
+// assertCuratorFrontmatterShape asserts the curator agent frontmatter shape
+// on one shipped copy (the tracked file or the deweyAgentDefinitions map
+// entry). The tools: and permission: mappings are parsed with yaml.Node,
+// which preserves key order, so the deny-before-allow ordering is asserted
+// rather than assumed.
+func assertCuratorFrontmatterShape(t *testing.T, label, content string, serverKeys []string) {
+	t.Helper()
+
+	frontBlock, _, err := splitFrontmatter(content)
+	if err != nil {
+		t.Fatalf("%s: split frontmatter: %v", label, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(frontBlock), &doc); err != nil {
+		t.Fatalf("%s: parse YAML frontmatter: %v", label, err)
+	}
+	if len(doc.Content) == 0 {
+		t.Fatalf("%s: frontmatter parsed to an empty document", label)
+	}
+	root := yamlMappingPairs(t, label, "frontmatter", doc.Content[0])
+
+	// tools: block — deny-all-then-allow-six (CA-FR-009).
+
+	toolsPairs := yamlMappingPairs(t, label, "tools", yamlPairValue(root, "tools"))
+	if len(toolsPairs) == 0 {
+		t.Fatalf("%s: tools block has no entries", label)
+	}
+	type toolFlag struct {
+		key   string
+		grant bool
+	}
+	flags := make([]toolFlag, 0, len(toolsPairs))
+	for _, pair := range toolsPairs {
+		var grant bool
+		if err := pair.value.Decode(&grant); err != nil {
+			t.Fatalf("%s: tools entry %q is not a boolean: %v", label, pair.key, err)
+		}
+		flags = append(flags, toolFlag{key: pair.key, grant: grant})
+	}
+	flagByKey := make(map[string]bool, len(flags))
+	for _, flag := range flags {
+		flagByKey[flag.key] = flag.grant
+	}
+
+	// Built-in entries are unchanged from curator-agent-human-gates: read
+	// and bash stay true; write, edit, and webfetch stay false.
+	for key, want := range map[string]bool{
+		"read":     true,
+		"bash":     true,
+		"write":    false,
+		"edit":     false,
+		"webfetch": false,
+	} {
+		got, ok := flagByKey[key]
+		if !ok {
+			t.Errorf("%s: tools block is missing built-in entry %q", label, key)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: built-in tools entry %q = %v, want %v", label, key, got, want)
+		}
+	}
+
+	// The broad deny is present, false, and precedes every dewey_* allow
+	// (design D2: a last-matching-rule-wins matcher must resolve an
+	// allowlisted tool to true and every other dewey_* tool to false).
+	denyIndex := -1
+	for i, flag := range flags {
+		if flag.key == "dewey_*" {
+			denyIndex = i
+			break
+		}
+	}
+	if denyIndex < 0 {
+		t.Errorf("%s: tools block is missing the \"dewey_*\" deny entry", label)
+	} else {
+		if flagByKey["dewey_*"] {
+			t.Errorf("%s: \"dewey_*\" entry is true, want false", label)
+		}
+		for i, flag := range flags {
+			if i < denyIndex && flag.grant && strings.HasPrefix(flag.key, "dewey_") {
+				t.Errorf("%s: allow entry %q (position %d) precedes the \"dewey_*\" deny (position %d)", label, flag.key, i, denyIndex)
+			}
+		}
+	}
+
+	// Exactly the six allowlisted tools carry true; the set comparison also
+	// rejects any other dewey_*-matching key carrying true (CA-FR-009).
+	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "promote"}
+	var allowedTools []string
+	for _, flag := range flags {
+		if flag.grant && strings.HasPrefix(flag.key, "dewey_") {
+			allowedTools = append(allowedTools, strings.TrimPrefix(flag.key, "dewey_"))
+		}
+	}
+	if !sameStringSet(allowedTools, wantTools) {
+		t.Errorf("%s: dewey_* tools carrying true = %v, want exactly %v", label, allowedTools, wantTools)
+	}
+
+	// Grant exhaustiveness, fail closed: beyond the built-in read and bash
+	// grants, no key of any kind carries true. This generalizes
+	// CA-FR-009's "no other dewey_*-matching key" to every server
+	// (CA-FR-010: the curator must not be granted any tool from another
+	// configured server), so an unexpected grant — a replicator_* tool,
+	// say — fails here instead of passing unnoticed.
+	wantGranted := []string{"read", "bash"}
+	for _, tool := range wantTools {
+		wantGranted = append(wantGranted, "dewey_"+tool)
+	}
+	var granted []string
+	for _, flag := range flags {
+		if flag.grant {
+			granted = append(granted, flag.key)
+		}
+	}
+	if !sameStringSet(granted, wantGranted) {
+		t.Errorf("%s: tools entries carrying true = %v, want exactly %v", label, granted, wantGranted)
+	}
+
+	// Every non-dewey MCP server configured in the repository-root
+	// opencode.json is denied wholesale (CA-FR-010): one <key>_*: false
+	// entry per configured server, so a server added to the config fails
+	// this test until the curator's deny list is updated.
+	for _, server := range serverKeys {
+		if server == "dewey" {
+			continue
+		}
+		key := server + "_*"
+		denied, ok := flagByKey[key]
+		if !ok {
+			t.Errorf("%s: tools block is missing deny entry %q for configured MCP server %q", label, key, server)
+			continue
+		}
+		if denied {
+			t.Errorf("%s: deny entry %q for configured MCP server %q is true, want false", label, key, server)
+		}
+	}
+
+	// permission: block — unchanged from curator-agent-human-gates.
+
+	permPairs := yamlMappingPairs(t, label, "permission", yamlPairValue(root, "permission"))
+
+	// The top-level key set is pinned exactly: a new permission entry is a
+	// capability change that must update this test (fail closed).
+	wantPermKeys := []string{"question", "task", "edit", "write", "patch", "webfetch", "bash"}
+	var gotPermKeys []string
+	for _, pair := range permPairs {
+		gotPermKeys = append(gotPermKeys, pair.key)
+	}
+	if !sameStringSet(gotPermKeys, wantPermKeys) {
+		t.Errorf("%s: permission keys = %v, want exactly %v", label, gotPermKeys, wantPermKeys)
+	}
+
+	for key, want := range map[string]string{
+		"question": "allow",
+		"task":     "deny",
+		"edit":     "deny",
+		"write":    "deny",
+		"patch":    "deny",
+		"webfetch": "deny",
+	} {
+		node := yamlPairValue(permPairs, key)
+		if node == nil {
+			t.Errorf("%s: permission block is missing entry %q", label, key)
+			continue
+		}
+		var got string
+		if err := node.Decode(&got); err != nil {
+			t.Errorf("%s: permission entry %q is not a string scalar: %v", label, key, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: permission entry %q = %q, want %q", label, key, got, want)
+		}
+	}
+
+	// The nested bash map keeps its deny-all-then-allow-one carve-out:
+	// "*": deny must precede the single "dewey gate auto-answer" allow —
+	// the same last-matching-rule-wins ordering the tools block relies on.
+	bashPairs := yamlMappingPairs(t, label, "permission.bash", yamlPairValue(permPairs, "bash"))
+	wantBash := []struct {
+		key   string
+		value string
+	}{
+		{"*", "deny"},
+		{"dewey gate auto-answer", "allow"},
+	}
+	if len(bashPairs) != len(wantBash) {
+		t.Errorf("%s: permission.bash has %d entries, want exactly %d (the \"*\" deny and the single gate allow)", label, len(bashPairs), len(wantBash))
+	} else {
+		for i, want := range wantBash {
+			var got string
+			if err := bashPairs[i].value.Decode(&got); err != nil {
+				t.Errorf("%s: permission.bash entry %q is not a string scalar: %v", label, bashPairs[i].key, err)
+				continue
+			}
+			if bashPairs[i].key != want.key || got != want.value {
+				t.Errorf("%s: permission.bash entry %d = %q: %q, want %q: %q", label, i, bashPairs[i].key, got, want.key, want.value)
+			}
+		}
+	}
+}
+
+// yamlPair is one ordered entry of a YAML mapping node.
+type yamlPair struct {
+	key   string
+	value *yaml.Node
+}
+
+// yamlMappingPairs walks a YAML mapping node in document order, failing the
+// test on duplicate keys: yaml.Node does not reject them, and a duplicated
+// tools or permission key would otherwise collapse silently in set-based
+// assertions.
+func yamlMappingPairs(t *testing.T, label, mapping string, node *yaml.Node) []yamlPair {
+	t.Helper()
+	if node == nil || node.Kind != yaml.MappingNode {
+		t.Fatalf("%s: %s is missing or not a YAML mapping", label, mapping)
+	}
+	var pairs []yamlPair
+	seen := make(map[string]bool)
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key, value := node.Content[i], node.Content[i+1]
+		if seen[key.Value] {
+			t.Fatalf("%s: %s has duplicate key %q", label, mapping, key.Value)
+		}
+		seen[key.Value] = true
+		pairs = append(pairs, yamlPair{key: key.Value, value: value})
+	}
+	return pairs
+}
+
+// yamlPairValue returns the value node for key, or nil when absent.
+func yamlPairValue(pairs []yamlPair, key string) *yaml.Node {
+	for _, pair := range pairs {
+		if pair.key == key {
+			return pair.value
+		}
+	}
+	return nil
+}
+
+// TestCuratorAgent_AllowlistParity verifies the curator agent's two
+// allowlist declarations cannot drift apart (CA-FR-011): the frontmatter
+// tools block's dewey_* true entries and the Markdown body's
+// "## Dewey MCP tool allowlist" section must name the same tools. Set
+// equality is symmetric, so a tool added to either list without the other
+// fails the test. The same parity assertion runs against the
+// deweyAgentDefinitions map entry, matching the two-copy coverage of
+// TestCuratorAgent_FrontmatterToolAllowlist; byte identity of the copies
+// is separately guarded by TestInitCmd_ScaffoldsCuratorAgentFromMap.
+func TestCuratorAgent_AllowlistParity(t *testing.T) {
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read tracked curator.md: %v", err)
+	}
+	assertCuratorAllowlistParity(t, "tracked .opencode/agents/curator.md", string(tracked))
+
+	def, ok := deweyAgentDefinitions["curator.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing curator.md entry")
+	}
+	assertCuratorAllowlistParity(t, `deweyAgentDefinitions["curator.md"]`, def)
+}
+
+// assertCuratorAllowlistParity asserts, on one shipped copy of the curator
+// agent definition, that the frontmatter allow set and the prompt-text
+// allowlist name the same Dewey tools: the set of dewey_-prefixed tools:
+// keys carrying true (prefix stripped) must equal agentAllowlistEntries
+// applied to the same copy's Markdown body. Parsing reuses the same
+// helpers as the frontmatter shape assertions (splitFrontmatter,
+// yamlMappingPairs, yamlPairValue), so quoted glob keys and nesting are
+// handled uniformly across both tests.
+func assertCuratorAllowlistParity(t *testing.T, label, content string) {
+	t.Helper()
+
+	frontBlock, body, err := splitFrontmatter(content)
+	if err != nil {
+		t.Fatalf("%s: split frontmatter: %v", label, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(frontBlock), &doc); err != nil {
+		t.Fatalf("%s: parse YAML frontmatter: %v", label, err)
+	}
+	if len(doc.Content) == 0 {
+		t.Fatalf("%s: frontmatter parsed to an empty document", label)
+	}
+	root := yamlMappingPairs(t, label, "frontmatter", doc.Content[0])
+	toolsPairs := yamlMappingPairs(t, label, "tools", yamlPairValue(root, "tools"))
+	if len(toolsPairs) == 0 {
+		t.Fatalf("%s: tools block has no entries", label)
+	}
+
+	var frontmatterTools []string
+	for _, pair := range toolsPairs {
+		var grant bool
+		if err := pair.value.Decode(&grant); err != nil {
+			t.Fatalf("%s: tools entry %q is not a boolean: %v", label, pair.key, err)
+		}
+		// The "dewey_*" glob deny matches the prefix but carries false,
+		// so only genuine per-tool allows are collected.
+		if grant && strings.HasPrefix(pair.key, "dewey_") {
+			frontmatterTools = append(frontmatterTools, strings.TrimPrefix(pair.key, "dewey_"))
+		}
+	}
+
+	bodyTools := agentAllowlistEntries(body)
+	if !sameStringSet(frontmatterTools, bodyTools) {
+		t.Errorf("%s: frontmatter dewey_* allows = %v, prompt-body allowlist = %v; the two lists must name the same tools", label, frontmatterTools, bodyTools)
+	}
 }
 
 // TestPromoteCmd_MultiplePages verifies the CLI accepts multiple page names

@@ -369,6 +369,10 @@ type PromoteInput struct {
 // Provide either Pages or Tags, not both; with neither, the tool verifies
 // every draft candidate in the promotable queue. Supplying both is a
 // validation error, mirroring promote's page/pages rule.
+//
+// The tool this input drives is read-only: verification never mutates
+// tiers, validity, content, or files, and promotion stays a human decision
+// regardless of the result.
 type VerifyCandidatesInput struct {
 	// Pages names explicit candidates to verify. Names resolve against the
 	// learning/, compiled/, and knowledge/ namespaces; duplicates are

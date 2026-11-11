@@ -149,6 +149,13 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 
 		promote := tools.NewPromote(cfg.store)
 		toolCount += registerPromoteTools(srv, promote)
+
+		// Candidate verification (dewey-distill-verify-step, issue #151):
+		// read-only queue check ahead of promote's human gate. The vault
+		// path anchors the local-git anchor checks; when empty they are
+		// skipped.
+		verify := tools.NewVerify(cfg.store, cfg.vaultPath)
+		toolCount += registerVerifyTools(srv, verify)
 	}
 
 	toolCount += registerHealthTool(srv, b, readOnly, &cfg)
@@ -530,6 +537,22 @@ func registerPromoteTools(srv *mcp.Server, promote *tools.Promote) int {
 		Name:        "promote",
 		Description: "Promote draft learnings or compiled articles to validated status after human review. Accepts page for one page or pages for a batch; names resolve exact, then case-insensitive, then bare tags against learning/, compiled/, and knowledge/, then source doc IDs; ambiguous matches are refused. Batch promotion is all-or-nothing.",
 	}, promote.Promote)
+
+	return 1
+}
+
+// registerVerifyTools registers the verify_candidates MCP tool for the
+// read-only verification of the promotable candidate queue ahead of the
+// human promotion gate. The tool itself mutates nothing — verification is
+// not endorsement — but it needs the persistent store, so it is registered
+// with the other store-backed knowledge tools, which are excluded in
+// read-only mode.
+// Returns the number of tools registered.
+func registerVerifyTools(srv *mcp.Server, verify *tools.Verify) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "verify_candidates",
+		Description: "Read-only verification of the promotable candidate queue — every draft page under learning/, compiled/, and knowledge/ — ahead of the human promotion gate. Checks each candidate's cited evidence locators against its as_of pin and HEAD via local git and reports one result per candidate (anchors_ok, drifted, missing, no_anchors, or skipped) plus summary counts. Nothing is mutated: no tier, validity, content, or file changes. Verification is not endorsement — anchors_ok states only that cited paths exist at the pin and are unchanged at HEAD, never that a claim is correct or worth acting on — and promotion stays a human decision. Provide pages (exact page names, deduplicated; a missing or non-draft page is reported skipped with a reason) or tags (matching via page-name prefixes learning/{tag}-* and compiled/{tag} or the tag property, exact with the delimiter after the tag, never from prose), not both; with neither, every draft candidate is verified.",
+	}, verify.VerifyCandidates)
 
 	return 1
 }

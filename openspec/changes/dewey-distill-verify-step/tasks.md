@@ -135,7 +135,7 @@ passes, and `go test -race -count=1 ./...` passes.
 
 ## 5. Verification and review
 
-- [ ] 5.1 CI parity: run the exact checks from
+- [x] 5.1 CI parity: run the exact checks from
   `.github/workflows/ci.yml` — `go build -v ./...`,
   `go vet ./...`, `go test -race -v -count=1
   -coverprofile=coverage.out ./...`, and

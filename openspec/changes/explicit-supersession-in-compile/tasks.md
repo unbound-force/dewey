@@ -53,7 +53,7 @@
 
 ## 3. Citation coverage helper (pure)
 
-- [ ] 3.1 `tools/citations.go` (new): claim-bearing body extraction
+- [x] 3.1 `tools/citations.go` (new): claim-bearing body extraction
   anchored by shape — text after the leading frontmatter block and
   before the trailing (last) `## History` heading and any trailing
   `## Supersession Proposals` section; an earlier `## History`
@@ -70,7 +70,7 @@
   supersession status passed in as an input so the helper performs
   no store lookup; pure functions,
   GoDoc, Options/Result pattern
-- [ ] 3.2 `tools/citations_test.go` (new): table-driven — clean
+- [x] 3.2 `tools/citations_test.go` (new): table-driven — clean
   article, truncated citation, unknown identity, uncited source,
   multi-identity group, History/frontmatter/proposals excluded from
   forward counting, an early `## History` heading not fencing the
@@ -83,7 +83,7 @@
   one case per non-citation bracket form (`[text](url)`,
   `[ref][target]`, `[1]`, `[x]`, `[[wiki-link]]`, `[]`,
   `[see the notes]`)
-- [ ] 3.3 Phase checkpoint — `go test -race -count=1 ./tools/...`
+- [x] 3.3 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 4 begins
 
 ## 4. Compile: proposals and coverage

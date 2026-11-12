@@ -98,6 +98,7 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
             "similarity": 0.92,
             "description": "Learnings 'auth-timeout-1' and 'auth-timeout-3' are highly similar (0.92) but may contain contradicting information.",
             "remediation": "Run `dewey compile` to resolve contradictions via temporal merge, or review manually."
+// *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
         }
     ],
     "fixed": {

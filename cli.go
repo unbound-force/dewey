@@ -2196,8 +2196,11 @@ func newCompileCmd() *cobra.Command {
 		Short: "Compile learnings into knowledge articles",
 		Long: `Synthesize stored learnings into compiled knowledge articles.
 
-Groups learnings by topic tag, resolves contradictions temporally
-(newer wins), and produces current-state articles with history.
+Groups learnings by topic tag and produces current-state articles
+with per-claim citations and history. Supersession is explicit, not
+recency-driven: synthesis presents unresolved contradictions with both
+positions, proposes supersessions for human confirmation, and reports
+per-article citation coverage.
 
 When a compile_model is configured in .uf/dewey/config.yaml, uses
 Ollama for LLM synthesis. Otherwise, outputs clusters with synthesis
@@ -2437,6 +2440,8 @@ func newLintCmd() *cobra.Command {
   - Uncompiled learnings (not in any compiled article)
   - Embedding gaps (pages with blocks but no embeddings)
   - Potential contradictions (similar learnings with same tag)
+  - Citation coverage (compiled articles citing undeclared learnings
+    or leaving current sources uncited)
 
 Use --fix to auto-repair mechanical issues (e.g., regenerate
 missing embeddings). Semantic issues require human intervention.

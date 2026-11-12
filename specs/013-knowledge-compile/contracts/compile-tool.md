@@ -22,6 +22,7 @@ type CompileInput struct {
 mcp.AddTool(srv, &mcp.Tool{
     Name:        "compile",
     Description: "Compile stored learnings into synthesized knowledge articles. Clusters learnings by topic, applies category-aware resolution (decisions: temporal merge, patterns: accumulate, gotchas: dedup), and produces markdown articles in .uf/dewey/compiled/. Returns clusters with synthesis prompts when no LLM is configured.",
+    // *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 }, compile.Compile)
 ```
 

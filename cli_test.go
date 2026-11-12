@@ -4895,7 +4895,7 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 	// Every Dewey MCP tool referenced must be within the allowlist. The
 	// candidate set is derived from the server's tool registry, so a
 	// newly referenced tool fails rather than passing unnoticed.
-	allowlist := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "promote"}
+	allowlist := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "supersede_learning", "promote"}
 	allowedSet := make(map[string]bool, len(allowlist))
 	for _, tool := range allowlist {
 		allowedSet[tool] = true
@@ -4922,18 +4922,20 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 	}
 }
 
-// TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition verifies that both
+// TestCuratorAgentAllowlist_AuthorizedExtensions verifies that both
 // tracked copies of the curator agent definition — the tracked
 // .opencode/agents/curator.md file and the deweyAgentDefinitions["curator.md"]
 // scaffold mirror in agents.go — extend the six-tool baseline shipped with
-// curator-agent-human-gates (#152) by exactly one entry: verify_candidates.
-// CA-FR-013 records that extension as the one human-authorized addition to
-// the curator allowlist (agent tool-access settings are a protected
-// gatekeeping category; the authorization was issued at the 2026-11-11
-// spec-review pause for issue #151), so an eighth tool or a removed
-// baseline tool in either copy must fail.
-func TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition(t *testing.T) {
-	// The #152 six-tool baseline plus the single CA-FR-013 addition.
+// curator-agent-human-gates (#152) by exactly two entries: verify_candidates
+// and supersede_learning. CA-FR-013 records verify_candidates as the one
+// human-authorized addition for issue #151 (agent tool-access settings are
+// a protected gatekeeping category; the authorization was issued at the
+// 2026-11-11 spec-review pause), and the explicit-supersession change
+// (#150) records supersede_learning as the second, authorized at the
+// 2026-11-12 spec-review pause relayed by the pipeline orchestrator — so
+// any ninth tool or a removed baseline tool in either copy must fail.
+func TestCuratorAgentAllowlist_AuthorizedExtensions(t *testing.T) {
+	// The #152 six-tool baseline plus the two authorized additions.
 	want := []string{
 		"lint",
 		"list_pages",
@@ -4942,6 +4944,7 @@ func TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition(t *testing.T) {
 		"store_compiled",
 		"promote",
 		"verify_candidates",
+		"supersede_learning",
 	}
 
 	cases := []struct {
@@ -4976,7 +4979,7 @@ func TestCuratorAgentAllowlist_VerifyCandidatesOnlyAddition(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := agentAllowlistEntries(tc.body(t))
 			if !sameStringSet(got, want) {
-				t.Errorf("%s: curator allowlist = %v, want exactly the #152 baseline plus verify_candidates: %v", tc.name, got, want)
+				t.Errorf("%s: curator allowlist = %v, want exactly the #152 baseline plus verify_candidates and supersede_learning: %v", tc.name, got, want)
 			}
 		})
 	}
@@ -5234,10 +5237,12 @@ func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKe
 		}
 	}
 
-	// Exactly the seven allowlisted tools carry true (the #152 six-tool
-	// baseline plus verify_candidates, CA-FR-013); the set comparison also
-	// rejects any other dewey_*-matching key carrying true.
-	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "promote"}
+	// Exactly the eight allowlisted tools carry true (the #152 six-tool
+	// baseline plus the two human-authorized additions: verify_candidates,
+	// CA-FR-013, and supersede_learning, explicit-supersession #150); the
+	// set comparison also rejects any other dewey_*-matching key carrying
+	// true.
+	wantTools := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "supersede_learning", "promote"}
 	allowedTools := curatorAllowedDeweyTools(flags)
 	if !sameStringSet(allowedTools, wantTools) {
 		t.Errorf("%s: dewey_* tools carrying true = %v, want exactly %v", label, allowedTools, wantTools)

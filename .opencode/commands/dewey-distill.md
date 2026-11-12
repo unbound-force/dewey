@@ -1,5 +1,5 @@
 ---
-description: Lint, compile, curate, verify, and promote knowledge through the running MCP server.
+description: Lint, compile, curate, verify, apply confirmed supersessions, and promote knowledge through the running MCP server.
 agent: curator
 ---
 
@@ -10,8 +10,9 @@ agent: curator
 Turn draft learnings into compiled articles and curated knowledge, verify
 each candidate's cited code, and promote through the running Dewey MCP
 server, with two mandatory human gates. The pipeline is lint → inventory
-→ scope gate → compile/curate → verify → review gate → batch promote →
-report. Nothing is promoted without explicit approval.
+→ scope gate → compile/curate → verify → review gate → confirmed-
+supersession apply → batch promote → report. Nothing is promoted without
+explicit approval.
 
 The command uses MCP tools exclusively, with one documented exception:
 the mandatory startup gate runs `dewey gate auto-answer`, which never
@@ -122,6 +123,17 @@ Inspect the result status:
   refusal, report it to the human rather than retrying the same tag. Do
   not skip a cluster silently.
 
+Report the supersession proposals and citation coverage the results carry.
+In the `compiled` and `partial` statuses the compile result includes
+`proposed_supersessions` (each proposal names a `successor` and a `target`
+with a `rationale`), `dropped_proposals` (proposals naming unknown
+identities — report them, never apply them), and per-article `coverage`
+in `articles` (unresolved citations and uncited sources). In
+`prompts_ready` mode the compile result carries neither field: the
+`store_compiled` results you produce instead carry the same
+`proposed_supersessions`, `dropped_proposals`, and `coverage` per stored
+page — collect and report those the same way.
+
 If curation was approved, call the `curate` MCP tool for the approved
 store (or with no `store` only when all stores were approved). Inspect the
 result status:
@@ -193,21 +205,34 @@ anything, in this order:
 - the run's output regardless: compiled articles (`compiled/{tag}`) with
   topics and source counts, learnings included in compiled clusters, and
   curated stores with item counts.
+- proposed supersessions (successor superseding target, with rationale)
+  and each article's coverage (unresolved citations, uncited sources) —
+  from the compile result, or from the `store_compiled` results produced
+  in `prompts_ready` mode.
 
 State code correspondence only. `anchors_ok` means the cited paths exist
 at the candidate's pin and are unchanged at the current `HEAD`; it is not
 an endorsement, a quality judgment, or a recommendation to promote. Do
 not rank or annotate candidates by result, and do not pre-select any.
 
-HUMAN_GATE: Which of the listed draft pages should I promote to validated?
+HUMAN_GATE: Which of the listed draft pages should I promote to validated, and which of the proposed supersessions should I confirm?
 
 Only draft pages are eligible. Do not promote anything before the human
-answers, and do not promote a page the human did not select.
+answers, and do not promote a page the human did not select. Apply only
+the supersession pairs the human explicitly confirmed; leave unconfirmed
+proposals unchanged — they surface again on the next run's lint.
 
-### 7. Promote
+### 7. Apply Confirmed Supersessions and Promote
 
-Call the `promote` MCP tool once with a `pages` array of the approved page
-names. Batch promotion is all-or-nothing: if any page is missing,
+Apply each confirmed pair by calling the `supersede_learning` MCP tool
+with `successor` and `target` (bare identities or `learning/{identity}`
+page names both resolve). A confirmed apply that returns an error or a
+`supersedes_warning` aborts promotion: relay the failure verbatim and ask
+the human how to proceed — do not continue to promote, and do not retry
+without direction.
+
+Then call the `promote` MCP tool once with a `pages` array of the approved
+page names. Batch promotion is all-or-nothing: if any page is missing,
 ambiguous, or not draft, no tiers change and the result lists each
 failure. Relay the per-page failures verbatim. Do not retry by dropping
 pages without asking the human first; do not fall back to one call per
@@ -221,6 +246,8 @@ Report concisely:
 - articles written or stored and their paths,
 - curation results or the reason curation was skipped,
 - pages promoted to validated,
+- supersessions applied (successor superseding target) and proposals
+  left unconfirmed,
 - pages that remain draft and why.
 
 Then suggest `/dewey-publish` if new compiled or curated artifacts should
@@ -236,6 +263,7 @@ be committed to the repository.
 - Never let verification change a tier, validity, or page content, and
   never pre-select a page for the human; only the review-gate selection
   leads to `promote`.
+- Never call `supersede_learning` without the review-gate approval.
 - Never invent curated content when `curate` returns `prompt_ready`.
 - Never promote authored or already-validated pages.
 - The human-gate marker is reserved for the two gate questions. Constraint

@@ -109,6 +109,95 @@ func ValidLearningIdentity(identity string) bool {
 	return !strings.Contains(identity, "..")
 }
 
+// isLearningIdentity reports whether s matches the learning-identity
+// grammar: the current "{tag}-{YYYYMMDDTHHMMSS}-{author}" form or the
+// legacy pre-#146 "{tag}-{sequence}" form (a non-empty tag and a numeric
+// sequence, for example "auth-1", "vault-walker-2"). Both formats the
+// store holds are first-class: reIngestLearnings still re-ingests
+// legacy-identity files, so a declared link to "auth-1" is valid, not
+// malformed. Every hyphen-separated segment must be a non-empty run of
+// lowercase ASCII letters and digits — the character set normalizeTag
+// produces for tags and authors — except the timestamp segment, which
+// carries the one uppercase letter the grammar allows. The timestamp form
+// requires a tag segment before the timestamp and an author segment after
+// it; the legacy form requires a numeric final segment after the tag. This
+// is the ES-FR-003 prompt-injection boundary: a value that fails the
+// grammar is treated as absent rather than rendered, so spaces, newlines,
+// brackets, and other prompt-bearing characters never pass. Unlike
+// ValidLearningIdentity, which guards filesystem paths, this is a shape
+// check for decoded link values and bracketed citations.
+func isLearningIdentity(s string) bool {
+	segs := strings.Split(s, "-")
+	timestampAt := -1
+	for i, seg := range segs {
+		switch {
+		case isTimestampSegment(seg):
+			if timestampAt < 0 {
+				timestampAt = i
+			}
+		case !isLowerAlnumRun(seg):
+			return false
+		}
+	}
+	if timestampAt >= 0 {
+		// {tag}-{timestamp}-{author}: the timestamp must sit strictly
+		// between a non-empty tag and a non-empty author.
+		return timestampAt > 0 && timestampAt < len(segs)-1
+	}
+	// Legacy {tag}-{sequence}: a non-empty tag and a numeric sequence.
+	return len(segs) >= 2 && isDigitRun(segs[len(segs)-1])
+}
+
+// isTimestampSegment reports whether s has the YYYYMMDDTHHMMSS shape —
+// eight digits, an uppercase T, six digits — matching the identity
+// generator's "20060102T150405" layout. It is a shape match, not a
+// calendar validation: the grammar discriminates identity-shaped strings,
+// it does not parse dates.
+func isTimestampSegment(s string) bool {
+	if len(s) != 15 || s[8] != 'T' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if i != 8 && (s[i] < '0' || s[i] > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// isLowerAlnumRun reports whether s is non-empty and consists solely of
+// lowercase ASCII letters and digits — the character set normalizeTag
+// produces for identity tags and authors. Non-ASCII bytes always fail the
+// range checks, so multi-byte runes never pass.
+func isLowerAlnumRun(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// isDigitRun reports whether s is non-empty and consists solely of ASCII
+// digits — the shape of a legacy identity's numeric sequence. Digit runs
+// of any length pass: the grammar says "numeric sequence", not a bounded
+// integer.
+func isDigitRun(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // properties returns the non-empty temporal fields as page properties.
 func (t temporalFields) properties() map[string]any {
 	props := map[string]any{}

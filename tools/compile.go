@@ -33,11 +33,35 @@ var compileLogger = log.NewWithOptions(os.Stderr, log.Options{
 // LearningEntry represents a learning with its metadata for clustering.
 // Extracted from store.Page for use in the pure clustering function.
 type LearningEntry struct {
-	Identity  string    // e.g., "authentication-3"
-	Tag       string    // topic tag
-	Category  string    // decision/pattern/gotcha/context/reference
-	CreatedAt time.Time // temporal ordering
-	Content   string    // block content
+	// Identity is the learning's identity: the current
+	// "{tag}-{YYYYMMDDTHHMMSS}-{author}" form or a legacy
+	// "{tag}-{sequence}" form (e.g., "authentication-3").
+	Identity string
+	// Tag is the learning's topic tag, the sole clustering dimension.
+	Tag string
+	// Category is the learning's category: decision, pattern, gotcha,
+	// context, or reference. Empty is treated as "context".
+	Category string
+	// CreatedAt is the learning's creation time, used for chronological
+	// ordering within a cluster.
+	CreatedAt time.Time
+	// Content is the learning's block content.
+	Content string
+	// Validity is the temporal-validity token decoded from the learning's
+	// page properties — one of current, stale-unverified, superseded, or
+	// historical. Empty when the properties carry no validity key or the
+	// value failed decode-boundary validation (ES-FR-003).
+	Validity string
+	// Supersedes is the identity of the learning this learning declares
+	// replaced, normalized with supersedesIdentity and validated against
+	// the learning-identity grammar. Empty when absent or withheld at the
+	// decode boundary (ES-FR-003).
+	Supersedes string
+	// SupersededBy is the identity recorded as this learning's successor,
+	// normalized with supersedesIdentity and validated against the
+	// learning-identity grammar. Empty when absent or withheld at the
+	// decode boundary (ES-FR-003).
+	SupersededBy string
 }
 
 // Cluster represents a group of related learnings for compilation.
@@ -602,14 +626,67 @@ func (c *Compile) returnPromptMode(clusters []Cluster, totalLearnings int, start
 	return res, nil, err
 }
 
+// temporalEntryFields holds the temporal-validity metadata decoded onto a
+// LearningEntry. The zero value renders no temporal lines: every field is
+// either a validated, prompt-safe value or empty.
+type temporalEntryFields struct {
+	Validity     string
+	Supersedes   string
+	SupersededBy string
+}
+
+// decodeTemporalEntryFields decodes the #146 temporal keys (validity,
+// supersedes, superseded_by) from a learning's page properties into
+// prompt-safe entry fields, applying the ES-FR-003 decode boundary:
+// string values are trimmed, the two link values are normalized with
+// supersedesIdentity and must match the learning-identity grammar (both
+// the {tag}-{YYYYMMDDTHHMMSS}-{author} and the legacy {tag}-{sequence}
+// form), and validity is accepted only from the known token set. A value
+// that is absent, not a string, or fails validation is returned empty so
+// a hostile or corrupt property can never inject prompt text. A nil map
+// (unreadable properties) yields the zero value.
+func decodeTemporalEntryFields(props map[string]any) temporalEntryFields {
+	var fields temporalEntryFields
+	if v, ok := props["validity"].(string); ok {
+		v = strings.TrimSpace(v)
+		if validValidities[v] {
+			fields.Validity = v
+		}
+	}
+	if v, ok := props["supersedes"].(string); ok {
+		if id := supersedesIdentity(v); isLearningIdentity(id) {
+			fields.Supersedes = id
+		}
+	}
+	if v, ok := props["superseded_by"].(string); ok {
+		if id := supersedesIdentity(v); isLearningIdentity(id) {
+			fields.SupersededBy = id
+		}
+	}
+	return fields
+}
+
 // buildLearningEntries converts store pages into LearningEntry values
 // by loading block content and extracting metadata from page properties.
+// The temporal-validity properties are decoded through
+// decodeTemporalEntryFields, which normalizes and shape-validates them at
+// the decode boundary so only prompt-safe values reach the entry.
 func (c *Compile) buildLearningEntries(pages []*store.Page) ([]LearningEntry, error) {
 	var entries []LearningEntry
 	for _, p := range pages {
 		// Extract identity from page name: "learning/{identity}" → "{identity}".
 		identity := strings.TrimPrefix(p.Name, "learning/")
 		tag := extractTagFromIdentity(identity, p.Properties)
+
+		// Decode the temporal keys at the trust boundary; a value that
+		// fails validation is treated as absent, never rendered
+		// (ES-FR-003).
+		props, propsErr := decodeLearningProperties(p.Properties)
+		if propsErr != nil {
+			compileLogger.Warn("unreadable learning properties; temporal fields treated as absent",
+				"page", p.Name, "err", propsErr)
+		}
+		temporal := decodeTemporalEntryFields(props)
 
 		// Load block content for this learning.
 		blocks, err := c.store.GetBlocksByPage(p.Name)
@@ -629,11 +706,14 @@ func (c *Compile) buildLearningEntries(pages []*store.Page) ([]LearningEntry, er
 		createdAt := time.UnixMilli(p.CreatedAt)
 
 		entries = append(entries, LearningEntry{
-			Identity:  identity,
-			Tag:       tag,
-			Category:  p.Category,
-			CreatedAt: createdAt,
-			Content:   content,
+			Identity:     identity,
+			Tag:          tag,
+			Category:     p.Category,
+			CreatedAt:    createdAt,
+			Content:      content,
+			Validity:     temporal.Validity,
+			Supersedes:   temporal.Supersedes,
+			SupersededBy: temporal.SupersededBy,
 		})
 	}
 	return entries, nil
@@ -718,6 +798,10 @@ func extractTagFromIdentity(identity, properties string) string {
 // buildSynthesisPrompt generates the LLM prompt for synthesizing a
 // compiled article from a cluster of learnings. The prompt includes
 // category-aware instructions for how to handle different learning types.
+// Per-learning temporal metadata (validity, supersedes, superseded-by)
+// renders as entry lines only when the learning carries a decoded value,
+// so a legacy learning without temporal properties renders exactly as
+// before (ES-FR-003, design D2).
 func buildSynthesisPrompt(cl Cluster) string {
 	var sb strings.Builder
 
@@ -738,6 +822,22 @@ func buildSynthesisPrompt(cl Cluster) string {
 		fmt.Fprintf(&sb, "### Learning %d: %s\n", i+1, l.Identity)
 		fmt.Fprintf(&sb, "- **Category**: %s\n", cat)
 		fmt.Fprintf(&sb, "- **Date**: %s\n", l.CreatedAt.UTC().Format("2006-01-02"))
+		// Temporal lines render only when the entry carries a decoded
+		// value, so a legacy learning renders exactly as before
+		// (ES-FR-003). Direct interpolation is safe here because the
+		// decode boundary (decodeTemporalEntryFields) already withheld
+		// every value that is not a known validity token or an identity
+		// matching the learning-identity grammar — a hostile or corrupt
+		// property cannot reach this rendering.
+		if l.Validity != "" {
+			fmt.Fprintf(&sb, "- **Validity**: %s\n", l.Validity)
+		}
+		if l.Supersedes != "" {
+			fmt.Fprintf(&sb, "- **Supersedes**: %s\n", l.Supersedes)
+		}
+		if l.SupersededBy != "" {
+			fmt.Fprintf(&sb, "- **Superseded by**: %s\n", l.SupersededBy)
+		}
 		fmt.Fprintf(&sb, "- **Content**: %s\n\n", l.Content)
 	}
 

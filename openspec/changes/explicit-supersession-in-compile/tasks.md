@@ -7,7 +7,7 @@
 
 ## 1. Compile input: temporal metadata
 
-- [ ] 1.1 `tools/compile.go`: `LearningEntry` gains `Validity`,
+- [x] 1.1 `tools/compile.go`: `LearningEntry` gains `Validity`,
   `Supersedes`, `SupersededBy`; `buildLearningEntries` decodes them
   from page properties with the #146 keys via
   `decodeLearningProperties`, then normalizes and shape-validates at
@@ -16,15 +16,15 @@
   token set, require link values to match the identity grammar, and
   treat a failing value as absent so it is never rendered into a
   prompt (ES-FR-003); GoDoc on the struct fields
-- [ ] 1.2 `tools/compile.go` `buildSynthesisPrompt`: render
+- [x] 1.2 `tools/compile.go` `buildSynthesisPrompt`: render
   per-learning temporal lines (validity, supersedes, superseded-by)
   only when present — legacy learnings render unchanged
-- [ ] 1.3 `tools/compile_test.go`: entry decoding (present, absent,
+- [x] 1.3 `tools/compile_test.go`: entry decoding (present, absent,
   wrong-typed values), decode-boundary withholding (non-string link,
   unknown validity token, non-identity link, surrounding whitespace
   normalized), a legacy `{tag}-{sequence}` identity link accepted,
   and prompt rendering tests
-- [ ] 1.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
+- [x] 1.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 2 begins
 
 ## 2. Prompt policy: declared authority, open conflicts, citations

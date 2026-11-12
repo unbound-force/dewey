@@ -171,6 +171,8 @@ FR-008 defines category-specific merge strategies:
 | Category | Resolution Strategy |
 |----------|-------------------|
 | `decision` | Temporal merge: newer wins, non-contradicted facts carry forward |
+
+*(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 | `pattern` | Accumulate: multiple patterns are additive |
 | `gotcha` | De-duplicate: same gotcha from different sessions → one entry |
 | `context` | Carry forward: unless explicitly contradicted |

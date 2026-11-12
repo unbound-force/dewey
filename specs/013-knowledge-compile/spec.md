@@ -30,18 +30,26 @@ With temporal awareness, every learning has a creation timestamp and a topic tag
 
 A developer has been working on a project for two weeks. Across 15 sessions, agents have stored 40 learnings — decisions about architecture, gotchas about specific files, patterns that worked, context about constraints. These learnings are scattered, sometimes contradictory (early decisions were revised), and hard to navigate. The developer runs `dewey compile` and Dewey reads all stored learnings, clusters them by topic, and produces a set of compiled articles — one per topic cluster. Each article presents the **current truth**: facts from newer learnings replace contradicted facts from older ones, while non-contradicted information carries forward unchanged. A history section preserves the full evolution timeline.
 
+*(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
+
 The compiled articles are regular markdown files in `.uf/dewey/compiled/`. They are automatically searchable alongside specs, code, and other indexed content. When an agent in session 16 searches for "authentication," it finds the compiled article that says "Use Option B (changed from A in session 5 due to rate limiting). Timeout: 60s (increased from 30s in session 8). Rate limit: 100 req/min" — a single, authoritative, current-state document.
 
 **Why this priority**: This is the core Karpathy insight — the LLM acts as a librarian that synthesizes raw materials into a curated wiki. Without compilation, learnings accumulate but never consolidate. Compilation is what transforms a log of events into actionable knowledge.
 
 **Independent Test**: Store 5 learnings on the same topic across different sessions, including one that contradicts an earlier one. Run `dewey compile`. Verify a compiled article exists that merges all non-contradicted facts and resolves the contradiction in favor of the newer learning.
 
+*(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
+
 **Acceptance Scenarios**:
 
 1. **Given** 10 stored learnings across 3 topics, **When** the developer runs `dewey compile`, **Then** compiled articles are produced in `.uf/dewey/compiled/` — one per topic cluster, plus an index file
 2. **Given** two learnings on the same topic where the newer one contradicts a fact in the older one, **When** compilation runs, **Then** the compiled article presents the newer fact as current truth and preserves the older fact in the history section
+
+   *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 3. **Given** two learnings on the same topic where the newer one adds information without contradicting the older one, **When** compilation runs, **Then** the compiled article includes both facts (additive merge)
 4. **Given** learnings with `category: "decision"`, **When** compilation runs, **Then** decisions get temporal resolution (newer wins) while learnings with `category: "pattern"` are accumulated (multiple patterns are additive)
+
+   *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 5. **Given** compiled articles exist, **When** an agent calls `semantic_search`, **Then** compiled articles appear in results alongside other content
 6. **Given** a configurable LLM provider, **When** the developer runs `dewey compile`, **Then** the configured model is used for synthesis (default: opencode session model)
 
@@ -142,6 +150,8 @@ Over time, learnings on the same topic evolve. Session 1: "Use Option A for auth
 - **FR-006**: Dewey MUST provide a `compile` CLI command and MCP tool that reads all stored learnings, clusters them by topic, and produces synthesized articles
 - **FR-007**: Compilation MUST use tag-assisted semantic clustering — learnings with shared tags are grouped first, then refined by semantic similarity
 - **FR-008**: Compilation MUST apply category-aware resolution: `decision` learnings get temporal merge (newer wins, non-contradicted facts carry forward), `pattern` learnings accumulate, `gotcha` learnings de-duplicate, `context` carries forward, `reference` is preserved as-is
+
+  *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 - **FR-009**: The compiler MUST discover the file taxonomy — one article per topic cluster, auto-named based on dominant tags, organized under `.uf/dewey/compiled/` with an auto-generated `_index.md`
 - **FR-010**: Each compiled article MUST include a current-state section (merged truth) and a history section (chronological evolution)
 - **FR-011**: The compilation LLM provider MUST be configurable. The default MUST use the opencode session's configured model
@@ -188,11 +198,15 @@ Over time, learnings on the same topic evolve. Session 1: "Use Option A for auth
 
 - **SC-001**: An agent can store a learning with a tag and category and receive a `{tag}-{sequence}` identity within 1 second
 - **SC-002**: `dewey compile` produces compiled articles that resolve temporal contradictions — a search for a topic returns one authoritative current-state document instead of multiple conflicting learnings
+
+  *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 - **SC-003**: After 15 sessions with 40 stored learnings, `dewey compile` produces a navigable set of compiled articles in under 60 seconds
 - **SC-004**: Session-end auto-compile integrates new learnings into existing compiled articles without manual intervention — the knowledge base improves after every session
 - **SC-005**: `dewey lint` identifies 100% of pages missing embeddings and 100% of learnings not yet compiled
 - **SC-006**: An agent can filter search results by trust tier — querying for `tier: "authored"` returns zero agent-generated content
 - **SC-007**: A compiled article about a topic with 3 evolving learnings correctly carries forward non-contradicted facts and replaces superseded facts with current values
+
+  *(Superseded for decisions by the explicit-supersession-in-compile change — dewey #150, `openspec/changes/explicit-supersession-in-compile/specs/explicit-supersession/spec.md` Affected-requirements context: declared supersession, confirmed by a human via `supersede_learning` or a compile-proposed pair, replaces the newer-wins authority; unresolved contradictions are presented with both positions.)*
 - **SC-008**: All existing tests continue to pass — the `store_learning` API change (adding required `tag`) is backward-compatible via a default tag when not provided
 
 ## Assumptions

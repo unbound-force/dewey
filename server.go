@@ -496,7 +496,7 @@ func registerIndexingTools(srv *mcp.Server, indexing *tools.Indexing) int {
 func registerCompileTools(srv *mcp.Server, compile *tools.Compile) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "compile",
-		Description: "Synthesize stored learnings into compiled knowledge articles. Groups learnings by topic, resolves contradictions temporally, and produces current-state articles with history.",
+		Description: "Synthesize stored learnings into compiled knowledge articles. Groups learnings by topic, cites sources per claim, proposes supersessions for human confirmation instead of resolving contradictions by recency, and produces current-state articles with history and citation coverage.",
 	}, compile.Compile)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -527,7 +527,7 @@ func registerCurateTools(srv *mcp.Server, curateTool *tools.Curate) int {
 func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "lint",
-		Description: "Scan the knowledge base for quality issues: stale decisions, uncompiled learnings, embedding gaps, potential contradictions, knowledge-store quality, stale knowledge stores, sanitization findings, and learnings whose cited code changed (anchor_drift) or is absent at the pinned commit (anchor_missing). The anchor_checks field reports whether the anchor checks ran, were skipped, or failed. With fix=true, regenerates missing embeddings and marks drifted learnings validity stale-unverified (tiers are never changed).",
+		Description: "Scan the knowledge base for quality issues: stale decisions, uncompiled learnings, embedding gaps, potential contradictions, knowledge-store quality, stale knowledge stores, sanitization findings, citation coverage of store-backed compiled articles (citation_coverage), and learnings whose cited code changed (anchor_drift) or is absent at the pinned commit (anchor_missing). The anchor_checks field reports whether the anchor checks ran, were skipped, or failed. With fix=true, regenerates missing embeddings and marks drifted learnings validity stale-unverified (tiers are never changed).",
 	}, lint.Lint)
 
 	return 1

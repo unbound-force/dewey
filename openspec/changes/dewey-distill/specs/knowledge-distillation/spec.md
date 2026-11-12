@@ -150,9 +150,15 @@ When synthesis is unconfigured, unavailable, or the provider cannot be
 constructed, `compile` MUST return `status: "prompts_ready"` with the
 existing cluster/prompt fields and `curate` MUST return
 `status: "prompt_ready"` with the existing store/prompt fields. For
-non-empty learning collections these payloads MUST remain
-byte-compatible with the pre-change behavior so calling agents can
-synthesize and call `store_compiled`. When no learnings exist and a
+non-empty learning collections these payloads MUST remain compatible
+in shape — the same top-level status/result fields and the same
+per-cluster prompt fields the pre-change behavior returned — so
+calling agents can synthesize and call `store_compiled`. The prompt
+text itself is excluded from this compatibility: the
+explicit-supersession-in-compile change (dewey #150) alters the
+synthesis prompt's instructions, so prompt bytes necessarily differ
+while the hand-off contract stands. (Narrowed from a byte-compat
+clause by that change's task 9.5 before either change archives.) When no learnings exist and a
 synthesizer is available, `compile` MUST clear draft compiled pages,
 retain validated ones, and report surviving tags in
 `retained_validated` — validated knowledge is never silently

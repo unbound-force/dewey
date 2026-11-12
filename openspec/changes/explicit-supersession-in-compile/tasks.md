@@ -220,7 +220,7 @@
 
 ## 9. Docs, website, and verification
 
-- [ ] 9.1 [P] `README.md`: compile citations, coverage, and
+- [x] 9.1 [P] `README.md`: compile citations, coverage, and
   proposals; `supersede_learning` row and tool count 50 → 51; lint
   `citation_coverage` kind; distill review gate; correct the two
   falsified prose claims — line ~431 and the compile section at
@@ -231,7 +231,7 @@
   store_learning-only serialization framing, which read as the only
   way to link learnings) with the `supersede_learning`
   two-existing-learnings path, mirroring 9.2's AGENTS.md clause
-- [ ] 9.2 [P] `AGENTS.md`: MCP tool count (overview, `server.go`
+- [x] 9.2 [P] `AGENTS.md`: MCP tool count (overview, `server.go`
   architecture note, `types/tools.go` note), tool table/summary
   entry, Recent Changes, annotate the insert-time-only
   `store_learning` `supersedes` bullet (line ~461, which reads as the
@@ -241,7 +241,7 @@
   `citation_coverage`, the Project Overview category list gains the
   supersession surface, and the architecture `tools/` line gains the
   supersede entry
-- [ ] 9.3 [P] Stale recency-text surfaces in code and shipped
+- [x] 9.3 [P] Stale recency-text surfaces in code and shipped
   commands: `cli.go` `dewey compile` Long help ("resolves
   contradictions temporally (newer wins)" → the
   declared-supersession policy) and `dewey lint` Long help
@@ -250,7 +250,7 @@
   `.opencode/commands/dewey-compile.md` and its byte-mirrored
   `slash_commands.go` entry (must change together); regenerate
   `.uf/dewey/manifest.md` via `dewey manifest`
-- [ ] 9.4 Website sync (one task, one tasks.md edit): determine
+- [x] 9.4 Website sync (one task, one tasks.md edit): determine
   which `content/docs/` pages describe compile contradiction
   resolution, citations, lint kinds, or the tool count; whether a
   release-style blog post is warranted for the policy change; and
@@ -262,7 +262,23 @@
   `unbound-force/website` docs, blog, and tutorial issues (or record
   the deliberate no-issue determinations with their reasons) and
   record all issue numbers in this single tasks.md edit
-- [ ] 9.5 Archive-time byte-compat: amend the dewey-distill delta's
+
+  Record (2026-11-12): docs issue website#409 (content/docs/projects/
+  dewey.md tool count 50→51, compile bullet, lint bullet); blog issue
+  website#410 (policy-change post; cross-referenced #392). No new
+  tutorial issue — deliberate: both affected tutorials are still-open
+  unwritten issues, so their scope was extended by comment instead of
+  duplicating tracking: website#376 (distill tutorial — review-gate
+  question gains supersession confirmation, applied via
+  supersede_learning before promote; comment issuecomment-6829735677)
+  and website#393 (store_learning supersession tutorial — gains the
+  confirmed-pair path alongside insert-time supersedes; comment
+  issuecomment-6829736179). No compile-walkthrough tutorial exists on
+  the website (tutorials dir checked: knowledge-stores,
+  provider-configuration, gaze-crap-baseline-ci, onboard-customization)
+  — no surface to update. content/docs/reference/cli.md is the
+  unbound-force CLI, not dewey's — not affected.
+- [x] 9.5 Archive-time byte-compat: amend the dewey-distill delta's
   "Prompt-Mode Fallback Compatibility" requirement
   (`openspec/changes/dewey-distill/specs/knowledge-distillation/
   spec.md`) to narrow its compile byte-compat clause to payload
@@ -271,7 +287,7 @@
   already archived, file the narrowing as a MODIFIED delta against
   `openspec/specs/knowledge-distillation/` so no main spec carries
   the un-narrowed clause
-- [ ] 9.6 `specs/013-knowledge-compile/contracts/compile-tool.md`
+- [x] 9.6 `specs/013-knowledge-compile/contracts/compile-tool.md`
   and `contracts/lint-tool.md`: annotate the superseded newer-wins
   wording (the compile tool description's "decisions: temporal
   merge" and the lint contradiction check) with a pointer to this
@@ -284,14 +300,14 @@
   (~line 42), SC-002 (~line 190), and SC-007 (~line 195), plus
   `research.md` R7 (~lines 169-173) and `tasks.md` T022 (~line 96)
   — so no 013 document still states the retired rule as current
-- [ ] 9.7 Constitution-alignment verification: re-read the four
+- [x] 9.7 Constitution-alignment verification: re-read the four
   principles against the final diff (Composability First — no new
   dependency, store-less mode untouched; Autonomous Collaboration —
   proposals/coverage ride the existing results, one MCP tool;
   Observable Quality — coverage and proposals machine-parseable;
   Testability — pure helpers, in-memory store, `NoopSynthesizer`),
   and record any drift as a finding before marking the phase done
-- [ ] 9.8 CI parity: derive the exact commands from
+- [x] 9.8 CI parity: derive the exact commands from
   `.github/workflows/ci.yml` at run time (build, vet,
   `go test -race -count=1 -coverprofile=coverage.out ./...`, Gaze
   `crap` with the workflow's thresholds) and run them locally; any

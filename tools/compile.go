@@ -802,6 +802,23 @@ func extractTagFromIdentity(identity, properties string) string {
 // renders as entry lines only when the learning carries a decoded value,
 // so a legacy learning without temporal properties renders exactly as
 // before (ES-FR-003, design D2).
+//
+// Unresolved contradictions are surfaced, never silently resolved: the
+// instructions direct both positions into an `## Open Conflicts` section,
+// each with its citations, and pick no winner — replacement authority is
+// the declared supersession link or validity, not recency (ES-FR-001).
+//
+// Every factual claim ends with a bracketed citation of the learning
+// identity — or comma-separated identities — it derives from: the
+// instructions show both citation forms and both identity grammars the
+// store holds (the current {tag}-{YYYYMMDDTHHMMSS}-{author} form and the
+// legacy {tag}-{sequence} form) and state that bracketed text which is
+// not a learning identity is ignored (ES-FR-004, design D3). The article
+// MAY end with a strict machine-parseable `## Supersession Proposals`
+// section — one entry per proposed pair, each carrying successor, target,
+// and rationale — justified only when one learning clearly replaces
+// another, never by recency alone; the section is parsed and stripped
+// from the stored article (ES-FR-005, design D4).
 func buildSynthesisPrompt(cl Cluster) string {
 	var sb strings.Builder
 
@@ -844,10 +861,45 @@ func buildSynthesisPrompt(cl Cluster) string {
 	sb.WriteString("## Instructions\n\n")
 	sb.WriteString("Produce a markdown article with:\n")
 	sb.WriteString("1. A `## Current State` section containing all current facts. ")
-	sb.WriteString("Resolve contradictions by favoring the newest learning. ")
 	sb.WriteString("Carry forward non-contradicted facts from older learnings.\n")
 	sb.WriteString("2. Do NOT include a top-level heading (# Title) — it will be added automatically.\n")
 	sb.WriteString("3. Write in a clear, factual style. No preamble or meta-commentary.\n")
+	// ES-FR-001: an unresolved contradiction is surfaced, never silently
+	// resolved — the resolution authority is the declared link, which only
+	// a human can add between two existing learnings. The citation format
+	// gets its own instruction (ES-FR-004), so this clause names citations
+	// without pinning their shape.
+	sb.WriteString("4. An `## Open Conflicts` section when two learnings contradict and neither a ")
+	sb.WriteString("declared supersession link nor `validity: superseded` resolves the ")
+	sb.WriteString("contradiction: present both positions, each with its citations. Do not pick a winner.\n")
+	// ES-FR-004: every factual claim carries a bracketed citation of the
+	// learning identity — or comma-separated identities — it derives from
+	// (design D3). The instruction shows both citation forms and names both
+	// identity grammars the store holds — the current
+	// {tag}-{YYYYMMDDTHHMMSS}-{author} form and the legacy
+	// {tag}-{sequence} form — so a citation of a pre-#146 learning parses
+	// too, and states that bracketed text which is not a learning identity
+	// is ignored, so ordinary markdown brackets are not discouraged.
+	sb.WriteString("5. End every factual claim with a bracketed citation of the learning identity — ")
+	sb.WriteString("or comma-separated identities — the claim derives from, for example ")
+	sb.WriteString("`[auth-20261101T000000-alice]` or `[auth-20261001T000000-alice, auth-20261101T000000-bob]`. ")
+	sb.WriteString("An identity is either `{tag}-{YYYYMMDDTHHMMSS}-{author}` (for example ")
+	sb.WriteString("`auth-20261101T000000-alice`) or the legacy `{tag}-{sequence}` (for example `auth-1`); ")
+	sb.WriteString("copy identities exactly from the learnings above. Bracketed text that is not a ")
+	sb.WriteString("learning identity is ignored.\n")
+	// ES-FR-005: the article MAY end with a strict machine-parseable
+	// `## Supersession Proposals` section (design D4) — one entry per
+	// proposed pair, each carrying successor, target, and rationale. A
+	// proposal is justified only when one learning clearly replaces the
+	// other; recency alone is not grounds — the same authority rule the
+	// Open Conflicts instruction states. The shape is strict because
+	// compile parses and strips the section before storing the article;
+	// entries that miss it are dropped and reported, never kept.
+	sb.WriteString("6. An optional `## Supersession Proposals` section at the end of the article when ")
+	sb.WriteString("one learning clearly replaces another — recency alone is not grounds for a proposal. ")
+	sb.WriteString("Omit the section entirely when no learning clearly replaces another. ")
+	sb.WriteString("Use exactly this shape, one entry per proposed pair:\n\n")
+	sb.WriteString("```\n## Supersession Proposals\n\n- successor: <identity>\n  target: <identity>\n  rationale: <single line>\n```\n")
 
 	return sb.String()
 }
@@ -869,7 +921,8 @@ func categoryInstructions(cl Cluster) string {
 	sb.WriteString("## Category-Specific Resolution Rules\n\n")
 
 	if cats["decision"] {
-		sb.WriteString("- **decision**: Newer decisions supersede older ones on the same topic. ")
+		sb.WriteString("- **decision**: A decision is replaced only when a declared supersession ")
+		sb.WriteString("link or `validity: superseded` says so. ")
 		sb.WriteString("Carry forward non-contradicted aspects of older decisions.\n")
 	}
 	if cats["pattern"] {
@@ -881,8 +934,8 @@ func categoryInstructions(cl Cluster) string {
 		sb.WriteString("Keep the most detailed description.\n")
 	}
 	if cats["context"] {
-		sb.WriteString("- **context**: Carry forward all contextual information unless explicitly ")
-		sb.WriteString("superseded by a newer learning.\n")
+		sb.WriteString("- **context**: Carry forward all contextual information unless a declared ")
+		sb.WriteString("supersession link or `validity: superseded` says otherwise.\n")
 	}
 	if cats["reference"] {
 		sb.WriteString("- **reference**: Preserve reference material as-is. Do not summarize or merge.\n")

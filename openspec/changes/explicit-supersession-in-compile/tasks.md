@@ -29,26 +29,26 @@
 
 ## 2. Prompt policy: declared authority, open conflicts, citations
 
-- [ ] 2.1 `tools/compile.go` `buildSynthesisPrompt` +
+- [x] 2.1 `tools/compile.go` `buildSynthesisPrompt` +
   `categoryInstructions`: remove the
   recency instructions ("favoring the newest learning", "Newer
   decisions supersede older ones", "superseded by a newer learning");
   decision and context rules restate declared-supersession authority
-- [ ] 2.2 `tools/compile.go` prompt gains the `## Open Conflicts`
+- [x] 2.2 `tools/compile.go` prompt gains the `## Open Conflicts`
   instruction: both
   positions presented, each with citations, no silent winner
-- [ ] 2.3 `tools/compile.go` prompt gains the per-claim citation
+- [x] 2.3 `tools/compile.go` prompt gains the per-claim citation
   instruction (bracketed,
   comma-separated identities per D3, with the identity-grammar shape
   shown — both the timestamped and legacy `{tag}-{sequence}` forms —
   and non-identity bracketed text stated as ignored) and the
   strict `## Supersession Proposals` section spec (successor,
   target, rationale; clear replacement only — recency is not grounds)
-- [ ] 2.4 `tools/compile_test.go`: update prompt assertions — the
+- [x] 2.4 `tools/compile_test.go`: update prompt assertions — the
   "temporal merge instruction for decisions" pin (~line 706) becomes
   a declared-supersession assertion; add Open Conflicts, citation,
   and proposals-section assertions
-- [ ] 2.5 Phase checkpoint — `go test -race -count=1 ./tools/...`
+- [x] 2.5 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 3 begins
 
 ## 3. Citation coverage helper (pure)

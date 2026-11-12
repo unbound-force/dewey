@@ -678,13 +678,18 @@ func TestCompile_SynthesisPromptWithholdsMalformedTemporalValues(t *testing.T) {
 	}
 }
 
-// TestCompile_SynthesisPromptLegacyLearningUnchanged pins design D2's
-// byte-identity claim: a cluster whose learnings carry no temporal
-// metadata renders the exact bytes the pre-ES-FR-003 buildSynthesisPrompt
-// produced — the temporal lines are strictly additive, so a legacy
-// learning's entry block is untouched. Tasks 2.1-2.3 change the
-// instruction text deliberately; this golden value is updated alongside
-// them (task 2.4).
+// TestCompile_SynthesisPromptLegacyLearningUnchanged pins the full
+// synthesis prompt for a cluster whose learnings carry no temporal
+// metadata — the single authoritative golden for buildSynthesisPrompt.
+// Design D2's byte-identity claim holds on the entry blocks: the
+// temporal lines are strictly additive, so a legacy learning's entry
+// renders exactly as the pre-ES-FR-003 prompt did. Tasks 2.1-2.3
+// deliberately changed the instruction text — the declared-supersession
+// rules replacing recency (task 2.1), the Open Conflicts instruction
+// (item 4, task 2.2), and the citation and Supersession Proposals
+// instructions (items 5-6, task 2.3) — and the golden value below
+// carries those changes; the focused per-instruction assertions live
+// in the tests that follow.
 func TestCompile_SynthesisPromptLegacyLearningUnchanged(t *testing.T) {
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	cl := Cluster{
@@ -699,7 +704,7 @@ func TestCompile_SynthesisPromptLegacyLearningUnchanged(t *testing.T) {
 	want := "You are compiling learnings into a knowledge article.\n\n" +
 		"Topic: Authentication\n\n" +
 		"## Category-Specific Resolution Rules\n\n" +
-		"- **decision**: Newer decisions supersede older ones on the same topic. Carry forward non-contradicted aspects of older decisions.\n\n" +
+		"- **decision**: A decision is replaced only when a declared supersession link or `validity: superseded` says so. Carry forward non-contradicted aspects of older decisions.\n\n" +
 		"## Learnings (chronological order, oldest first)\n\n" +
 		"### Learning 1: auth-1\n" +
 		"- **Category**: decision\n" +
@@ -711,13 +716,157 @@ func TestCompile_SynthesisPromptLegacyLearningUnchanged(t *testing.T) {
 		"- **Content**: Switch to Option B\n\n" +
 		"## Instructions\n\n" +
 		"Produce a markdown article with:\n" +
-		"1. A `## Current State` section containing all current facts. Resolve contradictions by favoring the newest learning. Carry forward non-contradicted facts from older learnings.\n" +
+		"1. A `## Current State` section containing all current facts. Carry forward non-contradicted facts from older learnings.\n" +
 		"2. Do NOT include a top-level heading (# Title) — it will be added automatically.\n" +
-		"3. Write in a clear, factual style. No preamble or meta-commentary.\n"
+		"3. Write in a clear, factual style. No preamble or meta-commentary.\n" +
+		"4. An `## Open Conflicts` section when two learnings contradict and neither a declared supersession link nor `validity: superseded` resolves the contradiction: present both positions, each with its citations. Do not pick a winner.\n" +
+		"5. End every factual claim with a bracketed citation of the learning identity — or comma-separated identities — the claim derives from, for example `[auth-20261101T000000-alice]` or `[auth-20261001T000000-alice, auth-20261101T000000-bob]`. An identity is either `{tag}-{YYYYMMDDTHHMMSS}-{author}` (for example `auth-20261101T000000-alice`) or the legacy `{tag}-{sequence}` (for example `auth-1`); copy identities exactly from the learnings above. Bracketed text that is not a learning identity is ignored.\n" +
+		"6. An optional `## Supersession Proposals` section at the end of the article when one learning clearly replaces another — recency alone is not grounds for a proposal. Omit the section entirely when no learning clearly replaces another. Use exactly this shape, one entry per proposed pair:\n\n```\n## Supersession Proposals\n\n- successor: <identity>\n  target: <identity>\n  rationale: <single line>\n```\n"
 
 	got := buildSynthesisPrompt(cl)
 	if got != want {
-		t.Errorf("legacy cluster prompt is not byte-identical to the pre-change rendering:\ngot:  %q\nwant: %q", got, want)
+		t.Errorf("legacy cluster prompt does not match the authoritative golden:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// TestCompile_SynthesisPromptDeclaredSupersessionRules covers task 2.1
+// (ES-FR-001): recency is never replacement authority in the prompt. The
+// decision and context rules restate declared-supersession authority — a
+// learning is replaced only when a declared supersession link or
+// `validity: superseded` says so — and the three recency instructions
+// the task removed stay absent.
+func TestCompile_SynthesisPromptDeclaredSupersessionRules(t *testing.T) {
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	cl := Cluster{
+		Topic:       "Authentication",
+		DominantTag: "auth",
+		Learnings: []LearningEntry{
+			{Identity: "auth-1", Tag: "auth", Category: "decision", CreatedAt: baseTime, Content: "Use Option A"},
+			{Identity: "auth-2", Tag: "auth", Category: "context", CreatedAt: baseTime.Add(24 * time.Hour), Content: "Tokens expire hourly"},
+		},
+	}
+
+	prompt := buildSynthesisPrompt(cl)
+
+	for _, rule := range []string{
+		"- **decision**: A decision is replaced only when a declared supersession link or `validity: superseded` says so. Carry forward non-contradicted aspects of older decisions.",
+		"- **context**: Carry forward all contextual information unless a declared supersession link or `validity: superseded` says otherwise.",
+	} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("prompt missing declared-supersession rule %q", rule)
+		}
+	}
+
+	// ES-FR-001's removal clause: the prompt must not teach recency as
+	// resolution authority. These are the three instructions task 2.1
+	// deleted.
+	for _, forbidden := range []string{
+		"favoring the newest learning",
+		"Newer decisions supersede older ones",
+		"superseded by a newer learning",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("prompt contains removed recency instruction %q", forbidden)
+		}
+	}
+}
+
+// TestCompile_SynthesisPromptOpenConflictsInstruction covers task 2.2
+// (ES-FR-001's surfacing clause): a contradiction that neither a
+// declared supersession link nor `validity: superseded` resolves is
+// directed into an `## Open Conflicts` section — both positions
+// presented, each with its citations, and no winner picked.
+func TestCompile_SynthesisPromptOpenConflictsInstruction(t *testing.T) {
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	cl := Cluster{
+		Topic:       "Authentication",
+		DominantTag: "auth",
+		Learnings: []LearningEntry{
+			{Identity: "auth-1", Tag: "auth", Category: "decision", CreatedAt: baseTime, Content: "Use Option A"},
+		},
+	}
+
+	prompt := buildSynthesisPrompt(cl)
+
+	for _, want := range []string{
+		"`## Open Conflicts`",
+		"neither a declared supersession link nor `validity: superseded` resolves the contradiction",
+		"present both positions",
+		"each with its citations",
+		"Do not pick a winner",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing Open Conflicts requirement %q", want)
+		}
+	}
+}
+
+// TestCompile_SynthesisPromptCitationInstruction covers task 2.3
+// (ES-FR-004, design D3): every factual claim ends with a bracketed
+// citation of the learning identity — or comma-separated identities —
+// it derives from. The instruction shows both citation forms, names
+// both identity grammars the store holds (the current
+// {tag}-{YYYYMMDDTHHMMSS}-{author} form and the legacy {tag}-{sequence}
+// form), and states that bracketed text which is not a learning
+// identity is ignored.
+func TestCompile_SynthesisPromptCitationInstruction(t *testing.T) {
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	cl := Cluster{
+		Topic:       "Authentication",
+		DominantTag: "auth",
+		Learnings: []LearningEntry{
+			{Identity: "auth-1", Tag: "auth", Category: "decision", CreatedAt: baseTime, Content: "Use Option A"},
+		},
+	}
+
+	prompt := buildSynthesisPrompt(cl)
+
+	for _, want := range []string{
+		"End every factual claim with a bracketed citation",
+		"or comma-separated identities",
+		"`[auth-20261101T000000-alice]`",
+		"`[auth-20261001T000000-alice, auth-20261101T000000-bob]`",
+		"`{tag}-{YYYYMMDDTHHMMSS}-{author}`",
+		"the legacy `{tag}-{sequence}`",
+		"copy identities exactly from the learnings above",
+		"Bracketed text that is not a learning identity is ignored",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing citation requirement %q", want)
+		}
+	}
+}
+
+// TestCompile_SynthesisPromptSupersessionProposalsInstruction covers
+// task 2.3 (ES-FR-005, design D4): the article may end with a strictly
+// shaped `## Supersession Proposals` section — one entry per proposed
+// pair, each carrying successor, target, and rationale. A proposal is
+// justified only when one learning clearly replaces another; recency
+// alone is not grounds, and the section is omitted entirely when no
+// learning does.
+func TestCompile_SynthesisPromptSupersessionProposalsInstruction(t *testing.T) {
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	cl := Cluster{
+		Topic:       "Authentication",
+		DominantTag: "auth",
+		Learnings: []LearningEntry{
+			{Identity: "auth-1", Tag: "auth", Category: "decision", CreatedAt: baseTime, Content: "Use Option A"},
+		},
+	}
+
+	prompt := buildSynthesisPrompt(cl)
+
+	for _, want := range []string{
+		"`## Supersession Proposals`",
+		"one learning clearly replaces another",
+		"recency alone is not grounds for a proposal",
+		"Omit the section entirely when no learning clearly replaces another",
+		"one entry per proposed pair",
+		"```\n## Supersession Proposals\n\n- successor: <identity>\n  target: <identity>\n  rationale: <single line>\n```",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing Supersession Proposals requirement %q", want)
+		}
 	}
 }
 
@@ -1145,8 +1294,10 @@ func TestCompile_CategoryAwarePrompt(t *testing.T) {
 	if !strings.Contains(prompt, "gotcha") {
 		t.Error("prompt missing gotcha instructions")
 	}
-	if !strings.Contains(prompt, "supersede") {
-		t.Error("prompt missing temporal merge instruction for decisions")
+	// ES-FR-001 (task 2.4): this declared-supersession pin replaces the
+	// old recency assertion ("temporal merge instruction for decisions").
+	if !strings.Contains(prompt, "- **decision**: A decision is replaced only when a declared supersession link or `validity: superseded` says so. Carry forward non-contradicted aspects of older decisions.") {
+		t.Error("prompt missing declared-supersession decision rule")
 	}
 	if !strings.Contains(strings.ToLower(prompt), "accumulate") {
 		t.Error("prompt missing accumulate instruction for patterns")

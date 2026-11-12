@@ -77,6 +77,30 @@ func (r CoverageResult) Complete() bool {
 	return len(r.UnresolvedCitations) == 0 && len(r.UncitedSources) == 0
 }
 
+// coverageResultMap renders a CoverageResult as a JSON-ready map for MCP
+// results, normalizing nil slices to empty arrays so serialized coverage
+// reports are stable for machine consumers (Observable Quality).
+func coverageResultMap(r CoverageResult) map[string]any {
+	return map[string]any{
+		"complete":                     r.Complete(),
+		"unresolved_citations":         stringsOrEmpty(r.UnresolvedCitations),
+		"uncited_sources":              stringsOrEmpty(r.UncitedSources),
+		"cited_sources":                stringsOrEmpty(r.CitedSources),
+		"accounted_superseded_sources": stringsOrEmpty(r.AccountedSupersededSources),
+		"citation_count":               r.CitationCount,
+		"resolved_citations":           r.ResolvedCitations,
+		"source_count":                 r.SourceCount,
+	}
+}
+
+// stringsOrEmpty returns s, or an empty non-nil slice when s is nil.
+func stringsOrEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
 // CheckCitationCoverage verifies citation coverage in both directions
 // against a compiled article's declared sources (design D5, ES-FR-010).
 //

@@ -334,7 +334,9 @@ func TestScanBrackets(t *testing.T) {
 		{"adjacent groups", "[x][y]", "", []string{"x", "y"}},
 		{"wikilink", "see [[wiki-link]] here", "see  here", []string{"[wiki-link]"}},
 		{"stray closing bracket", "x ] y", "x ] y", nil},
-		{"unclosed group", "open [unclosed text", "open ", nil},
+		{"unclosed group is literal", "open [unclosed text", "open [unclosed text", nil},
+		{"unclosed bracket does not swallow later groups", "range [0, 5) then [x] and [y]", "range [0, 5) then  and ", []string{"x", "y"}},
+		{"group never spans a line", "a [b\nc] d", "a [b\nc] d", nil},
 		{"empty group", "a [] b", "a  b", []string{""}},
 	}
 	for _, tt := range tests {
@@ -377,5 +379,50 @@ func TestMentionsIdentity(t *testing.T) {
 				t.Errorf("mentionsIdentity(%q, %q) = %v, want %v", tt.text, id, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCheckCitationCoverage_UnbalancedBracketKeepsLaterCitations pins
+// that interval notation or a stray "[" earlier in the body never hides
+// the citations that follow it from backward coverage.
+func TestCheckCitationCoverage_UnbalancedBracketKeepsLaterCitations(t *testing.T) {
+	const id = "retry-20261101T000000-alice"
+	res := CheckCitationCoverage(CoverageOptions{
+		Article: "## Current State\n\nRetries fall in the range [1, 5). Backoff doubles [" + id + "].\n",
+		Sources: []CitationSource{{Identity: id}},
+	})
+	if !res.Complete() {
+		t.Fatalf("want complete coverage, got uncited=%v unresolved=%v", res.UncitedSources, res.UnresolvedCitations)
+	}
+}
+
+// TestIsLearningIdentity_EmptySegments pins that identities whose tag or
+// author normalize to consecutive hyphens (normalizeTag("api - auth") is
+// "api---auth") stay citable, while a missing tag, author, or sequence is
+// still rejected.
+func TestIsLearningIdentity_EmptySegments(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{"auth-20261101T000000-alice", true},
+		{"api---auth-20261101T000000-alice", true},
+		{normalizeTag("api - auth") + "-20261101T000000-alice", true},
+		{"auth-20261101T000000-jay--flowers", true},
+		{"auth-20261101T000000-alice-2", true},
+		{"auth--1", true},
+		{"auth-1", true},
+		{"-20261101T000000-alice", false},
+		{"auth-20261101T000000-", false},
+		{"--20261101T000000--", false},
+		{"-1", false},
+		{"auth-", false},
+		{"auth", false},
+		{"auth 1-2", false},
+	}
+	for _, tt := range tests {
+		if got := isLearningIdentity(tt.in); got != tt.want {
+			t.Errorf("isLearningIdentity(%q) = %v, want %v", tt.in, got, tt.want)
+		}
 	}
 }

@@ -126,9 +126,11 @@ Inspect the result status:
 Report the supersession proposals and citation coverage the results carry.
 In the `compiled` and `partial` statuses the compile result includes
 `proposed_supersessions` (each proposal names a `successor` and a `target`
-with a `rationale`), `dropped_proposals` (proposals naming unknown
-identities — report them, never apply them), and per-article `coverage`
-in `articles` (unresolved citations and uncited sources). In
+with a `rationale`), `dropped_proposals` (proposals that failed
+validation, conflict with links the learnings already declare, or
+conflict with another proposal in the run — report each with its
+`reason`, never apply them), and per-article `coverage` and `sources` in
+`articles` (unresolved citations and uncited sources). In
 `prompts_ready` mode the compile result carries neither field: the
 `store_compiled` results you produce instead carry the same
 `proposed_supersessions`, `dropped_proposals`, and `coverage` per stored
@@ -209,6 +211,10 @@ anything, in this order:
   and each article's coverage (unresolved citations, uncited sources) —
   from the compile result, or from the `store_compiled` results produced
   in `prompts_ready` mode.
+- for each proposed supersession, the compiled articles whose declared
+  sources include its successor or target. State plainly that confirming
+  the pair withholds those articles from this run's promotion: they were
+  synthesized before the link existed and must be recompiled first.
 
 State code correspondence only. `anchors_ok` means the cited paths exist
 at the candidate's pin and are unchanged at the current `HEAD`; it is not
@@ -220,19 +226,27 @@ HUMAN_GATE: Which of the listed draft pages should I promote to validated, and w
 Only draft pages are eligible. Do not promote anything before the human
 answers, and do not promote a page the human did not select. Apply only
 the supersession pairs the human explicitly confirmed; leave unconfirmed
-proposals unchanged — they surface again on the next run's lint.
+proposals unchanged. Proposals are not stored anywhere: an unconfirmed
+proposal reappears only if a later compile proposes it again, so list
+every unconfirmed proposal in the report.
 
 ### 7. Apply Confirmed Supersessions and Promote
 
 Apply each confirmed pair by calling the `supersede_learning` MCP tool
 with `successor` and `target` (bare identities or `learning/{identity}`
-page names both resolve). A confirmed apply that returns an error or a
-`supersedes_warning` aborts promotion: relay the failure verbatim and ask
-the human how to proceed — do not continue to promote, and do not retry
-without direction.
+page names both resolve). Relay any error or `supersedes_warning`
+verbatim, do not retry that pair without direction, and continue with the
+remaining confirmed pairs.
 
-Then call the `promote` MCP tool once with a `pages` array of the approved
-page names. Batch promotion is all-or-nothing: if any page is missing,
+Before promoting, withhold every approved compiled article whose declared
+`sources` include the successor or the target of any confirmed pair,
+whether its apply succeeded or failed. Such an article was synthesized
+before the link existed, so promoting it would validate text that still
+treats the target as current. Report each withheld article and recommend
+recompiling it on the next `/dewey-distill` run.
+
+Then call the `promote` MCP tool once with a `pages` array of the
+remaining approved page names; skip the call when none remain. Batch promotion is all-or-nothing: if any page is missing,
 ambiguous, or not draft, no tiers change and the result lists each
 failure. Relay the per-page failures verbatim. Do not retry by dropping
 pages without asking the human first; do not fall back to one call per
@@ -246,8 +260,10 @@ Report concisely:
 - articles written or stored and their paths,
 - curation results or the reason curation was skipped,
 - pages promoted to validated,
-- supersessions applied (successor superseding target) and proposals
-  left unconfirmed,
+- supersessions applied (successor superseding target), pairs whose
+  apply failed, and proposals left unconfirmed,
+- compiled articles withheld from promotion because a confirmed pair
+  touches their sources,
 - pages that remain draft and why.
 
 Then suggest `/dewey-publish` if new compiled or curated artifacts should

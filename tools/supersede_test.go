@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -733,5 +734,78 @@ func TestSupersedeLearning_ConcurrentReversePairRace(t *testing.T) {
 		if sup == other && by == other {
 			t.Fatalf("learning %s records both directions naming %s", identity, other)
 		}
+	}
+}
+
+// TestSupersedeLearning_HopBoundRefusesLongChain pins that a chain longer
+// than the cycle walk's hop bound is refused rather than read as safe:
+// linking the chain's tail to supersede its head would close a cycle the
+// bounded walk cannot see.
+func TestSupersedeLearning_HopBoundRefusesLongChain(t *testing.T) {
+	l, s, _ := newSupersedeTool(t)
+	n := maxSupersessionHops + 2
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("auth-20260101T000000-u%d", i)
+	}
+	// ids[i+1] supersedes ids[i]: ids[0] is the oldest tail, ids[n-1]
+	// the head that nothing supersedes.
+	for i, id := range ids {
+		props := map[string]any{"tag": "auth"}
+		if i > 0 {
+			props["supersedes"] = ids[i-1]
+		}
+		if i < n-1 {
+			props["superseded_by"] = ids[i+1]
+			props["validity"] = "superseded"
+		}
+		data, _ := json.Marshal(props)
+		storeLearningWithProps(t, s, id, string(data), "chain member", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	}
+
+	result := callSupersede(t, l, ids[0], ids[n-1])
+	if !result.IsError {
+		t.Fatalf("expected hop-bound refusal, got: %s", resultText(result))
+	}
+	if text := resultText(result); !strings.Contains(text, "exceeds") {
+		t.Errorf("result = %q, want hop-bound refusal", text)
+	}
+	if props := readStoredProps(t, s, ids[n-1]); props["superseded_by"] != nil {
+		t.Errorf("head must not be written, got %v", props["superseded_by"])
+	}
+}
+
+// TestRollbackSupersedes pins the successor-leg rollback a failed or lost
+// target claim triggers: the link this call wrote is cleared from the
+// store and emptied in the backup, while a successor value naming a
+// different target is left untouched.
+func TestRollbackSupersedes(t *testing.T) {
+	l, s, vaultDir := newSupersedeTool(t)
+	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
+	succ, err := s.GetPage("learning/" + b)
+	if err != nil || succ == nil {
+		t.Fatalf("resolve successor: %v", err)
+	}
+	if w := l.recordSupersedes(succ, a); w != "" {
+		t.Fatalf("recordSupersedes warning: %s", w)
+	}
+	if w := l.rollbackSupersedes(succ, a); w != "" {
+		t.Fatalf("rollbackSupersedes warning: %s", w)
+	}
+	if props := readStoredProps(t, s, b); props["supersedes"] != nil {
+		t.Errorf("store supersedes = %v, want cleared", props["supersedes"])
+	}
+	if got, _ := frontmatterScalar(readBackup(t, vaultDir, b), "supersedes"); got != "" {
+		t.Errorf("backup supersedes = %q, want empty", got)
+	}
+
+	// A value naming another target is never cleared.
+	other := "auth-20260317T100003-test"
+	overwriteLearningProps(t, s, b, `{"tag":"auth","supersedes":"`+other+`"}`)
+	if w := l.rollbackSupersedes(succ, a); w != "" {
+		t.Fatalf("rollbackSupersedes warning: %s", w)
+	}
+	if props := readStoredProps(t, s, b); props["supersedes"] != other {
+		t.Errorf("store supersedes = %v, want %s left intact", props["supersedes"], other)
 	}
 }

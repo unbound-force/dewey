@@ -953,7 +953,21 @@ func (l *Lint) checkCitationCoverage() ([]Finding, citationCoverageReport, error
 				Remediation: "Recompile the article with the cited learnings declared as sources, or correct the citations.",
 			})
 		}
-		if len(cov.UncitedSources) > 0 {
+		if cov.CitationCount == 0 && len(cov.UncitedSources) > 0 {
+			// An article with no bracketed citations at all predates
+			// per-claim citations (or was synthesized without them):
+			// one informational finding per article, rather than a
+			// warning per uncited source, keeps a pre-upgrade vault's
+			// first lint from burying drift and contradiction findings.
+			findings = append(findings, Finding{
+				Type:        "citation_coverage",
+				Severity:    "info",
+				Page:        p.Name,
+				Identities:  cov.UncitedSources,
+				Description: fmt.Sprintf("Compiled article '%s' carries no per-claim citations (it likely predates citation support).", article),
+				Remediation: "Recompile the article to add per-claim citations.",
+			})
+		} else if len(cov.UncitedSources) > 0 {
 			findings = append(findings, Finding{
 				Type:        "citation_coverage",
 				Severity:    "warning",

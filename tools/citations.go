@@ -258,43 +258,51 @@ func isLevel2Heading(line, title string) bool {
 	return strings.TrimSpace(rest) == title
 }
 
-// scanBrackets walks s tracking square-bracket depth and returns the text
-// outside every bracketed group together with the contents of the groups
-// that open at depth zero, in order. A group is opened by "[" and closed
-// by the matching "]" that returns depth to zero; brackets nested inside a
-// group stay in its content, which is what keeps double-bracket wikilinks
+// scanBrackets walks s and returns the text outside every bracketed group
+// together with the contents of the groups that open at depth zero, in
+// order. A group is opened by "[" and closed by the matching "]" that
+// returns depth to zero on the same line; brackets nested inside a group
+// stay in its content, which is what keeps double-bracket wikilinks
 // ("[[page]]") from reading as their inner text — the group content then
-// carries the inner bracket and fails the identity grammar. Text after an
-// unclosed "[" stays inside the group, and a stray "]" at depth zero is
-// outside text.
+// carries the inner bracket and fails the identity grammar. An "[" with
+// no matching "]" before the end of its line (interval notation like
+// "[0, 5)", a stray bracket in prose) is literal outside text, so it can
+// never swallow the citations that follow it. A stray "]" at depth zero
+// is outside text.
 func scanBrackets(s string) (outside string, groups []string) {
 	var out strings.Builder
-	depth := 0
-	start := -1
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '[':
-			if depth == 0 {
-				start = i
-			}
-			depth++
-		case ']':
-			if depth > 0 {
-				depth--
-				if depth == 0 && start >= 0 {
-					groups = append(groups, s[start+1:i])
-					start = -1
-				}
-			} else {
-				out.WriteByte(s[i])
-			}
-		default:
-			if depth == 0 {
-				out.WriteByte(s[i])
+		if s[i] == '[' {
+			if end := matchingBracket(s, i); end >= 0 {
+				groups = append(groups, s[i+1:end])
+				i = end
+				continue
 			}
 		}
+		out.WriteByte(s[i])
 	}
 	return out.String(), groups
+}
+
+// matchingBracket returns the index of the "]" that closes the "[" at
+// open, counting nested brackets, or -1 when the line (or text) ends
+// before depth returns to zero.
+func matchingBracket(s string, open int) int {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		case '\n':
+			return -1
+		}
+	}
+	return -1
 }
 
 // citationIdentities returns the learning identities cited by the given

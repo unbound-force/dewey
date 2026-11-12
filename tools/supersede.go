@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -14,8 +15,10 @@ import (
 // learning declares at most one supersedes and one superseded_by link, so
 // each expansion enqueues at most two identities; the bound plus the
 // visited set guarantees the walk terminates on any chain, including a
-// pre-existing cycle (ES-FR-008).
-const maxSupersessionHops = 64
+// pre-existing cycle (ES-FR-008). A walk that exhausts the bound with
+// nodes still queued has not proven the link safe, so validation refuses
+// it rather than treating the unexplored remainder as cycle-free.
+const maxSupersessionHops = 256
 
 // SupersedeLearning links two existing learnings, successor and target,
 // through the same guarded write paths as store_learning supersession
@@ -61,6 +64,12 @@ func (l *Learning) SupersedeLearning(_ context.Context, _ *mcp.CallToolRequest, 
 		if err != nil {
 			return err
 		}
+		// A successor that already declared this target (a half-link a
+		// prior partial failure left behind) keeps it if the claim fails;
+		// a link this call writes is rolled back instead, so a failed or
+		// lost claim never leaves a dangling successor-side link that a
+		// later call for a different successor cannot see.
+		preLinked := successorDeclares(successor, targetID)
 		// Successor leg, then the guarded target claim (ES-FR-007).
 		// Warnings accumulate across the legs so a later leg's failure never
 		// hides an earlier leg's (ES-FR-009 reports every failed leg).
@@ -68,10 +77,13 @@ func (l *Learning) SupersedeLearning(_ context.Context, _ *mcp.CallToolRequest, 
 		claimed, winner, claimErr := l.claimSuperseded(target, successorID)
 		if claimErr != nil {
 			warning = joinWarnings(warning, fmt.Sprintf("failed to mark %s superseded in the store: %v", target.Name, claimErr))
-			return nil
-		}
-		if !claimed {
+		} else if !claimed {
 			warning = joinWarnings(warning, lostClaimWarning(target.Name, winner))
+		}
+		if claimErr != nil || !claimed {
+			if !preLinked {
+				warning = joinWarnings(warning, l.rollbackSupersedes(successor, targetID))
+			}
 			return nil
 		}
 		warning = joinWarnings(warning, l.markSupersededFile(targetID, successorID))
@@ -152,7 +164,10 @@ func (l *Learning) validateSupersession(successorID, targetID string) (*store.Pa
 		{successorID, targetID},
 		{targetID, successorID},
 	} {
-		reaches, cycle := l.walkSupersessionLinks(walk.start, walk.other, successorID, targetID)
+		reaches, cycle, exceeded := l.walkSupersessionLinks(walk.start, walk.other, successorID, targetID)
+		if exceeded {
+			return nil, nil, fmt.Errorf("supersession chain from %q exceeds %d hops: refusing a link the cycle walk could not prove safe", walk.start, maxSupersessionHops)
+		}
 		if reaches {
 			return nil, nil, fmt.Errorf("following declared supersession links from %q reaches %q: the link would close a cycle", walk.start, walk.other)
 		}
@@ -259,7 +274,11 @@ func declaredLink(props map[string]any, key, identity string) (string, error) {
 // walk stops at the first revisit rather than spinning (ES-FR-008). An
 // unreadable chain node ends that branch; the ladder surfaces unreadable
 // properties on the pair itself before walking.
-func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo string) (reachesOther bool, cycle []string) {
+//
+// exceeded reports that the hop bound ran out with nodes still queued:
+// the remainder of the chain is unexplored, so the caller must refuse
+// rather than read the absence of a hit as safety.
+func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo string) (reachesOther bool, cycle []string, exceeded bool) {
 	visited := map[string]bool{start: true}
 	parent := map[string]string{}
 	// arrivalViaSupersedes records how each visited node was reached:
@@ -267,7 +286,10 @@ func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo stri
 	// false along its parent's superseded_by (parent is the target).
 	arrivalViaSupersedes := map[string]bool{}
 	queue := []string{start}
-	for hops := 0; hops < maxSupersessionHops && len(queue) > 0; hops++ {
+	for hops := 0; len(queue) > 0; hops++ {
+		if hops >= maxSupersessionHops {
+			return false, nil, true
+		}
 		current := queue[0]
 		queue = queue[1:]
 		links, err := l.declaredLinks(current)
@@ -301,11 +323,11 @@ func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo stri
 			}
 			next := link.neighbor
 			if next == other {
-				return true, nil
+				return true, nil, false
 			}
 			if visited[next] {
 				if chain := ancestorPath(parent, current, next); chain != nil {
-					return false, append(chain, next)
+					return false, append(chain, next), false
 				}
 				continue
 			}
@@ -315,7 +337,7 @@ func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo stri
 			queue = append(queue, next)
 		}
 	}
-	return false, nil
+	return false, nil, false
 }
 
 // declaredLinkEdge is one declared supersession adjacency of a learning:
@@ -373,4 +395,49 @@ func ancestorPath(parent map[string]string, node, candidate string) []string {
 		}
 		current = p
 	}
+}
+
+// successorDeclares reports whether the successor page already declares
+// supersedes naming target (normalized), read from its current
+// properties. Unreadable properties report false.
+func successorDeclares(successor *store.Page, target string) bool {
+	props, err := decodeLearningProperties(successor.Properties)
+	if err != nil {
+		return false
+	}
+	id, err := declaredLink(props, "supersedes", supersedesIdentity(successor.Name))
+	return err == nil && id == target
+}
+
+// rollbackSupersedes undoes the successor leg recordSupersedes wrote when
+// the target claim then failed or was lost: the store's supersedes is
+// cleared, and the markdown backup's supersedes is emptied, each only
+// while it still names target, so a value a concurrent writer recorded
+// is never cleared. Returns a warning when either leg could not be
+// rolled back, else "".
+func (l *Learning) rollbackSupersedes(successor *store.Page, target string) string {
+	identity := supersedesIdentity(successor.Name)
+	err := updateLearningProperties(l.store, successor.Name, func(props map[string]any) error {
+		if s, ok := props["supersedes"].(string); ok && supersedesIdentity(s) == target {
+			delete(props, "supersedes")
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Sprintf("could not roll back supersedes %q on %s in the store: %v", target, identity, err)
+	}
+	fileErr := updateLearningBackup(l.vaultPath, identity,
+		[][2]string{{"supersedes", ""}},
+		func(content string) string {
+			recorded, found := frontmatterScalar(content, "supersedes")
+			if !found || supersedesIdentity(recorded) != target {
+				return "backup does not record this link"
+			}
+			return ""
+		})
+	var refusal *backupRefusalError
+	if fileErr != nil && !errors.As(fileErr, &refusal) {
+		return fmt.Sprintf("rolled back supersedes %q on %s in the store, but not in its markdown backup: %v", target, identity, fileErr)
+	}
+	return ""
 }

@@ -311,6 +311,12 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 	// for the review gate (ES-FR-006, design D8). The keys are always
 	// present in compiled mode — prompt mode carries neither field — so
 	// the gate can tell "compiled, nothing proposed" from "prompt mode".
+	run := newProposalRun()
+	for i := range produced {
+		kept, linkDropped := filterProposalsByLinkState(c.store, run, produced[i].proposals)
+		produced[i].proposals = kept
+		produced[i].dropped = append(produced[i].dropped, linkDropped...)
+	}
 	proposedSupersessions, droppedProposals := proposalResultFields(produced)
 
 	if err := c.writeIndex(); err != nil {
@@ -1330,6 +1336,8 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 	// proposals ride the result for the review gate, exactly as on the
 	// compile path.
 	content, proposals, droppedEntries := parseSupersessionProposals(input.Content, sources)
+	proposals, linkDropped := filterProposalsByLinkState(c.store, newProposalRun(), proposals)
+	droppedEntries = append(droppedEntries, linkDropped...)
 	articleContent := buildStoredArticle(input.Tag, content, input.Model, tier, sources)
 
 	// Per-article citation coverage (ES-FR-013), computed on the stored

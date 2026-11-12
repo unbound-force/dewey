@@ -1649,6 +1649,15 @@ func TestLint_CitationCoverage_PreChangeArticleNotClearedByFix(t *testing.T) {
 	if got := identitiesOf(t, findings[0]); !equalStrings(got, []string{"auth-20260101T000000-alice", "auth-20260102T000000-alice"}) {
 		t.Errorf("uncited identities = %v, want both declared sources (store version, hand edit invisible)", got)
 	}
+	// A citation-free article is one informational finding, not a
+	// warning per source, so a pre-upgrade vault's first lint does not
+	// bury drift and contradiction findings.
+	if findings[0]["severity"] != "info" {
+		t.Errorf("severity = %v, want info for a citation-free article", findings[0]["severity"])
+	}
+	if desc, _ := findings[0]["description"].(string); !strings.Contains(desc, "no per-claim citations") {
+		t.Errorf("description = %q, want the no-citations wording", desc)
+	}
 
 	// fix never touches citation coverage: no repair path exists for it.
 	fixedMap, ok := parsed["fixed"].(map[string]any)

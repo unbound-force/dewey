@@ -16,13 +16,20 @@
       guarded backup leg, durability through re-ingestion) this
       delta's ES-FR-007/008/009 restate in orchestration terms and
       reference by id.
-    - learning-temporal-validity (prefix LTV): LTV-FR-001 lives in
-      openspec/changes/learning-temporal-validity/specs/
-      learning-temporal-validity/spec.md (and is restated by the
-      serialize-supersession-writes delta); LTV-FR-002 .. LTV-FR-020
-      are reserved. LTV-FR-001 owns the two-way supersession contract
-      on `store_learning`; ES-FR-007 extends the same link semantics
-      to two existing learnings.
+    - learning-temporal-validity (prefix LTV): LTV-FR-001
+      (write-time-enforced two-way supersession) is allocated by the
+      serialize-supersession-writes delta at
+      openspec/changes/serialize-supersession-writes/specs/
+      learning-temporal-validity/spec.md. The
+      learning-temporal-validity base delta
+      (openspec/changes/learning-temporal-validity/specs/
+      learning-temporal-validity.md — no nested directory) carries
+      the un-numbered requirements (As-Of Pinning, Evidence and
+      Validity Inputs, Two-Way Supersession, Round-Trip Through
+      Re-Ingestion). LTV-FR-002 .. LTV-FR-020 are reserved. LTV-FR-001
+      owns the two-way supersession contract on `store_learning`;
+      ES-FR-007 extends the same link semantics to two existing
+      learnings.
     - knowledge-distillation (prefix KD): KD-FR-104 lives in this
       change's specs/knowledge-distillation/spec.md delta; KD-FR-101
       .. KD-FR-103 live in
@@ -113,7 +120,14 @@ boundary before they are rendered into a prompt: string values are
 trimmed, `supersedes` and `superseded_by` are normalized with the
 shared identity normalizer, `validity` MUST be one of the known
 tokens, and the two link values MUST match the learning-identity
-grammar. A value that fails validation, or that is not a string,
+grammar. The grammar accepts both identity formats the store holds:
+the current `{tag}-{YYYYMMDDTHHMMSS}-{author}` form and the legacy
+pre-#146 `{tag}-{sequence}` form (a non-empty tag and a numeric
+sequence, for example `auth-1`, `vault-walker-2`) — `reIngestLearnings`
+re-ingests legacy-identity files and `extractTagFromIdentity` still
+parses them, so a declared `supersedes: auth-1` is a valid link to
+that legacy learning and MUST pass validation, not be treated as
+absent. A value that fails validation, or that is not a string,
 MUST be treated as absent for rendering and MUST never be emitted
 into the prompt, so a hostile or corrupt property value cannot
 inject prompt text.
@@ -141,6 +155,16 @@ inject prompt text.
 - **WHEN** compile builds the synthesis prompt
 - **THEN** the offending value MUST be treated as absent
 - **AND** MUST NOT appear in the prompt
+
+#### Scenario: Legacy identity link is honoured
+
+- **GIVEN** a learning whose properties carry
+  `supersedes: auth-1`, where `auth-1` is a legacy pre-#146
+  `{tag}-{sequence}` identity held in the store
+- **WHEN** compile builds its learning entries and the synthesis
+  prompt
+- **THEN** the entry MUST carry the link and the prompt MUST render
+  it for that learning
 
 ### Requirement: Per-Claim Citations
 
@@ -193,10 +217,18 @@ stored articles MUST NOT contain it.
 
 A proposal entry is valid when its successor and target both resolve
 to the article's source learnings, are distinct, and its rationale
-is non-empty. Each valid entry MUST ride the compile result as a
-`proposed_supersessions` item carrying successor, target, rationale,
-and topic. Invalid entries MUST be dropped and reported without
-failing the article write.
+is non-empty after sanitization. Sanitization MUST strip control and
+invisible Unicode characters and MUST bound the rationale to at most
+512 runes — a longer sanitized rationale is truncated to the bound;
+a rationale that is empty after sanitization makes the entry
+invalid. The rationale is LLM-authored text derived from learning
+content and MUST be treated as data by every consumer: the review
+gate presents it, never executes it. Each valid entry MUST ride the
+compile result as a `proposed_supersessions` item carrying successor,
+target, sanitized rationale, and topic. Invalid entries MUST be
+dropped and reported in the result's `dropped_proposals` array —
+one entry per dropped proposal, carrying its successor, target, and
+the reason it was dropped — without failing the article write.
 
 #### Scenario: Valid proposal rides the compile result
 
@@ -212,7 +244,9 @@ failing the article write.
   outside the article's sources, repeat one learning as both
   successor and target, or omit the rationale
 - **WHEN** compile processes the article
-- **THEN** the invalid entries MUST be dropped and reported
+- **THEN** the invalid entries MUST be dropped and reported in the
+  `dropped_proposals` array, each carrying the entry's successor,
+  target, and drop reason
 - **AND** the article MUST still be written
 
 ### Requirement: Supersede Learning Tool
@@ -229,12 +263,20 @@ legs. The successor MUST gain `supersedes`; the target MUST gain
 semantics, applied to two pre-existing learnings). The target MUST
 NOT be deleted and its tier MUST NOT change.
 
-Because both learnings already exist, the handler MUST re-read and
-re-validate each learning's link state inside the lock hold before
-writing — the same in-closure fast-fail the `store_learning` path
-uses (SSW-FR-001, SSW-FR-002) — so a concurrent writer that changed
-either side between validation and write is refused or routed to the
-lost-claim outcome rather than overwritten.
+Because both learnings already exist, the handler MUST re-run the
+full validation ladder inside the lock hold before writing: the same
+in-closure fast-fail the `store_learning` path uses (SSW-FR-001,
+SSW-FR-002) on each side's recorded link state, plus the bounded
+cycle walk and the check that the target does not already supersede
+the successor. Re-running the whole ladder — not only the two
+fast-fails — inside the hold is what makes the reverse-pair
+interleaving safe: two concurrent calls started together, one
+linking A→B and the other B→A, serialize on the lock, and the
+second call's in-hold ladder observes the first call's writes and
+refuses, so both directions of a pair can never be written. A
+concurrent writer that changed either side between validation and
+write is refused or routed to the lost-claim outcome rather than
+overwritten.
 
 #### Scenario: Confirm a proposal
 
@@ -274,9 +316,11 @@ learning, when the target already records a `superseded_by`, when
 the successor already declares a `supersedes` naming a different
 learning, or when following declared supersession links from either
 learning reaches the other. The cycle walk MUST carry a visited set
-or an explicit hop bound so it terminates on a pre-existing cycle; a
-pre-existing cycle that already contains the two learnings is not a
-reason to hang.
+or an explicit hop bound so it terminates on a pre-existing cycle.
+When the walk terminates on a pre-existing cyclic chain — whether or
+not that chain contains the requested pair — the tool MUST return an
+error result naming the pre-existing cycle and MUST write nothing:
+a corrupt chain is reported for human repair, never extended.
 
 #### Scenario: Cycle refused
 
@@ -288,14 +332,29 @@ reason to hang.
 
 #### Scenario: Pre-existing cycle terminates and is refused
 
-- **GIVEN** a chain that already cycles through learnings A, B, and
-  C, with neither A nor B the requested target in the other direction
+- **GIVEN** learnings A, B, and C already form a cyclic chain of
+  declared links (following the links loops A→B→C→A) that excludes
+  target D, while successor A declares no `supersedes` of its own
+  and D records no `superseded_by`
 - **WHEN** `supersede_learning` is called with successor A and
-  target some unrelated learning D
+  target D
 - **THEN** the cycle walk MUST terminate via its visited set or hop
-  bound
-- **AND** the tool MUST return a result without writing either
-  learning
+  bound rather than spinning
+- **AND** the tool MUST return an error result naming the
+  pre-existing cycle
+- **AND** neither learning MUST be written
+
+#### Scenario: Reverse-pair race writes no cycle
+
+- **GIVEN** two concurrent `supersede_learning` calls, one with
+  successor A and target B, the other with successor B and target A,
+  started together while neither learning records any link
+- **WHEN** both calls complete
+- **THEN** at most one direction of the pair MUST be written
+- **AND** no cycle MUST exist between A and B — neither learning
+  records both a `supersedes` and a `superseded_by` naming the other
+- **AND** the refused call MUST return an error result or a
+  `supersedes_warning` outcome naming the winner
 
 #### Scenario: Target already superseded
 
@@ -327,14 +386,19 @@ semantics (SSW-FR-002).
 **ID**: ES-FR-010
 
 One shared pure helper MUST verify citation coverage in both
-directions over an article's claim-bearing body and its declared
-source learnings: forward — every bracketed citation resolves to a
-declared source; backward — every declared source is cited at least
-once.
+directions. Its input contract is the article's claim-bearing body,
+its declared source learnings, and each declared source's
+supersession status — whether that learning records a
+`superseded_by` or `validity: superseded` — resolved by the caller:
+the helper itself MUST perform no store lookup, so it stays pure.
+Forward — every bracketed citation resolves to a declared source;
+backward — every declared source is cited at least once.
 
 A citation token is a bracketed group whose entire comma-separated
 content matches the learning-identity grammar (a tag, an
-`YYYYMMDDTHHMMSS` timestamp, and an author, joined by hyphens). A
+`YYYYMMDDTHHMMSS` timestamp, and an author, joined by hyphens — or
+a legacy pre-#146 `{tag}-{sequence}` identity such as `auth-1`, so
+a citation of a legacy learning counts in both directions). A
 bracketed group that does not match that grammar is not a citation
 and MUST be ignored by both directions — markdown link text,
 reference-style link labels, numeric footnotes, checkbox brackets,
@@ -342,16 +406,31 @@ double-bracket wikilinks, empty brackets, and prose in brackets are
 all explicitly out of scope, so ordinary markdown never reads as an
 unresolved citation.
 
-Backward coverage MUST account for superseded sources: a source
-recorded as superseded (a `superseded_by` or `validity: superseded`)
-is accounted for when it is cited in the claim-bearing body or named
-in the article's auto-generated `## History` table or an in-body
-mention. For a source that is not superseded, the History table does
-not satisfy backward coverage.
+A declared source is accepted in either bare-identity form
+(`auth-20261101T000000-alice`) or page-name form
+(`learning/auth-20261101T000000-alice`); the helper MUST normalize
+a `learning/`-prefixed source to its bare identity before comparing
+against citation tokens, so both write paths — compile's bare
+identities and `store_compiled` page names — count identically.
 
-The frontmatter `sources` list and any `## Supersession Proposals`
-section MUST NOT count as citations. Compile MUST report per-article
-coverage for every article it writes.
+Backward coverage MUST account for superseded sources: a source
+recorded as superseded is accounted for when it is cited in the
+claim-bearing body, named in a row of the article's `## History`
+table, or mentioned in the claim-bearing body — an in-body mention
+is the bare identity occurring in the claim-bearing body outside any
+bracketed group. For a source that is not superseded, the History
+table does not satisfy backward coverage.
+
+The claim-bearing body is the article text after the leading
+frontmatter block and before the trailing `## History` section —
+the last `## History` heading in the article, where the
+auto-generated table is appended — and before any trailing `##
+Supersession Proposals` section; an earlier `## History` heading
+does not end the body, so its content stays in scope and cannot
+fence citations out of the check. The frontmatter `sources` list and
+any `## Supersession Proposals` section MUST NOT count as
+citations. Compile MUST report per-article coverage for every
+article it writes.
 
 #### Scenario: Unresolved citation reported
 
@@ -399,13 +478,20 @@ coverage for every article it writes.
 **ID**: ES-FR-011
 
 Lint MUST gain a `citation_coverage` finding kind that re-runs the
-same check over already-written compiled articles — hand-edited or
-`store_compiled`-authored — reporting unresolved citations and
-uncited sources by name; the kind MUST NOT be auto-repaired by
-`fix`. A pre-existing compiled article written before this change
-flooding the new kind is intended signal, not a false positive: the
-remediation is to recompile the article (or correct its citations),
-and records produced by this change MUST NOT inherit that backlog.
+same check over compiled articles backed by the store — pages
+written by compile or `store_compiled`. The store is the kind's data
+source, matching every other lint check: a file-only hand edit to
+`.uf/dewey/compiled/` is invisible to the kind until the article is
+recompiled or its page is deleted and re-indexed, because compiled
+articles, unlike learnings, have no startup re-ingestion path. The
+kind reports unresolved citations and uncited sources by name and
+MUST NOT be auto-repaired by `fix`. A pre-existing compiled article
+written before this change flooding the new kind is intended signal,
+not a false positive: the remediation is to recompile the article
+(or correct its citations). The kind carries no version
+discrimination — a finding corresponds one-to-one with a coverage
+violation in the checked article, and an article whose citations all
+resolve and whose current sources are each cited produces none.
 
 #### Scenario: Lint re-runs the check over written articles
 

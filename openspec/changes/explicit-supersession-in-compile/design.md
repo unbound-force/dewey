@@ -176,13 +176,23 @@ The prompt specifies a trailing section in exactly this shape:
 and states the justification bar: one learning clearly replaces the
 other; recency alone is not grounds. Parsing, validation (both
 identities resolve to the article's source learnings, distinct,
-non-empty rationale), and stripping live in one pure helper used by
-both `synthesizeClusters`' write path and `store_compiled` — the
-prompt-mode path (agent synthesis, `store_compiled` write) must
-surface proposals too, or the review gate would only work with
-server-side synthesis. Valid proposals ride the result as
-`proposed_supersessions` (successor, target, rationale, topic);
-invalid entries are dropped and reported without failing the article
+rationale non-empty after sanitization), and stripping live in one
+pure helper used by both `synthesizeClusters`' write path and
+`store_compiled` — the prompt-mode path (agent synthesis,
+`store_compiled` write) must surface proposals too, or the review
+gate would only work with server-side synthesis. The rationale is
+the one free-text field that reaches the gate, and it is LLM-authored
+text derived from learning content that may itself be
+attacker-influenced (a re-ingested file, a web payload quoted into a
+learning), so it gets the same validated trust boundary the
+identities got: sanitization strips control and invisible Unicode
+and bounds the rationale to 512 runes (longer sanitized rationales
+truncate; empty-after-sanitization invalidates the entry), and the
+gate treats the rationale as data, never instructions. Valid
+proposals ride the result as `proposed_supersessions` (successor,
+target, sanitized rationale, topic); invalid entries are dropped and
+reported in a `dropped_proposals` array — each carrying the entry's
+successor, target, and drop reason — without failing the article
 write. Rationale is not persisted on the link — it rides the compile
 result and the gate presentation; the link itself stays as lean as
 #146's. (Autonomous Collaboration: proposals are artifacts riding
@@ -191,18 +201,31 @@ the existing compile result, not side-channel state.)
 ### D5 Coverage helper: pure, shared, three call sites
 
 `tools/citations.go` (new) holds pure functions: extract the
-claim-bearing body (frontmatter, `## History`, and any `##
-Supersession Proposals` section excluded), extract bracketed
-citations, and check both directions against the declared source
-list, returning named violations plus counts. Compile calls it per
-article (per-article `coverage` in each `articles` result entry);
-`store_compiled` calls it on submitted content; lint's
-`citation_coverage` check calls it over compiled pages (content from
-store blocks, sources from page properties — the store is the source
-of truth). Excluding History and frontmatter is what makes the
-backward direction meaningful: the auto-generated table lists every
-source by construction (Composability First: string analysis, no
-embedder, no dependencies; Observable Quality: machine-parseable
+claim-bearing body, extract bracketed citations, and check both
+directions against the declared source list, returning named
+violations plus counts. The claim-bearing body is anchored, not
+name-based: the text after the leading frontmatter block and before
+the trailing `## History` section — the *last* `## History` heading,
+where `buildCompiledArticle` appends the auto-generated table — and
+before any trailing `## Supersession Proposals` section; an earlier
+`## History` heading does not end the body, so a hand-placed early
+heading cannot fence citations out of the check. The helper's input
+contract carries each declared source's supersession status
+(`superseded_by` or `validity: superseded`), resolved by the caller
+— compile and lint read it from page properties before calling — so
+the carve-out below needs no store lookup inside the helper and the
+purity claim holds. Compile calls it per article (per-article
+`coverage` in each `articles` result entry); `store_compiled` calls
+it on submitted content; lint's `citation_coverage` check calls it
+over compiled pages (content from store blocks, sources from page
+properties — the store is the source of truth, and it is also the
+observable boundary: a file-only hand edit to
+`.uf/dewey/compiled/` is invisible to lint until the article is
+recompiled or re-indexed, because compiled articles have no
+re-ingestion path). Excluding History and frontmatter is what makes
+the backward direction meaningful: the auto-generated table lists
+every source by construction (Composability First: string analysis,
+no embedder, no dependencies; Observable Quality: machine-parseable
 violations, by name).
 
 The backward rule needs one carve-out or it fights the temporal
@@ -213,10 +236,13 @@ fact. The rule is therefore: a declared source that is not
 superseded must be cited in the claim-bearing body; a declared
 source that records `superseded_by` or `validity: superseded` is
 accounted for when it is cited in the body *or* named in the `##
-History` table or an in-body mention. The History table counts for
-superseded sources only, so it cannot launder an uncited current
-source into a pass. This keeps "every source learning is accounted
-for" true without weakening "every current claim cites its source".
+History` table or mentioned in the claim-bearing body — an in-body
+mention being the bare identity occurring outside any bracketed
+group, so the predicate is the same string search the citation
+extractor already performs. The History table counts for superseded
+sources only, so it cannot launder an uncited current source into a
+pass. This keeps "every source learning is accounted for" true
+without weakening "every current claim cites its source".
 
 ### D6 `supersede_learning`: two existing learnings through the
 guarded paths
@@ -232,8 +258,11 @@ either learning reaches the other. The cycle walk is the check the
 fresh-successor path never needed (`store_learning`'s successor is
 newly created, so it cannot close a loop). Because the walk follows
 links that other writers may already have chained into a cycle, it
-carries a visited set and an explicit hop bound: a pre-existing loop
-the walk runs into terminates and refuses instead of spinning, and
+carries a visited set and an explicit hop bound: when the walk
+terminates on a pre-existing cyclic chain — whether or not it
+contains the requested pair — the call is refused with an error
+result naming that cycle and nothing is written (fail-closed: a
+corrupt chain is reported for human repair, never extended), and
 the bound is what keeps a corrupt chain from turning a refusal into
 a hang (ES-FR-008).
 
@@ -241,14 +270,26 @@ Validation happens before the lock, but validation-time state is a
 snapshot. Both learnings already exist, so either side can change
 between validation and write — unlike the fresh-successor path,
 where only the target is reachable by another writer. The handler
-therefore re-reads and re-validates each side's link state *inside*
-the `withLearningPropsLock` hold, before the first write: the
-in-closure fast-fail that `claimSuperseded` already uses for the
-target (a recorded non-empty string routes to the lost-claim
-outcome, a non-string is an error) is applied to the successor's
-`supersedes` as well. A concurrent writer that linked either side
-after validation is refused or reported as a lost claim rather than
-silently overwritten (SSW-FR-001, SSW-FR-002).
+therefore re-runs the *full* validation ladder *inside* the
+`withLearningPropsLock` hold, before the first write — not just the
+two `store_learning` fast-fails. The fast-fails (the in-closure
+check `claimSuperseded` already uses for the target — a recorded
+non-empty string routes to the lost-claim outcome, a non-string is
+an error — applied to the successor's `supersedes` as well) catch a
+concurrent writer that linked either side after validation. The
+cycle walk and the check that the target does not already supersede
+the successor must also re-run inside the hold, because the
+fast-fails alone do not compose against the reverse-pair
+interleaving: two calls started together, one linking A→B and the
+other B→A, serialize on the lock, and if the second call re-checked
+only the recorded-state keys it would pass both fast-fails (B's
+`supersedes` is still empty; A's `superseded_by` is still empty from
+its perspective) and write the reverse direction — a 2-cycle where
+both learnings end up `validity: superseded`. Re-running the whole
+ladder in-hold makes the second call observe the first call's
+writes and refuse, so both directions of a pair can never be
+written (SSW-FR-001, SSW-FR-002; the reverse-pair race is pinned by
+ES-FR-008's scenario and task 6.4's `-race` test).
 
 Writes run under one `withLearningPropsLock` hold across both legs,
 in `store_learning`'s order: the successor leg first (record
@@ -260,7 +301,12 @@ after the store leg lands reports `supersedes_warning`, matching
 #166's losing-writer semantics; re-confirming an already-complete
 link errors on the target-already-superseded guard, exactly as
 `store_learning` does.
-Registration in `server.go` takes the tool count 50 → 51;
+Registration in `server.go` goes inside the existing `if !readOnly`
+block, beside `store_learning`, compile, curate, lint, and promote —
+`supersede_learning` mutates the supersession state of an
+already-existing (possibly validated) learning, so it takes the same
+least-privilege read-only guard every mutating tool takes — and
+takes the tool count 50 → 51;
 `TestNewServer_ToolCount` ranges and per-category comments extend
 with it. (Testability: in-memory SQLite plus `t.TempDir()` backups,
 race-tested with a start barrier, no sleeps.)
@@ -282,7 +328,13 @@ The review gate's single `HUMAN_GATE` question is extended to ask
 which supersession proposals to confirm alongside the promote
 selection — the marker stays reserved for the two existing gates
 (curator-agent-human-gates constraint), so no third marked question
-is introduced. After the answer, each confirmed pair is applied via
+is introduced. The gate inspects both data sources: a server-side
+compile result's `proposed_supersessions` and per-article coverage,
+and — in prompt mode, where compile returns `prompts_ready` with
+neither field — the `store_compiled` results the gate-driven agent
+just produced, which carry the same proposals and coverage
+(KD-FR-104's prompt-mode scenario). After the answer, each
+confirmed pair is applied via
 `supersede_learning` before `promote`; unconfirmed proposals leave
 both learnings unchanged. Both copies of the command change together:
 `.opencode/commands/dewey-distill.md` and the byte-identical
@@ -299,12 +351,35 @@ both learnings unchanged. Both copies of the command change together:
   Records written by this change do not inherit it. Treating the
   initial wave as noise and suppressing the kind would hide the
   drift the kind exists to catch.
+- **Legacy learnings are first-class under the grammar — intended.**
+  The store still holds pre-#146 `{tag}-{sequence}` identities
+  (`reIngestLearnings` re-ingests them, `extractTagFromIdentity`
+  still parses them), so the identity grammar accepts both formats:
+  a declared `supersedes: auth-1` validates and reaches the prompt,
+  and a citation of `auth-1` counts in coverage. Treating legacy
+  identities as malformed would silently strand every pre-#146
+  learning's links and citations — and the treat-as-absent failure
+  path is invisible, which is exactly why the grammar names both
+  formats instead of deriving from the current identity generator
+  alone.
 - **LLM citation compliance is probabilistic.** A model may omit or
   malformed citations. Mitigation: coverage is a reported finding at
   compile time and a lint kind afterward; violations name the exact
   token; the human gate judges. Writes are not blocked — an article
   with missing citations is still data, and blocking would make
   compile unusable with weaker models.
+- **"Surfaced, not silently resolved" is not directly observable
+  post-hoc.** Every ES-FR-001 acceptance criterion is prompt-text
+  only; whether synthesis actually emitted an `## Open Conflicts`
+  section over a cluster holding an unresolved contradiction is
+  probabilistic model behaviour, not a checked invariant — the
+  citation half of the change's intent has a checker, the recency
+  half does not. Intended follow-up observation: a lint check
+  flagging a single-answer claim over a cluster whose learnings
+  still hold an unresolved contradiction, reading the same store the
+  `citation_coverage` kind reads. Recorded as a risk rather than
+  scoped because wiring lint's contradiction heuristic to per-claim
+  article text is its own change.
 - **Strict section format may be mis-produced.** Invalid entries are
   dropped and reported, never silently kept and never failing the
   write; the section is always stripped, so stored articles stay
@@ -323,11 +398,12 @@ both learnings unchanged. Both copies of the command change together:
   price of not clobbering a concurrent reverse-pair link, and it is
   reads, not contention, because nothing blocks on the re-read except
   the same mutex every learning-property writer already takes.
-- **Cycle-walk cost.** Chains are bounded by learnings per tag and
-  walked via in-store reads before any write; the walk is refuse-only
-  (no writes) and carries a visited set plus a hop bound, so a
-  pre-existing cycle terminates and a long chain costs reads, not
-  contention.
+- **Cycle-walk cost.** Chains are bounded by learnings per tag; the
+  walk runs once before the lock and re-runs inside the hold (D6),
+  both via in-store reads; the walk is refuse-only (no writes) and
+  carries a visited set plus a hop bound, so a pre-existing cycle
+  terminates and is refused with an error naming it, and a long
+  chain costs reads, not contention.
 - **Tool-count surfaces.** 50 → 51 touches README, AGENTS.md, and the
   `server_test.go` ranges — tasked explicitly so the count cannot
   drift silently.

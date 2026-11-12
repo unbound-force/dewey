@@ -62,19 +62,19 @@ func (l *Learning) SupersedeLearning(_ context.Context, _ *mcp.CallToolRequest, 
 			return err
 		}
 		// Successor leg, then the guarded target claim (ES-FR-007).
-		warning = l.recordSupersedes(successor, targetID)
+		// Warnings accumulate across the legs so a later leg's failure never
+		// hides an earlier leg's (ES-FR-009 reports every failed leg).
+		warning = joinWarnings(warning, l.recordSupersedes(successor, targetID))
 		claimed, winner, claimErr := l.claimSuperseded(target, successorID)
 		if claimErr != nil {
-			warning = fmt.Sprintf("failed to mark %s superseded in the store: %v", target.Name, claimErr)
+			warning = joinWarnings(warning, fmt.Sprintf("failed to mark %s superseded in the store: %v", target.Name, claimErr))
 			return nil
 		}
 		if !claimed {
-			warning = lostClaimWarning(target.Name, winner)
+			warning = joinWarnings(warning, lostClaimWarning(target.Name, winner))
 			return nil
 		}
-		if fileWarning := l.markSupersededFile(targetID, successorID); fileWarning != "" {
-			warning = fileWarning
-		}
+		warning = joinWarnings(warning, l.markSupersededFile(targetID, successorID))
 		return nil
 	})
 	if err != nil {
@@ -91,6 +91,20 @@ func (l *Learning) SupersedeLearning(_ context.Context, _ *mcp.CallToolRequest, 
 	}
 	res, err := jsonTextResult(result)
 	return res, nil, err
+}
+
+// joinWarnings accumulates partial-failure warnings from consecutive
+// supersession write legs, so each leg's report stays visible when more
+// than one leg degrades.
+func joinWarnings(current, next string) string {
+	switch {
+	case current == "":
+		return next
+	case next == "":
+		return current
+	default:
+		return current + "; " + next
+	}
 }
 
 // validateSupersession runs the full ES-FR-008 ladder against current
@@ -225,9 +239,16 @@ func declaredLink(props map[string]any, key, identity string) (string, error) {
 // and superseded_by, both directions — breadth-first from start, with a
 // visited set and a maxSupersessionHops bound on expansions, keeping
 // parent pointers for cycle reconstruction. The edge ignoreFrom
-// supersedes ignoreTo is skipped — the requested pair's own forward link,
-// which is either the idempotent half-link this call completes or the
-// link it is about to write, never a cycle-closing back-edge.
+// supersedes ignoreTo (the supersedes representation only) is skipped —
+// the requested pair's own forward link, which is either the idempotent
+// half-link this call completes or the link it is about to write, never
+// a cycle-closing back-edge. A completed pair stores one logical edge as
+// two representations (successor.supersedes = target plus
+// target.superseded_by = successor); walking back along the reverse
+// representation of the arrival edge is skipped so healthy completed
+// pairs are not read as 2-cycles and chains remain extendable — a
+// distinct second edge back to the parent (both directions declaring
+// supersedes, or superseded_by disagreements) is still followed.
 //
 // The walk reports whether it reaches other (linking the pair would
 // close a cycle) and the identity chain of a pre-existing cycle when one
@@ -241,6 +262,10 @@ func declaredLink(props map[string]any, key, identity string) (string, error) {
 func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo string) (reachesOther bool, cycle []string) {
 	visited := map[string]bool{start: true}
 	parent := map[string]string{}
+	// arrivalViaSupersedes records how each visited node was reached:
+	// true along its parent's supersedes (parent is the successor),
+	// false along its parent's superseded_by (parent is the target).
+	arrivalViaSupersedes := map[string]bool{}
 	queue := []string{start}
 	for hops := 0; hops < maxSupersessionHops && len(queue) > 0; hops++ {
 		current := queue[0]
@@ -249,10 +274,32 @@ func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo stri
 		if err != nil {
 			continue
 		}
-		for _, next := range links {
-			if current == ignoreFrom && next == ignoreTo {
+		for _, link := range links {
+			// The requested pair's own forward link — the successor's
+			// supersedes naming the target, whether already declared
+			// (the idempotent half-link this call completes) or about
+			// to be written — is ignored wherever it appears. Only the
+			// supersedes representation is ignored: a successor that
+			// already records the target as ITS successor
+			// (superseded_by) is a genuine reverse declaration and is
+			// followed, refusing the call as cycle-closing.
+			if current == ignoreFrom && link.fromSupersedes && link.neighbor == ignoreTo {
 				continue
 			}
+			// A completed pair is stored as two representations of ONE
+			// logical edge: successor.supersedes = target plus
+			// target.superseded_by = successor. Walking back along the
+			// reverse representation of the arrival edge would read
+			// every healthy completed pair as a 2-cycle and block chain
+			// extension, so only that mutual reverse is skipped — a
+			// disagreement (a second, distinct edge back to the parent,
+			// e.g. both directions declaring supersedes) is still
+			// followed and reported as a cycle.
+			if current != start && link.neighbor == parent[current] &&
+				link.fromSupersedes != arrivalViaSupersedes[current] {
+				continue
+			}
+			next := link.neighbor
 			if next == other {
 				return true, nil
 			}
@@ -264,15 +311,26 @@ func (l *Learning) walkSupersessionLinks(start, other, ignoreFrom, ignoreTo stri
 			}
 			visited[next] = true
 			parent[next] = current
+			arrivalViaSupersedes[next] = link.fromSupersedes
 			queue = append(queue, next)
 		}
 	}
 	return false, nil
 }
 
+// declaredLinkEdge is one declared supersession adjacency of a learning:
+// the neighbor's bare identity and the property the link was read from.
+// fromSupersedes distinguishes the two stored representations of a
+// logical edge (supersedes names the target; superseded_by names the
+// successor), which the walk needs to collapse mutual pairs.
+type declaredLinkEdge struct {
+	neighbor       string
+	fromSupersedes bool
+}
+
 // declaredLinks reads a learning's declared supersedes and superseded_by
 // links, normalized to bare identities, skipping empty values.
-func (l *Learning) declaredLinks(identity string) ([]string, error) {
+func (l *Learning) declaredLinks(identity string) ([]declaredLinkEdge, error) {
 	page, err := l.store.GetPage(store.LearningPrefix + identity)
 	if err != nil {
 		return nil, err
@@ -284,10 +342,13 @@ func (l *Learning) declaredLinks(identity string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var links []string
+	var links []declaredLinkEdge
 	for _, key := range []string{"supersedes", "superseded_by"} {
 		if id, err := declaredLink(props, key, identity); err == nil && id != "" {
-			links = append(links, id)
+			links = append(links, declaredLinkEdge{
+				neighbor:       id,
+				fromSupersedes: key == "supersedes",
+			})
 		}
 	}
 	return links, nil

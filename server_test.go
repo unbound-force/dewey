@@ -560,43 +560,37 @@ func TestNewServer_ToolCount(t *testing.T) {
 		name     string
 		backend  backend.Backend
 		readOnly bool
-		wantMin  int // minimum expected tool count
-		wantMax  int // maximum expected tool count
+		want     int // exact expected tool count
 	}{
 		{
 			name:     "non-DataScript read-write",
 			backend:  &serverMockBackend{},
 			readOnly: false,
-			wantMin:  38, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(2) + indexing(2) + compile(2) + curate(1) + lint(1) + promote(1) + verify(1) + health(1) = 44
-			wantMax:  44,
+			want:     44, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(2: store_learning, supersede_learning) + indexing(2) + compile(2) + curate(1) + lint(1) + promote(1) + verify(1) + health(1)
 		},
 		{
 			name:     "non-DataScript read-only",
 			backend:  &serverMockBackend{},
 			readOnly: true,
-			wantMin:  16, // navigate(5) + search(3) + analyze(5) + journal(2) + semantic(3) + health(1) = 19
-			wantMax:  20,
+			want:     19, // navigate(5) + search(3) + analyze(5) + journal(2) + semantic(3) + health(1)
 		},
 		{
 			name:     "DataScript read-write",
 			backend:  &serverMockBackendWithDataScript{},
 			readOnly: false,
-			wantMin:  46, // above + get_references + query_datalog + flashcard(3) + whiteboard(2) = 51
-			wantMax:  51,
+			want:     51, // non-DataScript read-write + get_references + query_datalog + flashcard(3) + whiteboard(2)
 		},
 		{
 			name:     "DataScript read-only",
 			backend:  &serverMockBackendWithDataScript{},
 			readOnly: true,
-			wantMin:  23, // read-only + DataScript read tools
-			wantMax:  26,
+			want:     25, // non-DataScript read-only + get_references + query_datalog + flashcard(3) + whiteboard(2)
 		},
 		{
 			name:     "vault read-write",
 			backend:  vault.New(t.TempDir()),
 			readOnly: false,
-			wantMin:  39, // non-DataScript read-write + reload
-			wantMax:  45,
+			want:     45, // non-DataScript read-write + reload
 		},
 	}
 
@@ -605,9 +599,9 @@ func TestNewServer_ToolCount(t *testing.T) {
 			srv, _ := newServer(tc.backend, tc.readOnly)
 			tools := listServerTools(t, srv)
 
-			if len(tools) < tc.wantMin || len(tools) > tc.wantMax {
-				t.Errorf("tool count = %d, want between %d and %d\ntools: %v",
-					len(tools), tc.wantMin, tc.wantMax, tools)
+			if len(tools) != tc.want {
+				t.Errorf("tool count = %d, want exactly %d\ntools: %v",
+					len(tools), tc.want, tools)
 			}
 		})
 	}

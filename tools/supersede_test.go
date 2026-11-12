@@ -169,6 +169,9 @@ func TestSupersedeLearning_UnknownIdentity(t *testing.T) {
 	l, s, vaultDir := newSupersedeTool(t)
 	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
 
+	// Refusal cases only: the table shares one seeded store, so every
+	// entry must leave it untouched (the mutating page-name-form
+	// resolution case lives in its own test).
 	tests := []struct {
 		name      string
 		successor string
@@ -177,7 +180,6 @@ func TestSupersedeLearning_UnknownIdentity(t *testing.T) {
 	}{
 		{"unknown successor", "auth-20260909T000000-nobody", a, "auth-20260909T000000-nobody"},
 		{"unknown target", b, "auth-20260909T000000-nobody", "auth-20260909T000000-nobody"},
-		{"page-name form resolves", "learning/" + b, "learning/" + a, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -196,6 +198,96 @@ func TestSupersedeLearning_UnknownIdentity(t *testing.T) {
 				t.Fatalf("page-name form must resolve: %s", resultText(result))
 			}
 		})
+	}
+}
+
+// seedThirdLearning stores one more clean learning (newest of the trio)
+// with a backup, for chain-extension scenarios.
+func seedThirdLearning(t *testing.T, s *store.Store, vaultDir string) string {
+	t.Helper()
+	const c = "auth-20260317T100003-test"
+	storeLearningWithProps(t, s, c, `{"tag":"auth","created_at":"2026-03-17T10:00:03Z"}`, "newest learning", time.Date(2026, 3, 17, 10, 0, 0, 0, time.UTC))
+	writeLearningBackup(t, vaultDir, c, backupContent([][2]string{{"tag", "auth"}, {"created_at", "2026-03-17T10:00:03Z"}}))
+	return c
+}
+
+// TestSupersedeLearning_PageNameFormResolves covers the mutating
+// resolution case isolated from the refusal table: learning/<identity>
+// page names resolve for both operands.
+func TestSupersedeLearning_PageNameFormResolves(t *testing.T) {
+	l, s, vaultDir := newSupersedeTool(t)
+	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
+
+	result := callSupersede(t, l, "learning/"+b, "learning/"+a)
+	if result.IsError {
+		t.Fatalf("page-name form must resolve: %s", resultText(result))
+	}
+	if props := readStoredProps(t, s, a); props["superseded_by"] != b {
+		t.Errorf("target superseded_by = %v, want %s", props["superseded_by"], b)
+	}
+}
+
+// TestSupersedeLearning_ChainExtension pins that a completed pair — the
+// normal end state of a successful call, stored as both supersedes and
+// superseded_by — is one logical edge, not a walkable 2-cycle: a third
+// learning may supersede either member afterwards. The distill review
+// gate relies on this when it applies a cluster's proposals
+// sequentially (e.g. (B,A) then (C,B)).
+func TestSupersedeLearning_ChainExtension(t *testing.T) {
+	l, s, vaultDir := newSupersedeTool(t)
+	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
+	c := seedThirdLearning(t, s, vaultDir)
+
+	if result := callSupersede(t, l, b, a); result.IsError {
+		t.Fatalf("first supersession (b supersedes a): %s", resultText(result))
+	}
+	// Before the mutual-pair collapse this was refused as
+	// "pre-existing supersession cycle" on healthy state.
+	if result := callSupersede(t, l, c, b); result.IsError {
+		t.Fatalf("chain extension (c supersedes b, b already supersedes a): %s", resultText(result))
+	}
+
+	// The chain reads c -> b -> a in both representations.
+	if props := readStoredProps(t, s, b); props["supersedes"] != a || props["superseded_by"] != c {
+		t.Errorf("b props = %v, want supersedes=%s superseded_by=%s", props, a, c)
+	}
+	if props := readStoredProps(t, s, a); props["superseded_by"] != b {
+		t.Errorf("a superseded_by = %v, want %s (unchanged)", props["superseded_by"], b)
+	}
+	if props := readStoredProps(t, s, c); props["supersedes"] != b {
+		t.Errorf("c supersedes = %v, want %s", props["supersedes"], b)
+	}
+
+	// Extending off the successor side (a fourth learning superseding c)
+	// must work as well.
+	d := "auth-20260318T100004-test"
+	storeLearningWithProps(t, s, d, `{"tag":"auth","created_at":"2026-03-18T10:00:04Z"}`, "fourth learning", time.Date(2026, 3, 18, 10, 0, 0, 0, time.UTC))
+	writeLearningBackup(t, vaultDir, d, backupContent([][2]string{{"tag", "auth"}, {"created_at", "2026-03-18T10:00:04Z"}}))
+	if result := callSupersede(t, l, d, c); result.IsError {
+		t.Fatalf("chain extension off the successor side: %s", resultText(result))
+	}
+}
+
+// TestSupersedeLearning_SuccessorInCompletedPair pins the mirror case:
+// the requested successor is itself the target of a completed pair, and
+// the walk through its own pair must not read it as a cycle.
+func TestSupersedeLearning_SuccessorInCompletedPair(t *testing.T) {
+	l, s, vaultDir := newSupersedeTool(t)
+	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
+	c := seedThirdLearning(t, s, vaultDir)
+
+	// b supersedes a: a completed pair.
+	if result := callSupersede(t, l, b, a); result.IsError {
+		t.Fatalf("first supersession: %s", resultText(result))
+	}
+	// a, already superseded by b, now supersedes a third learning —
+	// a is mid-chain, which is legal.
+	result := callSupersede(t, l, a, c)
+	if result.IsError {
+		t.Fatalf("successor already superseded must not block the call: %s", resultText(result))
+	}
+	if props := readStoredProps(t, s, a); props["superseded_by"] != b || props["supersedes"] != c {
+		t.Errorf("a props = %v, want superseded_by=%s supersedes=%s (mid-chain)", props, b, c)
 	}
 }
 
@@ -436,6 +528,74 @@ func TestSupersedeLearning_PartialFailureBackupRefusal(t *testing.T) {
 	// The backup is left byte-for-byte unchanged.
 	if value, ok := frontmatterScalar(readBackup(t, vaultDir, a), "superseded_by"); !ok || value != "auth-20260909T000000-nobody" {
 		t.Errorf("backup must keep its recorded value, got %q (found=%v)", value, ok)
+	}
+}
+
+// TestSupersedeLearning_PartialFailureSuccessorBackupRefusal covers the
+// successor-side mirror of the backup refusal: the successor's backup
+// records a differing supersedes while its store properties stay clean.
+// The call succeeds, the warning names the successor backup, both store
+// legs stand, and the successor's backup is left byte-for-byte unchanged.
+func TestSupersedeLearning_PartialFailureSuccessorBackupRefusal(t *testing.T) {
+	l, s, vaultDir := newSupersedeTool(t)
+	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
+	writeLearningBackup(t, vaultDir, b, backupContent([][2]string{
+		{"tag", "auth"}, {"created_at", "2026-03-16T10:00:02Z"},
+		{"supersedes", "auth-20260909T000000-nobody"},
+	}))
+
+	result := callSupersede(t, l, b, a)
+	if result.IsError {
+		t.Fatalf("partial failure must not be an error result: %s", resultText(result))
+	}
+	parsed := parseCompileResult(t, resultText(result))
+	warning, _ := parsed["supersedes_warning"].(string)
+	if warning == "" {
+		t.Fatalf("result missing supersedes_warning: %v", parsed)
+	}
+	if !strings.Contains(warning, "markdown backup") || !strings.Contains(warning, "auth-20260909T000000-nobody") {
+		t.Errorf("warning = %q, want it to name the successor backup refusal", warning)
+	}
+	if props := readStoredProps(t, s, b); props["supersedes"] != a {
+		t.Errorf("store successor leg must stand, got %v", props["supersedes"])
+	}
+	if value, ok := frontmatterScalar(readBackup(t, vaultDir, b), "supersedes"); !ok || value != "auth-20260909T000000-nobody" {
+		t.Errorf("successor backup must keep its recorded value, got %q (found=%v)", value, ok)
+	}
+}
+
+// TestSupersedeLearning_BackupEqualValueRewrites covers the equal-value
+// branch of both backup guards: a backup already recording the link in
+// page-name form is not a refusal — the rewrite proceeds (and repairs a
+// bare-form key), so no warning is reported.
+func TestSupersedeLearning_BackupEqualValueRewrites(t *testing.T) {
+	l, s, vaultDir := newSupersedeTool(t)
+	a, b := seedSupersedeLearnings(t, l, s, vaultDir)
+	// Both backups pre-record the pair in page-name form: equal values
+	// after normalization, stale in form.
+	writeLearningBackup(t, vaultDir, b, backupContent([][2]string{
+		{"tag", "auth"}, {"created_at", "2026-03-16T10:00:02Z"},
+		{"supersedes", "learning/" + a},
+	}))
+	writeLearningBackup(t, vaultDir, a, backupContent([][2]string{
+		{"tag", "auth"}, {"created_at", "2026-03-15T10:00:01Z"},
+		{"superseded_by", "learning/" + b},
+	}))
+
+	result := callSupersede(t, l, b, a)
+	if result.IsError {
+		t.Fatalf("equal-value backups must not refuse: %s", resultText(result))
+	}
+	parsed := parseCompileResult(t, resultText(result))
+	if warning, _ := parsed["supersedes_warning"].(string); warning != "" {
+		t.Errorf("equal-value rewrite must not warn, got %q", warning)
+	}
+	// The rewrite normalizes both keys to bare identities.
+	if value, ok := frontmatterScalar(readBackup(t, vaultDir, b), "supersedes"); !ok || value != a {
+		t.Errorf("successor backup supersedes = %q (found=%v), want %s", value, ok, a)
+	}
+	if value, ok := frontmatterScalar(readBackup(t, vaultDir, a), "superseded_by"); !ok || value != b {
+		t.Errorf("target backup superseded_by = %q (found=%v), want %s", value, ok, b)
 	}
 }
 

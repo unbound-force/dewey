@@ -493,7 +493,7 @@ func (c *Compile) replaceArticles(compiledDir string, produced []synthesizedClus
 		for i, l := range sc.cluster.Learnings {
 			covSources[i] = CitationSource{
 				Identity:   l.Identity,
-				Superseded: l.SupersededBy != "" || l.Validity == "superseded",
+				Superseded: supersededFrom(l.SupersededBy, l.Validity),
 			}
 		}
 		coverage := CheckCitationCoverage(CoverageOptions{Article: sc.article, Sources: covSources})
@@ -711,7 +711,7 @@ func (c *Compile) buildLearningEntries(pages []*store.Page) ([]LearningEntry, er
 	var entries []LearningEntry
 	for _, p := range pages {
 		// Extract identity from page name: "learning/{identity}" → "{identity}".
-		identity := strings.TrimPrefix(p.Name, "learning/")
+		identity := strings.TrimPrefix(p.Name, store.LearningPrefix)
 		tag := extractTagFromIdentity(identity, p.Properties)
 
 		// Decode the temporal keys at the trust boundary; a value that
@@ -1212,7 +1212,7 @@ func (c *Compile) resolveCompiledSources(sources []string) (covSources []Citatio
 			unresolved = append(unresolved, s)
 			continue
 		}
-		page, err := c.store.GetPage("learning/" + id)
+		page, err := c.store.GetPage(store.LearningPrefix + id)
 		if err != nil || page == nil {
 			unresolved = append(unresolved, id)
 			continue

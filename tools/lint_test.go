@@ -1472,6 +1472,21 @@ func TestLint_CitationCoverage_Findings(t *testing.T) {
 	}
 	parsed := parseLintResult(t, resultText(result))
 
+	// The structured outcome reports a checked pass over the article.
+	outcome, ok := parsed["citation_coverage_checks"].(map[string]any)
+	if !ok {
+		t.Fatalf("result missing citation_coverage_checks outcome: %v", parsed)
+	}
+	if outcome["status"] != "checked" {
+		t.Errorf("outcome status = %v, want checked", outcome["status"])
+	}
+	if checked, _ := outcome["checked"].(float64); checked != 1 {
+		t.Errorf("outcome checked = %v, want 1", outcome["checked"])
+	}
+	if skipped, present := outcome["skipped"]; present {
+		t.Errorf("outcome skipped = %v, want absent on a clean pass", skipped)
+	}
+
 	findings := citationCoverageFindings(t, parsed)
 	if len(findings) != 2 {
 		t.Fatalf("expected 2 citation_coverage findings (unresolved + uncited), got %d: %v", len(findings), findings)

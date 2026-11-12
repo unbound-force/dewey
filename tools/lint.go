@@ -181,8 +181,10 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 
 	// Check 9: Citation coverage over store-backed compiled articles
 	// (ES-FR-011). Store-backed only: the store is the kind's data
-	// source, and fix never touches these findings.
-	citationFindings, err := l.checkCitationCoverage()
+	// source, and fix never touches these findings. The outcome is
+	// reported as citation_coverage_checks so MCP clients can tell a
+	// clean pass from a degraded or failed one.
+	citationFindings, citationOutcome, err := l.checkCitationCoverage()
 	if err != nil {
 		lintLogger.Warn("citation coverage check failed", "err", err)
 	} else {
@@ -294,6 +296,9 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		"message":  message,
 		// anchor_checks: checked, skipped, or failed, with the reason (#147).
 		"anchor_checks": anchorOutcome,
+		// citation_coverage_checks: checked, skipped pages, or failed
+		// (ES-FR-011).
+		"citation_coverage_checks": citationOutcome,
 	}
 
 	// Include fix results when fix was requested.
@@ -885,6 +890,17 @@ func (l *Lint) checkSanitizationFindings() ([]Finding, error) {
 	return findings, nil
 }
 
+// citationCoverageReport is the citation-coverage pass outcome, reported
+// as citation_coverage_checks so MCP clients can tell a clean pass from a
+// degraded one (some pages skipped for unreadable blocks) or a failed
+// one — mirroring anchor_checks (#147).
+type citationCoverageReport struct {
+	Status  string   `json:"status"`            // checked or failed
+	Checked int      `json:"checked"`           // compiled pages evaluated
+	Skipped []string `json:"skipped,omitempty"` // pages skipped for unreadable blocks, with the reason
+	Reason  string   `json:"reason,omitempty"`  // why the pass failed
+}
+
 // checkCitationCoverage re-runs the shared citation-coverage check over
 // compiled articles backed by the store (ES-FR-011): pages written by
 // compile or store_compiled, both persisted with SourceID "compiled".
@@ -896,18 +912,31 @@ func (l *Lint) checkSanitizationFindings() ([]Finding, error) {
 // its citations. A pre-existing article written before this change is
 // intended signal, not a false positive — the check carries no version
 // discrimination.
-func (l *Lint) checkCitationCoverage() ([]Finding, error) {
+//
+// A page whose blocks cannot be read is skipped and recorded in the
+// outcome's Skipped list rather than failing the whole pass: one damaged
+// article must not blind the check to every other article's findings.
+// Only the inability to list compiled pages fails the pass outright.
+func (l *Lint) checkCitationCoverage() ([]Finding, citationCoverageReport, error) {
+	report := citationCoverageReport{Status: "checked"}
 	pages, err := l.store.ListPagesBySource("compiled")
 	if err != nil {
-		return nil, fmt.Errorf("list compiled pages: %w", err)
+		err = fmt.Errorf("list compiled pages: %w", err)
+		report.Status = "failed"
+		report.Reason = err.Error()
+		return nil, report, err
 	}
 
 	var findings []Finding
 	for _, p := range pages {
 		content, err := l.compiledPageContent(p.Name)
 		if err != nil {
-			return nil, fmt.Errorf("read blocks for %s: %w", p.Name, err)
+			lintLogger.Warn("citation coverage skipped page",
+				"page", p.Name, "err", err)
+			report.Skipped = append(report.Skipped, fmt.Sprintf("%s: %v", p.Name, err))
+			continue
 		}
+		report.Checked++
 		cov := CheckCitationCoverage(CoverageOptions{
 			Article: content,
 			Sources: l.citationCoverageSources(extractSourcesFromProperties(p)),
@@ -935,7 +964,7 @@ func (l *Lint) checkCitationCoverage() ([]Finding, error) {
 			})
 		}
 	}
-	return findings, nil
+	return findings, report, nil
 }
 
 // citationCoverageSources resolves declared compiled-article sources into

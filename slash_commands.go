@@ -177,6 +177,7 @@ supersessions for human confirmation.
 /dewey-compile --incremental authentication-3
 ` + "```" + `
 
+<protect>
 ## Instructions
 
 Call the Dewey MCP tool ` + "`" + `compile` + "`" + ` to synthesize stored learnings.
@@ -193,6 +194,7 @@ automatically.
 
 Display the returned summary showing topics compiled, articles
 generated, and elapsed time.
+</protect>
 `,
 
 	"dewey-curate.md": `---

@@ -464,11 +464,11 @@ The `store_learning` MCP tool stores knowledge with temporal awareness:
 
 Set `DEWEY_AUTHOR` to override the default author identity (useful in CI or shared environments where git config may not be available).
 
+Backward compatibility: the old `tags` (plural, comma-separated) field is still accepted — the first tag is used. Temporal-validity fields round-trip through markdown frontmatter and startup re-ingestion; legacy files without them re-ingest unchanged.
+
 ### Supersede Learning API
 
-The `supersede_learning` MCP tool records a confirmed supersession between two existing learnings (`successor` supersedes `target`, bare identities or `learning/<identity>` page names). Validation is fail-closed: distinct identities, both learnings exist, the target records no `superseded_by`, the successor declares no differing `supersedes`, no link in either direction closes a cycle (bounded walk, both directions, ignoring the pair's own forward link so idempotent half-link completion succeeds), and pre-existing corrupt cycles are refused, not extended. The validation ladder runs pre-lock for fast failure and again inside one `withLearningPropsLock` hold before the first write, so concurrent reverse-pair races are safe; cross-process races lose at the store's compare-and-swap claim and return `supersedes_warning` naming the winner. Writes the two-way link in the store and both markdown backups; a backup leg that fails after the store leg returns `supersedes_warning`.
-
-Backward compatibility: the old `tags` (plural, comma-separated) field is still accepted — the first tag is used. Temporal-validity fields round-trip through markdown frontmatter and startup re-ingestion; legacy files without them re-ingest unchanged.
+The `supersede_learning` MCP tool records a confirmed supersession between two existing learnings (`successor` supersedes `target`, bare identities or `learning/<identity>` page names). Validation is fail-closed: distinct identities, both learnings exist, the target records no `superseded_by`, the successor declares no differing `supersedes`, no link in either direction closes a cycle (bounded walk, both directions, ignoring the pair's own forward link so idempotent half-link completion succeeds, and collapsing the two stored representations of a completed pair into one logical edge so chains remain extendable), and pre-existing corrupt cycles are refused, not extended. The validation ladder runs pre-lock for fast failure and again inside one `withLearningPropsLock` hold before the first write, so concurrent reverse-pair races are safe; cross-process races lose at the store's compare-and-swap claim and return `supersedes_warning` naming the winner. Writes the two-way link in the store and both markdown backups; a backup leg that fails after the store leg returns `supersedes_warning`.
 
 ### Trust Tiers
 

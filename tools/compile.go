@@ -267,12 +267,15 @@ func (c *Compile) compileIncremental(ctx context.Context, identities []string, s
 }
 
 // synthesizedCluster is a successfully synthesized article awaiting
-// persistence.
+// replacement, carrying the supersession proposals parsed out of its
+// synthesized text (design D4).
 type synthesizedCluster struct {
-	cluster Cluster
-	article string
-	tier    string
-	model   string
+	cluster   Cluster
+	article   string
+	tier      string
+	model     string
+	proposals []SupersessionProposal
+	dropped   []DroppedProposal
 }
 
 // processClusters handles the shared logic for both full and incremental
@@ -304,6 +307,12 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 	articles, replaceFailures := c.replaceArticles(compiledDir, produced)
 	failures = append(failures, replaceFailures...)
 
+	// Supersession proposals and dropped entries ride the compiled result
+	// for the review gate (ES-FR-006, design D8). The keys are always
+	// present in compiled mode — prompt mode carries neither field — so
+	// the gate can tell "compiled, nothing proposed" from "prompt mode".
+	proposedSupersessions, droppedProposals := proposalResultFields(produced)
+
 	if err := c.writeIndex(); err != nil {
 		compileLogger.Warn("failed to write index", "err", err)
 		failures = append(failures, map[string]string{"topic": "_index", "error": err.Error()})
@@ -318,12 +327,14 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 	)
 
 	result := map[string]any{
-		"status":          "compiled",
-		"articles":        articles,
-		"index":           filepath.Join(compiledDir, "_index.md"),
-		"total_learnings": totalLearnings,
-		"total_articles":  len(articles),
-		"message":         fmt.Sprintf("Compiled %d learnings into %d articles.", totalLearnings, len(articles)),
+		"status":                 "compiled",
+		"articles":               articles,
+		"index":                  filepath.Join(compiledDir, "_index.md"),
+		"total_learnings":        totalLearnings,
+		"total_articles":         len(articles),
+		"proposed_supersessions": proposedSupersessions,
+		"dropped_proposals":      droppedProposals,
+		"message":                fmt.Sprintf("Compiled %d learnings into %d articles.", totalLearnings, len(articles)),
 	}
 	if len(failures) > 0 {
 		result["status"] = "partial"
@@ -373,11 +384,23 @@ func (c *Compile) synthesizeClusters(ctx context.Context, clusters []Cluster, mo
 		if existing != nil && existing.Tier == "validated" {
 			tier = "validated"
 		}
+		// Parse, validate, and strip the trailing Supersession Proposals
+		// section before the article is built, so stored articles never
+		// contain it (ES-FR-005) and the proposals ride the result to the
+		// review gate (ES-FR-006). Invalid entries are dropped and
+		// reported, never fatal to the article.
+		sourceIDs := make([]string, len(cl.Learnings))
+		for i, l := range cl.Learnings {
+			sourceIDs[i] = l.Identity
+		}
+		synthesized, proposals, dropped := parseSupersessionProposals(synthesized, sourceIDs)
 		produced = append(produced, synthesizedCluster{
-			cluster: cl,
-			article: buildCompiledArticle(cl, synthesized, tier, model),
-			tier:    tier,
-			model:   model,
+			cluster:   cl,
+			article:   buildCompiledArticle(cl, synthesized, tier, model),
+			tier:      tier,
+			model:     model,
+			proposals: proposals,
+			dropped:   dropped,
 		})
 	}
 	return produced, failures
@@ -462,6 +485,18 @@ func (c *Compile) replaceArticles(compiledDir string, produced []synthesizedClus
 		for _, l := range sc.cluster.Learnings {
 			sources = append(sources, l.Identity)
 		}
+		// Per-article citation coverage (ES-FR-010): computed on the
+		// written article, with each source's supersession status
+		// resolved here from the decoded temporal fields so the pure
+		// helper performs no store lookup.
+		covSources := make([]CitationSource, len(sc.cluster.Learnings))
+		for i, l := range sc.cluster.Learnings {
+			covSources[i] = CitationSource{
+				Identity:   l.Identity,
+				Superseded: l.SupersededBy != "" || l.Validity == "superseded",
+			}
+		}
+		coverage := CheckCitationCoverage(CoverageOptions{Article: sc.article, Sources: covSources})
 		articles = append(articles, map[string]any{
 			"path":           articlePath,
 			"topic":          sc.cluster.Topic,
@@ -469,6 +504,7 @@ func (c *Compile) replaceArticles(compiledDir string, produced []synthesizedClus
 			"learning_count": len(sc.cluster.Learnings),
 			"tier":           sc.tier,
 			"compiled_by":    sc.model,
+			"coverage":       coverageResultMap(coverage),
 		})
 	}
 	return articles, failures

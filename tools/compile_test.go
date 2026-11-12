@@ -2557,3 +2557,367 @@ func TestCompile_SynthesisUnavailableReasonReported(t *testing.T) {
 		t.Errorf("message should carry the reason, got %q", message)
 	}
 }
+
+// TestCompile_ProposalsParsedStrippedSurfaced covers task 4.3 (ES-FR-005,
+// ES-FR-006, design D4): a valid Supersession Proposals section is parsed
+// out of the synthesized text, stripped from the stored article, and
+// surfaced on the compile result with successor, target, rationale, and
+// topic.
+func TestCompile_ProposalsParsedStrippedSurfaced(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	synth := &llm.NoopSynthesizer{
+		Response: "## Current State\n\nUse Option B [auth-20260315T100001-test, auth-20260315T100002-test].\n\n" +
+			"## Supersession Proposals\n\n" +
+			"- successor: auth-20260315T100002-test\n" +
+			"  target: auth-20260315T100001-test\n" +
+			"  rationale: Option B replaces Option A end to end\n",
+		Avail: true,
+		Model: "test-model",
+	}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
+	storeLearningDirect(t, s, "auth", 2, "decision", "Switch to Option B", baseTime)
+
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Compile returned error: %s", resultText(result))
+	}
+
+	parsed := parseCompileResult(t, resultText(result))
+	proposed, ok := parsed["proposed_supersessions"].([]any)
+	if !ok {
+		t.Fatalf("proposed_supersessions missing from result: %v", parsed["proposed_supersessions"])
+	}
+	if len(proposed) != 1 {
+		t.Fatalf("proposed_supersessions: want 1 entry, got %d (%v)", len(proposed), proposed)
+	}
+	entry, _ := proposed[0].(map[string]any)
+	if entry["successor"] != "auth-20260315T100002-test" {
+		t.Errorf("successor = %v, want auth-20260315T100002-test", entry["successor"])
+	}
+	if entry["target"] != "auth-20260315T100001-test" {
+		t.Errorf("target = %v, want auth-20260315T100001-test", entry["target"])
+	}
+	if entry["rationale"] != "Option B replaces Option A end to end" {
+		t.Errorf("rationale = %v, want the parsed rationale", entry["rationale"])
+	}
+	if entry["topic"] != "Auth" {
+		t.Errorf("topic = %v, want Auth", entry["topic"])
+	}
+	dropped, ok := parsed["dropped_proposals"].([]any)
+	if !ok || len(dropped) != 0 {
+		t.Errorf("dropped_proposals: want empty, got %v", parsed["dropped_proposals"])
+	}
+
+	// The stored article must not contain the section (ES-FR-005).
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md"))
+	if err != nil {
+		t.Fatalf("failed to read compiled article: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "## Supersession Proposals") {
+		t.Error("stored article must not contain the Supersession Proposals section")
+	}
+	if strings.Contains(content, "- successor:") {
+		t.Error("stored article must not contain proposal entries")
+	}
+	if !strings.Contains(content, "Use Option B") {
+		t.Error("stored article missing synthesized body")
+	}
+
+	// Per-article coverage is present and clean (both sources cited).
+	articles, _ := parsed["articles"].([]any)
+	if len(articles) != 1 {
+		t.Fatalf("articles: want 1, got %d", len(articles))
+	}
+	first, _ := articles[0].(map[string]any)
+	cov, _ := first["coverage"].(map[string]any)
+	if cov == nil {
+		t.Fatalf("article entry missing coverage: %v", first)
+	}
+	if cov["complete"] != true {
+		t.Errorf("coverage.complete = %v, want true (cov=%v)", cov["complete"], cov)
+	}
+	if cov["resolved_citations"] != float64(2) || cov["source_count"] != float64(2) {
+		t.Errorf("coverage counters = resolved %v / sources %v, want 2 / 2", cov["resolved_citations"], cov["source_count"])
+	}
+}
+
+// TestCompile_NoProposalsSection covers task 4.3's absent-section scenario:
+// a synthesized article with no proposals section is stored unchanged, and
+// the compiled result still carries both (empty) proposal fields so the
+// review gate can tell compiled-with-no-proposals from prompt mode.
+func TestCompile_NoProposalsSection(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	synth := &llm.NoopSynthesizer{
+		Response: "## Current State\n\nSimple fact [auth-20260315T100001-test].",
+		Avail:    true,
+		Model:    "test-model",
+	}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
+
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Compile returned error: %s", resultText(result))
+	}
+
+	parsed := parseCompileResult(t, resultText(result))
+	proposed, ok := parsed["proposed_supersessions"].([]any)
+	if !ok || len(proposed) != 0 {
+		t.Errorf("proposed_supersessions: want present and empty, got %v", parsed["proposed_supersessions"])
+	}
+	dropped, ok := parsed["dropped_proposals"].([]any)
+	if !ok || len(dropped) != 0 {
+		t.Errorf("dropped_proposals: want present and empty, got %v", parsed["dropped_proposals"])
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md"))
+	if err != nil {
+		t.Fatalf("failed to read compiled article: %v", err)
+	}
+	if !strings.Contains(string(data), "Simple fact") {
+		t.Error("stored article missing synthesized body")
+	}
+}
+
+// TestCompile_InvalidProposalsDropped covers task 4.3's invalid-entry
+// scenario (ES-FR-006): entries outside the article's sources, repeating
+// one learning as both successor and target, or omitting the rationale are
+// dropped and reported; an over-length rationale is truncated and a
+// control-character rationale sanitized (both still valid); the article is
+// still written.
+func TestCompile_InvalidProposalsDropped(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	longRationale := strings.Repeat("a", 600)
+	synth := &llm.NoopSynthesizer{
+		Response: "## Current State\n\nUse Option B [auth-20260315T100001-test, auth-20260315T100002-test].\n\n" +
+			"## Supersession Proposals\n\n" +
+			"- successor: auth-20260315T100002-test\n" +
+			"  target: auth-20260315T100001-test\n" +
+			"  rationale: " + longRationale + "\n\n" +
+			"- successor: auth-20260315T100001-test\n" +
+			"  target: auth-20260315T100002-test\n" +
+			"  rationale: hidden\x00payload\u200b\n\n" +
+			"- successor: auth-20260315T100002-test\n" +
+			"  target: auth-20260315T100001-test\n\n" +
+			"- successor: auth-20260320T000000-mallory\n" +
+			"  target: auth-20260315T100001-test\n" +
+			"  rationale: outside the source set\n\n" +
+			"- successor: auth-20260315T100001-test\n" +
+			"  target: auth-20260315T100001-test\n" +
+			"  rationale: same learning both ways\n",
+		Avail: true,
+		Model: "test-model",
+	}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
+	storeLearningDirect(t, s, "auth", 2, "decision", "Switch to Option B", baseTime)
+
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Compile returned error: %s", resultText(result))
+	}
+
+	parsed := parseCompileResult(t, resultText(result))
+	proposed, _ := parsed["proposed_supersessions"].([]any)
+	if len(proposed) != 2 {
+		t.Fatalf("proposed_supersessions: want 2 (truncated + sanitized), got %d (%v)", len(proposed), proposed)
+	}
+	truncated, _ := proposed[0].(map[string]any)
+	rationale, _ := truncated["rationale"].(string)
+	if rationale != strings.Repeat("a", 512) {
+		t.Errorf("over-length rationale: want 512 runes, got %d", utf8.RuneCountInString(rationale))
+	}
+	sanitized, _ := proposed[1].(map[string]any)
+	if sanitized["rationale"] != "hiddenpayload" {
+		t.Errorf("control-character rationale: want %q, got %v", "hiddenpayload", sanitized["rationale"])
+	}
+
+	dropped, _ := parsed["dropped_proposals"].([]any)
+	if len(dropped) != 3 {
+		t.Fatalf("dropped_proposals: want 3, got %d (%v)", len(dropped), dropped)
+	}
+	wantDrops := []struct{ successor, reason string }{
+		{"auth-20260315T100002-test", "empty_rationale"},
+		{"auth-20260320T000000-mallory", "successor_not_source"},
+		{"auth-20260315T100001-test", "successor_equals_target"},
+	}
+	for i, want := range wantDrops {
+		got, _ := dropped[i].(map[string]any)
+		if got["successor"] != want.successor || got["reason"] != want.reason {
+			t.Errorf("dropped[%d]: want successor=%s reason=%s, got successor=%v reason=%v",
+				i, want.successor, want.reason, got["successor"], got["reason"])
+		}
+	}
+
+	// The article is still written despite the invalid entries.
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md"))
+	if err != nil {
+		t.Fatalf("article must still be written: %v", err)
+	}
+	if !strings.Contains(string(data), "Use Option B") {
+		t.Error("stored article missing synthesized body")
+	}
+	if strings.Contains(string(data), "## Supersession Proposals") {
+		t.Error("stored article must not contain the proposals section")
+	}
+}
+
+// TestCompile_PerArticleCoverage covers task 4.3's coverage scenario
+// (ES-FR-010): each articles entry carries a coverage report, and a
+// superseded source with no in-body citation is accounted for by the
+// generated History table.
+func TestCompile_PerArticleCoverage(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	synth := &llm.NoopSynthesizer{
+		Response: "## Current State\n\nUse Option B [auth-20260316T100002-test].",
+		Avail:    true,
+		Model:    "test-model",
+	}
+	c := NewCompile(s, nil, synth, tmpDir, nil, 0)
+
+	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
+	// The older learning records validity: superseded; the newer one is
+	// current. The synthesized body cites only the current learning.
+	storeLearningWithProps(t, s, "auth-20260315T100001-test",
+		`{"tag":"auth","created_at":"2026-03-15T10:00:01Z","validity":"superseded"}`,
+		"Use Option A", baseTime)
+	storeLearningWithProps(t, s, "auth-20260316T100002-test",
+		`{"tag":"auth","created_at":"2026-03-16T10:00:02Z"}`,
+		"Switch to Option B", baseTime.Add(24*time.Hour))
+
+	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("Compile returned error: %s", resultText(result))
+	}
+
+	parsed := parseCompileResult(t, resultText(result))
+	articles, _ := parsed["articles"].([]any)
+	if len(articles) != 1 {
+		t.Fatalf("articles: want 1, got %d", len(articles))
+	}
+	first, _ := articles[0].(map[string]any)
+	cov, _ := first["coverage"].(map[string]any)
+	if cov == nil {
+		t.Fatalf("article entry missing coverage: %v", first)
+	}
+	if cov["complete"] != true {
+		t.Errorf("coverage.complete = %v, want true (cov=%v)", cov["complete"], cov)
+	}
+	uncited, _ := cov["uncited_sources"].([]any)
+	if len(uncited) != 0 {
+		t.Errorf("uncited_sources: want empty, got %v", uncited)
+	}
+	accounted, _ := cov["accounted_superseded_sources"].([]any)
+	if len(accounted) != 1 || accounted[0] != "auth-20260315T100001-test" {
+		t.Errorf("accounted_superseded_sources: want the superseded learning, got %v", accounted)
+	}
+	cited, _ := cov["cited_sources"].([]any)
+	if len(cited) != 1 || cited[0] != "auth-20260316T100002-test" {
+		t.Errorf("cited_sources: want the current learning, got %v", cited)
+	}
+}
+
+// TestParseSupersessionProposals exercises the shared pure helper
+// (task 4.1) directly: stripping bounds, source resolution with
+// learning/-prefixed identities, and drop reasons.
+func TestParseSupersessionProposals(t *testing.T) {
+	srcA, srcB := "auth-1", "auth-2"
+	tests := []struct {
+		name          string
+		text          string
+		sources       []string
+		wantStripped  string
+		wantProposals []SupersessionProposal
+		wantDropped   []DroppedProposal
+	}{
+		{
+			name:         "no section returns text unchanged",
+			text:         "body only\n",
+			sources:      []string{srcA},
+			wantStripped: "body only\n",
+		},
+		{
+			name:          "section stripped and entry validated",
+			text:          "body\n\n## Supersession Proposals\n\n- successor: auth-2\n  target: auth-1\n  rationale: replaces\n",
+			sources:       []string{srcA, srcB},
+			wantStripped:  "body\n\n",
+			wantProposals: []SupersessionProposal{{Successor: srcB, Target: srcA, Rationale: "replaces"}},
+		},
+		{
+			name:          "content after a following heading is preserved",
+			text:          "body\n\n## Supersession Proposals\n\n- successor: auth-2\n  target: auth-1\n  rationale: r\n\n## After\n\ntrailing\n",
+			sources:       []string{srcA, srcB},
+			wantStripped:  "body\n\n## After\n\ntrailing\n",
+			wantProposals: []SupersessionProposal{{Successor: srcB, Target: srcA, Rationale: "r"}},
+		},
+		{
+			name:          "learning-prefixed identities resolve against bare sources",
+			text:          "body\n\n## Supersession Proposals\n\n- successor: learning/auth-2\n  target: learning/auth-1\n  rationale: r\n",
+			sources:       []string{"learning/" + srcA, "learning/" + srcB},
+			wantStripped:  "body\n\n",
+			wantProposals: []SupersessionProposal{{Successor: srcB, Target: srcA, Rationale: "r"}},
+		},
+		{
+			name:         "unknown target dropped with reason",
+			text:         "body\n\n## Supersession Proposals\n\n- successor: auth-2\n  target: auth-9\n  rationale: r\n",
+			sources:      []string{srcA, srcB},
+			wantStripped: "body\n\n",
+			wantDropped:  []DroppedProposal{{Successor: srcB, Target: "auth-9", Reason: "target_not_source"}},
+		},
+		{
+			name:          "rationale sanitized and truncated",
+			text:          "body\n\n## Supersession Proposals\n\n- successor: auth-2\n  target: auth-1\n  rationale: x\x00y\u200b" + strings.Repeat("z", 600) + "\n",
+			sources:       []string{srcA, srcB},
+			wantStripped:  "body\n\n",
+			wantProposals: []SupersessionProposal{{Successor: srcB, Target: srcA, Rationale: "xy" + strings.Repeat("z", 510)}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stripped, proposals, dropped := parseSupersessionProposals(tt.text, tt.sources)
+			if stripped != tt.wantStripped {
+				t.Errorf("stripped: want %q, got %q", tt.wantStripped, stripped)
+			}
+			if len(proposals) != len(tt.wantProposals) {
+				t.Fatalf("proposals: want %d, got %d (%v)", len(tt.wantProposals), len(proposals), proposals)
+			}
+			for i, want := range tt.wantProposals {
+				if proposals[i] != want {
+					t.Errorf("proposals[%d]: want %+v, got %+v", i, want, proposals[i])
+				}
+			}
+			if len(dropped) != len(tt.wantDropped) {
+				t.Fatalf("dropped: want %d, got %d (%v)", len(tt.wantDropped), len(dropped), dropped)
+			}
+			for i, want := range tt.wantDropped {
+				if dropped[i] != want {
+					t.Errorf("dropped[%d]: want %+v, got %+v", i, want, dropped[i])
+				}
+			}
+		})
+	}
+}

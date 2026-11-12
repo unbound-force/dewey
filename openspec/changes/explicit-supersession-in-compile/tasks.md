@@ -88,26 +88,26 @@
 
 ## 4. Compile: proposals and coverage
 
-- [ ] 4.1 `tools/compile.go`: parse, validate, and strip the `##
+- [x] 4.1 `tools/compile.go`: parse, validate, and strip the `##
   Supersession Proposals` section from synthesized output — one pure
   helper shared with `store_compiled`; entries valid when successor
   and target resolve to the cluster's source learnings, are distinct,
   and carry a rationale that is non-empty after sanitization
   (control/invisible Unicode stripped, 512-rune bound); invalid
   entries dropped and reported
-- [ ] 4.2 compile result: `proposed_supersessions` (successor,
+- [x] 4.2 compile result: `proposed_supersessions` (successor,
   target, sanitized rationale, topic), `dropped_proposals` (one entry
   per dropped proposal: successor, target, drop reason), and
   per-article `coverage` in each
   `articles` entry; `prompts_ready` result shape otherwise unchanged
-- [ ] 4.3 `tools/compile_test.go`: canned synthesizer outputs —
+- [x] 4.3 `tools/compile_test.go`: canned synthesizer outputs —
   valid proposals parsed/stripped/surfaced; absent section; invalid
   entries dropped into `dropped_proposals` (including an
   over-length rationale truncated and a control-character rationale
   sanitized) with the article still written; per-article
   coverage present and correct, including a superseded source
   accounted for by the generated History table
-- [ ] 4.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
+- [x] 4.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 5 begins
 
 ## 5. store_compiled: input validation and parity

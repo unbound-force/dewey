@@ -124,11 +124,11 @@
 
 ## 6. supersede_learning tool
 
-- [ ] 6.1 `tools/learning_temporal.go`: helper recording `supersedes`
+- [x] 6.1 `tools/learning_temporal.go`: helper recording `supersedes`
   on an existing successor — store properties plus backup frontmatter
   via `updateLearningBackup`, designed to run inside a
   `withLearningPropsLock` hold; GoDoc
-- [ ] 6.2 `tools/supersede.go` (new): `SupersedeLearning` handler on
+- [x] 6.2 `tools/supersede.go` (new): `SupersedeLearning` handler on
   the `Learning` struct — resolve successor and target (identity or
   `learning/<identity>`, `supersedesIdentity` normalization);
   validation ladder before any write (existence, distinct, target
@@ -144,13 +144,13 @@
   guarded
   target claim (CAS + backup leg);
   `supersedes_warning` on lost claim or partial failure
-- [ ] 6.3 `types/tools.go`: `SupersedeLearningInput` with jsonschema
+- [x] 6.3 `types/tools.go`: `SupersedeLearningInput` with jsonschema
   descriptions; `server.go`: registration inside the existing
   `if !readOnly` block, beside the other mutating tools, and tool
   description (tool
   count 50 → 51); `server_test.go`: extend `TestNewServer_ToolCount`
   ranges and per-category comments
-- [ ] 6.4 `tools/supersede_test.go` (new): confirmation path (store +
+- [x] 6.4 `tools/supersede_test.go` (new): confirmation path (store +
   backup frontmatter on both sides, target still present with its
   tier unchanged), unknown identity, same learning,
   already-superseded target, successor-declares-other, cycle, cycle
@@ -161,11 +161,11 @@
   sleeps, `-race`), and a concurrent reverse-pair race (A→B and B→A
   started together: exactly one link lands, the other is refused or
   warns, and no cycle is written)
-- [ ] 6.5 `tools/learning_temporal_test.go` + `main_test.go`:
+- [x] 6.5 `tools/learning_temporal_test.go` + `main_test.go`:
   tool-created links round-trip through `reIngestLearnings` — the
   successor's `supersedes` and the target's `superseded_by` restored
   after store loss
-- [ ] 6.6 Phase checkpoint — `go test -race -count=1 ./...` passes
+- [x] 6.6 Phase checkpoint — `go test -race -count=1 ./...` passes
   before phase 7 begins
 
 ## 7. lint: citation_coverage and remediation text

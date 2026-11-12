@@ -286,6 +286,14 @@ type StoreLearningInput struct {
 	Supersedes string   `json:"supersedes,omitempty" jsonschema:"Optional identity (or learning/<identity> page name) of an existing learning this one replaces. The target gains superseded_by and validity: superseded; it is never deleted. Concurrent same-target supersessions are serialized; a losing claim yields supersedes_warning naming the winner."`
 }
 
+// SupersedeLearningInput is the input for the dewey_supersede_learning
+// MCP tool, which links two existing learnings (explicit-supersession
+// design, issue #150).
+type SupersedeLearningInput struct {
+	Successor string `json:"successor" jsonschema:"Identity (or learning/<identity> page name) of the newer learning that replaces the target. Required."`
+	Target    string `json:"target" jsonschema:"Identity (or learning/<identity> page name) of the learning being replaced. It gains superseded_by and validity: superseded; it is never deleted and its tier never changes. Required."`
+}
+
 // --- Journal tool inputs ---
 
 type JournalRangeInput struct {

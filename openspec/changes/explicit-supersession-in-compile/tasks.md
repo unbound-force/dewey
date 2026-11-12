@@ -312,5 +312,5 @@
   `go test -race -count=1 -coverprofile=coverage.out ./...`, Gaze
   `crap` with the workflow's thresholds) and run them locally; any
   failure blocks task completion
-- [ ] 9.9 `/uf.review-council` (OpenCode) until APPROVE, then draft
+- [x] 9.9 `/uf.review-council` (OpenCode) until APPROVE, then draft
   the PR (closes #150 via `originating_issue`)

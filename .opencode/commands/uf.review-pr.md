@@ -628,8 +628,8 @@ recompute, re-derive, or re-map any of them, and do not alter the
 tool-computed verdict, `verdict_reason`, run counts, findings, or
 advisories. The compact result's `warnings` array is the single source
 for consolidation warnings. Its `proposals` array is a capped preview
-(at most 10 entries, each `information` cut to 512 characters); never
-store lessons from it.
+(at most 10 complete entries; `proposals_truncated` marks dropped
+ones); never store lessons from it.
 
 **Truncation check.** First parse the entire consolidation response as
 one JSON object. If the parse succeeds, the response is complete: use it

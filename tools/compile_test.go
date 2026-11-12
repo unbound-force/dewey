@@ -1524,6 +1524,10 @@ func TestStoreCompiled_Basic(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
 
+	// Declared sources must map to existing learnings (ES-FR-012).
+	storeLearningWithProps(t, s, "auth-1", `{"tag":"auth","created_at":"2026-03-15T10:00:01Z"}`, "first", time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-3", `{"tag":"auth","created_at":"2026-03-15T10:00:03Z"}`, "third", time.Date(2026, 3, 15, 10, 0, 2, 0, time.UTC))
+
 	vaultPath := t.TempDir()
 	c := NewCompile(s, nil, nil, vaultPath, nil, 0)
 
@@ -1605,6 +1609,10 @@ func TestStoreCompiled_Basic(t *testing.T) {
 func TestStoreCompiled_ResponseBody(t *testing.T) {
 	s := newTestStore(t)
 	defer func() { _ = s.Close() }()
+
+	// Declared sources must map to existing learnings (ES-FR-012).
+	storeLearningWithProps(t, s, "auth-1", `{"tag":"auth","created_at":"2026-03-15T10:00:01Z"}`, "first", time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-3", `{"tag":"auth","created_at":"2026-03-15T10:00:03Z"}`, "third", time.Date(2026, 3, 15, 10, 0, 2, 0, time.UTC))
 
 	c := NewCompile(s, nil, nil, t.TempDir(), nil, 0)
 	input := types.StoreCompiledInput{
@@ -2255,6 +2263,10 @@ func TestStoreCompiled_RefusesValidatedOverwrite(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
 	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
+
+	// Declared sources must map to existing learnings (ES-FR-012).
+	storeLearningWithProps(t, s, "gateway-1", `{"tag":"gateway","created_at":"2026-03-15T10:00:01Z"}`, "first learning", time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "gateway-2", `{"tag":"gateway","created_at":"2026-03-15T10:00:02Z"}`, "second learning", time.Date(2026, 3, 15, 10, 0, 1, 0, time.UTC))
 
 	first := types.StoreCompiledInput{Tag: "gateway", Content: "First version.", Sources: []string{"gateway-1"}, Model: "model-a"}
 	if res, _, err := c.StoreCompiled(context.Background(), nil, first); err != nil || res.IsError {
@@ -2919,5 +2931,134 @@ func TestParseSupersessionProposals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestStoreCompiled_UnknownSourceRefused covers task 5.2 (ES-FR-012): a
+// declared source naming no existing learning is refused with an error
+// result naming it, and no page or file is written.
+func TestStoreCompiled_UnknownSourceRefused(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	tmpDir := t.TempDir()
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
+
+	storeLearningWithProps(t, s, "auth-1", `{"tag":"auth","created_at":"2026-03-15T10:00:01Z"}`, "known", time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+
+	input := types.StoreCompiledInput{
+		Tag:     "auth",
+		Content: "Test article.",
+		Sources: []string{"auth-1", "auth-9"},
+	}
+	res, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected refusal for unknown source, got: %s", resultText(res))
+	}
+	if !strings.Contains(resultText(res), "unresolved sources") || !strings.Contains(resultText(res), "auth-9") {
+		t.Errorf("result = %q, want unresolved sources naming auth-9", resultText(res))
+	}
+
+	// Nothing is written: no page, no article file.
+	if page, err := s.GetPage("compiled/auth"); err != nil || page != nil {
+		t.Errorf("compiled page must not exist, got page=%v err=%v", page, err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md")); !os.IsNotExist(err) {
+		t.Errorf("article file must not be written, stat err=%v", err)
+	}
+}
+
+// TestStoreCompiled_CoverageAndProposalsParity covers task 5.2
+// (ES-FR-013): the store_compiled path reports citation coverage and
+// surfaces parsed proposals exactly as compile does — the stored article
+// never contains the section, the result carries coverage and the valid
+// proposals with topic naming the stored page, and invalid entries are
+// dropped with reasons.
+func TestStoreCompiled_CoverageAndProposalsParity(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	tmpDir := t.TempDir()
+	c := NewCompile(s, nil, nil, tmpDir, nil, 0)
+
+	storeLearningWithProps(t, s, "auth-20260315T100001-test", `{"tag":"auth","created_at":"2026-03-15T10:00:01Z","validity":"superseded"}`, "old", time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260315T100002-test", `{"tag":"auth","created_at":"2026-03-15T10:00:02Z"}`, "new", time.Date(2026, 3, 15, 10, 0, 1, 0, time.UTC))
+
+	input := types.StoreCompiledInput{
+		Tag: "auth",
+		Content: "## Current State\n\nUse Option B [auth-20260315T100002-test].\n\n" +
+			"## Supersession Proposals\n\n" +
+			"- successor: auth-20260315T100002-test\n" +
+			"  target: auth-20260315T100001-test\n" +
+			"  rationale: Option B replaces Option A end to end\n\n" +
+			"- successor: auth-20260315T100009-test\n" +
+			"  target: auth-20260315T100001-test\n" +
+			"  rationale: not a declared source\n",
+		Sources: []string{"auth-20260315T100001-test", "auth-20260315T100002-test"},
+		Model:   "test-model",
+	}
+	res, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("StoreCompiled returned error: %s", resultText(res))
+	}
+
+	parsed := parseCompileResult(t, resultText(res))
+
+	// The stored article must not contain the proposals section.
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".uf", "dewey", "compiled", "auth.md"))
+	if err != nil {
+		t.Fatalf("read article: %v", err)
+	}
+	if strings.Contains(string(data), "## Supersession Proposals") {
+		t.Error("stored article must not contain the proposals section")
+	}
+	if !strings.Contains(string(data), "Use Option B") {
+		t.Error("stored article missing submitted body")
+	}
+
+	// Coverage: the cited current source resolves; the uncited superseded
+	// source is flagged (no generated History table on this path).
+	cov, _ := parsed["coverage"].(map[string]any)
+	if cov == nil {
+		t.Fatalf("result missing coverage: %v", parsed["coverage"])
+	}
+	cited, _ := cov["cited_sources"].([]any)
+	if len(cited) != 1 || cited[0] != "auth-20260315T100002-test" {
+		t.Errorf("cited_sources = %v, want the current learning", cited)
+	}
+	uncited, _ := cov["uncited_sources"].([]any)
+	if len(uncited) != 1 || uncited[0] != "auth-20260315T100001-test" {
+		t.Errorf("uncited_sources = %v, want the superseded learning (no History table on this path)", uncited)
+	}
+
+	// Proposals: one valid entry with topic naming the stored page; one
+	// dropped entry with its reason.
+	proposed, _ := parsed["proposed_supersessions"].([]any)
+	if len(proposed) != 1 {
+		t.Fatalf("proposed_supersessions: want 1, got %d (%v)", len(proposed), proposed)
+	}
+	entry, _ := proposed[0].(map[string]any)
+	if entry["successor"] != "auth-20260315T100002-test" || entry["target"] != "auth-20260315T100001-test" {
+		t.Errorf("proposal identities = %v / %v", entry["successor"], entry["target"])
+	}
+	if entry["rationale"] != "Option B replaces Option A end to end" {
+		t.Errorf("rationale = %v", entry["rationale"])
+	}
+	if entry["topic"] != "compiled/auth" {
+		t.Errorf("topic = %v, want the stored page name compiled/auth", entry["topic"])
+	}
+	dropped, _ := parsed["dropped_proposals"].([]any)
+	if len(dropped) != 1 {
+		t.Fatalf("dropped_proposals: want 1, got %d (%v)", len(dropped), dropped)
+	}
+	drop, _ := dropped[0].(map[string]any)
+	if drop["reason"] != "successor_not_source" {
+		t.Errorf("drop reason = %v, want successor_not_source", drop["reason"])
 	}
 }

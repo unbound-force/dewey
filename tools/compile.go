@@ -1197,6 +1197,66 @@ func (c *Compile) writeEmptyIndex() error {
 	return os.WriteFile(indexPath, []byte(content), 0o644)
 }
 
+// resolveCompiledSources resolves store_compiled's declared sources
+// against existing learning pages (#93, ES-FR-012). Each source is
+// normalized like a declared citation source and looked up by its
+// learning page; resolved sources return as CitationSources with their
+// supersession status decoded from page properties. Sources that resolve
+// to no learning — or whose lookup fails — are returned in unresolved
+// (fail closed: existence cannot be verified).
+func (c *Compile) resolveCompiledSources(sources []string) (covSources []CitationSource, unresolved []string) {
+	covSources = make([]CitationSource, 0, len(sources))
+	for _, s := range sources {
+		id := supersedesIdentity(s)
+		if id == "" {
+			unresolved = append(unresolved, s)
+			continue
+		}
+		page, err := c.store.GetPage("learning/" + id)
+		if err != nil || page == nil {
+			unresolved = append(unresolved, id)
+			continue
+		}
+		props, err := decodeLearningProperties(page.Properties)
+		if err != nil {
+			props = map[string]any{}
+		}
+		validity, _ := props["validity"].(string)
+		supersededBy, _ := props["superseded_by"].(string)
+		covSources = append(covSources, CitationSource{
+			Identity:   id,
+			Superseded: supersededBy != "" || validity == "superseded",
+		})
+	}
+	return covSources, unresolved
+}
+
+// buildStoredArticle renders a store_compiled article: frontmatter (tier,
+// compiled_at, optional compiled_by and sources, topic) followed by the
+// trimmed article content. Extracted from StoreCompiled to keep that
+// method's complexity bounded once coverage and proposal handling joined
+// the write path.
+func buildStoredArticle(tag, content, model, tier string, sources []string) string {
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	fmt.Fprintf(&sb, "tier: %s\n", tier)
+	fmt.Fprintf(&sb, "compiled_at: %s\n", time.Now().UTC().Format(time.RFC3339))
+	if model != "" {
+		fmt.Fprintf(&sb, "compiled_by: %s\n", model)
+	}
+	if len(sources) > 0 {
+		sb.WriteString("sources:\n")
+		for _, s := range sources {
+			fmt.Fprintf(&sb, "  - %s\n", s)
+		}
+	}
+	fmt.Fprintf(&sb, "topic: %s\n", tag)
+	sb.WriteString("---\n\n")
+	sb.WriteString(strings.TrimSpace(content))
+	sb.WriteString("\n")
+	return sb.String()
+}
+
 // StoreCompiled persists a compiled article that was synthesized by the calling
 // agent. This closes the loop on the nil-synthesizer MCP path: the agent calls
 // compile → gets prompts → synthesizes → calls store_compiled to persist.
@@ -1259,26 +1319,28 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 			pageName)), nil, nil
 	}
 
-	// Build frontmatter.
-	var sb strings.Builder
-	sb.WriteString("---\n")
-	fmt.Fprintf(&sb, "tier: %s\n", tier)
-	fmt.Fprintf(&sb, "compiled_at: %s\n", time.Now().UTC().Format(time.RFC3339))
-	if input.Model != "" {
-		fmt.Fprintf(&sb, "compiled_by: %s\n", input.Model)
+	// Every declared source must map to an existing learning (#93,
+	// ES-FR-012). Refuse before any page or file is written, naming the
+	// unresolved sources. Checked after the validated refusal so the
+	// human-reviewed-content invariant keeps precedence over input
+	// validation.
+	covSources, unresolved := c.resolveCompiledSources(sources)
+	if len(unresolved) > 0 {
+		return errorResult(fmt.Sprintf(
+			"unresolved sources (no matching learning): %s",
+			strings.Join(unresolved, ", "))), nil, nil
 	}
-	if len(sources) > 0 {
-		sb.WriteString("sources:\n")
-		for _, s := range sources {
-			fmt.Fprintf(&sb, "  - %s\n", s)
-		}
-	}
-	fmt.Fprintf(&sb, "topic: %s\n", input.Tag)
-	sb.WriteString("---\n\n")
-	sb.WriteString(strings.TrimSpace(input.Content))
-	sb.WriteString("\n")
 
-	articleContent := sb.String()
+	// Parse, validate, and strip the trailing Supersession Proposals
+	// section (ES-FR-013): the stored article never contains it, and the
+	// proposals ride the result for the review gate, exactly as on the
+	// compile path.
+	content, proposals, droppedEntries := parseSupersessionProposals(input.Content, sources)
+	articleContent := buildStoredArticle(input.Tag, content, input.Model, tier, sources)
+
+	// Per-article citation coverage (ES-FR-013), computed on the stored
+	// article with the resolved sources.
+	coverage := CheckCitationCoverage(CoverageOptions{Article: articleContent, Sources: covSources})
 
 	// Write to filesystem.
 	compiledDir := c.compiledDir()
@@ -1351,13 +1413,20 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 
 	compileLogger.Info("stored compiled article", "tag", input.Tag, "path", articlePath)
 
+	// The review-gate fields mirror compile's shape (ES-FR-013); on this
+	// path topic names the stored page, since store_compiled has no
+	// cluster.
+	proposedSupersessions, droppedProposals := proposalMaps(proposals, droppedEntries, pageName)
 	result := map[string]any{
-		"status":  "stored",
-		"tag":     input.Tag,
-		"page":    pageName,
-		"path":    articlePath,
-		"sources": sources,
-		"tier":    tier,
+		"status":                 "stored",
+		"tag":                    input.Tag,
+		"page":                   pageName,
+		"path":                   articlePath,
+		"sources":                sources,
+		"tier":                   tier,
+		"coverage":               coverageResultMap(coverage),
+		"proposed_supersessions": proposedSupersessions,
+		"dropped_proposals":      droppedProposals,
 	}
 	if input.Model != "" {
 		result["compiled_by"] = input.Model

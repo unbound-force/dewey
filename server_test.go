@@ -1358,6 +1358,20 @@ func TestServerIntegration_StoreBackedPagesSameSession(t *testing.T) {
 	promoteTool := tools.NewPromote(s)
 	ctx := context.Background()
 
+	// Declared sources must map to existing learnings (ES-FR-012): seed
+	// the learning page store_compiled declares.
+	learningPage := &store.Page{
+		Name:         "learning/gateway-1",
+		OriginalName: "learning/gateway-1",
+		SourceID:     "learning",
+		SourceDocID:  "learning-gateway-1",
+		Properties:   `{"tag":"gateway","created_at":"2026-01-01T00:00:00Z"}`,
+		Tier:         "draft",
+	}
+	if err := s.InsertPage(learningPage); err != nil {
+		t.Fatalf("insert learning page: %v", err)
+	}
+
 	// --- #90 flow: store_compiled, then same-session reads (no restart) ---
 
 	const (

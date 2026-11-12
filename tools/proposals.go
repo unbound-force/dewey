@@ -155,23 +155,38 @@ func proposalResultFields(produced []synthesizedCluster) (proposed, dropped []ma
 	proposed = make([]map[string]any, 0)
 	dropped = make([]map[string]any, 0)
 	for _, sc := range produced {
-		for _, p := range sc.proposals {
-			proposed = append(proposed, map[string]any{
-				"successor": p.Successor,
-				"target":    p.Target,
-				"rationale": p.Rationale,
-				"topic":     sc.cluster.Topic,
-			})
-		}
-		for _, d := range sc.dropped {
-			dropped = append(dropped, map[string]any{
-				"successor": d.Successor,
-				"target":    d.Target,
-				"reason":    d.Reason,
-			})
-		}
+		p, d := proposalMaps(sc.proposals, sc.dropped, sc.cluster.Topic)
+		proposed = append(proposed, p...)
+		dropped = append(dropped, d...)
 	}
 	return proposed, dropped
+}
+
+// proposalMaps renders validated proposals and dropped entries as the
+// result fields shared by the compile and store_compiled paths
+// (ES-FR-013). On the store_compiled path topic names the stored page —
+// store_compiled has no cluster — keeping the review-gate presentation
+// identical in shape across both paths. Both slices are non-nil so
+// serialized results carry empty arrays, never null.
+func proposalMaps(proposals []SupersessionProposal, dropped []DroppedProposal, topic string) (proposed, droppedMaps []map[string]any) {
+	proposed = make([]map[string]any, 0)
+	droppedMaps = make([]map[string]any, 0)
+	for _, p := range proposals {
+		proposed = append(proposed, map[string]any{
+			"successor": p.Successor,
+			"target":    p.Target,
+			"rationale": p.Rationale,
+			"topic":     topic,
+		})
+	}
+	for _, d := range dropped {
+		droppedMaps = append(droppedMaps, map[string]any{
+			"successor": d.Successor,
+			"target":    d.Target,
+			"reason":    d.Reason,
+		})
+	}
+	return proposed, droppedMaps
 }
 
 // proposalFieldValue returns the value after the field prefix, trimmed.

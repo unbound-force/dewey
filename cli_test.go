@@ -4496,6 +4496,78 @@ func TestInitCmd_ScaffoldsDeweyPublishFromMap(t *testing.T) {
 	}
 }
 
+// TestInitCmd_ScaffoldsDeweyCompileFromMap verifies the dewey-compile command
+// file scaffolds byte-identical to its deweySlashCommands map entry and to the
+// command file tracked in this repository — the pair drifted once when an
+// embed regeneration synced to an unprotected tracked file, dropping the
+// <protect> wrapper the spec mandates.
+func TestInitCmd_ScaffoldsDeweyCompileFromMap(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Pre-create .opencode/ so init scaffolds command files, plus .gitignore.
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode", "commands"), 0o755); err != nil {
+		t.Fatalf("create opencode commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	scaffolded, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "commands", "dewey-compile.md"))
+	if err != nil {
+		t.Fatalf("read scaffolded dewey-compile.md: %v", err)
+	}
+
+	want, ok := deweySlashCommands["dewey-compile.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-compile.md entry")
+	}
+	if string(scaffolded) != want {
+		t.Errorf("scaffolded dewey-compile.md differs from deweySlashCommands map entry")
+	}
+
+	// The command file tracked in this repo must stay identical to the map
+	// entry so scaffolded vaults and the repository ship the same command.
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-compile.md"))
+	if err != nil {
+		t.Fatalf("read tracked dewey-compile.md: %v", err)
+	}
+	if string(tracked) != want {
+		t.Errorf("tracked .opencode/commands/dewey-compile.md differs from deweySlashCommands map entry")
+	}
+}
+
+// TestSlashCommandsInstructionsProtected enforces the structural half of the
+// protect-tags-slash-commands spec: every embedded command with an
+// ## Instructions section wraps that section (through the end of its guarded
+// content) in <protect>/</protect> markers, so scaffolding reproduces the
+// protection on every vault.
+func TestSlashCommandsInstructionsProtected(t *testing.T) {
+	if len(deweySlashCommands) == 0 {
+		t.Fatal("deweySlashCommands is empty")
+	}
+	for name, body := range deweySlashCommands {
+		idx := strings.Index(body, "## Instructions")
+		if idx < 0 {
+			continue
+		}
+		open := strings.LastIndex(body[:idx], "<protect>")
+		if open < 0 {
+			t.Errorf("%s: ## Instructions has no <protect> marker before it", name)
+			continue
+		}
+		close := strings.Index(body[idx:], "</protect>")
+		if close < 0 {
+			t.Errorf("%s: ## Instructions has no </protect> marker after it", name)
+		}
+	}
+}
+
 // TestInitCmd_ScaffoldingSkipsExistingDeweyPublish verifies init does not
 // overwrite an existing dewey-publish.md in .opencode/commands/.
 func TestInitCmd_ScaffoldingSkipsExistingDeweyPublish(t *testing.T) {

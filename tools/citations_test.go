@@ -348,35 +348,34 @@ func TestScanBrackets(t *testing.T) {
 	}
 }
 
-// TestExtractCitations covers the citation grammar directly (design D3):
-// whole-group matching against the identity grammar, both identity
-// formats, first-occurrence order, and deduplication.
-func TestExtractCitations(t *testing.T) {
+// TestMentionsIdentity covers the whole-token boundary rule of
+// superseded-source accounting: a substring that continues an identity
+// (auth-1 inside auth-10) is not a mention, while punctuation, brackets,
+// whitespace, and the text edges bound one.
+func TestMentionsIdentity(t *testing.T) {
+	const id = "auth-1"
 	tests := []struct {
 		name string
-		body string
-		want []string
+		text string
+		want bool
 	}{
-		{"timestamped identity", "Fact [" + covAlice + "].", []string{covAlice}},
-		{"legacy identity", "Old [" + covLegacy + "].", []string{covLegacy}},
-		{"multi-identity group", "Fact [" + covAlice + ", " + covBob + "].", []string{covAlice, covBob}},
-		{"deduplicated in first-occurrence order",
-			"[" + covBob + "] then [" + covAlice + "] then [" + covBob + "]",
-			[]string{covBob, covAlice}},
-		{"markdown link text ignored", "See [the docs](https://example.test).", nil},
-		{"reference label ignored", "See [ref-label][target].", nil},
-		{"numeric footnote ignored", "See [1].", nil},
-		{"checkbox ignored", "- [x] done", nil},
-		{"wikilink ignored", "See [[wiki-link]].", nil},
-		{"empty brackets ignored", "[]", nil},
-		{"prose in brackets ignored", "[see the notes]", nil},
-		{"mixed group dropped", "[" + covAlice + ", not-an-identity]", nil},
-		{"whitespace around elements", "[ " + covAlice + " , " + covBob + " ]", []string{covAlice, covBob}},
+		{"exact", "see auth-1 there", true},
+		{"text edges", "auth-1", true},
+		{"punctuation bounds", "(auth-1).", true},
+		{"brackets do not continue", "[auth-1]", true},
+		{"slash bound", "learning/auth-1", true},
+		{"longer identity is not a match", "see auth-10 there", false},
+		{"prefixed longer identity", "auth-12 and auth-13", false},
+		{"underscore continues", "auth-1_extra", false},
+		{"hyphen continues", "auth-1-x", false},
+		{"absent", "nothing here", false},
+		{"second occurrence matches", "auth-10 then auth-1", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractCitations(tt.body)
-			covAssertSlice(t, "citations", tt.want, got)
+			if got := mentionsIdentity(tt.text, id); got != tt.want {
+				t.Errorf("mentionsIdentity(%q, %q) = %v, want %v", tt.text, id, got, tt.want)
+			}
 		})
 	}
 }

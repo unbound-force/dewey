@@ -297,6 +297,20 @@ overwritten.
 - **THEN** it MUST still exist
 - **AND** its tier MUST be unchanged
 
+#### Scenario: Chain extension across a completed pair
+
+- **GIVEN** `supersede_learning` linked successor B to target A (B
+  declares `supersedes: A` and A declares `superseded_by: B` — the normal
+  end state of a confirmed pair, stored as both representations of one
+  logical link)
+- **WHEN** `supersede_learning` is called with successor C and target B
+- **THEN** the call MUST succeed — the two stored representations of a
+  completed pair MUST be read as one logical link, never as a walkable
+  two-step cycle — and the chain MUST read C → B → A in both
+  representations
+- **AND** the same MUST hold when the requested successor is itself the
+  target of a completed pair
+
 #### Scenario: Link state re-validated inside the lock hold
 
 - **GIVEN** a `supersede_learning` call that passed validation while
@@ -316,7 +330,11 @@ learning, when the target already records a `superseded_by`, when
 the successor already declares a `supersedes` naming a different
 learning, or when following declared supersession links from either
 learning reaches the other. The cycle walk MUST carry a visited set
-or an explicit hop bound so it terminates on a pre-existing cycle.
+or an explicit hop bound so it terminates on a pre-existing cycle, and
+MUST collapse the two stored representations of a completed pair — the
+successor's `supersedes` and the target's `superseded_by` naming each
+other — into one logical link, so a healthy chain is extendable at
+either end and is never refused as a cycle.
 When the walk terminates on a pre-existing cyclic chain — whether or
 not that chain contains the requested pair — the tool MUST return an
 error result naming the pre-existing cycle and MUST write nothing:

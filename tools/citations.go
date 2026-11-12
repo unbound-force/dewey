@@ -158,7 +158,7 @@ func CheckCitationCoverage(opts CoverageOptions) CoverageResult {
 		switch {
 		case cited[src.identity]:
 			res.CitedSources = append(res.CitedSources, src.identity)
-		case src.superseded && (strings.Contains(history, src.identity) || strings.Contains(outside, src.identity)):
+		case src.superseded && (mentionsIdentity(history, src.identity) || mentionsIdentity(outside, src.identity)):
 			res.AccountedSupersededSources = append(res.AccountedSupersededSources, src.identity)
 		default:
 			res.UncitedSources = append(res.UncitedSources, src.identity)
@@ -335,12 +335,45 @@ func citationIdentities(groups []string) []string {
 	return out
 }
 
-// extractCitations returns the learning identities cited in body, per the
-// citation grammar of citationIdentities, in order of first occurrence,
-// deduplicated.
-func extractCitations(body string) []string {
-	_, groups := scanBrackets(body)
-	return citationIdentities(groups)
+// mentionsIdentity reports whether text mentions the bare identity as a
+// whole token: every match must be bounded by non-identity characters (or
+// the edges of the text), so a mention of auth-10 does not count as a
+// mention of auth-1. Superseded-source accounting in the History table
+// and the body uses this instead of a substring match.
+func mentionsIdentity(text, identity string) bool {
+	for start := 0; start < len(text); {
+		i := strings.Index(text[start:], identity)
+		if i < 0 {
+			return false
+		}
+		i += start
+		end := i + len(identity)
+		if identityBoundary(text, i-1) && identityBoundary(text, end) {
+			return true
+		}
+		start = i + 1
+	}
+	return false
+}
+
+// identityBoundary reports whether the rune at pos — or the edge of text
+// when pos falls outside it — bounds a whole-token identity mention. The
+// characters that continue an identity are letters, digits, hyphens, and
+// underscores; anything else (punctuation, whitespace, brackets) is a
+// boundary.
+func identityBoundary(text string, pos int) bool {
+	if pos < 0 || pos >= len(text) {
+		return true
+	}
+	c := text[pos]
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return false
+	case c == '-' || c == '_':
+		return false
+	default:
+		return true
+	}
 }
 
 // learningSuperseded reports whether a resolved learning page records a
@@ -357,5 +390,15 @@ func learningSuperseded(page *store.Page) bool {
 	}
 	validity, _ := props["validity"].(string)
 	supersededBy, _ := props["superseded_by"].(string)
+	return supersededFrom(supersededBy, validity)
+}
+
+// supersededFrom is the pure two-field supersession predicate shared by
+// every decoder of the #146 temporal fields: a non-empty superseded_by
+// link or validity "superseded" marks a learning superseded. Callers that
+// already hold the decoded fields (compile's cluster learnings,
+// learningSuperseded's page decode) route through this one primitive so
+// the semantics cannot drift between them.
+func supersededFrom(supersededBy, validity string) bool {
 	return supersededBy != "" || validity == "superseded"
 }

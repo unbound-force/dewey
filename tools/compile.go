@@ -1217,15 +1217,9 @@ func (c *Compile) resolveCompiledSources(sources []string) (covSources []Citatio
 			unresolved = append(unresolved, id)
 			continue
 		}
-		props, err := decodeLearningProperties(page.Properties)
-		if err != nil {
-			props = map[string]any{}
-		}
-		validity, _ := props["validity"].(string)
-		supersededBy, _ := props["superseded_by"].(string)
 		covSources = append(covSources, CitationSource{
 			Identity:   id,
-			Superseded: supersededBy != "" || validity == "superseded",
+			Superseded: learningSuperseded(page),
 		})
 	}
 	return covSources, unresolved

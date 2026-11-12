@@ -1,6 +1,10 @@
 package tools
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/unbound-force/dewey/v3/store"
+)
 
 // historyHeadingTitle and proposalsHeadingTitle name the level-2 headings
 // that bound a compiled article's claim-bearing body (design D5): the
@@ -337,4 +341,21 @@ func citationIdentities(groups []string) []string {
 func extractCitations(body string) []string {
 	_, groups := scanBrackets(body)
 	return citationIdentities(groups)
+}
+
+// learningSuperseded reports whether a resolved learning page records a
+// successor: a non-empty superseded_by or validity "superseded" (the #146
+// temporal fields). Shared by store_compiled's source resolution
+// (ES-FR-012) and lint's citation_coverage kind (ES-FR-011) so both
+// decode supersession status identically. Unreadable properties decode
+// as not superseded — the status steers coverage reporting, never gates
+// a write.
+func learningSuperseded(page *store.Page) bool {
+	props, err := decodeLearningProperties(page.Properties)
+	if err != nil {
+		return false
+	}
+	validity, _ := props["validity"].(string)
+	supersededBy, _ := props["superseded_by"].(string)
+	return supersededBy != "" || validity == "superseded"
 }

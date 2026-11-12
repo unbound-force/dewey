@@ -34,7 +34,7 @@ var lintLogger = log.NewWithOptions(os.Stderr, log.Options{
 // Finding represents a single lint issue detected in the knowledge index.
 // Each finding includes an actionable remediation suggestion (invariant 5).
 type Finding struct {
-	Type        string   `json:"type"`                 // stale_decision, uncompiled, embedding_gap, contradiction, anchor_drift, anchor_missing, ...
+	Type        string   `json:"type"`                 // stale_decision, uncompiled, embedding_gap, contradiction, anchor_drift, anchor_missing, citation_coverage, ...
 	Severity    string   `json:"severity"`             // info, warning, error
 	Identity    string   `json:"identity,omitempty"`   // for single-page findings
 	Identities  []string `json:"identities,omitempty"` // for contradictions (pair)
@@ -94,6 +94,10 @@ func NewLint(s *store.Store, e embed.Embedder, vaultPath string, maxChunkChars i
 //     file changed or was removed since its as_of commit, anchor_missing
 //     when a cited file is absent at that commit. The pass outcome is
 //     reported as anchor_checks (checked, skipped, or failed).
+//  9. Citation coverage (ES-FR-011): compiled articles backed by the
+//     store whose citations name undeclared sources or whose declared
+//     sources are uncited. Never auto-repaired: the remediation is to
+//     recompile the article or correct its citations.
 //
 // When fix=true, auto-repairs embedding gaps by regenerating embeddings,
 // and marks learnings with anchor_drift findings validity
@@ -175,6 +179,16 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		allFindings = append(allFindings, anchorFindings...)
 	}
 
+	// Check 9: Citation coverage over store-backed compiled articles
+	// (ES-FR-011). Store-backed only: the store is the kind's data
+	// source, and fix never touches these findings.
+	citationFindings, err := l.checkCitationCoverage()
+	if err != nil {
+		lintLogger.Warn("citation coverage check failed", "err", err)
+	} else {
+		allFindings = append(allFindings, citationFindings...)
+	}
+
 	// Count findings by type for the summary.
 	staleCount := 0
 	uncompiledCount := 0
@@ -183,6 +197,7 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	knowledgeQualityCount := 0
 	staleKnowledgeCount := 0
 	sanitizationCount := 0
+	citationCoverageCount := 0
 	anchorCounts := map[string]int{}
 	for _, f := range allFindings {
 		anchorCounts[f.Type]++
@@ -201,6 +216,8 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 			staleKnowledgeCount++
 		case "sanitization":
 			sanitizationCount++
+		case "citation_coverage":
+			citationCoverageCount++
 		}
 	}
 	totalIssues := len(allFindings)
@@ -259,6 +276,10 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 	if sanitizationCount > 0 {
 		summary["sanitization_findings"] = sanitizationCount
 	}
+	// Add citation-coverage finding count when any exist (ES-FR-011).
+	if citationCoverageCount > 0 {
+		summary["citation_coverage"] = citationCoverageCount
+	}
 	// Add anchor finding counts when any exist (issue #147).
 	for _, kind := range []string{"anchor_drift", "anchor_missing"} {
 		if anchorCounts[kind] > 0 {
@@ -296,6 +317,7 @@ func (l *Lint) Lint(ctx context.Context, req *mcp.CallToolRequest, input types.L
 		"knowledge_quality", knowledgeQualityCount,
 		"stale_knowledge", staleKnowledgeCount,
 		"sanitization", sanitizationCount,
+		"citation_coverage", citationCoverageCount,
 		"fixed", fixedEmbeddings,
 	)
 
@@ -419,8 +441,10 @@ func (l *Lint) checkEmbeddingGaps() ([]Finding, error) {
 // Design decision: This check requires an embedder to be available.
 // When the embedder is nil or unavailable, the check is skipped entirely
 // (invariant 6). The heuristic reports tags with 2+ decision-type learnings
-// as potentially contradicting — run `dewey compile` to resolve via
-// temporal merge.
+// as potentially contradicting. Resolve explicitly: confirm a replacement
+// with the supersede_learning tool or a compile-proposed supersession at
+// the /dewey-distill review gate. Unresolved contradictions are surfaced,
+// never silently merged.
 func (l *Lint) checkContradictions() ([]Finding, error) {
 	// Skip if embedder is unavailable (invariant 6).
 	if l.embedder == nil || !l.embedder.Available() {
@@ -462,7 +486,7 @@ func (l *Lint) checkContradictions() ([]Finding, error) {
 			Severity:    "warning",
 			Identities:  identities,
 			Description: fmt.Sprintf("Tag '%s' has %d decision learnings that may contain contradicting information.", tag, len(group)),
-			Remediation: "Run `dewey compile` to resolve contradictions via temporal merge, or review manually.",
+			Remediation: "If one learning replaces the other, confirm it with supersede_learning (or a compile-proposed supersession at the /dewey-distill review gate); otherwise review and resolve manually.",
 		})
 	}
 
@@ -859,6 +883,95 @@ func (l *Lint) checkSanitizationFindings() ([]Finding, error) {
 	}
 
 	return findings, nil
+}
+
+// checkCitationCoverage re-runs the shared citation-coverage check over
+// compiled articles backed by the store (ES-FR-011): pages written by
+// compile or store_compiled, both persisted with SourceID "compiled".
+// The store is the kind's data source, matching every other lint check —
+// a file-only hand edit to .uf/dewey/compiled/ is invisible until the
+// article is recompiled or its page is deleted and re-indexed. The kind
+// reports unresolved citations and uncited sources by name and is never
+// auto-repaired: the remediation is to recompile the article or correct
+// its citations. A pre-existing article written before this change is
+// intended signal, not a false positive — the check carries no version
+// discrimination.
+func (l *Lint) checkCitationCoverage() ([]Finding, error) {
+	pages, err := l.store.ListPagesBySource("compiled")
+	if err != nil {
+		return nil, fmt.Errorf("list compiled pages: %w", err)
+	}
+
+	var findings []Finding
+	for _, p := range pages {
+		content, err := l.compiledPageContent(p.Name)
+		if err != nil {
+			return nil, fmt.Errorf("read blocks for %s: %w", p.Name, err)
+		}
+		cov := CheckCitationCoverage(CoverageOptions{
+			Article: content,
+			Sources: l.citationCoverageSources(extractSourcesFromProperties(p)),
+		})
+
+		article := strings.TrimPrefix(p.Name, "compiled/")
+		if len(cov.UnresolvedCitations) > 0 {
+			findings = append(findings, Finding{
+				Type:        "citation_coverage",
+				Severity:    "warning",
+				Page:        p.Name,
+				Identities:  cov.UnresolvedCitations,
+				Description: fmt.Sprintf("Compiled article '%s' cites %d learning(s) not among its declared sources: %s.", article, len(cov.UnresolvedCitations), strings.Join(cov.UnresolvedCitations, ", ")),
+				Remediation: "Recompile the article with the cited learnings declared as sources, or correct the citations.",
+			})
+		}
+		if len(cov.UncitedSources) > 0 {
+			findings = append(findings, Finding{
+				Type:        "citation_coverage",
+				Severity:    "warning",
+				Page:        p.Name,
+				Identities:  cov.UncitedSources,
+				Description: fmt.Sprintf("Compiled article '%s' leaves %d declared source(s) uncited: %s.", article, len(cov.UncitedSources), strings.Join(cov.UncitedSources, ", ")),
+				Remediation: "Recompile the article so every current source is cited, or store a corrected version with the stale sources removed.",
+			})
+		}
+	}
+	return findings, nil
+}
+
+// citationCoverageSources resolves declared compiled-article sources into
+// coverage sources. Unlike store_compiled's fail-closed resolution
+// (ES-FR-012), lint is advisory: a source naming no learning resolves as
+// a current, non-superseded source rather than an error, so a legacy
+// article still gets its uncited-source signal.
+func (l *Lint) citationCoverageSources(sources []string) []CitationSource {
+	resolved := make([]CitationSource, 0, len(sources))
+	for _, s := range sources {
+		id := supersedesIdentity(s)
+		if id == "" {
+			continue
+		}
+		cs := CitationSource{Identity: id}
+		if page, err := l.store.GetPage(store.LearningPrefix + id); err == nil && page != nil {
+			cs.Superseded = learningSuperseded(page)
+		}
+		resolved = append(resolved, cs)
+	}
+	return resolved
+}
+
+// compiledPageContent joins a page's store blocks into the article text
+// lint checks — the persisted body, never a file on disk.
+func (l *Lint) compiledPageContent(pageName string) (string, error) {
+	blocks, err := l.store.GetBlocksByPage(pageName)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, blk := range blocks {
+		b.WriteString(blk.Content)
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }
 
 // severityRank returns a numeric rank for severity comparison.

@@ -1387,3 +1387,331 @@ func TestLint_ParsesCurateRenderedQuotedFrontmatter(t *testing.T) {
 		t.Errorf("quality flags = %+v, want one missing_rationale", fm.QualityFlags)
 	}
 }
+
+// seedCompiledForLint inserts a compiled article page directly into the
+// store, mirroring what compile and store_compiled persist (SourceID
+// "compiled"): page properties carry the declared sources, blocks carry
+// the article body.
+func seedCompiledForLint(t *testing.T, s *store.Store, name string, sources []string, content string) {
+	t.Helper()
+	props := map[string]any{
+		"tag":        strings.TrimPrefix(name, "compiled/"),
+		"created_at": "2026-06-01T00:00:00Z",
+	}
+	if len(sources) > 0 {
+		props["sources"] = sources
+	}
+	propsJSON, err := json.Marshal(props)
+	if err != nil {
+		t.Fatalf("marshal properties: %v", err)
+	}
+	page := &store.Page{
+		Name:         name,
+		OriginalName: name,
+		SourceID:     "compiled",
+		SourceDocID:  name,
+		Properties:   string(propsJSON),
+		Tier:         "draft",
+		CreatedAt:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+		UpdatedAt:    time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+	}
+	if err := s.InsertPage(page); err != nil {
+		t.Fatalf("InsertPage(%s): %v", name, err)
+	}
+	block := &store.Block{UUID: "block-" + name, PageName: name, Content: content, Position: 0}
+	if err := s.InsertBlock(block); err != nil {
+		t.Fatalf("InsertBlock(%s): %v", block.UUID, err)
+	}
+}
+
+// citationCoverageFindings extracts the citation_coverage findings from a
+// parsed lint result, keyed by their description.
+func citationCoverageFindings(t *testing.T, parsed map[string]any) []map[string]any {
+	t.Helper()
+	raw, _ := parsed["findings"].([]any)
+	var out []map[string]any
+	for _, f := range raw {
+		finding, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
+		if finding["type"] == "citation_coverage" {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+// TestLint_CitationCoverage_Findings verifies the citation_coverage kind
+// over a store-backed compiled article (ES-FR-011): unresolved citations
+// and uncited sources are named by identity, the article is named in the
+// description, a superseded source is excused when uncited, and the
+// summary carries the counter.
+func TestLint_CitationCoverage_Findings(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+	lint := NewLint(s, nil, "", 0)
+
+	storeLearningWithProps(t, s, "auth-20260101T000000-alice", `{"tag":"auth","created_at":"2026-01-01T00:00:00Z"}`, "first", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260102T000000-alice", `{"tag":"auth","created_at":"2026-01-02T00:00:00Z"}`, "second", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260303T000000-alice", `{"tag":"auth","created_at":"2026-03-03T00:00:00Z","superseded_by":"auth-20260404T000000-alice","validity":"superseded"}`, "third", time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC))
+
+	// The body cites the first source and an undeclared learning; the
+	// second source is current but never cited; the third is superseded
+	// and named in the History table, which accounts for it.
+	body := "# Auth\n\nUse tokens [auth-20260101T000000-alice] and see [auth-20260909T000000-alice].\n\n## History\n\n| Learning | Created |\n| --- | --- |\n| auth-20260303T000000-alice | 2026-03-03 |\n"
+	seedCompiledForLint(t, s, "compiled/auth", []string{
+		"auth-20260101T000000-alice",
+		"auth-20260102T000000-alice",
+		"auth-20260303T000000-alice",
+	}, body)
+
+	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
+	if err != nil {
+		t.Fatalf("Lint error: %v", err)
+	}
+	parsed := parseLintResult(t, resultText(result))
+
+	findings := citationCoverageFindings(t, parsed)
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 citation_coverage findings (unresolved + uncited), got %d: %v", len(findings), findings)
+	}
+
+	var unresolved, uncited map[string]any
+	for _, f := range findings {
+		desc, _ := f["description"].(string)
+		switch {
+		case strings.Contains(desc, "not among its declared sources"):
+			unresolved = f
+		case strings.Contains(desc, "uncited"):
+			uncited = f
+		}
+	}
+	if unresolved == nil || uncited == nil {
+		t.Fatalf("expected one unresolved-citations and one uncited-sources finding, got %v", findings)
+	}
+
+	if got := identitiesOf(t, unresolved); !equalStrings(got, []string{"auth-20260909T000000-alice"}) {
+		t.Errorf("unresolved identities = %v, want [auth-20260909T000000-alice]", got)
+	}
+	if got := identitiesOf(t, uncited); !equalStrings(got, []string{"auth-20260102T000000-alice"}) {
+		t.Errorf("uncited identities = %v, want [auth-20260102T000000-alice] (superseded source excused)", got)
+	}
+	for _, f := range findings {
+		if f["page"] != "compiled/auth" {
+			t.Errorf("finding page = %v, want compiled/auth", f["page"])
+		}
+		desc, _ := f["description"].(string)
+		if !strings.Contains(desc, "auth-20260102T000000-alice") && !strings.Contains(desc, "auth-20260909T000000-alice") {
+			t.Errorf("description = %q, should name the violations", desc)
+		}
+	}
+
+	summary := lintSummary(t, parsed)
+	if summary["citation_coverage"] != float64(2) {
+		t.Errorf("summary citation_coverage = %v, want 2", summary["citation_coverage"])
+	}
+}
+
+// TestLint_CitationCoverage_CleanArticle verifies an article whose
+// citations all resolve and whose current sources are each cited produces
+// no findings — an uncited superseded source is accounted for.
+func TestLint_CitationCoverage_CleanArticle(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+	lint := NewLint(s, nil, "", 0)
+
+	storeLearningWithProps(t, s, "auth-20260101T000000-alice", `{"tag":"auth","created_at":"2026-01-01T00:00:00Z"}`, "first", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260102T000000-alice", `{"tag":"auth","created_at":"2026-01-02T00:00:00Z"}`, "second", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260303T000000-alice", `{"tag":"auth","created_at":"2026-03-03T00:00:00Z","superseded_by":"auth-20260404T000000-alice","validity":"superseded"}`, "third", time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC))
+
+	body := "# Auth\n\nUse tokens [auth-20260101T000000-alice] and rotate [auth-20260102T000000-alice].\n\n## History\n\n| Learning | Created |\n| --- | --- |\n| auth-20260303T000000-alice | 2026-03-03 |\n"
+	seedCompiledForLint(t, s, "compiled/auth", []string{
+		"auth-20260101T000000-alice",
+		"auth-20260102T000000-alice",
+		"auth-20260303T000000-alice",
+	}, body)
+
+	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
+	if err != nil {
+		t.Fatalf("Lint error: %v", err)
+	}
+	parsed := parseLintResult(t, resultText(result))
+
+	if findings := citationCoverageFindings(t, parsed); len(findings) != 0 {
+		t.Errorf("expected no citation_coverage findings, got %v", findings)
+	}
+	summary := lintSummary(t, parsed)
+	if _, ok := summary["citation_coverage"]; ok {
+		t.Errorf("summary should not carry citation_coverage when clean, got %v", summary["citation_coverage"])
+	}
+}
+
+// TestLint_CitationCoverage_StoreCompiledAuthored verifies the kind covers
+// articles written by store_compiled, not only by compile.
+func TestLint_CitationCoverage_StoreCompiledAuthored(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	storeLearningWithProps(t, s, "auth-20260101T000000-alice", `{"tag":"auth","created_at":"2026-01-01T00:00:00Z"}`, "first", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260102T000000-alice", `{"tag":"auth","created_at":"2026-01-02T00:00:00Z"}`, "second", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+
+	c := NewCompile(s, nil, nil, t.TempDir(), nil, 0)
+	input := types.StoreCompiledInput{
+		Tag:     "authentication",
+		Content: "# Authentication\n\nTokens [auth-20260101T000000-alice] rotate hourly.",
+		Sources: []string{"auth-20260101T000000-alice", "auth-20260102T000000-alice"},
+	}
+	result, _, err := c.StoreCompiled(context.Background(), nil, input)
+	if err != nil {
+		t.Fatalf("StoreCompiled: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreCompiled returned error: %s", resultText(result))
+	}
+
+	lint := NewLint(s, nil, "", 0)
+	lintResult, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
+	if err != nil {
+		t.Fatalf("Lint error: %v", err)
+	}
+	parsed := parseLintResult(t, resultText(lintResult))
+
+	findings := citationCoverageFindings(t, parsed)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 citation_coverage finding, got %d: %v", len(findings), findings)
+	}
+	if got := identitiesOf(t, findings[0]); !equalStrings(got, []string{"auth-20260102T000000-alice"}) {
+		t.Errorf("uncited identities = %v, want [auth-20260102T000000-alice]", got)
+	}
+	if findings[0]["page"] != "compiled/authentication" {
+		t.Errorf("finding page = %v, want compiled/authentication", findings[0]["page"])
+	}
+}
+
+// TestLint_CitationCoverage_PreChangeArticleNotClearedByFix verifies the
+// legacy-article scenario (ES-FR-011): a pre-change article with no
+// citations is reported as intended signal, a file-only hand edit to
+// .uf/dewey/compiled/ is invisible to the kind, and fix never repairs or
+// removes the findings.
+func TestLint_CitationCoverage_PreChangeArticleNotClearedByFix(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+
+	storeLearningWithProps(t, s, "auth-20260101T000000-alice", `{"tag":"auth","created_at":"2026-01-01T00:00:00Z"}`, "first", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	storeLearningWithProps(t, s, "auth-20260102T000000-alice", `{"tag":"auth","created_at":"2026-01-02T00:00:00Z"}`, "second", time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC))
+
+	// Pre-change article: declared sources, no citations anywhere.
+	body := "# Legacy\n\nUse basic auth.\n\n## History\n\n| Learning | Created |\n| --- | --- |\n"
+	seedCompiledForLint(t, s, "compiled/legacy", []string{
+		"auth-20260101T000000-alice",
+		"auth-20260102T000000-alice",
+	}, body)
+
+	// A file-only hand edit on disk fixes the article — but compiled
+	// articles have no re-ingestion path, so the store is what lint sees.
+	vaultPath := t.TempDir()
+	dir := filepath.Join(vaultPath, ".uf", "dewey", "compiled")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	fixed := "# Legacy\n\n[auth-20260101T000000-alice] [auth-20260102T000000-alice]\n"
+	if err := os.WriteFile(filepath.Join(dir, "legacy.md"), []byte(fixed), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	lint := NewLint(s, nil, vaultPath, 0)
+	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{Fix: true})
+	if err != nil {
+		t.Fatalf("Lint error: %v", err)
+	}
+	parsed := parseLintResult(t, resultText(result))
+
+	findings := citationCoverageFindings(t, parsed)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 citation_coverage finding (both sources uncited), got %d: %v", len(findings), findings)
+	}
+	if got := identitiesOf(t, findings[0]); !equalStrings(got, []string{"auth-20260101T000000-alice", "auth-20260102T000000-alice"}) {
+		t.Errorf("uncited identities = %v, want both declared sources (store version, hand edit invisible)", got)
+	}
+
+	// fix never touches citation coverage: no repair path exists for it.
+	fixedMap, ok := parsed["fixed"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'fixed' map in lint result with fix=true")
+	}
+	if _, ok := fixedMap["citation_coverage"]; ok {
+		t.Errorf("fixed map must not carry citation_coverage: %v", fixedMap)
+	}
+
+	summary := lintSummary(t, parsed)
+	if summary["citation_coverage"] != float64(1) {
+		t.Errorf("summary citation_coverage = %v, want 1", summary["citation_coverage"])
+	}
+}
+
+// TestLint_ContradictionRemediationNamesSupersede verifies the
+// contradiction remediation text points at the declared-supersession
+// workflow instead of the removed temporal merge.
+func TestLint_ContradictionRemediationNamesSupersede(t *testing.T) {
+	s := newTestStore(t)
+	defer func() { _ = s.Close() }()
+	e := newMockEmbedder(true)
+	lint := NewLint(s, e, "", 0)
+
+	now := time.Now()
+	storeLearningForLint(t, s, "auth", 1, "decision", "Use basic auth", now)
+	storeLearningForLint(t, s, "auth", 2, "decision", "Switch to OAuth", now.Add(24*time.Hour))
+
+	result, _, err := lint.Lint(context.Background(), nil, types.LintInput{})
+	if err != nil {
+		t.Fatalf("Lint error: %v", err)
+	}
+	parsed := parseLintResult(t, resultText(result))
+
+	raw, _ := parsed["findings"].([]any)
+	found := false
+	for _, f := range raw {
+		finding, ok := f.(map[string]any)
+		if !ok || finding["type"] != "contradiction" {
+			continue
+		}
+		found = true
+		remediation, _ := finding["remediation"].(string)
+		if !strings.Contains(remediation, "supersede_learning") {
+			t.Errorf("remediation = %q, should name supersede_learning", remediation)
+		}
+		if strings.Contains(remediation, "temporal merge") {
+			t.Errorf("remediation = %q, must not reference temporal merge", remediation)
+		}
+	}
+	if !found {
+		t.Fatal("expected a contradiction finding")
+	}
+}
+
+// identitiesOf extracts a finding's identities as a string slice.
+func identitiesOf(t *testing.T, finding map[string]any) []string {
+	t.Helper()
+	raw, _ := finding["identities"].([]any)
+	out := make([]string, 0, len(raw))
+	for _, id := range raw {
+		if s, ok := id.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// equalStrings compares two string slices for exact equality.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

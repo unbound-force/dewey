@@ -115,22 +115,28 @@ func ValidLearningIdentity(identity string) bool {
 // sequence, for example "auth-1", "vault-walker-2"). Both formats the
 // store holds are first-class: reIngestLearnings still re-ingests
 // legacy-identity files, so a declared link to "auth-1" is valid, not
-// malformed. Every hyphen-separated segment must be a non-empty run of
-// lowercase ASCII letters and digits — the character set normalizeTag
-// produces for tags and authors — except the timestamp segment, which
-// carries the one uppercase letter the grammar allows. The timestamp form
-// requires a tag segment before the timestamp and an author segment after
-// it; the legacy form requires a numeric final segment after the tag. This
+// malformed. Every hyphen-separated segment must be a run of lowercase
+// ASCII letters and digits — the character set normalizeTag produces for
+// tags and authors, which may leave empty segments between consecutive
+// hyphens — except the timestamp segment, which carries the one uppercase
+// letter the grammar allows. The timestamp form requires a non-empty tag
+// segment before the timestamp and a non-empty author segment after it; the legacy form requires a numeric final segment after the tag. This
 // is the ES-FR-003 prompt-injection boundary: a value that fails the
 // grammar is treated as absent rather than rendered, so spaces, newlines,
 // brackets, and other prompt-bearing characters never pass. Unlike
 // ValidLearningIdentity, which guards filesystem paths, this is a shape
 // check for decoded link values and bracketed citations.
 func isLearningIdentity(s string) bool {
+	// Empty segments (consecutive, leading, or trailing hyphens) are
+	// accepted: normalizeTag keeps hyphens, so a tag like "api - auth"
+	// yields "api---auth" in a tool-created identity, and rejecting it
+	// would make that learning uncitable. A hyphen carries no
+	// prompt-bearing character, so accepting it keeps the boundary.
 	segs := strings.Split(s, "-")
 	timestampAt := -1
 	for i, seg := range segs {
 		switch {
+		case seg == "":
 		case isTimestampSegment(seg):
 			if timestampAt < 0 {
 				timestampAt = i
@@ -142,10 +148,21 @@ func isLearningIdentity(s string) bool {
 	if timestampAt >= 0 {
 		// {tag}-{timestamp}-{author}: the timestamp must sit strictly
 		// between a non-empty tag and a non-empty author.
-		return timestampAt > 0 && timestampAt < len(segs)-1
+		return hasNonEmpty(segs[:timestampAt]) && hasNonEmpty(segs[timestampAt+1:])
 	}
 	// Legacy {tag}-{sequence}: a non-empty tag and a numeric sequence.
-	return len(segs) >= 2 && isDigitRun(segs[len(segs)-1])
+	last := len(segs) - 1
+	return last >= 1 && isDigitRun(segs[last]) && hasNonEmpty(segs[:last])
+}
+
+// hasNonEmpty reports whether any segment is non-empty.
+func hasNonEmpty(segs []string) bool {
+	for _, seg := range segs {
+		if seg != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // isTimestampSegment reports whether s has the YYYYMMDDTHHMMSS shape —

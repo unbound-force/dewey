@@ -2721,7 +2721,7 @@ func TestCompile_InvalidProposalsDropped(t *testing.T) {
 			"- successor: auth-20260315T100002-test\n" +
 			"  target: auth-20260315T100001-test\n" +
 			"  rationale: " + longRationale + "\n\n" +
-			"- successor: auth-20260315T100001-test\n" +
+			"- successor: auth-20260315T100003-test\n" +
 			"  target: auth-20260315T100002-test\n" +
 			"  rationale: hidden\x00payload\u200b\n\n" +
 			"- successor: auth-20260315T100002-test\n" +
@@ -2740,6 +2740,7 @@ func TestCompile_InvalidProposalsDropped(t *testing.T) {
 	baseTime := time.Date(2026, 3, 15, 10, 0, 0, 0, time.UTC)
 	storeLearningDirect(t, s, "auth", 1, "decision", "Use Option A", baseTime)
 	storeLearningDirect(t, s, "auth", 2, "decision", "Switch to Option B", baseTime)
+	storeLearningDirect(t, s, "auth", 3, "decision", "Switch to Option C", baseTime)
 
 	result, _, err := c.Compile(context.Background(), nil, types.CompileInput{})
 	if err != nil {

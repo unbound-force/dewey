@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/unbound-force/dewey/v3/store"
 )
 
 // maxProposalRationaleRunes bounds a supersession-proposal rationale after
@@ -34,30 +36,36 @@ type DroppedProposal struct {
 	Target string
 	// Reason is a machine-parseable drop reason: missing_successor,
 	// missing_target, successor_not_source, target_not_source,
-	// successor_equals_target, or empty_rationale.
+	// successor_equals_target, or empty_rationale from the entry ladder;
+	// link_conflict, unresolved_learning, duplicate_proposal,
+	// duplicate_target, duplicate_successor, or reverse_of_proposal from
+	// the link-state check.
 	Reason string
 }
 
-// parseSupersessionProposals parses, validates, and strips the "##
+// parseSupersessionProposals parses, validates, and strips every "##
 // Supersession Proposals" section from synthesized text (design D4,
-// ES-FR-005/006). The section runs from the first "## Supersession
-// Proposals" heading to the next heading of any level or the end of the
-// text; the returned stripped text is everything outside the section,
-// concatenated. Text with no section is returned unchanged.
+// ES-FR-005/006). A section runs from its heading to the next heading of
+// any level or the end of the text; headings and "#" lines inside fenced
+// code blocks neither open nor close a section. The returned stripped
+// text is everything outside the sections, concatenated. Text with no
+// section is returned unchanged. Every section is parsed and stripped, so
+// a synthesizer that emits the section twice never leaves one behind in
+// the stored article.
 //
 // An entry is valid when its successor and target both resolve to one of
 // sources (each normalized like a declared citation source), are distinct,
 // and its rationale is non-empty after sanitization — control and
 // invisible Unicode stripped, then bounded to maxProposalRationaleRunes
 // runes. Valid entries are returned as proposals; invalid entries are
-// dropped with a reason. The section is stripped either way, so stored
-// articles never contain it.
+// dropped with a reason. The sections are stripped either way, so stored
+// articles never contain them.
 func parseSupersessionProposals(text string, sources []string) (stripped string, proposals []SupersessionProposal, dropped []DroppedProposal) {
 	sourceSet := buildSourceSet(sources)
 
 	lines := strings.SplitAfter(text, "\n")
-	headingIdx, sectionEnd, offsets := locateProposalsSection(lines, len(text))
-	if headingIdx < 0 {
+	spans, offsets := locateProposalsSections(lines)
+	if len(spans) == 0 {
 		return text, nil, nil
 	}
 
@@ -84,23 +92,30 @@ func parseSupersessionProposals(text string, sources []string) (stripped string,
 		}
 		successor, target, rationale = "", "", ""
 	}
-	for i := headingIdx + 1; i < len(lines) && offsets[i] < sectionEnd; i++ {
-		trimmed := strings.TrimSpace(lines[i])
-		switch {
-		case strings.HasPrefix(trimmed, "- successor:"):
-			flush()
-			inEntry = true
-			successor = proposalFieldValue(trimmed, "- successor:")
-		case !inEntry:
-			// Prose or blank line between entries.
-		case strings.HasPrefix(trimmed, "target:"):
-			target = proposalFieldValue(trimmed, "target:")
-		case strings.HasPrefix(trimmed, "rationale:"):
-			rationale = proposalFieldValue(trimmed, "rationale:")
+	var out strings.Builder
+	prev := 0
+	for _, sp := range spans {
+		out.WriteString(text[prev:offsets[sp.start]])
+		prev = offsets[sp.end]
+		for i := sp.start + 1; i < sp.end; i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			switch {
+			case strings.HasPrefix(trimmed, "- successor:"):
+				flush()
+				inEntry = true
+				successor = proposalFieldValue(trimmed, "- successor:")
+			case !inEntry:
+				// Prose or blank line between entries.
+			case strings.HasPrefix(trimmed, "target:"):
+				target = proposalFieldValue(trimmed, "target:")
+			case strings.HasPrefix(trimmed, "rationale:"):
+				rationale = proposalFieldValue(trimmed, "rationale:")
+			}
 		}
+		flush()
 	}
-	flush()
-	return text[:offsets[headingIdx]] + text[sectionEnd:], proposals, dropped
+	out.WriteString(text[prev:])
+	return out.String(), proposals, dropped
 }
 
 // buildSourceSet normalizes the declared source identities into a set the
@@ -117,34 +132,48 @@ func buildSourceSet(sources []string) map[string]bool {
 	return sourceSet
 }
 
-// locateProposalsSection finds the "## Supersession Proposals" section in
-// lines (produced by strings.SplitAfter with trailing newlines retained).
-// It returns the index of the section's heading line, the byte offset
-// where the section ends (the next heading of any level, or textLen at
-// end of text), and each line's byte offset for slicing. headingIdx is -1
-// when the section is absent.
-func locateProposalsSection(lines []string, textLen int) (headingIdx, sectionEnd int, offsets []int) {
-	offsets = make([]int, len(lines))
-	headingIdx = -1
+// lineSpan is a half-open range of line indexes [start, end).
+type lineSpan struct{ start, end int }
+
+// locateProposalsSections finds every "## Supersession Proposals" section
+// in lines (produced by strings.SplitAfter with trailing newlines
+// retained). Each span runs from the heading line to the next heading
+// line of any level, or to len(lines). Lines inside a fenced code block
+// (``` or ~~~) are never headings, so a quoted example heading cannot
+// open a section and a "#" comment inside a fence cannot close one. It
+// also returns each line's byte offset, with offsets[len(lines)] equal to
+// the text length, for slicing.
+func locateProposalsSections(lines []string) (spans []lineSpan, offsets []int) {
+	offsets = make([]int, len(lines)+1)
+	headings := make([]bool, len(lines))
 	offset := 0
+	inFence := false
 	for i, line := range lines {
 		offsets[i] = offset
-		if headingIdx < 0 && isLevel2Heading(line, proposalsHeadingTitle) {
-			headingIdx = i
-		}
 		offset += len(line)
-	}
-	if headingIdx < 0 {
-		return headingIdx, 0, offsets
-	}
-	sectionEnd = textLen
-	for i := headingIdx + 1; i < len(lines); i++ {
-		if strings.HasPrefix(lines[i], "#") {
-			sectionEnd = offsets[i]
-			break
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
 		}
+		headings[i] = !inFence && strings.HasPrefix(line, "#")
 	}
-	return headingIdx, sectionEnd, offsets
+	offsets[len(lines)] = offset
+	for i := 0; i < len(lines); i++ {
+		if !headings[i] || !isLevel2Heading(lines[i], proposalsHeadingTitle) {
+			continue
+		}
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			if headings[j] {
+				end = j
+				break
+			}
+		}
+		spans = append(spans, lineSpan{start: i, end: end})
+		i = end - 1
+	}
+	return spans, offsets
 }
 
 // proposalResultFields flattens the per-cluster proposals and dropped
@@ -250,4 +279,83 @@ func sanitizeProposalRationale(s string) string {
 func isControlOrInvisibleRune(r rune) bool {
 	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) ||
 		unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
+}
+
+// proposalRun tracks the proposals already kept during one compile or
+// store_compiled call, so proposals that could not all be confirmed
+// together are dropped before they reach the review gate.
+type proposalRun struct {
+	successorOf map[string]string // target → kept successor
+	targetOf    map[string]string // successor → kept target
+}
+
+func newProposalRun() *proposalRun {
+	return &proposalRun{successorOf: map[string]string{}, targetOf: map[string]string{}}
+}
+
+// filterProposalsByLinkState drops proposals that supersede_learning would
+// refuse against the store's current declared links (the same link-state
+// ladder it runs: target already superseded, successor already declaring
+// a different target, target already superseding the successor), and
+// proposals that conflict with one already kept in this run: the same
+// pair twice, a second successor for one target, a second target for one
+// successor, or the reverse of a kept pair. Without this, the review gate
+// could present pairs that cannot all be applied, and a confirmed pair
+// the tool then refuses would stall the run.
+func filterProposalsByLinkState(s *store.Store, run *proposalRun, proposals []SupersessionProposal) (kept []SupersessionProposal, dropped []DroppedProposal) {
+	for _, p := range proposals {
+		if reason := proposalLinkStateReason(s, run, p); reason != "" {
+			dropped = append(dropped, DroppedProposal{Successor: p.Successor, Target: p.Target, Reason: reason})
+			continue
+		}
+		run.successorOf[p.Target] = p.Successor
+		run.targetOf[p.Successor] = p.Target
+		kept = append(kept, p)
+	}
+	return kept, dropped
+}
+
+// proposalLinkStateReason returns the drop reason for one proposal, or ""
+// when it can be presented for confirmation.
+func proposalLinkStateReason(s *store.Store, run *proposalRun, p SupersessionProposal) string {
+	if succ, ok := run.successorOf[p.Target]; ok {
+		if succ == p.Successor {
+			return "duplicate_proposal"
+		}
+		return "duplicate_target"
+	}
+	if _, ok := run.targetOf[p.Successor]; ok {
+		return "duplicate_successor"
+	}
+	if run.successorOf[p.Successor] == p.Target {
+		return "reverse_of_proposal"
+	}
+	if s == nil {
+		return ""
+	}
+	succProps, ok := learningProps(s, p.Successor)
+	if !ok {
+		return "unresolved_learning"
+	}
+	tgtProps, ok := learningProps(s, p.Target)
+	if !ok {
+		return "unresolved_learning"
+	}
+	if err := checkLinkStateLadder(succProps, tgtProps, p.Successor, p.Target); err != nil {
+		return "link_conflict"
+	}
+	return ""
+}
+
+// learningProps loads and decodes a learning's stored properties.
+func learningProps(s *store.Store, identity string) (map[string]any, bool) {
+	page, err := s.GetPage(store.LearningPrefix + identity)
+	if err != nil || page == nil || page.SourceID != store.SourceLearning {
+		return nil, false
+	}
+	props, err := decodeLearningProperties(page.Properties)
+	if err != nil {
+		return nil, false
+	}
+	return props, true
 }

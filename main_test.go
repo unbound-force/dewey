@@ -2633,3 +2633,100 @@ machine-written body that must not overwrite the human edit
 		t.Errorf("re-ingestion inserted %d blocks for a pre-existing page, want 0", len(blocks))
 	}
 }
+
+// TestReIngestLearnings_RoundTripFromSupersedeLearning pins the composed
+// round-trip for links the supersede_learning tool creates (issue #150):
+// two learnings stored unlinked, linked by the tool, then the store is
+// wiped and re-ingested from the markdown backups — the successor's
+// supersedes and the target's superseded_by and validity must both be
+// restored. The tools-side half (the backups carrying the links) is
+// pinned by TestSupersedeLearning_Confirmation in the tools package.
+func TestReIngestLearnings_RoundTripFromSupersedeLearning(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "alice")
+	vaultPath := t.TempDir()
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	l := tools.NewLearning(nil, s, vaultPath, 0)
+
+	resultJSON := func(res *mcp.CallToolResult) map[string]any {
+		tc, _ := res.Content[0].(*mcp.TextContent)
+		m := map[string]any{}
+		if err := json.Unmarshal([]byte(tc.Text), &m); err != nil {
+			t.Fatalf("unmarshal result %q: %v", tc.Text, err)
+		}
+		return m
+	}
+	storeOne := func(tag string) string {
+		res, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+			Information: "Round trip body for " + tag + ".",
+			Tag:         tag,
+		})
+		if err != nil {
+			t.Fatalf("StoreLearning(%s): %v", tag, err)
+		}
+		if res.IsError {
+			t.Fatalf("StoreLearning(%s) error result: %s", tag, resultJSON(res))
+		}
+		identity, _ := resultJSON(res)["identity"].(string)
+		if identity == "" {
+			t.Fatalf("identity missing from StoreLearning(%s) result", tag)
+		}
+		return identity
+	}
+
+	targetIdentity := storeOne("rtlink")
+	successorIdentity := storeOne("rtlink2")
+
+	// Link the pre-existing learnings with the tool.
+	res, _, err := l.SupersedeLearning(context.Background(), nil, types.SupersedeLearningInput{
+		Successor: successorIdentity,
+		Target:    targetIdentity,
+	})
+	if err != nil {
+		t.Fatalf("SupersedeLearning: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("SupersedeLearning error result: %s", resultJSON(res))
+	}
+
+	// Wipe the store; re-ingest from the backups the tool updated.
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	fresh, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = fresh.Close() }()
+
+	if count, err := reIngestLearnings(fresh, nil, vaultPath, 0); err != nil || count != 2 {
+		t.Fatalf("reIngestLearnings = %d, %v; want 2, nil", count, err)
+	}
+
+	restoredProps := func(name string) map[string]any {
+		page, err := fresh.GetPage(name)
+		if err != nil || page == nil {
+			t.Fatalf("GetPage(%q) = %v, %v", name, page, err)
+		}
+		props := map[string]any{}
+		if err := json.Unmarshal([]byte(page.Properties), &props); err != nil {
+			t.Fatalf("unmarshal properties of %q: %v", name, err)
+		}
+		return props
+	}
+
+	successorProps := restoredProps("learning/" + successorIdentity)
+	if successorProps["supersedes"] != targetIdentity {
+		t.Errorf("successor supersedes = %v, want %q", successorProps["supersedes"], targetIdentity)
+	}
+	targetProps := restoredProps("learning/" + targetIdentity)
+	if targetProps["superseded_by"] != successorIdentity {
+		t.Errorf("target superseded_by = %v, want %q", targetProps["superseded_by"], successorIdentity)
+	}
+	if targetProps["validity"] != "superseded" {
+		t.Errorf("target validity = %v, want superseded", targetProps["validity"])
+	}
+}

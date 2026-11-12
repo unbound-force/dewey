@@ -434,6 +434,73 @@ func (l *Learning) markSupersededFile(identity, successor string) string {
 	return fmt.Sprintf("marked %s superseded in the store, but not in its markdown backup: %v", identity, err)
 }
 
+// refuseSupersedesBackup returns the successor file leg's refusal policy,
+// the mirror of refuseSupersededBackup: the backup's recorded supersedes,
+// read with frontmatterScalar, is compared against the target about to be
+// written, both normalized with supersedesIdentity. An absent or empty
+// value is unclaimed and proceeds; an equal value proceeds, so an
+// idempotent rewrite also repairs a missing key. Any other value — a
+// differing target, or an unparseable or block-form scalar — yields a
+// reason naming it, so updateLearningBackup leaves the file byte-for-byte
+// unchanged rather than clobbering the durable record.
+func refuseSupersedesBackup(target string) func(content string) string {
+	return func(content string) string {
+		recorded, found := frontmatterScalar(content, "supersedes")
+		if !found || recorded == "" {
+			return ""
+		}
+		if supersedesIdentity(recorded) == supersedesIdentity(target) {
+			return ""
+		}
+		return fmt.Sprintf("backup already records supersedes %q", recorded)
+	}
+}
+
+// recordSupersedes links successor → target by recording supersedes on an
+// existing successor: the store properties leg (updateLearningProperties)
+// followed by the guarded markdown-backup leg (updateLearningBackup). It
+// MUST be called only inside a withLearningPropsLock section, alongside
+// the target claim, so a concurrent learning-property writer cannot
+// interleave between the legs — supersede_learning wraps this helper and
+// claimSuperseded in one hold (ES-FR-007).
+//
+// The store leg carries the in-closure fast-fail mirroring
+// claimSuperseded's: when the re-read successor already records a
+// supersedes naming a different learning, nothing is written and the
+// conflict is returned as a warning naming the recorded value — the
+// validation-time ladder already refuses that case, so reaching it here
+// means a concurrent writer changed the successor between validation and
+// write. The file leg is guarded by refuseSupersedesBackup: a backup that
+// already records a different target is left byte-for-byte unchanged and
+// the refusal is returned as a warning. A missing backup (no vault, or a
+// store-only learning) is not an error. Returns a warning describing a
+// failure or refusal, or "" on success.
+func (l *Learning) recordSupersedes(successor *store.Page, target string) string {
+	err := updateLearningProperties(l.store, successor.Name, func(props map[string]any) error {
+		if recorded, present := props["supersedes"]; present {
+			if s, ok := recorded.(string); ok && s != "" && supersedesIdentity(s) != supersedesIdentity(target) {
+				return fmt.Errorf("learning %q already declares supersedes %q", supersedesIdentity(successor.Name), s)
+			}
+		}
+		props["supersedes"] = target
+		return nil
+	})
+	if err != nil {
+		return fmt.Sprintf("failed to record supersedes on %s in the store: %v", supersedesIdentity(successor.Name), err)
+	}
+	fileErr := updateLearningBackup(l.vaultPath, supersedesIdentity(successor.Name),
+		[][2]string{{"supersedes", target}},
+		refuseSupersedesBackup(target))
+	if fileErr == nil {
+		return ""
+	}
+	var refusal *backupRefusalError
+	if errors.As(fileErr, &refusal) {
+		return fmt.Sprintf("recorded supersedes on %s in the store, but not in its markdown backup: %s", supersedesIdentity(successor.Name), refusal)
+	}
+	return fmt.Sprintf("recorded supersedes on %s in the store, but not in its markdown backup: %v", supersedesIdentity(successor.Name), fileErr)
+}
+
 // learningPropsMu serializes read-modify-write updates of stored learning
 // properties within this process, across each caller's store leg and file
 // leg. MCP calls run concurrently, and lint's fix and store_learning's

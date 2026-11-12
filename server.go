@@ -463,7 +463,12 @@ func registerLearningTools(srv *mcp.Server, learning *tools.Learning) int {
 		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via semantic_search. Use to build semantic memory across sessions. Pins as_of to the vault's git HEAD; optionally records evidence locators, a validity status, and the identity of a learning this one supersedes (the target is marked superseded_by, never deleted). Concurrent same-target supersessions are serialized; a losing call returns supersedes_warning naming the winner.",
 	}, learning.StoreLearning)
 
-	return 1
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "supersede_learning",
+		Description: "Link two existing learnings: the successor gains supersedes naming the target, and the target gains superseded_by and validity: superseded. The target is never deleted and its tier never changes. Use to confirm a compile-proposed supersession at the review gate, or to record an explicit replacement between learnings that already exist. Refuses unknown identities, same-learning pairs, already-superseded targets, conflicting declarations, and any link that would close a cycle; a pre-existing cyclic chain is reported for human repair and never extended.",
+	}, learning.SupersedeLearning)
+
+	return 2
 }
 
 // registerIndexingTools registers the index and reindex MCP tools for

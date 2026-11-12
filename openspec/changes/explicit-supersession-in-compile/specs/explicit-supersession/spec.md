@@ -535,7 +535,11 @@ writing a page or file.
 compile's, and a `## Supersession Proposals` section in the
 submitted content MUST be parsed, validated, stripped, and returned
 as `proposed_supersessions` exactly as compile does, so the
-prompt-mode path surfaces proposals too.
+prompt-mode path surfaces proposals too. On this path `topic` is
+the stored page's name — `store_compiled` has no cluster, so the
+field that names the compile path's cluster topic names the stored
+article here, keeping the review-gate presentation identical in
+shape across both paths.
 
 #### Scenario: Coverage reported and proposals surfaced
 

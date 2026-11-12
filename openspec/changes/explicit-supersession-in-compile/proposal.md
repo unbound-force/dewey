@@ -196,9 +196,11 @@ reader does not read the artifact depth as an accident.
   `contracts/lint-tool.md` — annotated with the superseded
   newer-wins wording so the archived contract and this delta do
   not read as agreeing; the authoritative
-  `specs/013-knowledge-compile/spec.md` FR-008 and its acceptance
-  criterion 4 (plus the `research.md` R7 and `tasks.md` T022
-  restatements) annotated with the same pointer.
+  `specs/013-knowledge-compile/spec.md` restatements of FR-008
+  annotated with the same pointer — FR-008 itself, acceptance
+  criterion 4, the user-story prose, the independent test,
+  acceptance scenario 2, SC-002, and SC-007 — plus the
+  `research.md` R7 and `tasks.md` T022 restatements.
 - Tests: `tools/compile_test.go`, `tools/citations_test.go` (new),
   `tools/supersede_test.go` (new), `tools/lint_test.go`,
   `tools/learning_temporal_test.go`, `main_test.go`,

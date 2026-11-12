@@ -16,27 +16,32 @@
   token set, require link values to match the identity grammar, and
   treat a failing value as absent so it is never rendered into a
   prompt (ES-FR-003); GoDoc on the struct fields
-- [ ] 1.2 `buildSynthesisPrompt`: render per-learning temporal lines
-  (validity, supersedes, superseded-by) only when present — legacy
-  learnings render unchanged
+- [ ] 1.2 `tools/compile.go` `buildSynthesisPrompt`: render
+  per-learning temporal lines (validity, supersedes, superseded-by)
+  only when present — legacy learnings render unchanged
 - [ ] 1.3 `tools/compile_test.go`: entry decoding (present, absent,
   wrong-typed values), decode-boundary withholding (non-string link,
   unknown validity token, non-identity link, surrounding whitespace
-  normalized), and prompt rendering tests
+  normalized), a legacy `{tag}-{sequence}` identity link accepted,
+  and prompt rendering tests
 - [ ] 1.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 2 begins
 
 ## 2. Prompt policy: declared authority, open conflicts, citations
 
-- [ ] 2.1 `buildSynthesisPrompt` + `categoryInstructions`: remove the
+- [ ] 2.1 `tools/compile.go` `buildSynthesisPrompt` +
+  `categoryInstructions`: remove the
   recency instructions ("favoring the newest learning", "Newer
   decisions supersede older ones", "superseded by a newer learning");
   decision and context rules restate declared-supersession authority
-- [ ] 2.2 prompt gains the `## Open Conflicts` instruction: both
+- [ ] 2.2 `tools/compile.go` prompt gains the `## Open Conflicts`
+  instruction: both
   positions presented, each with citations, no silent winner
-- [ ] 2.3 prompt gains the per-claim citation instruction (bracketed,
+- [ ] 2.3 `tools/compile.go` prompt gains the per-claim citation
+  instruction (bracketed,
   comma-separated identities per D3, with the identity-grammar shape
-  shown and non-identity bracketed text stated as ignored) and the
+  shown — both the timestamped and legacy `{tag}-{sequence}` forms —
+  and non-identity bracketed text stated as ignored) and the
   strict `## Supersession Proposals` section spec (successor,
   target, rationale; clear replacement only — recency is not grounds)
 - [ ] 2.4 `tools/compile_test.go`: update prompt assertions — the
@@ -49,18 +54,31 @@
 ## 3. Citation coverage helper (pure)
 
 - [ ] 3.1 `tools/citations.go` (new): claim-bearing body extraction
-  (frontmatter, `## History`, `## Supersession Proposals` excluded),
-  bracketed-citation extraction gated on the identity-grammar
-  discriminator (whole-group match; every other bracketed form
-  ignored), forward/backward coverage result type with named
+  anchored by shape — text after the leading frontmatter block and
+  before the trailing (last) `## History` heading and any trailing
+  `## Supersession Proposals` section; an earlier `## History`
+  heading does not end the body — bracketed-citation extraction
+  gated on the identity-grammar discriminator (whole-group match;
+  both identity formats, timestamped and legacy `{tag}-{sequence}`;
+  every other bracketed form ignored), declared-source normalization
+  (`learning/<identity>` → bare identity), forward/backward coverage
+  result type with named
   violations and counts, and the superseded-source backward rule (a
-  superseded declared source is accounted for by the History table or
-  an in-body mention; a current source is not); pure functions,
+  superseded declared source is accounted for by the History table
+  or an in-body mention — the bare identity occurring outside any
+  bracketed group; a current source is not), with each source's
+  supersession status passed in as an input so the helper performs
+  no store lookup; pure functions,
   GoDoc, Options/Result pattern
 - [ ] 3.2 `tools/citations_test.go` (new): table-driven — clean
   article, truncated citation, unknown identity, uncited source,
   multi-identity group, History/frontmatter/proposals excluded from
-  forward counting, superseded source accounted for by History,
+  forward counting, an early `## History` heading not fencing the
+  body, a `learning/`-prefixed declared source normalized and
+  counted, superseded source accounted for by History, superseded
+  source accounted for by an in-body mention (bare identity in
+  prose, outside brackets), a legacy `{tag}-{sequence}` citation
+  counting in both directions,
   current source with only a History row still reported uncited, and
   one case per non-citation bracket form (`[text](url)`,
   `[ref][target]`, `[1]`, `[x]`, `[[wiki-link]]`, `[]`,
@@ -74,13 +92,19 @@
   Supersession Proposals` section from synthesized output — one pure
   helper shared with `store_compiled`; entries valid when successor
   and target resolve to the cluster's source learnings, are distinct,
-  and carry non-empty rationale; invalid entries dropped and reported
+  and carry a rationale that is non-empty after sanitization
+  (control/invisible Unicode stripped, 512-rune bound); invalid
+  entries dropped and reported
 - [ ] 4.2 compile result: `proposed_supersessions` (successor,
-  target, rationale, topic) and per-article `coverage` in each
+  target, sanitized rationale, topic), `dropped_proposals` (one entry
+  per dropped proposal: successor, target, drop reason), and
+  per-article `coverage` in each
   `articles` entry; `prompts_ready` result shape otherwise unchanged
 - [ ] 4.3 `tools/compile_test.go`: canned synthesizer outputs —
   valid proposals parsed/stripped/surfaced; absent section; invalid
-  entries dropped with the article still written; per-article
+  entries dropped into `dropped_proposals` (including an
+  over-length rationale truncated and a control-character rationale
+  sanitized) with the article still written; per-article
   coverage present and correct, including a superseded source
   accounted for by the generated History table
 - [ ] 4.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
@@ -109,15 +133,21 @@
   `learning/<identity>`, `supersedesIdentity` normalization);
   validation ladder before any write (existence, distinct, target
   records no `superseded_by`, successor declares no differing
-  `supersedes`, bounded cycle walk with a visited set and hop bound
-  over declared links in both directions); then re-read and
-  re-validate both sides' link state inside one
-  `withLearningPropsLock` hold (successor fast-fail mirrored from
-  `claimSuperseded`); then the successor leg followed by the guarded
+  `supersedes`, the target does not already supersede the successor,
+  bounded cycle walk with a visited set and hop bound
+  over declared links in both directions); then re-run the FULL
+  ladder inside one `withLearningPropsLock` hold — both sides'
+  fast-fails, the cycle walk, and the reverse-pair check — before
+  the first write, so a concurrent reverse-pair call (A→B vs B→A)
+  serialized behind this one observes its writes and refuses rather
+  than closing a 2-cycle; then the successor leg followed by the
+  guarded
   target claim (CAS + backup leg);
   `supersedes_warning` on lost claim or partial failure
 - [ ] 6.3 `types/tools.go`: `SupersedeLearningInput` with jsonschema
-  descriptions; `server.go`: registration and tool description (tool
+  descriptions; `server.go`: registration inside the existing
+  `if !readOnly` block, beside the other mutating tools, and tool
+  description (tool
   count 50 → 51); `server_test.go`: extend `TestNewServer_ToolCount`
   ranges and per-category comments
 - [ ] 6.4 `tools/supersede_test.go` (new): confirmation path (store +
@@ -125,7 +155,8 @@
   tier unchanged), unknown identity, same learning,
   already-superseded target, successor-declares-other, cycle, cycle
   walk terminating on a pre-existing cyclic chain that excludes the
-  requested pair, lost claim warning naming the winner, partial-
+  requested pair (error result naming the cycle, nothing written),
+  lost claim warning naming the winner, partial-
   failure warning, concurrent same-target race (start barrier, no
   sleeps, `-race`), and a concurrent reverse-pair race (A→B and B→A
   started together: exactly one link lands, the other is refused or
@@ -147,8 +178,10 @@
   stale "temporal merge" doc comments in `lint.go`/`compile.go`
   corrected to the declared-supersession workflow
   (`supersede_learning` + compile proposals)
-- [ ] 7.3 `tools/lint_test.go`: coverage findings for hand-edited and
-  `store_compiled`-authored articles, clean article passes, a
+- [ ] 7.3 `tools/lint_test.go`: coverage findings for store-backed
+  compiled articles (compile-written and `store_compiled`-authored;
+  a file-only hand edit is invisible until the article is
+  recompiled or re-indexed, ES-FR-011), clean article passes, a
   pre-change article reported (intended signal) and not cleared by
   `fix`, counters in the summary, remediation-text assertion
 - [ ] 7.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
@@ -156,9 +189,13 @@
 
 ## 8. /dewey-distill review gate
 
-- [ ] 8.1 `.opencode/commands/dewey-distill.md`: compile-result
-  inspection reports `proposed_supersessions` and per-article
-  coverage; the review gate presents them beside the promote list;
+- [ ] 8.1 `.opencode/commands/dewey-distill.md`: compile-result and
+  `store_compiled`-result inspection reports
+  `proposed_supersessions` and per-article coverage — in prompt mode
+  (compile returns `prompts_ready` with neither field) the gate
+  presents the `store_compiled` results the gate-driven agent just
+  produced (KD-FR-104's prompt-mode scenario); the review gate
+  presents them beside the promote list;
   the `HUMAN_GATE` question asks which proposals to confirm alongside
   the promote selection (marker stays reserved for the two gates — no
   third marked question); confirmed pairs applied via
@@ -169,8 +206,17 @@
 - [ ] 8.2 `slash_commands.go`: update the embedded `dewey-distill.md`
   copy byte-identically (drift-tested by
   `TestInitCmd_ScaffoldsDeweyDistillFromMap` in `cli_test.go`)
-- [ ] 8.3 Phase checkpoint — `go test -race -count=1 ./...` passes
-  (the drift test is the gate for 8.2) before phase 9 begins
+- [ ] 8.3 `.opencode/agents/curator.md`: add `supersede_learning` to
+  the Dewey MCP tool allowlist — a human-approved extension of the
+  protected agent tool-access surface (AGENTS.md Gatekeeping Value
+  Protection item 5; the gate's confirmed-apply step in 8.1 requires
+  it); sync the byte-identical `agents.go` embed
+  (`deweyAgentDefinitions["curator.md"]`) and extend the
+  `cli_test.go` allowlist set-equality assertions
+  (`agentAllowlistEntries`) so all three surfaces move together
+- [ ] 8.4 Phase checkpoint — `go test -race -count=1 ./...` passes
+  (the slash_commands and agents.go drift tests are the gates for
+  8.2/8.3) before phase 9 begins
 
 ## 9. Docs, website, and verification
 
@@ -183,28 +229,54 @@
   declared-supersession policy
 - [ ] 9.2 [P] `AGENTS.md`: MCP tool count (overview, `server.go`
   architecture note, `types/tools.go` note), tool table/summary
-  entry, Recent Changes, and annotate the insert-time-only
+  entry, Recent Changes, annotate the insert-time-only
   `store_learning` `supersedes` bullet (line ~461, which reads as the
   only way to link learnings) with the `supersede_learning`
-  two-existing-learnings path
-- [ ] 9.3 [P] Website docs-sync: determine which
-  `content/docs/` pages describe compile contradiction resolution,
-  citations, lint kinds, or the tool count, then file one
-  `unbound-force/website` docs issue and record its number inline here
-- [ ] 9.4 [P] Website blog-sync: determine whether a release-style
-  post is warranted for the policy change, then file the blog issue
-  (or record the deliberate no-issue determination with its reason)
-  and record the number inline here
-- [ ] 9.5 [P] Website tutorial-sync: determine the impact on the
-  distill tutorial (published as website#376) and any compile
-  walkthrough, then file the tutorial issue and record its number
-  inline here
+  two-existing-learnings path, and update the enumerations this
+  change invalidates — the CLI Commands `dewey lint` row gains
+  `citation_coverage`, the Project Overview category list gains the
+  supersession surface, and the architecture `tools/` line gains the
+  supersede entry
+- [ ] 9.3 [P] Stale recency-text surfaces in code and shipped
+  commands: `cli.go` `dewey compile` Long help ("resolves
+  contradictions temporally (newer wins)" → the
+  declared-supersession policy) and `dewey lint` Long help
+  (enumerate `citation_coverage`); `server.go` compile tool
+  description (~line 487, "resolves contradictions temporally");
+  `.opencode/commands/dewey-compile.md` and its byte-mirrored
+  `slash_commands.go` entry (must change together); regenerate
+  `.uf/dewey/manifest.md` via `dewey manifest`
+- [ ] 9.4 Website sync (one task, one tasks.md edit): determine
+  which `content/docs/` pages describe compile contradiction
+  resolution, citations, lint kinds, or the tool count; whether a
+  release-style blog post is warranted for the policy change; and
+  the impact on the distill tutorial (published as website#376) and
+  any compile walkthrough — scoping each determination against the
+  adjacent published surfaces (blog #392 and tutorial #393 document
+  supersession as insert-time-only; the lint-kind comparator
+  precedent is blog #399 / tutorial #402) — then file the
+  `unbound-force/website` docs, blog, and tutorial issues (or record
+  the deliberate no-issue determinations with their reasons) and
+  record all issue numbers in this single tasks.md edit
+- [ ] 9.5 Archive-time byte-compat: amend the dewey-distill delta's
+  "Prompt-Mode Fallback Compatibility" requirement
+  (`openspec/changes/dewey-distill/specs/knowledge-distillation/
+  spec.md`) to narrow its compile byte-compat clause to payload
+  shape and cluster/prompt fields (prompt text excluded), matching
+  this change's KD delta header record — or, if dewey-distill has
+  already archived, file the narrowing as a MODIFIED delta against
+  `openspec/specs/knowledge-distillation/` so no main spec carries
+  the un-narrowed clause
 - [ ] 9.6 `specs/013-knowledge-compile/contracts/compile-tool.md`
   and `contracts/lint-tool.md`: annotate the superseded newer-wins
   wording (the compile tool description's "decisions: temporal
   merge" and the lint contradiction check) with a pointer to this
-  change's declaration that it supersedes 013 FR-008, so the archived
-  contract and the new policy cannot be read as agreeing
+  change's declaration that it supersedes 013 FR-008 — and annotate
+  the authoritative restatements too: `specs/013-knowledge-compile/
+  spec.md` FR-008 (~line 144, "decision learnings get temporal
+  merge (newer wins …)") and its acceptance criterion 4 (~line 44),
+  `research.md` R7 (~lines 169-173), and `tasks.md` T022 (~line 96)
+  — so no 013 document still states the retired rule as current
 - [ ] 9.7 Constitution-alignment verification: re-read the four
   principles against the final diff (Composability First — no new
   dependency, store-less mode untouched; Autonomous Collaboration —

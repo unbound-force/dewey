@@ -129,8 +129,11 @@ the authority that links two learnings.
 
 This change stays an OpenSpec change although its artifact set is
 thicker than the tactical shape usually implies. The exception is
-human-approved through the `/uf.run-pipeline-plan` pause-relay (the
-same relay that carried the spec-review decisions below), for two
+human-approved through the `/uf.run-pipeline-plan` pause-relay — the
+same relay that carried this change's spec-review decisions, which
+are recorded in the review-council dispatch history
+(`.uf/artifacts/dispatch/`, correlation ids preserved in the
+checkpoints) and applied to these artifacts — for two
 reasons. First, the change is a thin guarded wrapper over store
 machinery that already exists — #146's temporal fields, #166's
 serialized supersession claim, and #145's server-side synthesis —
@@ -162,17 +165,40 @@ reader does not read the artifact depth as an accident.
 - `tools/learning_temporal.go` — helper for recording `supersedes`
   on an existing successor (store properties + backup frontmatter).
 - `types/tools.go` — `SupersedeLearningInput`.
-- `server.go` — `supersede_learning` registration (tool count
-  50 → 51).
+- `server.go` — `supersede_learning` registration inside the
+  existing `if !readOnly` block, beside the other mutating tools
+  (tool count 50 → 51); the `compile` MCP tool description drops
+  "resolves contradictions temporally" for the declared-supersession
+  policy.
+- `cli.go` — `dewey compile` Long help ("resolves contradictions
+  temporally (newer wins)" → the declared-supersession policy) and
+  `dewey lint` Long help (enumerates `citation_coverage`).
 - `.opencode/commands/dewey-distill.md` — review gate presents
   proposals and coverage; confirmed supersessions applied before
   promote; apply failure aborts promotion.
 - `slash_commands.go` — embedded `dewey-distill.md` copy updated
-  byte-identically (drift-tested by `cli_test.go`).
+  byte-identically (drift-tested by `cli_test.go`); the embedded
+  `dewey-compile.md` copy updated byte-identically with its tracked
+  file (both must change together).
+- `.opencode/commands/dewey-compile.md` — description drops
+  "resolves contradictions temporally" for the declared-supersession
+  policy.
+- `.opencode/agents/curator.md` — `supersede_learning` added to the
+  tool allowlist (human-approved extension of the protected agent
+  tool-access surface, AGENTS.md Gatekeeping Value Protection item
+  5: the gate's confirmed-apply step requires it); `agents.go`
+  `deweyAgentDefinitions["curator.md"]` embed synced byte-identically
+  and the `cli_test.go` allowlist set-equality assertions extended —
+  all three surfaces move together.
+- `.uf/dewey/manifest.md` — regenerated (`dewey manifest`) so the
+  compile entry's stale recency text does not survive.
 - `specs/013-knowledge-compile/contracts/compile-tool.md` and
   `contracts/lint-tool.md` — annotated with the superseded
   newer-wins wording so the archived contract and this delta do
-  not read as agreeing.
+  not read as agreeing; the authoritative
+  `specs/013-knowledge-compile/spec.md` FR-008 and its acceptance
+  criterion 4 (plus the `research.md` R7 and `tasks.md` T022
+  restatements) annotated with the same pointer.
 - Tests: `tools/compile_test.go`, `tools/citations_test.go` (new),
   `tools/supersede_test.go` (new), `tools/lint_test.go`,
   `tools/learning_temporal_test.go`, `main_test.go`,
@@ -182,10 +208,16 @@ reader does not read the artifact depth as an accident.
   contradictions — newer facts replace older ones" claims corrected.
 - `AGENTS.md` — MCP tool count, tool table/summary, the
   insert-time-only `supersedes` bullet annotated with the
-  `supersede_learning` path, Recent Changes.
+  `supersede_learning` path, Recent Changes, and the enumerations
+  this change invalidates: the CLI Commands `dewey lint` row (gains
+  `citation_coverage`), the Project Overview category list, and the
+  architecture `tools/` line (gains the supersede entry).
 - Website sync issues in `unbound-force/website` (docs, blog, and
-  the distill tutorial, per-channel determinations recorded in
-  tasks.md).
+  the distill tutorial, one consolidated determination recorded in
+  tasks.md) — scoped against the adjacent published surfaces:
+  blog #392 and tutorial #393 document supersession as
+  insert-time-only, and the lint-kind comparator precedent is blog
+  #399 / tutorial #402.
 - No SQLite schema changes, no configuration changes, no new
   dependencies. New observables: `proposed_supersessions` and
   per-article `coverage` in compile results, the

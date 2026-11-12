@@ -41,6 +41,20 @@
   fields remain compatible; only the prompt text changes, and the
   prompt-mode hand-off to `store_compiled` is unchanged. Every other
   clause of that requirement and of "Gated Distill Workflow" stands.
+
+  Archive-time ordering (recorded): the dewey-distill change is
+  unarchived, so its "Prompt-Mode Fallback Compatibility"
+  requirement does not yet live in a main spec this delta could
+  MODIFY — the prose declaration above does not survive as an
+  archive operation. The narrowing MUST therefore land structurally:
+  this change amends the dewey-distill delta itself (task 9.5)
+  before either change archives, narrowing its byte-compat clause
+  to payload shape and cluster/prompt fields with prompt text
+  excluded. If dewey-distill has already archived when this task
+  runs, the amendment is instead a MODIFIED delta against the
+  archived requirement in openspec/specs/knowledge-distillation/.
+  Either way, no main spec may carry the un-narrowed clause once
+  both changes have archived.
   Requirement ids MUST stay inside the allocated range.
 -->
 
@@ -73,6 +87,17 @@ tracked file and the byte-identical embedded copy (KD-FR-102).
 - **THEN** it MUST present each proposal's successor, target, and
   rationale and each article's coverage findings beside the promote
   list
+
+#### Scenario: Prompt-mode gate path presents store_compiled results
+
+- **GIVEN** compile returns `prompts_ready` (no synthesizer
+  configured) and the gate-driven agent stored articles via
+  `store_compiled`, whose results carry `proposed_supersessions`
+  and per-article coverage
+- **WHEN** the review gate runs
+- **THEN** it MUST present the `store_compiled` results' proposals
+  and coverage beside the promote list, exactly as it presents a
+  server-side compile result's
 
 #### Scenario: Confirmed supersessions applied before promotion
 

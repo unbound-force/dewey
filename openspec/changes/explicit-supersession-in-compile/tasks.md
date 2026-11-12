@@ -222,11 +222,15 @@
 
 - [ ] 9.1 [P] `README.md`: compile citations, coverage, and
   proposals; `supersede_learning` row and tool count 50 → 51; lint
-  `citation_coverage` kind; distill review gate; and correct the two
+  `citation_coverage` kind; distill review gate; correct the two
   falsified prose claims — line ~431 and the compile section at
   line ~757 both say compiled articles "resolve temporal
   contradictions — newer facts replace older ones" — to the
-  declared-supersession policy
+  declared-supersession policy; and annotate the temporal-validity
+  section (~lines 813-815, "Set by: `supersedes` input" and the
+  store_learning-only serialization framing, which read as the only
+  way to link learnings) with the `supersede_learning`
+  two-existing-learnings path, mirroring 9.2's AGENTS.md clause
 - [ ] 9.2 [P] `AGENTS.md`: MCP tool count (overview, `server.go`
   architecture note, `types/tools.go` note), tool table/summary
   entry, Recent Changes, annotate the insert-time-only
@@ -272,10 +276,13 @@
   wording (the compile tool description's "decisions: temporal
   merge" and the lint contradiction check) with a pointer to this
   change's declaration that it supersedes 013 FR-008 — and annotate
-  the authoritative restatements too: `specs/013-knowledge-compile/
-  spec.md` FR-008 (~line 144, "decision learnings get temporal
-  merge (newer wins …)") and its acceptance criterion 4 (~line 44),
-  `research.md` R7 (~lines 169-173), and `tasks.md` T022 (~line 96)
+  the authoritative restatements too, every layer that carries the
+  retired rule: `specs/013-knowledge-compile/spec.md` FR-008
+  (~line 144, "decision learnings get temporal merge (newer
+  wins …)"), acceptance criterion 4 (~line 44), the user-story prose
+  (~line 31), the independent test (~line 37), acceptance scenario 2
+  (~line 42), SC-002 (~line 190), and SC-007 (~line 195), plus
+  `research.md` R7 (~lines 169-173) and `tasks.md` T022 (~line 96)
   — so no 013 document still states the retired rule as current
 - [ ] 9.7 Constitution-alignment verification: re-read the four
   principles against the final diff (Composability First — no new

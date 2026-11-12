@@ -317,8 +317,11 @@ After the existing scalar checks and before any write,
 `store_compiled` resolves every declared source to an existing
 learning page and returns an error result naming the unresolved
 sources — no page, no file. Coverage is verified and reported like
-compile's, and the proposals section is handled identically (D4).
-Sources must exist; proposals naming non-source identities are
+compile's, and the proposals section is handled identically (D4);
+the one path-dependent field is `topic`, which names the cluster on
+the compile path and the stored page's name here, so the gate
+presentation is identical in shape on both paths. Sources must
+exist; proposals naming non-source identities are
 dropped and reported (not an error) — the article is still valid
 data, only the proposal is not actionable.
 
@@ -380,6 +383,21 @@ both learnings unchanged. Both copies of the command change together:
   `citation_coverage` kind reads. Recorded as a risk rather than
   scoped because wiring lint's contradiction heuristic to per-claim
   article text is its own change.
+- **Withheld temporal values are silent (accepted trade-off).**
+  ES-FR-003's decode boundary treats a temporal property that fails
+  shape validation as absent — the right call as a prompt-injection
+  defense — but nothing reports the withholding: a hand-edited
+  backup re-ingested with a corrupt `validity` token and a missing
+  `superseded_by` renders with no temporal lines, so synthesis
+  treats a superseded learning as current, silently. This is the
+  one silent path left in a change that exists to eliminate silent
+  resolution, kept because a report channel would grow the compile
+  result surface (`withheld_temporal_values`) without changing any
+  decision the gate makes. Intended follow-up observation, matching
+  the entry above: the same lint check that reads learning
+  properties can flag a learning whose stored `validity` is not a
+  known token — lint's embedding-gap check already walks that data.
+  Revisit if the corrupt-property case is ever observed in practice.
 - **Strict section format may be mis-produced.** Invalid entries are
   dropped and reported, never silently kept and never failing the
   write; the section is always stripped, so stored articles stay

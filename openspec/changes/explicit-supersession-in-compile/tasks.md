@@ -170,21 +170,21 @@
 
 ## 7. lint: citation_coverage and remediation text
 
-- [ ] 7.1 `tools/lint.go`: `citation_coverage` check over compiled
+- [x] 7.1 `tools/lint.go`: `citation_coverage` check over compiled
   pages (content from store blocks, sources from page properties) via
   the shared helper; findings name unresolved citations and uncited
   sources; summary counters; `fix` never touches them
-- [ ] 7.2 `tools/lint.go` contradiction remediation text and the
+- [x] 7.2 `tools/lint.go` contradiction remediation text and the
   stale "temporal merge" doc comments in `lint.go`/`compile.go`
   corrected to the declared-supersession workflow
   (`supersede_learning` + compile proposals)
-- [ ] 7.3 `tools/lint_test.go`: coverage findings for store-backed
+- [x] 7.3 `tools/lint_test.go`: coverage findings for store-backed
   compiled articles (compile-written and `store_compiled`-authored;
   a file-only hand edit is invisible until the article is
   recompiled or re-indexed, ES-FR-011), clean article passes, a
   pre-change article reported (intended signal) and not cleared by
   `fix`, counters in the summary, remediation-text assertion
-- [ ] 7.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
+- [x] 7.4 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 8 begins
 
 ## 8. /dewey-distill review gate

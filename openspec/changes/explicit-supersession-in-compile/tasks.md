@@ -189,7 +189,7 @@
 
 ## 8. /dewey-distill review gate
 
-- [ ] 8.1 `.opencode/commands/dewey-distill.md`: compile-result and
+- [x] 8.1 `.opencode/commands/dewey-distill.md`: compile-result and
   `store_compiled`-result inspection reports
   `proposed_supersessions` and per-article coverage — in prompt mode
   (compile returns `prompts_ready` with neither field) the gate
@@ -203,10 +203,10 @@
   unchanged; a confirmed apply that errors or warns aborts promotion
   and relays the failure verbatim; the report section lists applied
   supersessions
-- [ ] 8.2 `slash_commands.go`: update the embedded `dewey-distill.md`
+- [x] 8.2 `slash_commands.go`: update the embedded `dewey-distill.md`
   copy byte-identically (drift-tested by
   `TestInitCmd_ScaffoldsDeweyDistillFromMap` in `cli_test.go`)
-- [ ] 8.3 `.opencode/agents/curator.md`: add `supersede_learning` to
+- [x] 8.3 `.opencode/agents/curator.md`: add `supersede_learning` to
   the Dewey MCP tool allowlist — a human-approved extension of the
   protected agent tool-access surface (AGENTS.md Gatekeeping Value
   Protection item 5; the gate's confirmed-apply step in 8.1 requires
@@ -214,7 +214,7 @@
   (`deweyAgentDefinitions["curator.md"]`) and extend the
   `cli_test.go` allowlist set-equality assertions
   (`agentAllowlistEntries`) so all three surfaces move together
-- [ ] 8.4 Phase checkpoint — `go test -race -count=1 ./...` passes
+- [x] 8.4 Phase checkpoint — `go test -race -count=1 ./...` passes
   (the slash_commands and agents.go drift tests are the gates for
   8.2/8.3) before phase 9 begins
 

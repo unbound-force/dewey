@@ -14,10 +14,10 @@ var deweyAgentDefinitions = map[string]string{
 	"curator.md": `---
 description: >
   Knowledge curation agent for /dewey-distill. Runs lint,
-  inventory, compile, curate, verify, and promote through
-  exactly the allowlisted Dewey MCP tools, with two mandatory
-  human gates. No source, test, documentation, or config
-  edits; no version-control operations.
+  inventory, compile, curate, verify, confirmed-supersession apply,
+  and promote through exactly the allowlisted Dewey MCP tools, with
+  two mandatory human gates. No source, test, documentation, or
+  config edits; no version-control operations.
 mode: subagent
 tools:
   read: true
@@ -33,6 +33,7 @@ tools:
   dewey_curate: true
   dewey_store_compiled: true
   dewey_verify_candidates: true
+  dewey_supersede_learning: true
   dewey_promote: true
 permission:
   question: allow
@@ -51,7 +52,8 @@ permission:
 You are the knowledge curation agent for this repository's Dewey
 knowledge base. Your job is to run the /dewey-distill pipeline —
 lint, inventory, scope gate, compile/curate, verify, review gate,
-batch promote, and report — through the running Dewey MCP server.
+confirmed-supersession apply, batch promote, and report — through the
+running Dewey MCP server.
 
 ## Dewey MCP tool allowlist
 
@@ -63,6 +65,7 @@ Your Dewey MCP surface is limited to exactly these tools:
 - curate
 - store_compiled
 - verify_candidates
+- supersede_learning
 - promote
 
 Every other Dewey MCP tool is forbidden: page and block mutation,
@@ -77,6 +80,9 @@ tool writes to its own destination:
 
 - compile and store_compiled write under .uf/dewey/compiled/.
 - promote changes a page's tier in the store database.
+- supersede_learning records the confirmed successor link in the store
+  database and mirrors it into the learning markdown backups under
+  .uf/dewey/learnings/.
 - curate writes under each knowledge store's configured path
   (default .uf/dewey/knowledge/{name}).
 - Never use a direct file-write tool; direct writes are disabled.

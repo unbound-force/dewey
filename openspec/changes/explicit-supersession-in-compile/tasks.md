@@ -112,14 +112,14 @@
 
 ## 5. store_compiled: input validation and parity
 
-- [ ] 5.1 `tools/compile.go` `StoreCompiled`: declared sources must
+- [x] 5.1 `tools/compile.go` `StoreCompiled`: declared sources must
   map to existing learning pages (#93) — error result naming the
   unresolved sources, no page or file written; coverage verified and
   reported; `## Supersession Proposals` parsed, stripped, and
   returned via the shared helper
-- [ ] 5.2 `tools/compile_test.go`: unknown-source refusal (nothing
+- [x] 5.2 `tools/compile_test.go`: unknown-source refusal (nothing
   written), coverage and proposals parity with the compile path
-- [ ] 5.3 Phase checkpoint — `go test -race -count=1 ./tools/...`
+- [x] 5.3 Phase checkpoint — `go test -race -count=1 ./tools/...`
   passes before phase 6 begins
 
 ## 6. supersede_learning tool

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -555,6 +556,9 @@ func TestPromote_StoreCompiledRoundTrip(t *testing.T) {
 	s := newTestStore(t)
 	tmpDir := t.TempDir()
 	compile := NewCompile(s, nil, nil, tmpDir, nil, 0)
+
+	// Declared sources must map to existing learnings (ES-FR-012).
+	storeLearningWithProps(t, s, "gateway-20260101T000000-test", `{"tag":"gateway","created_at":"2026-01-01T00:00:00Z"}`, "gateway learning", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 
 	result, _, err := compile.StoreCompiled(context.Background(), nil, types.StoreCompiledInput{
 		Tag:     "gateway",

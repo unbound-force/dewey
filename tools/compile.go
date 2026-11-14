@@ -2,7 +2,9 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1064,6 +1066,20 @@ func (c *Compile) upsertCompiledPage(page *store.Page) error {
 	return nil
 }
 
+// contentHash returns the hex encoding of the first 8 bytes of the SHA-256
+// digest of b — the truncated-hash convention the curation re-index and
+// learning re-ingestion paths also record (a 16-character string). It is a
+// change-detection fingerprint for the store's content-bound tier rule
+// (VTB-FR-001, VTB-FR-002), not a cryptographic integrity check: the 8-byte
+// truncation accepts a 2^-64 collision probability by design. The helper is
+// scoped to the compiled article write paths (persistCompiledArticle,
+// StoreCompiled); vault and disk re-ingestion keep their own hashing
+// conventions and must not use it.
+func contentHash(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:8])
+}
+
 // persistCompiledArticle stores a compiled article as a page in the store
 // with source_id="compiled" and the supplied tier (always draft from the
 // compile path — a machine write never carries validated; preserving an
@@ -1098,12 +1114,17 @@ func (c *Compile) persistCompiledArticle(cl Cluster, articleContent, tier, model
 		return fmt.Errorf("marshal properties: %w", err)
 	}
 
+	// The hash covers the exact article bytes persisted here and written to
+	// disk by writeArticle, so the store's content-bound tier rule
+	// (VTB-FR-001) preserves validated only when regeneration is
+	// byte-identical (VTB-FR-002).
 	page := &store.Page{
 		Name:         pageName,
 		OriginalName: cl.Topic,
 		SourceID:     "compiled",
 		SourceDocID:  cl.DominantTag,
 		Properties:   string(propsJSON),
+		ContentHash:  contentHash([]byte(articleContent)),
 		Tier:         tier,
 	}
 	if err := c.upsertCompiledPage(page); err != nil {
@@ -1368,12 +1389,17 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 		return errorResult(fmt.Sprintf("failed to marshal properties: %v", err)), nil, nil
 	}
 
+	// The hash covers the exact article bytes staged for the article file
+	// above, so the store's content-bound tier rule (VTB-FR-001) sees this
+	// write as content-bearing (VTB-FR-002): identical bytes hash
+	// identically across both compiled write paths.
 	page := &store.Page{
 		Name:         pageName,
 		OriginalName: input.Tag,
 		SourceID:     "compiled",
 		SourceDocID:  input.Tag,
 		Properties:   string(propsJSON),
+		ContentHash:  contentHash([]byte(articleContent)),
 		Tier:         tier,
 	}
 	if existing != nil {

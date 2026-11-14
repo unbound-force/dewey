@@ -2155,6 +2155,202 @@ func TestUpdatePage_PreservesValidatedTier(t *testing.T) {
 	}
 }
 
+// --- Content-bound validated preservation (VTB-FR-001) ---
+
+// newCompiledPage builds the Page shape a compiled-article write path
+// hands to the store: name compiled/<tag>, source compiled, and explicit
+// content-hash and tier fields. The compiled paths construct a fresh page
+// per regeneration rather than read-modify-writing the stored row, so the
+// content-bound preservation tests use this constructor for both the
+// seeded row and the write under test — the two differ only in the fields
+// each case varies.
+func newCompiledPage(name, contentHash, tier string) *Page {
+	return &Page{
+		Name:         name,
+		OriginalName: name,
+		SourceID:     SourceCompiled,
+		SourceDocID:  strings.TrimPrefix(name, CompiledPrefix),
+		ContentHash:  contentHash,
+		Tier:         tier,
+	}
+}
+
+// insertCompiledPage seeds a store row built by newCompiledPage, failing
+// the test on insert errors.
+func insertCompiledPage(t *testing.T, s *Store, name, contentHash, tier string) {
+	t.Helper()
+	if err := s.InsertPage(newCompiledPage(name, contentHash, tier)); err != nil {
+		t.Fatalf("InsertPage(%q): %v", name, err)
+	}
+}
+
+// TestUpdatePage_ChangedContentDemotesValidated verifies the demoting half
+// of the content-bound rule (VTB-FR-001): when the incoming content hash
+// differs from the stored hash, the caller-supplied tier applies, so a
+// regeneration that changed the article bytes demotes a human-validated
+// page — the machine never carries the human vouch onto content it has
+// not seen.
+func TestUpdatePage_ChangedContentDemotesValidated(t *testing.T) {
+	s := newTestStore(t)
+	insertCompiledPage(t, s, "compiled/auth", "hash-v1", "validated")
+
+	regenerated := newCompiledPage("compiled/auth", "hash-v2", "draft")
+	if err := s.UpdatePage(regenerated); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+
+	got, err := s.GetPage("compiled/auth")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if got.Tier != "draft" {
+		t.Errorf("tier = %q, want draft — changed content must drop the validated tier", got.Tier)
+	}
+	// The incoming hash must be persisted: the demoted row now compares
+	// against hash-v2, so a later byte-identical regeneration can preserve
+	// whatever tier the page holds then.
+	if got.ContentHash != "hash-v2" {
+		t.Errorf("content_hash = %q, want hash-v2 persisted", got.ContentHash)
+	}
+}
+
+// TestUpdatePage_IdenticalContentPreservesValidated verifies the
+// preserving half of the content-bound rule (VTB-FR-001): a write whose
+// content hash equals the stored hash keeps the validated tier even
+// though the writer supplied draft — byte-identical regeneration keeps
+// the human vouch.
+func TestUpdatePage_IdenticalContentPreservesValidated(t *testing.T) {
+	s := newTestStore(t)
+	insertCompiledPage(t, s, "compiled/auth", "hash-v1", "validated")
+
+	regenerated := newCompiledPage("compiled/auth", "hash-v1", "draft")
+	if err := s.UpdatePage(regenerated); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+
+	got, err := s.GetPage("compiled/auth")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if got.Tier != "validated" {
+		t.Errorf("tier = %q, want validated preserved on identical content", got.Tier)
+	}
+}
+
+// TestUpdatePage_HashLessWriterKeepsValidated verifies the empty-hash
+// equality (VTB-FR-001): two empty content hashes compare as equal, so a
+// writer that does not track content hashes keeps the pre-change
+// never-demote behavior for validated pages.
+func TestUpdatePage_HashLessWriterKeepsValidated(t *testing.T) {
+	s := newTestStore(t)
+	insertCompiledPage(t, s, "compiled/auth", "", "validated")
+
+	write := newCompiledPage("compiled/auth", "", "draft")
+	if err := s.UpdatePage(write); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+
+	got, err := s.GetPage("compiled/auth")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if got.Tier != "validated" {
+		t.Errorf("tier = %q, want validated preserved for a hash-less writer", got.Tier)
+	}
+}
+
+// TestUpdatePage_PromoteRaceStaysClosed verifies the promotion trust
+// boundary across UpdatePage's read-then-write window (VTB-FR-001): a
+// caller that reads a draft page, loses a human promotion inside the
+// window, and then writes back its stale draft tier with the content hash
+// unchanged must not revert the promotion. Promotion remains the only
+// path onto validated; this write only preserves it.
+func TestUpdatePage_PromoteRaceStaysClosed(t *testing.T) {
+	s := newTestStore(t)
+	insertCompiledPage(t, s, "compiled/auth", "hash-v1", "draft")
+
+	// The read half of the window: the writer carries away the page's
+	// draft tier and its content hash.
+	stale, err := s.GetPage("compiled/auth")
+	if err != nil || stale == nil {
+		t.Fatalf("GetPage: %v (page=%v)", err, stale)
+	}
+
+	// The human promotion gate lands inside the window — the only path
+	// that may elevate the page.
+	if err := s.PromotePagesTiers([]string{"compiled/auth"}); err != nil {
+		t.Fatalf("PromotePagesTiers: %v", err)
+	}
+	promoted, err := s.GetPage("compiled/auth")
+	if err != nil || promoted == nil {
+		t.Fatalf("GetPage after promote: %v (page=%v)", err, promoted)
+	}
+	if promoted.Tier != "validated" {
+		t.Fatalf("tier after promote = %q, want validated — the race requires an elevated page", promoted.Tier)
+	}
+
+	// The write half lands last: the stale draft tier read before the
+	// promotion, with the content hash unchanged.
+	if err := s.UpdatePage(stale); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+	got, err := s.GetPage("compiled/auth")
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if got.Tier != "validated" {
+		t.Errorf("tier = %q, want validated — a stale draft-tier write with unchanged content must not revert the promotion", got.Tier)
+	}
+}
+
+// TestUpdatePage_NonValidatedTiersUnaffected verifies the rule's scope
+// (VTB-FR-001): a page whose stored tier is not validated takes the
+// caller-supplied tier exactly as before, on hash match and hash change
+// alike — the content-hash comparison never widens into tier behavior for
+// non-validated pages.
+func TestUpdatePage_NonValidatedTiersUnaffected(t *testing.T) {
+	tests := []struct {
+		name       string
+		storedTier string
+		storedHash string
+		writeHash  string
+		writeTier  string
+		wantTier   string
+	}{
+		{name: "draft stored, hash match", storedTier: "draft", storedHash: "hash-v1", writeHash: "hash-v1", writeTier: "curated", wantTier: "curated"},
+		{name: "draft stored, hash change", storedTier: "draft", storedHash: "hash-v1", writeHash: "hash-v2", writeTier: "curated", wantTier: "curated"},
+		// The everyday compile regeneration on a never-promoted page.
+		{name: "draft stored, hash change, draft write", storedTier: "draft", storedHash: "hash-v1", writeHash: "hash-v2", writeTier: "draft", wantTier: "draft"},
+		{name: "curated stored, hash match", storedTier: "curated", storedHash: "hash-v1", writeHash: "hash-v1", writeTier: "draft", wantTier: "draft"},
+		{name: "curated stored, hash change", storedTier: "curated", storedHash: "hash-v1", writeHash: "hash-v2", writeTier: "draft", wantTier: "draft"},
+		{name: "authored stored, hash match", storedTier: "authored", storedHash: "hash-v1", writeHash: "hash-v1", writeTier: "draft", wantTier: "draft"},
+		{name: "authored stored, hash change", storedTier: "authored", storedHash: "hash-v1", writeHash: "hash-v2", writeTier: "draft", wantTier: "draft"},
+		// Empty hashes compare as equal, but that equality only guards
+		// validated rows — a hash-less write to a non-validated page still
+		// takes the caller-supplied tier.
+		{name: "draft stored, hash-less writer", storedTier: "draft", storedHash: "", writeHash: "", writeTier: "curated", wantTier: "curated"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			insertCompiledPage(t, s, "compiled/topic", tc.storedHash, tc.storedTier)
+
+			write := newCompiledPage("compiled/topic", tc.writeHash, tc.writeTier)
+			if err := s.UpdatePage(write); err != nil {
+				t.Fatalf("UpdatePage: %v", err)
+			}
+
+			got, err := s.GetPage("compiled/topic")
+			if err != nil {
+				t.Fatalf("GetPage: %v", err)
+			}
+			if got.Tier != tc.wantTier {
+				t.Errorf("tier = %q, want %q (stored tier %q, write hash %q)", got.Tier, tc.wantTier, tc.storedTier, tc.writeHash)
+			}
+		})
+	}
+}
+
 // --- Supersession claim (CAS) operations ---
 
 // insertClaimTarget inserts a page seeded for ClaimSupersession tests and

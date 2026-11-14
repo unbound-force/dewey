@@ -16,5 +16,5 @@
 
 ## 4. Docs and constitution alignment verification
 
-- [ ] 4.1 [P] File website docs sync issue (unbound-force/website, `docs` label) for user-visible `compile` tier/frontmatter change and retain `verified` site state until re-promoted
-- [ ] 4.2 Verify constitution alignment: I Autonomous Collaboration — artifact-level trust boundary, no coupling; II Composability First — no deps/config, internal to `store`/`tools`; III Observable Quality — tier+hash queryable provenance; IV Testability — :memory: SQLite and NoopSynthesizer seams exercised
+- [x] 4.1 [P] File website docs sync issue (unbound-force/website, `docs` label) for user-visible `compile` tier/frontmatter change and retain `verified` site state until re-promoted
+- [x] 4.2 Verify constitution alignment: I Autonomous Collaboration — artifact-level trust boundary, no coupling; II Composability First — no deps/config, internal to `store`/`tools`; III Observable Quality — tier+hash queryable provenance; IV Testability — :memory: SQLite and NoopSynthesizer seams exercised

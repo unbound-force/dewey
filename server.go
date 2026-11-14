@@ -147,7 +147,7 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 		lint := tools.NewLint(cfg.store, cfg.embedder, cfg.vaultPath, cfg.maxChunkChars)
 		toolCount += registerLintTools(srv, lint)
 
-		promote := tools.NewPromote(cfg.store)
+		promote := tools.NewPromote(cfg.store, cfg.vaultPath)
 		toolCount += registerPromoteTools(srv, promote)
 
 		// Candidate verification (dewey-distill-verify-step, issue #151):
@@ -533,14 +533,16 @@ func registerLintTools(srv *mcp.Server, lint *tools.Lint) int {
 	return 1
 }
 
-// registerPromoteTools registers the promote MCP tool for transitioning
-// pages from draft to validated tier. Write operation — excluded in
-// read-only mode.
+// registerPromoteTools registers the promote MCP tool. Promotion is a
+// frontmatter file edit on the current branch (git-is-the-source-of-record,
+// PW-FR-001): the tool writes tier: validated into the page file and never
+// writes the database tier, which stays a cache recomputed on the next
+// index. Write operation — excluded in read-only mode.
 // Returns the number of tools registered.
 func registerPromoteTools(srv *mcp.Server, promote *tools.Promote) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "promote",
-		Description: "Promote draft learnings or compiled articles to validated status after human review. Accepts page for one page or pages for a batch; names resolve exact, then case-insensitive, then bare tags against learning/, compiled/, and knowledge/, then source doc IDs; ambiguous matches are refused. Batch promotion is all-or-nothing.",
+		Description: "Promote a draft compiled article or curated knowledge page by writing tier: validated into the page file's frontmatter on the current branch — the file diff, carried by a pull request, is the promotion artifact for human review. The database tier is a cache recomputed on the next index, so a branch-only promotion keeps indexing as draft until the pull request merges to the default branch and the server re-indexes (the merge is the vouch). Accepts page for one page or pages for a batch; names resolve exact, then case-insensitive, then bare tags against the compiled/, learning/, and knowledge/ namespaces, then source doc IDs; ambiguous matches are refused. Only files under compiled/ or knowledge/ are promotable — learnings stay draft forever and are never promotable. Batch promotion is all-or-nothing.",
 	}, promote.Promote)
 
 	return 1

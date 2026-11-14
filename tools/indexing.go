@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/gitref"
 	"github.com/unbound-force/dewey/v3/source"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -149,8 +150,13 @@ func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input t
 	// Force=true to bypass refresh intervals for explicit index requests.
 	result, allDocs := mgr.FetchAll(input.SourceID, true, lastFetchedTimes)
 
-	// Index fetched documents through the shared pipeline.
-	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars)
+	// Index fetched documents through the shared pipeline. The tier-blob
+	// resolver (default-branch ref + batch blob map, resolved once per index
+	// run per design D2) backs trust-tier derivation for compiled/curated
+	// pages (IP-FR-001); an unresolvable ref withholds the validated grant
+	// (GTS-FR-004) without failing the index.
+	tierBlobs := gitref.NewPageBlobResolver(ctx, gitref.Options{VaultDir: ix.vaultPath}, gitref.TrustPathspecs())
+	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars, tierBlobs)
 	if indexErr != nil {
 		indexingLogger.Warn("index had errors", "err", indexErr)
 	}
@@ -279,8 +285,10 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 	lastFetchedTimes := make(map[string]time.Time) // empty — force fetch all
 	result, allDocs := mgr.FetchAll("", true, lastFetchedTimes)
 
-	// Index fetched documents.
-	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars)
+	// Index fetched documents, with the same per-index-run tier-blob
+	// resolver as Index (design D2, IP-FR-001).
+	tierBlobs := gitref.NewPageBlobResolver(ctx, gitref.Options{VaultDir: ix.vaultPath}, gitref.TrustPathspecs())
+	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars, tierBlobs)
 	if indexErr != nil {
 		indexingLogger.Warn("reindex had errors", "err", indexErr)
 	}

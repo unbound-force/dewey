@@ -11,36 +11,60 @@ import (
 	"github.com/unbound-force/dewey/v3/types"
 )
 
-// Promote implements the dewey_promote MCP tool and CLI command.
-// Transitions pages from draft tier to validated tier after human review.
+// Promote implements the dewey_promote MCP tool and CLI command
+// (openspec/changes/git-is-the-source-of-record-for-page-trust-tiers).
+// Promotion is a frontmatter file edit on the current branch (PW-FR-001):
+// the tool writes `tier: validated` into the page file's YAML frontmatter
+// so a pull request can carry the promotion for human review. It never
+// writes the database tier — `pages.tier` is a cache of the git rule
+// (GTS-FR-005) recomputed on the next index from file state plus the
+// fetched default-branch ref (PW-FR-002). A promotion on an unmerged
+// branch therefore keeps indexing as draft on every server, including the
+// promoting one, until the pull request merges and the ref is fetched
+// (PW-FR-003): the merge is the vouch.
 //
 // Design decision: Only the draft → validated transition is supported
-// (invariant 1). Authored pages cannot be promoted because they represent
-// original vault content, not agent-generated material. Validated pages
-// cannot be re-promoted because they are already at the highest
-// agent-achievable trust level.
+// (invariant 1). Validated pages cannot be re-promoted because they are
+// already at the highest agent-achievable trust level, and authored or
+// curated pages cannot be promoted because promotion reviews agent
+// material. Learnings are never promotable (IP-FR-002: learnings stay
+// draft forever); only files under the compiled/ and knowledge/ prefixes,
+// in either the vault-root or the .uf/dewey workspace layout, can be
+// edited (PW-FR-004).
 //
 // Promotion accepts either a single page name (Page) or a batch (Pages).
-// Batch promotion validates every page before mutating any of them: if one
-// page is missing, ambiguous, or not draft, no tier changes and the result
-// lists each failure. This keeps a human review decision all-or-nothing.
+// Batch promotion validates every page and prepares every edit before any
+// is applied: if one page is missing, ambiguous, not draft, or has no
+// promotable file, no file is changed. The apply step is atomic per file
+// (temp file + rename, PW-FR-001) and rolls back already-applied edits on
+// mid-batch failure, keeping a human review decision all-or-nothing.
 type Promote struct {
-	store *store.Store
+	store     *store.Store
+	vaultPath string
 }
 
-// NewPromote creates a new Promote tool handler with the given store.
-// The store must be non-nil for the tool to function; a clear error is
-// returned at call time if it is nil.
-func NewPromote(s *store.Store) *Promote {
-	return &Promote{store: s}
+// NewPromote creates a new Promote tool handler with the given store and
+// vault root. The store resolves page names through the resolution ladder;
+// the vault root anchors the PW-FR-004 path validation every edit target
+// must pass (canonical vault-contained path under compiled/ or knowledge/,
+// symlinks resolved, no-follow on the final component). The store must be
+// non-nil for the tool to function; a clear error is returned at call time
+// if it is nil.
+func NewPromote(s *store.Store, vaultPath string) *Promote {
+	return &Promote{store: s, vaultPath: vaultPath}
 }
 
-// Promote handles the dewey_promote MCP tool. Changes page trust tiers from
-// "draft" to "validated". Page names are resolved through resolvePromotePage,
-// a tools-side ladder over narrow index-backed store queries: exact name,
-// then case-insensitive name, then the learning/compiled/knowledge namespaces
-// for bare tags, then source doc IDs. Returns an error result if any
-// requested page cannot be promoted.
+// Promote handles the dewey_promote MCP tool. Promotes a compiled or
+// curated page by writing `tier: validated` into its file frontmatter on
+// the current branch (PW-FR-001): the file diff, carried by a pull
+// request, is the promotion artifact, and the database tier stays a cache
+// recomputed on the next index (PW-FR-002, GTS-FR-005). Page names are
+// resolved through resolvePromotePage, a tools-side ladder over narrow
+// index-backed store queries: exact name, then case-insensitive name, then
+// the learning/compiled/knowledge namespaces for bare tags, then source
+// doc IDs. Raw arguments are path-validated before any lookup or file
+// access (PW-FR-004). Returns an error result if any requested page
+// cannot be promoted.
 func (p *Promote) Promote(_ context.Context, _ *mcp.CallToolRequest, input types.PromoteInput) (*mcp.CallToolResult, any, error) {
 	if p.store == nil {
 		return errorResult(persistentStorageError("promote").Error()), nil, nil
@@ -75,29 +99,67 @@ func (p *Promote) Promote(_ context.Context, _ *mcp.CallToolRequest, input types
 		return res, nil, nil
 	}
 
-	// All requested pages resolved and are drafts. Promote them in one
-	// transaction so a mid-batch failure changes nothing.
-	names := make([]string, 0, len(targets))
-	for _, t := range targets {
-		names = append(names, t.page.Name)
+	// Every requested page resolved and is draft. Resolve the vault root
+	// the file edits are validated against (PW-FR-004).
+	resolvedRoot, err := resolveVaultRoot(p.vaultPath)
+	if err != nil {
+		return errorResult(fmt.Sprintf("cannot promote: %v", err)), nil, nil
 	}
-	if err := p.store.PromotePagesTiers(names); err != nil {
-		if !batch {
-			return errorResult(fmt.Sprintf("failed to promote page: %v", err)), nil, nil
+
+	// Resolve each target to its promotable file and prepare the edit.
+	// All edits are prepared before any is applied, keeping the batch
+	// all-or-nothing (a failure during preparation touches nothing).
+	edits := make([]promoteEdit, 0, len(targets))
+	for _, t := range targets {
+		rel, abs, fileErr := resolvePromotableFile(resolvedRoot, t.page)
+		if fileErr != nil {
+			if !batch {
+				return errorResult(fmt.Sprintf("failed to promote page '%s': %v", t.requested, fileErr)), nil, nil
+			}
+			failures = append(failures, map[string]string{"page": t.page.Name, "error": fileErr.Error()})
+			continue
 		}
-		res, renderErr := rollbackFailureResult(targets, err)
+		edit, buildErr := buildPromoteEdit(t.page.Name, rel, abs)
+		if buildErr != nil {
+			if !batch {
+				return errorResult(fmt.Sprintf("failed to promote page '%s': %v", t.requested, buildErr)), nil, nil
+			}
+			failures = append(failures, map[string]string{"page": t.page.Name, "error": buildErr.Error()})
+			continue
+		}
+		edits = append(edits, edit)
+	}
+	if len(failures) > 0 {
+		res, renderErr := promoteFailureResult(failures)
 		if renderErr != nil {
 			return nil, nil, renderErr
 		}
 		return res, nil, nil
 	}
+
+	// Apply every prepared edit atomically: temp file + rename per file,
+	// with rollback of already-applied edits on mid-batch failure.
+	if applyErr := applyPromoteEdits(edits); applyErr != nil {
+		if !batch {
+			return errorResult(fmt.Sprintf("failed to promote page: %v", applyErr)), nil, nil
+		}
+		res, renderErr := rollbackFailureResult(targets, applyErr)
+		if renderErr != nil {
+			return nil, nil, renderErr
+		}
+		return res, nil, nil
+	}
+
 	if !batch {
-		page := targets[0].page
+		edit := edits[0]
 		result := map[string]any{
-			"page":          page.Name,
+			"page":          edit.page,
 			"previous_tier": "draft",
-			"new_tier":      "validated",
-			"message":       fmt.Sprintf("Page '%s' promoted to validated tier.", page.Name),
+			"new_tier":      tierValidated,
+			"file":          edit.relPath,
+			"message": fmt.Sprintf(
+				"Page '%s' promoted to validated tier: tier: validated written to %s on the current branch. Commit the change and open a pull request — the promotion takes effect for every server once the pull request merges to the default branch and the server re-indexes (promote edits the file, not the database).",
+				edit.page, edit.relPath),
 		}
 		res, err := jsonTextResult(result)
 		return res, nil, err
@@ -105,9 +167,11 @@ func (p *Promote) Promote(_ context.Context, _ *mcp.CallToolRequest, input types
 
 	result := map[string]any{
 		"status":         "promoted",
-		"promoted":       promotedEntries(targets),
-		"total_promoted": len(targets),
-		"message":        fmt.Sprintf("%d page(s) promoted to validated tier.", len(targets)),
+		"promoted":       promotedEntries(edits),
+		"total_promoted": len(edits),
+		"message": fmt.Sprintf(
+			"%d page(s) promoted to validated tier via frontmatter file edits on the current branch; the promotions take effect once the changes merge to the default branch and are re-indexed.",
+			len(edits)),
 	}
 	res, err := jsonTextResult(result)
 	return res, nil, err
@@ -122,9 +186,10 @@ type promoteTarget struct {
 // resolvePromoteTargets resolves every requested name through the
 // resolution ladder and keeps only pages that are safe to promote. In
 // single-page mode the first problem aborts with a rendered error result;
-// in batch mode problems accumulate as per-page failure entries. The error
-// strings are the handler's contract and must not change (PR 145 review
-// amendment).
+// in batch mode problems accumulate as per-page failure entries. The
+// lookup and tier error strings are the handler's contract and must not
+// change (PR 145 review amendment); the raw-argument path check is the
+// PW-FR-004 addition and carries its own error strings.
 func (p *Promote) resolvePromoteTargets(requested []string, batch bool) ([]promoteTarget, []map[string]string, *mcp.CallToolResult) {
 	targets := make([]promoteTarget, 0, len(requested))
 	resolvedNames := make(map[string]struct{}, len(requested))
@@ -133,6 +198,17 @@ func (p *Promote) resolvePromoteTargets(requested []string, batch bool) ([]promo
 	for _, name := range requested {
 		if strings.TrimSpace(name) == "" {
 			failures = append(failures, map[string]string{"page": name, "error": "page name is required"})
+			continue
+		}
+
+		// PW-FR-004 raw-argument guard: absolute paths and `..` segments
+		// are rejected before any store lookup or filesystem access, so
+		// no traversal-shaped argument can direct a later file edit.
+		if argErr := checkPromoteArgument(name); argErr != nil {
+			if !batch {
+				return nil, nil, errorResult(argErr.Error())
+			}
+			failures = append(failures, map[string]string{"page": name, "error": argErr.Error()})
 			continue
 		}
 
@@ -179,13 +255,13 @@ func (p *Promote) resolvePromoteTargets(requested []string, batch bool) ([]promo
 }
 
 // promoteFailureResult renders the pre-flight failure result: some pages
-// could not be resolved, so no tiers were changed.
+// could not be resolved or prepared, so no files were changed.
 func promoteFailureResult(failures []map[string]string) (*mcp.CallToolResult, error) {
 	payload := map[string]any{
 		"status":       "failed",
 		"failed":       failures,
 		"total_failed": len(failures),
-		"message":      fmt.Sprintf("%d page(s) could not be promoted; no tiers were changed.", len(failures)),
+		"message":      fmt.Sprintf("%d page(s) could not be promoted; no files were changed.", len(failures)),
 	}
 	res, err := jsonTextResult(payload)
 	if err != nil {
@@ -195,14 +271,14 @@ func promoteFailureResult(failures []map[string]string) (*mcp.CallToolResult, er
 	return res, nil
 }
 
-// rollbackFailureResult renders the mid-transaction failure result: the
-// batch rolled back and no tiers were changed.
+// rollbackFailureResult renders the mid-apply failure result: the batch
+// rolled back and no files remain changed.
 func rollbackFailureResult(targets []promoteTarget, promoteErr error) (*mcp.CallToolResult, error) {
 	failed := make([]map[string]string, 0, len(targets))
 	for _, target := range targets {
 		failed = append(failed, map[string]string{
 			"page":  target.page.Name,
-			"error": fmt.Sprintf("transaction rolled back: %v", promoteErr),
+			"error": fmt.Sprintf("file edits rolled back: %v", promoteErr),
 		})
 	}
 	payload := map[string]any{
@@ -211,7 +287,7 @@ func rollbackFailureResult(targets []promoteTarget, promoteErr error) (*mcp.Call
 		"failed":         failed,
 		"total_promoted": 0,
 		"total_failed":   len(failed),
-		"message":        "promotion transaction failed; no tiers were changed.",
+		"message":        "promotion edit failed; all file changes were rolled back.",
 	}
 	res, jsonErr := jsonTextResult(payload)
 	if jsonErr != nil {
@@ -222,13 +298,14 @@ func rollbackFailureResult(targets []promoteTarget, promoteErr error) (*mcp.Call
 }
 
 // promotedEntries renders the per-page success entries for the batch result.
-func promotedEntries(targets []promoteTarget) []map[string]string {
-	promoted := make([]map[string]string, 0, len(targets))
-	for _, t := range targets {
+func promotedEntries(edits []promoteEdit) []map[string]string {
+	promoted := make([]map[string]string, 0, len(edits))
+	for _, e := range edits {
 		promoted = append(promoted, map[string]string{
-			"page":          t.page.Name,
+			"page":          e.page,
 			"previous_tier": "draft",
-			"new_tier":      "validated",
+			"new_tier":      tierValidated,
+			"file":          e.relPath,
 		})
 	}
 	return promoted

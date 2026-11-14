@@ -42,12 +42,24 @@ type IndexResult struct {
 //
 // This is the shared implementation used by both the CLI (dewey index/reindex)
 // and MCP reindex tool, eliminating duplication (D6).
-func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder, maxChunkChars int) (*IndexResult, error) {
+//
+// An optional trailing TierBlobResolver supplies the git blob object IDs for
+// trust-tier derivation on compiled/curated pages (IP-FR-001); it is resolved
+// once per index run by the caller (design D2 — one ls-tree, not one per
+// page). When absent or nil, blob SHAs stay empty and the validated grant is
+// withheld (GTS-FR-004), exactly the pre-wiring behavior. At most the first
+// resolver is used.
+func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, configs []source.SourceConfig, embedder embed.Embedder, maxChunkChars int, tierBlobs ...TierBlobResolver) (*IndexResult, error) {
 	if maxChunkChars <= 0 {
 		maxChunkChars = embed.DefaultMaxChunkChars
 	}
 	if len(allDocs) == 0 {
 		return &IndexResult{}, nil
+	}
+
+	var resolver TierBlobResolver
+	if len(tierBlobs) > 0 {
+		resolver = tierBlobs[0]
 	}
 
 	var totalIndexed atomic.Int64
@@ -65,7 +77,7 @@ func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 			default:
 			}
 
-			indexed, embeds, err := indexSourceDocuments(s, sourceID, docs, configs, embedder, maxChunkChars)
+			indexed, embeds, err := indexSourceDocuments(s, sourceID, docs, configs, embedder, maxChunkChars, resolver)
 			if err != nil {
 				return fmt.Errorf("index source %s: %w", sourceID, err)
 			}
@@ -95,7 +107,9 @@ func IndexDocuments(s *store.Store, allDocs map[string][]source.Document, config
 
 // indexSourceDocuments processes all documents from a single source sequentially.
 // Returns the number of documents indexed and embeddings generated.
-func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Document, configs []source.SourceConfig, embedder embed.Embedder, maxChunkChars int) (int, int, error) {
+// tierBlobs is the optional per-index-run blob resolver (IP-FR-001); nil
+// withholds the validated grant (GTS-FR-004).
+func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Document, configs []source.SourceConfig, embedder embed.Embedder, maxChunkChars int, tierBlobs TierBlobResolver) (int, int, error) {
 	start := time.Now()
 	var blockCount, linkCount, embedCount, indexed int
 
@@ -179,6 +193,22 @@ func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Documen
 			props["sanitize_findings"] = scanResult.Findings
 		}
 
+		// Trust-tier policy: learning pages clamp to draft and compiled/
+		// curated pages derive from frontmatter plus default-branch blob
+		// equality through the optional resolver (IP-FR-001, IP-FR-002);
+		// every other page family keeps the source-config trust tier.
+		// Classification uses the document ID — the file's path within its
+		// source root — because the stored page name carries a source-ID
+		// prefix that would hide the family namespace. The same ID (with
+		// its .md extension) keys the blob map for disk sources rooted at
+		// the vault; other roots and non-disk sources miss the map, which
+		// withholds the grant fail-safe.
+		fileSHA, refSHA := resolveTierBlobs(tierBlobs, doc.ID)
+		pageTier := trustTier
+		if tier, known := ingestTier(doc.ID, props, fileSHA, refSHA); known {
+			pageTier = tier
+		}
+
 		// Build properties JSON.
 		propsJSON := ""
 		if props != nil {
@@ -207,7 +237,7 @@ func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Documen
 			existing.SourceDocID = doc.ID
 			existing.OriginalName = doc.Title
 			existing.Properties = propsJSON
-			existing.Tier = trustTier
+			existing.Tier = pageTier
 			if err := s.UpdatePage(existing); err != nil {
 				logger.Warn("failed to update page", "page", pageName, "err", err)
 				continue
@@ -222,7 +252,7 @@ func indexSourceDocuments(s *store.Store, sourceID string, docs []source.Documen
 				ContentHash:  doc.ContentHash,
 				CreatedAt:    doc.FetchedAt.UnixMilli(),
 				UpdatedAt:    doc.FetchedAt.UnixMilli(),
-				Tier:         trustTier,
+				Tier:         pageTier,
 			}
 			if err := s.InsertPage(page); err != nil {
 				logger.Warn("failed to insert page", "page", pageName, "err", err)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/unbound-force/dewey/v3/client"
 	"github.com/unbound-force/dewey/v3/curate"
 	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/gitref"
 	"github.com/unbound-force/dewey/v3/ignore"
 	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/openaicompat"
@@ -507,6 +509,36 @@ type sourceStatus struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// trustStatus reports the git-trust derivation state (GTS-FR-004
+// observability): the default-branch comparison ref and how the vault's
+// compiled/ and knowledge/ files compare against it. Shared by `dewey
+// status` and `dewey doctor` through queryTrustStatus.
+type trustStatus struct {
+	// Ref is the effective <remote>/<default-branch> value that was
+	// attempted, exactly as the winning precedence leg provided it.
+	Ref string `json:"ref"`
+	// Status classifies the ref resolution outcome (gitref.Status).
+	Status string `json:"status"`
+	// SHA is the fetched ref's commit SHA, empty when unresolved.
+	SHA string `json:"sha,omitempty"`
+	// Leg names the precedence source that supplied Ref.
+	Leg string `json:"leg,omitempty"`
+	// Reason carries the fallback cause when Status is not resolved.
+	Reason string `json:"reason,omitempty"`
+	// TrustFiles counts markdown files under compiled/ and knowledge/.
+	TrustFiles int `json:"trust_files"`
+	// ValidatedEligible counts files claiming canonical validated whose
+	// working-tree blob equals the default-branch blob (GTS-FR-001 — they
+	// index as validated).
+	ValidatedEligible int `json:"validated_eligible"`
+	// Differing counts files whose blob differs from the default branch
+	// (working-tree edits or unmerged branches — they index as draft).
+	Differing int `json:"differing"`
+	// DifferPaths lists up to 10 vault-relative differing paths for
+	// verbose diagnostics; never serialized.
+	DifferPaths []string `json:"-"`
+}
+
 // statusData holds all data needed to render the status output.
 // Separates data collection from formatting to reduce cyclomatic complexity.
 type statusData struct {
@@ -517,6 +549,7 @@ type statusData struct {
 	EmbeddingAvailable bool
 	Sources            []sourceStatus
 	IndexPath          string
+	Trust              *trustStatus
 }
 
 // embeddingCoverage computes the percentage of blocks with embeddings.
@@ -554,6 +587,11 @@ func newStatusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Trust-tier derivation state (git-derived tiers): the
+			// default-branch ref and the compiled/knowledge blob
+			// comparison behind every pages.tier in the index.
+			data.Trust = queryTrustStatus(vp)
 
 			w := cmd.OutOrStdout()
 			if jsonOutput {
@@ -653,6 +691,21 @@ func formatStatusText(data statusData, w io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(w, "  Coverage:   %.1f%%\n", data.embeddingCoverage())
 
+	if data.Trust != nil {
+		_, _ = fmt.Fprintln(w, "\nTrust Tiers")
+		switch {
+		case data.Trust.Status == string(gitref.StatusResolved):
+			_, _ = fmt.Fprintf(w, "  Ref:        %s @ %s (via %s)\n",
+				data.Trust.Ref, shortRefSHA(data.Trust.SHA), data.Trust.Leg)
+			_, _ = fmt.Fprintf(w, "  Files:      %d compiled/knowledge file(s): %d validated-eligible, %d differing from %s\n",
+				data.Trust.TrustFiles, data.Trust.ValidatedEligible, data.Trust.Differing, data.Trust.Ref)
+		default:
+			_, _ = fmt.Fprintf(w, "  Ref:        %s (%s)\n", data.Trust.Ref, data.Trust.Status)
+			_, _ = fmt.Fprintf(w, "  Files:      %d compiled/knowledge file(s) degrade to draft until the ref resolves\n",
+				data.Trust.TrustFiles)
+		}
+	}
+
 	if len(data.Sources) > 0 {
 		_, _ = fmt.Fprintln(w, "\nSources")
 		for _, src := range data.Sources {
@@ -684,6 +737,9 @@ func formatStatusJSON(data statusData, w io.Writer) error {
 		"embeddingAvailable": data.EmbeddingAvailable,
 		"embeddingCoverage":  data.embeddingCoverage(),
 		"sources":            data.Sources,
+	}
+	if data.Trust != nil {
+		status["trust"] = data.Trust
 	}
 	out, err := json.MarshalIndent(status, "", "  ")
 	if err != nil {
@@ -850,7 +906,14 @@ Fetches content from all configured sources and indexes it.`,
 			result, allDocs := mgr.FetchAll(sourceName, force, lastFetchedTimes)
 
 			embCfg := embed.ReadEmbeddingConfig(deweyDir)
-			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder, embCfg.MaxChunkChars)
+			// Tier-blob resolver (default-branch ref + batch blob map, one
+			// ls-tree per index run per design D2) for compiled/curated
+			// trust-tier derivation (IP-FR-001); an unresolvable ref
+			// withholds the validated grant (GTS-FR-004) without failing
+			// the index.
+			tierBlobs := gitref.NewPageBlobResolver(context.Background(),
+				gitref.Options{VaultDir: vp}, gitref.TrustPathspecs())
+			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder, embCfg.MaxChunkChars, tierBlobs)
 			reportSourceErrors(s, result)
 
 			if indexErr != nil {
@@ -989,7 +1052,11 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
 			}
 
 			embCfg := embed.ReadEmbeddingConfig(deweyDir)
-			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder, embCfg.MaxChunkChars)
+			// Same per-index-run tier-blob resolver as `dewey index`
+			// (design D2, IP-FR-001).
+			tierBlobs := gitref.NewPageBlobResolver(context.Background(),
+				gitref.Options{VaultDir: vp}, gitref.TrustPathspecs())
+			indexResult, indexErr := vault.IndexDocuments(s, allDocs, configs, embedder, embCfg.MaxChunkChars, tierBlobs)
 			reportSourceErrors(s, result)
 
 			if indexErr != nil {
@@ -1500,6 +1567,14 @@ func runDoctorChecks(w io.Writer, vaultPath string) {
 			}
 		}
 	}
+	dp("\n")
+
+	// --- Trust Tiers ---
+	// Git-derived trust tier state (GTS-FR-004 observability): the
+	// default-branch comparison ref and the compiled/knowledge blob
+	// comparison behind every pages.tier in the index.
+	section("Trust Tiers")
+	printTrustTierChecks(c, w, dp, vaultPath)
 	dp("\n")
 
 	// --- Embedding Layer ---
@@ -2528,27 +2603,40 @@ Exit code 0 if clean, 1 if issues found.`,
 
 // --- Promote command (T036, 013-knowledge-compile Phase 7) ---
 
-// newPromoteCmd creates the `dewey promote` subcommand.
-// Promotes one or more draft pages to validated tier after human review.
+// newPromoteCmd creates the `dewey promote` subcommand. Promotion is a
+// frontmatter file edit on the current branch (git-is-the-source-of-record,
+// PW-FR-001): the command writes tier: validated into the page file so a
+// pull request can carry the promotion for human review. The database tier
+// is a cache recomputed on the next index — promote never writes it.
 func newPromoteCmd() *cobra.Command {
 	var vaultPath string
 
 	cmd := &cobra.Command{
 		Use:   "promote PAGE_NAME...",
-		Short: "Promote draft pages to validated",
-		Long: `Promote draft learnings or compiled articles to validated status
-after human review. Only pages with tier=draft can be promoted.
+		Short: "Promote draft pages to validated (frontmatter file edit)",
+		Long: `Promote draft compiled articles or curated knowledge pages by writing
+tier: validated into the page file's frontmatter on the current branch.
+The file diff — carried by a pull request — is the promotion artifact for
+human review; promote never writes the database tier, which stays a cache
+recomputed on the next index.
+
+A promotion takes effect for every server only after the pull request
+merges to the default branch and the server re-indexes: a branch-only
+promotion keeps indexing as draft (the merge is the vouch). Only pages
+with tier=draft can be promoted, and only files under compiled/ or
+knowledge/ are promotable — learnings stay draft forever and are never
+promotable.
 
 Page names resolve through a ladder: exact name, then case-insensitive
 name, then bare tags against the compiled/, learning/, and knowledge/
 namespaces, then source doc IDs. Ambiguous matches are refused. Multiple
 names are promoted as an all-or-nothing batch: if any page cannot be
-promoted, none are changed.
+promoted, no file is changed.
 
 Examples:
-  dewey promote learning/authentication-3
+  dewey promote compiled/authentication
   dewey promote authentication
-  dewey promote compiled/authentication learning/authentication-3`,
+  dewey promote compiled/authentication knowledge/team/notes`,
 		SilenceUsage: true,
 		Args:         cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2573,7 +2661,9 @@ Examples:
 
 			// Create promote tool and run. A single argument preserves the
 			// single-page result shape; multiple arguments use batch mode.
-			promote := tools.NewPromote(s)
+			// The vault root anchors the path validation every edit target
+			// must pass (PW-FR-004).
+			promote := tools.NewPromote(s, vp)
 			input := types.PromoteInput{Page: args[0]}
 			if len(args) > 1 {
 				input = types.PromoteInput{Pages: args}
@@ -2854,6 +2944,145 @@ func gatewayCredentialWarnings(capability openaicompat.Capability, endpoint stri
 		warnings = append(warnings, fmt.Sprintf("%s.api_key in config.yaml is ignored; keys are environment-only", capability))
 	}
 	return warnings
+}
+
+// queryTrustStatus resolves the default-branch comparison ref and surveys
+// the vault's compiled/ and knowledge/ markdown files against it — the same
+// derivation inputs ingestion uses (one bounded ref resolution, one batch
+// ls-tree, per-file blob hashing). Read-only: no writes, no fetches, no
+// state changes; an unresolvable ref yields the GTS-FR-004 fallback shape
+// (every trust file counts as differing, validated withheld).
+func queryTrustStatus(vp string) *trustStatus {
+	ctx := context.Background()
+	res := gitref.New(gitref.Options{VaultDir: vp}).Resolve(ctx)
+	ts := &trustStatus{
+		Ref:    res.Ref,
+		Status: string(res.Status),
+		SHA:    res.SHA,
+		Leg:    string(res.Leg),
+		Reason: res.Reason,
+	}
+	var blobs map[string]string
+	if res.Resolved() {
+		blobs = gitref.MapDefaultBranchBlobs(ctx, gitref.ExecRunner{}, vp, res, gitref.TrustPathspecs())
+	}
+	for _, namespace := range gitref.TrustPathspecs() {
+		root := filepath.Join(vp, namespace)
+		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".md") {
+				return nil // unreadable or non-page entries are not status failures
+			}
+			rel, relErr := filepath.Rel(vp, p)
+			if relErr != nil {
+				return nil
+			}
+			content, readErr := os.ReadFile(p)
+			if readErr != nil {
+				return nil
+			}
+			ts.TrustFiles++
+			fileBlob, _ := gitref.FileBlobSHA(p)
+			if refBlob := blobs[filepath.ToSlash(rel)]; refBlob != "" && fileBlob == refBlob {
+				if frontmatterTierOf(content) == "validated" {
+					ts.ValidatedEligible++
+				}
+			} else {
+				ts.Differing++
+				if len(ts.DifferPaths) < 10 {
+					ts.DifferPaths = append(ts.DifferPaths, filepath.ToSlash(rel))
+				}
+			}
+			return nil
+		})
+	}
+	return ts
+}
+
+// printTrustTierChecks reports the trust-tier derivation state in the
+// doctor layout: the default-branch comparison ref (with the GTS-FR-004
+// fallback note and a fix hint when it cannot resolve) and the
+// compiled/knowledge blob comparison (effective-tier observability —
+// claimed file tier versus default-branch blob).
+func printTrustTierChecks(c *doctorCounter, w io.Writer, dp func(string, ...any), vaultPath string) {
+	ts := queryTrustStatus(vaultPath)
+
+	if ts.Status == string(gitref.StatusResolved) {
+		c.printCheck(w, "PASS", "default-branch ref",
+			fmt.Sprintf("%s @ %s (via %s)", ts.Ref, shortRefSHA(ts.SHA), ts.Leg))
+	} else {
+		c.printCheck(w, "WARN", "default-branch ref",
+			fmt.Sprintf("%s: %s", ts.Status, ts.Reason))
+		dp("     Fix: %s\n", trustRefFix(ts.Status))
+	}
+
+	switch {
+	case ts.TrustFiles == 0:
+		c.printCheck(w, "PASS", "tier derivation", "no compiled/ or knowledge/ pages in the vault")
+	case ts.Status == string(gitref.StatusResolved) && ts.Differing == 0:
+		c.printCheck(w, "PASS", "tier derivation",
+			fmt.Sprintf("%d file(s) match %s — %d validated-eligible", ts.TrustFiles, ts.Ref, ts.ValidatedEligible))
+	case ts.Status == string(gitref.StatusResolved):
+		c.printCheck(w, "INFO", "tier derivation",
+			fmt.Sprintf("%d of %d file(s) differ from %s — they index as draft until merged and fetched (%d validated-eligible)",
+				ts.Differing, ts.TrustFiles, ts.Ref, ts.ValidatedEligible))
+	default:
+		c.printCheck(w, "WARN", "tier derivation",
+			fmt.Sprintf("%d file(s) degrade to draft — validated is withheld until the ref resolves", ts.TrustFiles))
+	}
+
+	// Verbose mode: name the differing files so a draft page is
+	// explainable (working-tree edit vs unmerged branch vs missing file).
+	if logger.GetLevel() == log.DebugLevel {
+		for _, rel := range ts.DifferPaths {
+			dp("     • %s (differs from %s — indexes as draft)\n", rel, ts.Ref)
+		}
+	}
+}
+
+// trustRefFix returns the actionable remediation for an unresolved
+// default-branch ref by failure class.
+func trustRefFix(status string) string {
+	switch status {
+	case string(gitref.StatusMissingRef):
+		return "git fetch the remote (the comparison uses the locally fetched ref), then dewey index"
+	case string(gitref.StatusNotARepo):
+		return "initialize a git repository in the vault — trust tiers derive from git"
+	case string(gitref.StatusInvalidConfig):
+		return "correct default_branch_ref in .uf/dewey/config.yaml (or the global config / DEWEY_DEFAULT_BRANCH_REF)"
+	default:
+		return "check git availability and repository health (dewey -v doctor records the reason)"
+	}
+}
+
+// shortRefSHA renders the first 7 hex characters of a commit SHA, or the
+// value unchanged when shorter.
+func shortRefSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// frontmatterTierOf extracts the top-level `tier:` value from leading YAML
+// frontmatter for diagnostics. Line-oriented, matching the tier-key shape
+// the promote edit and ingestion parse: a column-zero `tier:` inside the
+// opening `---` block. Display-only — the derivation gate remains
+// vault.DeriveEffectiveTier at ingest.
+func frontmatterTierOf(content []byte) string {
+	lines := strings.Split(string(content), "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], "\r") != "---" {
+		return ""
+	}
+	for i := 1; i < len(lines); i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		if line == "---" {
+			return ""
+		}
+		if v, ok := strings.CutPrefix(line, "tier:"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // printVertexEmbeddingChecks renders the Embedding Layer section for the

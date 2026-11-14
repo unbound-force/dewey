@@ -133,7 +133,7 @@ Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) retu
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `promote` | Both | Promote draft content to validated after human review; names resolve exact, then case-insensitive, then bare-tag shorthand (`name` tries `compiled/name`, `learning/name`, and `knowledge/*` pages), then source doc IDs; ambiguous matches are refused; batch promotion is all-or-nothing |
+| `promote` | Both | Promote a draft compiled article or curated knowledge page by writing `tier: validated` into the page file's frontmatter on the current branch — the file diff, carried by a pull request, is the promotion artifact for human review; the database tier is a cache recomputed on the next index. Only files under `compiled/` or `knowledge/` are promotable (learnings stay draft forever); names resolve exact, then case-insensitive, then bare-tag shorthand, then source doc IDs; ambiguous matches are refused; batch promotion is all-or-nothing |
 
 ### Verify Candidates
 
@@ -378,7 +378,7 @@ This removes `graph.db`, WAL/SHM files, and the lock file before rebuilding. Req
 
 ### dewey status
 
-Report index health: page count, block count, embedding coverage, source status.
+Report index health: page count, block count, embedding coverage, source status, and trust-tier derivation (the default-branch comparison ref and how many compiled/knowledge files match it — see [Trust Tiers](#trust-tiers)).
 
 ```bash
 dewey status [--vault PATH] [--json]
@@ -386,7 +386,7 @@ dewey status [--vault PATH] [--json]
 
 ### dewey doctor
 
-Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), embedding layer configuration (Ollama availability and model status; Vertex checked for configuration completeness; OpenAI-compatible checked for configuration, connectivity, and credentials), synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, model and credential presence — only Ollama availability is probed; Vertex and OpenAI-compatible gateways are checked for configuration completeness), MCP server process, and opencode.json configuration.
+Run diagnostic checks for Dewey dependencies and report pass/fail with fix instructions. Checks: workspace initialization, database health (per-source page counts), trust tiers (whether the default-branch comparison ref resolves, and how many `compiled/`/`knowledge/` files match it — with fix hints like `git fetch` for a missing ref, see [Trust Tiers](#trust-tiers)), embedding layer configuration (Ollama availability and model status; Vertex checked for configuration completeness; OpenAI-compatible checked for configuration, connectivity, and credentials), synthesis layer configuration (Ollama/Vertex/OpenAI-compatible provider, model and credential presence — only Ollama availability is probed; Vertex and OpenAI-compatible gateways are checked for configuration completeness), MCP server process, and opencode.json configuration.
 
 ```bash
 dewey doctor [--vault PATH]
@@ -460,17 +460,19 @@ dewey lint [--vault PATH] [--fix]
 
 ### dewey promote
 
-Promote a page from `draft` tier to `validated` after human review. Only draft-tier pages (agent-generated content) can be promoted.
+Promote a page to `validated` by writing `tier: validated` into the page file's frontmatter **on the current branch** — the file diff, carried by a pull request, is the promotion artifact for human review. The database tier is a cache: `promote` never writes a tier to the database, and the next index re-derives it from git (see [Trust Tiers](#trust-tiers)). A promotion that stays on an unmerged branch keeps indexing as `draft` until the pull request merges to the default branch and the server re-indexes — the merge is the vouch.
 
 ```bash
 dewey promote [--vault PATH] PAGE_NAME...
 ```
 
-The page is located by its exact name; when that name is absent, resolution falls back deterministically: a case-insensitive exact match, then — for a bare name containing no `/` — the `compiled/PAGE_NAME`, `learning/PAGE_NAME`, and `knowledge/*/PAGE_NAME` namespaces, followed by a `source_id`/`source_doc_id` match. A bare tag that matches more than one page reports the candidates instead of picking one. A missing page reports `Page '<name>' not found`; a store failure reports `failed to look up page '<name>': <error>` so the error is not mistaken for absence.
+Only files under the vault's `compiled/` or `knowledge/` namespaces are promotable; learning pages are never promotable (they stay `draft` forever). The page is located by its exact name; when that name is absent, resolution falls back deterministically: a case-insensitive exact match, then — for a bare name containing no `/` — the `compiled/PAGE_NAME`, `learning/PAGE_NAME`, and `knowledge/*/PAGE_NAME` namespaces, followed by a `source_id`/`source_doc_id` match. A bare tag that matches more than one page reports the candidates instead of picking one. A missing page reports `Page '<name>' not found`; a store failure reports `failed to look up page '<name>': <error>` so the error is not mistaken for absence.
+
+The file edit is transactional: the frontmatter is rewritten in place with the tier line updated (frontmatter is created when absent), and a batch that fails any member changes no files. Paths are validated before any file access — absolute paths, `..` segments, and symlink escapes out of the promotable namespaces are rejected.
 
 When the store cannot be opened because another Dewey process holds the database lock, the error identifies the lock holder (PID and command, read from `.uf/dewey/dewey.lock`) and points to the `dewey_promote` MCP tool as the supported write path while a server is running.
 
-Multiple names are promoted as an all-or-nothing batch: if any page is missing, ambiguous, or not `draft`, no tiers change and the command reports each failure.
+Multiple names are promoted as an all-or-nothing batch: if any page is missing, ambiguous, not promotable, or already `validated`, no files change and the command reports each failure.
 
 ### dewey curate
 
@@ -775,9 +777,9 @@ Environment variables override config file values for embedding. For synthesis, 
 
 Dewey can synthesize stored learnings into compiled knowledge articles using an LLM. The `compile` tool reads all learnings, clusters them by topic tag, and produces current-state articles that cite their source learnings per claim. Contradictions are never resolved by recency: synthesis presents both positions with their citations, and every supersession is explicit — declared on a stored learning, or proposed for human confirmation. The compile result carries `proposed_supersessions` (successor/target pairs with rationale), `dropped_proposals` (proposals naming unknown learnings — reported, never applied), and per-article citation `coverage`; in `prompts_ready` mode the `store_compiled` results carry the same fields per stored page. Confirm a proposed pair with the `supersede_learning` tool; unconfirmed proposals surface again on the next lint.
 
-When a synthesis provider is configured, the running MCP server performs compilation server-side: `compile` returns `status: "compiled"` and writes `.uf/dewey/compiled/{tag}.md`. If some topics fail it returns `status: "partial"` with a `failed` array and keeps the previous articles for those topics; if every topic fails it returns `status: "failed"` and changes nothing. Recompiling writes `tier: draft`; a `validated` article keeps its tier only when the regenerated article bytes are identical to the stored ones (content-bound preservation in the store), and changed content demotes to `draft` for re-review. The synthesizing model is recorded as `compiled_by`. When no provider is configured or available, `compile` returns synthesis prompts, the agent performs synthesis with any model, and `store_compiled` persists the result with provenance tracking. `store_compiled` refuses to overwrite an article whose tier is `validated`; re-open review or use a new tag instead. A full compile with no learnings and no synthesizer returns `prompts_ready` and leaves existing compiled artifacts untouched.
+When a synthesis provider is configured, the running MCP server performs compilation server-side: `compile` returns `status: "compiled"` and writes `.uf/dewey/compiled/{tag}.md`. If some topics fail it returns `status: "partial"` with a `failed` array and keeps the previous articles for those topics; if every topic fails it returns `status: "failed"` and changes nothing. Recompiling always writes `tier: draft` — the page row records the machine's write receipt, so regenerated articles read as `draft` until the merged file re-derives `validated` at the next index (the DB tier is a cache of the git rule). The synthesizing model is recorded as `compiled_by`. When no provider is configured or available, `compile` returns synthesis prompts, the agent performs synthesis with any model, and `store_compiled` persists the result with provenance tracking. `store_compiled` refuses to overwrite an article whose tier is `validated`; re-open review or use a new tag instead. A full compile with no learnings and no synthesizer returns `prompts_ready` and leaves existing compiled artifacts untouched.
 
-Learning markdown files are treated as untrusted backups during startup re-ingestion: a file that claims `tier: validated` is re-ingested as `draft` until a human promotes it again.
+Learning markdown files are treated as untrusted backups during startup re-ingestion: a file that claims `tier: validated` is re-ingested as `draft` — learnings are never promotable and stay `draft` forever.
 
 Use `/dewey-distill` to run lint → compile → curate → verify → promote through the running MCP server. The verify step runs `verify_candidates` over the run's candidate queue and presents each candidate's evidence locators and anchor-verification result (`anchors_ok`, `drifted`, `missing`, `no_anchors`, `skipped` with reasons) at the review gate, so the human approves a pre-verified queue; a skipped or failed pass is stated plainly and never presented as verified clean. It gates the synthesis scope, the supersession confirmations, and the promotion list on human approval — the review gate asks which proposed supersessions to confirm alongside the promotion list, applies confirmed pairs via `supersede_learning` before promoting, and aborts promotion when a confirmed apply errors or warns. It falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable. The command binds to the `curator` agent (`agent:` frontmatter) and runs `dewey gate auto-answer` at startup, refusing before any stage when the curator is configured for automatic question answering or the configuration cannot be verified; both mandatory gate questions carry the `HUMAN_GATE:` marker, which auto-answer plugins honoring the external contract leave for a human.
 
@@ -793,9 +795,20 @@ All content in Dewey's index has a trust tier:
 |------|--------|-------------|
 | `authored` | Disk, GitHub, web, code sources | Human-written content. Highest trust. |
 | `curated` | `curate`, knowledge stores | Machine-extracted knowledge. LLM-curated with quality flags. |
-| `validated` | `promote` | Agent content promoted by human review. |
-| `draft` | `store_learning`, `compile` | Agent-generated. Unreviewed. |
+| `validated` | git default branch | A merged, human-approved promotion: the file says `tier: validated` **and** its blob equals the blob at the default-branch ref. |
+| `draft` | `store_learning`, `compile` | Agent-generated. Unreviewed. Also the fallback for any unproven `validated` claim. |
 | `untrusted` | Source config | Content from sources marked as lower trust. |
+
+**Git is the source of record.** Each teammate runs their own Dewey MCP server with its own database, so the tier cannot live in the database — it derives from git at every index:
+
+- **Validated requires a merged vouch.** A page under `compiled/` or `knowledge/` is `validated` only when its frontmatter says `tier: validated` and the file's git blob equals the blob at `<remote>/<default-branch>` (the locally fetched ref — resolution is offline, no network access). Raising trust comes only from the default branch: a working-tree edit, an unmerged branch commit, or a stale fetch reads as `draft`, even when the frontmatter claims `validated`.
+- **Lowering works from anywhere.** A canonical `tier: draft` declaration, or a `validity` of `stale-unverified`, `superseded`, or `historical`, lowers trust from any file, branch, or local edit — fail-safe, and it outranks the blob-equality grant.
+- **Learnings stay `draft` forever.** Files under `learning/` clamp to `draft` on every ingestion route, regardless of what their frontmatter claims or whether their blobs match.
+- **No git, no ref: `draft`.** A vault that is not a git repository, or whose default-branch ref is missing or unresolvable, withholds the `validated` grant — every `validated` claim degrades to `draft` until the ref is fetched (`git fetch`, then `dewey index`).
+
+The comparison ref is configured by `default_branch_ref` (per-vault `.uf/dewey/config.yaml`, then the global config, then `DEWEY_DEFAULT_BRANCH_REF`, then git config `dewey.defaultBranchRef`, falling back to `origin/main`; the first non-blank leg wins). `dewey status` reports the resolved ref and how many files match it; `dewey doctor` checks the ref with a fix hint and reports differing files (`dewey -v doctor` lists them). The database tier is a cache of this derivation — two servers with different local databases but the same fetched default branch show the same tiers.
+
+**Migration note.** Upgrading from an older Dewey does not rewrite tiers: existing `pages.tier` values persist, and the next `dewey index` re-derives every compiled/curated page from git. Pages whose files match the default branch and claim `validated` become `validated` without re-promotion; pages whose claims do not hold up (edited locally, unmerged, or stale) settle at `draft`.
 
 Filter search by tier: `semantic_search_filtered(query: "auth", tier: "authored")`
 Filter curated content: `semantic_search_filtered(query: "auth", tier: "curated")`

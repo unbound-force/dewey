@@ -240,3 +240,147 @@ func TestIndexDocuments_PersistenceErrorReturnsError(t *testing.T) {
 		t.Logf("IndexDocuments completed without error, indexed=%d", result.TotalIndexed)
 	}
 }
+
+// TestIndexDocuments_TierPolicyForPageFamilies pins the IP-FR-001/IP-FR-002
+// wiring on the source-indexing path: classification uses the document ID
+// (the file's path within its source root) because the stored page name
+// carries a source-ID prefix, learning pages clamp to draft, compiled
+// pages derive from frontmatter (a non-canonical claim reads as unknown →
+// draft, GTS-FR-003), and every other page keeps the source-config trust
+// tier (authored by default). Re-indexing recomputes drifted cached tiers
+// (GTS-FR-005) — including a learning page's, which converges to its
+// permanent draft clamp (IP-FR-002).
+func TestIndexDocuments_TierPolicyForPageFamilies(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	allDocs := map[string][]source.Document{
+		"disk-local": {
+			{ID: "learning/auth-1.md", Title: "Auth", Content: "---\ntier: validated\n---\n\nLearning content.", FetchedAt: time.Now()},
+			{ID: "compiled/authentication.md", Title: "Compiled", Content: "---\ntier: curated\n---\n\nCompiled content.", FetchedAt: time.Now()},
+			{ID: "compiled/case-variant.md", Title: "CaseVariant", Content: "---\ntier: Validated\n---\n\nCase-variant content.", FetchedAt: time.Now()},
+			{ID: "notes/regular.md", Title: "Notes", Content: "---\ntier: validated\n---\n\nOrdinary content.", FetchedAt: time.Now()},
+		},
+	}
+
+	if _, err := IndexDocuments(s, allDocs, nil, nil, 0); err != nil {
+		t.Fatalf("IndexDocuments: %v", err)
+	}
+
+	tests := []struct {
+		page string
+		want string
+	}{
+		{page: "disk-local/learning/auth-1.md", want: "draft"},
+		{page: "disk-local/compiled/authentication.md", want: "curated"},
+		{page: "disk-local/compiled/case-variant.md", want: "draft"},
+		{page: "disk-local/notes/regular.md", want: "authored"},
+	}
+	for _, tt := range tests {
+		p, err := s.GetPage(tt.page)
+		if err != nil || p == nil {
+			t.Fatalf("GetPage(%q): %v (nil=%v)", tt.page, err, p == nil)
+		}
+		if p.Tier != tt.want {
+			t.Errorf("page %q tier = %q, want %q", tt.page, p.Tier, tt.want)
+		}
+	}
+
+	// Drift cached tiers to validated — the hardest case for the cache
+	// semantics (design D4): re-indexing the same documents must converge
+	// the stale validated caches back down to the file-derived tiers
+	// (GTS-FR-005), and the learning page back to its permanent draft
+	// clamp (IP-FR-002 outranks any cached tier).
+	for _, page := range []string{
+		"disk-local/compiled/authentication.md",
+		"disk-local/learning/auth-1.md",
+	} {
+		drifted, err := s.GetPage(page)
+		if err != nil || drifted == nil {
+			t.Fatalf("GetPage drifted %q: %v", page, err)
+		}
+		drifted.Tier = "validated"
+		if err := s.UpdatePage(drifted); err != nil {
+			t.Fatalf("UpdatePage drift %q: %v", page, err)
+		}
+	}
+
+	if _, err := IndexDocuments(s, allDocs, nil, nil, 0); err != nil {
+		t.Fatalf("IndexDocuments again: %v", err)
+	}
+
+	converged := []struct {
+		page string
+		want string
+	}{
+		{page: "disk-local/compiled/authentication.md", want: "curated"},
+		{page: "disk-local/learning/auth-1.md", want: "draft"},
+	}
+	for _, tt := range converged {
+		after, err := s.GetPage(tt.page)
+		if err != nil || after == nil {
+			t.Fatalf("GetPage after %q: %v", tt.page, err)
+		}
+		if after.Tier != tt.want {
+			t.Errorf("page %q tier after re-index = %q, want %q", tt.page, after.Tier, tt.want)
+		}
+	}
+}
+
+// stubBlobResolver is an in-memory TierBlobResolver reporting a fixed
+// (file, ref) blob pair for every path — isolating wiring tests from git
+// while exercising the resolver seam exactly as the production resolver
+// would.
+type stubBlobResolver struct {
+	fileSHA, refSHA string
+}
+
+func (r stubBlobResolver) PageBlobs(string) (string, string) {
+	return r.fileSHA, r.refSHA
+}
+
+// TestIndexDocuments_LearningClampSurvivesBlobMatch covers the acceptance
+// edge of the IP-FR-002 clamp: a learning page claiming tier: validated
+// whose blob EQUALS the default-branch blob still ingests as draft — the
+// clamp outranks the GTS-FR-001 grant, so no learning page can appear
+// validated even from the default branch. The compiled control page in the
+// same run proves the stub's matching SHAs really do grant validated, so
+// the learning result is the clamp, not a broken stub.
+func TestIndexDocuments_LearningClampSurvivesBlobMatch(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	docs := map[string][]source.Document{
+		"disk-local": {
+			{ID: "learning/auth-1.md", Title: "Auth", Content: "---\ntier: validated\n---\n\nLearning content.", FetchedAt: time.Now()},
+			{ID: "compiled/auth.md", Title: "Compiled", Content: "---\ntier: validated\n---\n\nCompiled content.", FetchedAt: time.Now()},
+		},
+	}
+
+	if _, err := IndexDocuments(s, docs, nil, nil, 0, stubBlobResolver{fileSHA: "b10b", refSHA: "b10b"}); err != nil {
+		t.Fatalf("IndexDocuments: %v", err)
+	}
+
+	tests := []struct {
+		page string
+		want string
+	}{
+		{page: "disk-local/compiled/auth.md", want: "validated"},
+		{page: "disk-local/learning/auth-1.md", want: "draft"},
+	}
+	for _, tt := range tests {
+		p, err := s.GetPage(tt.page)
+		if err != nil || p == nil {
+			t.Fatalf("GetPage(%q): %v", tt.page, err)
+		}
+		if p.Tier != tt.want {
+			t.Errorf("page %q tier = %q, want %q (learning clamp outranks the blob-equality grant)", tt.page, p.Tier, tt.want)
+		}
+	}
+}

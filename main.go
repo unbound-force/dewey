@@ -26,6 +26,7 @@ import (
 	"github.com/unbound-force/dewey/v3/client"
 	"github.com/unbound-force/dewey/v3/curate"
 	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/gitref"
 	"github.com/unbound-force/dewey/v3/ignore"
 	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/openaicompat"
@@ -722,7 +723,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		}
 
 		// Index the vault — persistent (incremental) or in-memory.
-		if err := indexVault(vc); err != nil {
+		if err := indexVault(vc, vp); err != nil {
 			return fmt.Errorf("index vault: %w", err)
 		}
 
@@ -757,9 +758,20 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 //   - If a persistent store is available, attempts incremental indexing first,
 //     falling back to full re-index on validation failure or incremental error.
 //   - If no store is available, uses in-memory-only loading with backlink building.
-func indexVault(vc *vault.Client) error {
+//
+// vaultPath is the vault root; it anchors the per-index-run tier-blob resolver
+// installed on the VaultStore before indexing begins (IP-FR-001, design D2).
+func indexVault(vc *vault.Client, vaultPath string) error {
 	vs := vc.Store()
 	if vs != nil {
+		// Trust-tier derivation for compiled/curated pages (IP-FR-001):
+		// resolve the default-branch ref and batch blob map once per index
+		// run (one ls-tree, design D2). An unresolvable ref (non-git vault,
+		// no fetch yet) yields a resolver whose every lookup withholds the
+		// validated grant (GTS-FR-004) — indexing continues, and the
+		// watcher-driven re-persists after this run keep the resolver too.
+		vs.SetTierBlobResolver(gitref.NewPageBlobResolver(context.Background(),
+			gitref.Options{VaultDir: vaultPath}, gitref.TrustPathspecs()))
 		// Use persistent indexing if store is available.
 		if err := vs.ValidateStore(); err != nil {
 			// Corruption detected — fall back to full re-index.

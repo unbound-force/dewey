@@ -405,26 +405,36 @@ func (s *Store) ListPages() ([]*Page, error) {
 // to the current time. The content_hash comparison enables incremental
 // indexing — only re-index when content changes.
 //
-// The tier column is never demoted from "validated": the caller-supplied
-// tier applies only when the stored page is not validated. This closes the
-// read-then-write window at the promotion trust boundary — a promote that
-// lands between a caller's tier capture and this write is not reverted.
-// Tier transitions onto "validated" remain the promote gate's exclusive
-// responsibility.
+// The tier column is content-bound: a stored "validated" tier is preserved
+// only when the incoming content hash equals the stored content hash; when
+// the hashes differ, the caller-supplied tier applies, so regenerated
+// content loses the human vouch. Two empty hashes compare as equal, so
+// writers that do not track content hashes keep the pre-change
+// never-demote behavior. Pages whose stored tier is not "validated" take
+// the caller-supplied tier unconditionally, on hash match and hash change
+// alike. The promotion trust boundary stays closed: a read-then-write
+// that carries an unchanged hash (for example a metadata write racing a
+// promote) does not revert the promotion. Tier transitions onto
+// "validated" remain the promote gate's exclusive responsibility — this
+// rule only preserves or demotes, never elevates.
 //
 // Returns an error if the update query fails or if no page exists with
 // the given name (page not found).
 func (s *Store) UpdatePage(p *Page) error {
 	p.UpdatedAt = time.Now().UnixMilli()
 
+	// SQLite evaluates every SET expression against the pre-update row, so
+	// the "? = content_hash" check inside the CASE compares the incoming
+	// hash against the stored hash — not the value assigned by
+	// "content_hash = ?" earlier in the same statement.
 	result, err := s.db.Exec(`
 		UPDATE pages SET original_name = ?, source_id = ?, source_doc_id = ?,
 		properties = ?, content_hash = ?, is_journal = ?, updated_at = ?,
-		tier = CASE WHEN tier = 'validated' THEN 'validated' ELSE ? END, category = ?
+		tier = CASE WHEN tier = 'validated' AND ? = content_hash THEN 'validated' ELSE ? END, category = ?
 		WHERE name = ?`,
 		p.OriginalName, p.SourceID, p.SourceDocID,
 		p.Properties, p.ContentHash, boolToInt(p.IsJournal),
-		p.UpdatedAt, p.Tier, p.Category, p.Name,
+		p.UpdatedAt, p.ContentHash, p.Tier, p.Category, p.Name,
 	)
 	if err != nil {
 		return fmt.Errorf("update page %q: %w", p.Name, err)

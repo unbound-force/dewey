@@ -1,6 +1,6 @@
 ## 1. Store content-bound preservation
 
-- [ ] 1.1 Update `store/store.go:UpdatePage` tier CASE to `CASE WHEN tier = 'validated' AND ? = content_hash THEN 'validated' ELSE ? END` with hash-equality check, empty-hash equality, GoDoc, and non-validated passthrough (VTB-FR-001)
+- [x] 1.1 Update `store/store.go:UpdatePage` tier CASE to `CASE WHEN tier = 'validated' AND ? = content_hash THEN 'validated' ELSE ? END` with hash-equality check, empty-hash equality, GoDoc, and non-validated passthrough (VTB-FR-001)
 - [ ] 1.2 [P] Add `store/store_test.go` coverage: changed-content demotes validated, identical content preserves validated, hash-less writers keep validated, promote race stays closed, non-validated tiers unaffected
 
 ## 2. Compile demote-on-regeneration and hashes

@@ -20,33 +20,33 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Confirm the change artifacts under
+- [x] 0.1 Confirm the change artifacts under
   `openspec/changes/gate-config-sources-parity/` are committed and
   pushed on `opsx/gate-config-sources-parity` (Spec Commit Gate), and
   that the working tree is clean before implementation starts.
 
 ## 1. Gate Implementation (gate.go)
 
-- [ ] 1.1 Add a candidate-construction helper per design D1, D4 and D6
+- [x] 1.1 Add a candidate-construction helper per design D1, D4 and D6
   that returns the ordered, lexically de-duplicated candidates with
   their role (explicit, home, config directory, XDG): read
   `AUTO_QUESTION_CONFIG` and `OPENCODE_CONFIG_DIR` through `lookup`,
   trim, treat blank as unset, expand `~` and `~/...` against `$HOME`,
   refuse a value that is relative after expansion (message names the
   variable and value), and keep `resolvePluginConfigDirs` unchanged.
-- [ ] 1.2 Use the helper in `evaluateAutoAnswerGate`: `ConfigFile` is
+- [x] 1.2 Use the helper in `evaluateAutoAnswerGate`: `ConfigFile` is
   the first candidate and `AdditionalConfigFiles` the rest; keep the
   injected `configDir` single-path seam (D5) and the registration
   scan's directory (D7) unchanged.
-- [ ] 1.3 Refuse when the explicit (`AUTO_QUESTION_CONFIG`) candidate
+- [x] 1.3 Refuse when the explicit (`AUTO_QUESTION_CONFIG`) candidate
   does not exist, naming the file, with a fix to point the variable at
   an existing plugin config or unset it (D4). Every other per-file
   condition keeps going through `resolvePluginAgents`.
-- [ ] 1.4 Select `EffectiveAgents` and `DefaultApplied` by the plugin's
+- [x] 1.4 Select `EffectiveAgents` and `DefaultApplied` by the plugin's
   merge rule (D3): the explicit file alone when present; otherwise the
   config-directory file when it defines `agents`, else the
   home-directory file; never the XDG file.
-- [ ] 1.5 Update GoDoc on `gateOptions`, `evaluateAutoAnswerGate` and
+- [x] 1.5 Update GoDoc on `gateOptions`, `evaluateAutoAnswerGate` and
   the new helper; keep `go vet` and `gofmt` clean.
 
 **Checkpoint (Phase 1)**: `go build ./...`, `go vet ./...`,
@@ -55,28 +55,28 @@ passes unmodified.
 
 ## 2. Acceptance and Edge Tests (gate_test.go)
 
-- [ ] 2.1 Acceptance tests through `lookupEnv` with `t.TempDir()`
+- [x] 2.1 Acceptance tests through `lookupEnv` with `t.TempDir()`
   trees: (a) config-directory file lists `curator`, clean home →
   REFUSED naming the config-directory file; (b) `AUTO_QUESTION_CONFIG`
   file lists `curator`, clean home → REFUSED naming it; (c)
   `AUTO_QUESTION_CONFIG` clean, home lists `curator` → REFUSED naming
   the home file (over-check, D2); (d) wildcard in the config-directory
   file → REFUSED.
-- [ ] 2.2 Effective-agent tests (D3): (a) home and config-directory
+- [x] 2.2 Effective-agent tests (D3): (a) home and config-directory
   files with different lists → config-directory list; (b)
   config-directory file without `agents` → home list; (c)
   `AUTO_QUESTION_CONFIG` file with its own list → that list, verdict
   names it first then home, config directory and XDG; (d)
   `AUTO_QUESTION_CONFIG` file without `agents` → default with
   `DefaultApplied`.
-- [ ] 2.3 Fail-closed and resolution tests (D4): relative
+- [x] 2.3 Fail-closed and resolution tests (D4): relative
   `AUTO_QUESTION_CONFIG` → REFUSED; relative `OPENCODE_CONFIG_DIR` →
   REFUSED; missing `AUTO_QUESTION_CONFIG` file → REFUSED naming it;
   missing config-directory file → absent, PASS; `~/...` values expand
   against `$HOME`; blank values behave as unset; `OPENCODE_CONFIG_DIR`
   equal to `$HOME/.config/opencode` or to the XDG directory is checked
   once.
-- [ ] 2.4 Run the full existing gate suite unmodified
+- [x] 2.4 Run the full existing gate suite unmodified
   (`go test -race -count=1 -run
   'Test(GateAutoAnswer|RenderGateVerdict|StripJSONC|RunAutoAnswerGate)'
   .`); a failure means the implementation drifted, not that a test is
@@ -87,11 +87,15 @@ passes unmodified.
 
 ## 3. Verification and Documentation
 
-- [ ] 3.1 CI-parity gate from `.github/workflows/ci.yml`:
+- [x] 3.1 CI-parity gate from `.github/workflows/ci.yml`:
   `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...`,
   the Gaze CRAP threshold step with the repository's flags, and
   golangci-lint.
-- [ ] 3.2 Documentation gate: README `dewey gate` section (the four
+  Result: build, vet and the full race suite pass; Gaze CRAPload 47/48,
+  GazeCRAPload 1/45 (PASS), no new gate function above the CRAP
+  threshold; golangci-lint reports the same 7 pre-existing staticcheck
+  findings as the base branch, none in gate.go or gate_test.go.
+- [x] 3.2 Documentation gate: README `dewey gate` section (the four
   sources and their order, the effective-agent rule, the new
   refusals); AGENTS.md Recent Changes entry; GoDoc covered by 1.5.
 - [ ] 3.3 Website sync: extend unbound-force/website#371 with a comment

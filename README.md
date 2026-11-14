@@ -515,7 +515,14 @@ Deterministic startup gates consumed by Dewey commands.
 dewey gate auto-answer
 ```
 
-`auto-answer` evaluates whether the opencode-auto-question plugin is configured to auto-answer questions for the `curator` agent. It checks every path the plugin could read its config from (`auto-question.jsonc`, JSONC with `{env:VAR}` interpolation): the home-directory file (`$HOME/.config/opencode/auto-question.jsonc`) always, plus the XDG file (`$XDG_CONFIG_HOME/opencode/auto-question.jsonc`) when `XDG_CONFIG_HOME` is set to a non-empty absolute path other than `$HOME/.config` — when `XDG_CONFIG_HOME` is unset, empty, or yields the same directory, exactly one file is checked. The home-directory file is authoritative for the effective `agents` list and the default-applied flag (defaulting to `["autonomy"]` when the file or its `agents` key is absent), because the plugin reads only that path; every checked file is a refusal input — an offending or unverifiable file at any checked path refuses, and no clean file masks an offending one. It also verifies that `.opencode/agents/curator.md` exists and declares `mode: subagent`. Exit 0 means pass; exit 1 means refusal. It fails closed: a home directory that cannot be resolved (unset, empty, or relative `$HOME`, even when `XDG_CONFIG_HOME` is set), a relative `XDG_CONFIG_HOME`, an unreadable, unparseable, or unresolvable configuration at any checked path, a `curator` or `*` entry, or a missing curator definition all refuse. The verdict is tool-rendered, names every checked file on pass and refusal, and is meant to be relayed verbatim:
+`auto-answer` evaluates whether the opencode-auto-question plugin is configured to auto-answer questions for the `curator` agent. It checks every file a plugin process could read its config from (JSONC with `{env:VAR}` interpolation), in this order:
+
+1. `$AUTO_QUESTION_CONFIG`, when set — the plugin then reads this file alone;
+2. `$HOME/.config/opencode/auto-question.jsonc`, always;
+3. `$OPENCODE_CONFIG_DIR/auto-question.jsonc`, when `OPENCODE_CONFIG_DIR` is set — the plugin merges it over the home-directory file;
+4. `$XDG_CONFIG_HOME/opencode/auto-question.jsonc`, when `XDG_CONFIG_HOME` is set to a non-empty absolute path other than `$HOME/.config` (the plugin never reads it; it is checked as a refusal input only).
+
+`~` and `~/...` in the two variables expand against `$HOME`; a blank value counts as unset, and a path equal to an earlier one is checked once. The gate checks files 2–4 even when `AUTO_QUESTION_CONFIG` is set, because the plugin may run with a different environment than the gate. Every checked file is a refusal input — an offending or unverifiable file at any checked path refuses, and no clean file masks an offending one. The reported effective `agents` list and default-applied flag follow the plugin's own rule: the `AUTO_QUESTION_CONFIG` file's list when that is set; otherwise the `OPENCODE_CONFIG_DIR` file's list when it defines `agents`, else the home-directory file's; defaulting to `["autonomy"]` when the deciding file or its `agents` key is absent. It also verifies that `.opencode/agents/curator.md` exists and declares `mode: subagent`. Exit 0 means pass; exit 1 means refusal. It fails closed: a home directory that cannot be resolved (unset, empty, or relative `$HOME`), a relative `XDG_CONFIG_HOME`, an `AUTO_QUESTION_CONFIG` or `OPENCODE_CONFIG_DIR` that is relative after `~` expansion, an `AUTO_QUESTION_CONFIG` file that does not exist, an unreadable, unparseable, or unresolvable configuration at any checked path, a `curator` or `*` entry, or a missing curator definition all refuse. The verdict is tool-rendered, names every checked file on pass and refusal, and is meant to be relayed verbatim:
 
 ```
 Auto-answer gate: PASS
@@ -527,7 +534,7 @@ Curator definition: resolved
 Registration: registered
 ```
 
-One `Also checked:` line appears per additional path, on pass and refusal alike; with `XDG_CONFIG_HOME` unset, empty, or coinciding with `$HOME/.config`, there is no additional path and the output is unchanged.
+`Config file:` names the first checked file and one `Also checked:` line follows per additional path, in the order above, on pass and refusal alike. With `AUTO_QUESTION_CONFIG` and `OPENCODE_CONFIG_DIR` unset, and `XDG_CONFIG_HOME` unset, empty, or coinciding with `$HOME/.config`, only the home-directory file is checked and there is no `Also checked:` line.
 
 `/dewey-distill` runs this gate before any pipeline stage and stops on any non-pass verdict.
 

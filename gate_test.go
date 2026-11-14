@@ -1237,3 +1237,259 @@ func TestRenderGateVerdict_MultiFile(t *testing.T) {
 		t.Error("carriage return was not replaced in the Also checked line")
 	}
 }
+
+// gateSourcesFixture is a temporary layout for the plugin's four config
+// sources (change gate-config-sources-parity): a home directory with
+// .config/opencode, an XDG root, an OPENCODE_CONFIG_DIR directory and an
+// AUTO_QUESTION_CONFIG file path, plus a work directory with a
+// resolvable curator definition. File contents are written only when
+// set, so an empty string leaves that file absent.
+type gateSourcesFixture struct {
+	workDir, homeRoot, xdgRoot, configDir    string
+	homeFile, xdgFile, configDirFile, aqFile string
+}
+
+func newGateSourcesFixture(t *testing.T) *gateSourcesFixture {
+	t.Helper()
+	f := &gateSourcesFixture{homeRoot: t.TempDir(), xdgRoot: t.TempDir(), configDir: t.TempDir()}
+	f.workDir, _ = newGateFixture(t, "subagent")
+	homeDir := filepath.Join(f.homeRoot, ".config", "opencode")
+	xdgDir := filepath.Join(f.xdgRoot, "opencode")
+	for _, dir := range []string{homeDir, xdgDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+	f.homeFile = filepath.Join(homeDir, autoAnswerConfigFile)
+	f.xdgFile = filepath.Join(xdgDir, autoAnswerConfigFile)
+	f.configDirFile = filepath.Join(f.configDir, autoAnswerConfigFile)
+	f.aqFile = filepath.Join(t.TempDir(), "explicit.jsonc")
+	return f
+}
+
+// write writes content to path when content is non-empty.
+func (f *gateSourcesFixture) write(t *testing.T, path, content string) {
+	t.Helper()
+	if content == "" {
+		return
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// evaluate runs the gate with HOME set and the given extra variables.
+func (f *gateSourcesFixture) evaluate(env map[string]string) gateVerdict {
+	vars := map[string]string{"HOME": f.homeRoot}
+	for k, v := range env {
+		vars[k] = v
+	}
+	return evaluateAutoAnswerGate(gateOptions{workDir: f.workDir, lookupEnv: mapEnv(vars)})
+}
+
+// checkedFiles is every file a verdict names, in order.
+func checkedFiles(v gateVerdict) []string {
+	return append([]string{v.ConfigFile}, v.AdditionalConfigFiles...)
+}
+
+// assertRefusalNames asserts a refusal whose reason and fix name file.
+func assertRefusalNames(t *testing.T, v gateVerdict, file string) {
+	t.Helper()
+	assertRefusal(t, v)
+	if !strings.Contains(v.Reason, file) {
+		t.Errorf("reason %q does not name %s", v.Reason, file)
+	}
+	if !strings.Contains(v.Fix, file) {
+		t.Errorf("fix %q does not name %s", v.Fix, file)
+	}
+}
+
+// TestGateAutoAnswer_ConfigDirFileCuratorRefused covers spec scenario
+// "Config-directory file lists curator": a curator or wildcard entry in
+// $OPENCODE_CONFIG_DIR/auto-question.jsonc refuses despite a clean
+// home-directory file, and the refusal names the config-directory file.
+func TestGateAutoAnswer_ConfigDirFileCuratorRefused(t *testing.T) {
+	for _, entry := range []string{"curator", "*"} {
+		t.Run(entry, func(t *testing.T) {
+			f := newGateSourcesFixture(t)
+			f.write(t, f.homeFile, `{"agents": ["autonomy"]}`)
+			f.write(t, f.configDirFile, `{"agents": ["hud-supervisor", "`+entry+`"]}`)
+			v := f.evaluate(map[string]string{"OPENCODE_CONFIG_DIR": f.configDir})
+			assertRefusalNames(t, v, f.configDirFile)
+			if want := []string{f.homeFile, f.configDirFile}; !slices.Equal(checkedFiles(v), want) {
+				t.Errorf("checked files = %v, want %v", checkedFiles(v), want)
+			}
+		})
+	}
+}
+
+// TestGateAutoAnswer_ExplicitFileCuratorRefused covers spec scenario
+// "AUTO_QUESTION_CONFIG file lists curator".
+func TestGateAutoAnswer_ExplicitFileCuratorRefused(t *testing.T) {
+	f := newGateSourcesFixture(t)
+	f.write(t, f.homeFile, `{"agents": ["autonomy"]}`)
+	f.write(t, f.aqFile, `{"agents": ["Curator "]}`)
+	v := f.evaluate(map[string]string{"AUTO_QUESTION_CONFIG": f.aqFile})
+	assertRefusalNames(t, v, f.aqFile)
+}
+
+// TestGateAutoAnswer_ExplicitFileDoesNotMaskHome covers spec scenario
+// "AUTO_QUESTION_CONFIG does not mask the home-directory file": the
+// plugin would read only the explicit file, but the gate over-checks
+// (design D2) and names the home-directory file.
+func TestGateAutoAnswer_ExplicitFileDoesNotMaskHome(t *testing.T) {
+	f := newGateSourcesFixture(t)
+	f.write(t, f.homeFile, `{"agents": ["autonomy", "curator"]}`)
+	f.write(t, f.aqFile, `{"agents": ["autonomy"]}`)
+	v := f.evaluate(map[string]string{"AUTO_QUESTION_CONFIG": f.aqFile})
+	assertRefusalNames(t, v, f.homeFile)
+	if strings.Contains(v.Reason, f.aqFile) {
+		t.Errorf("reason %q must blame the home-directory file, not the clean explicit file", v.Reason)
+	}
+}
+
+// TestGateAutoAnswer_EffectiveAgentsFollowMerge covers spec scenario
+// "Effective agents follow the plugin's merge": the config-directory
+// file's agents win over the home-directory file's, and a
+// config-directory file without agents leaves the home-directory list.
+func TestGateAutoAnswer_EffectiveAgentsFollowMerge(t *testing.T) {
+	cases := []struct {
+		name, configDirContent string
+		want                   []string
+	}{
+		{"config dir defines agents", `{"agents": ["hud-supervisor"]}`, []string{"hud-supervisor"}},
+		{"config dir without agents", `{"secondOpinion": {"enabled": true}}`, []string{"autonomy", "builder"}},
+		{"config dir file absent", "", []string{"autonomy", "builder"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newGateSourcesFixture(t)
+			f.write(t, f.homeFile, `{"agents": ["autonomy", "builder"]}`)
+			f.write(t, f.configDirFile, c.configDirContent)
+			f.write(t, filepath.Join(f.xdgRoot, "opencode", autoAnswerConfigFile), `{"agents": ["xdg-only"]}`)
+			v := f.evaluate(map[string]string{"OPENCODE_CONFIG_DIR": f.configDir, "XDG_CONFIG_HOME": f.xdgRoot})
+			if !v.Pass {
+				t.Fatalf("expected pass, got refusal: %s", v.Reason)
+			}
+			if !slices.Equal(v.EffectiveAgents, c.want) || v.DefaultApplied {
+				t.Errorf("effective agents = %v (default %v), want %v", v.EffectiveAgents, v.DefaultApplied, c.want)
+			}
+			if want := []string{f.homeFile, f.configDirFile, f.xdgFile}; !slices.Equal(checkedFiles(v), want) {
+				t.Errorf("checked files = %v, want %v", checkedFiles(v), want)
+			}
+		})
+	}
+}
+
+// TestGateAutoAnswer_ExplicitFileDecidesEffectiveAgents covers spec
+// scenario "AUTO_QUESTION_CONFIG decides the effective agents": the
+// explicit file's list (or the default when it has none) is reported,
+// and the verdict names it first, then home, config dir and XDG.
+func TestGateAutoAnswer_ExplicitFileDecidesEffectiveAgents(t *testing.T) {
+	for _, c := range []struct {
+		name, content string
+		want          []string
+		def           bool
+	}{
+		{"with agents", `{"agents": ["reviewer"]}`, []string{"reviewer"}, false},
+		{"without agents", `{"verbose": true}`, []string{"autonomy"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newGateSourcesFixture(t)
+			f.write(t, f.homeFile, `{"agents": ["builder"]}`)
+			f.write(t, f.configDirFile, `{"agents": ["hud-supervisor"]}`)
+			f.write(t, f.aqFile, c.content)
+			v := f.evaluate(map[string]string{
+				"AUTO_QUESTION_CONFIG": f.aqFile, "OPENCODE_CONFIG_DIR": f.configDir, "XDG_CONFIG_HOME": f.xdgRoot,
+			})
+			if !v.Pass {
+				t.Fatalf("expected pass, got refusal: %s", v.Reason)
+			}
+			if !slices.Equal(v.EffectiveAgents, c.want) || v.DefaultApplied != c.def {
+				t.Errorf("effective agents = %v (default %v), want %v (default %v)", v.EffectiveAgents, v.DefaultApplied, c.want, c.def)
+			}
+			want := []string{f.aqFile, f.homeFile, f.configDirFile, f.xdgFile}
+			if !slices.Equal(checkedFiles(v), want) {
+				t.Errorf("checked files = %v, want %v", checkedFiles(v), want)
+			}
+			rendered := renderGateVerdict(v)
+			if !strings.Contains(rendered, "Config file: "+f.aqFile) {
+				t.Errorf("rendered verdict must name the explicit file first:\n%s", rendered)
+			}
+		})
+	}
+}
+
+// TestGateAutoAnswer_NewSourceUnverifiableRefused covers spec scenario
+// "New source unverifiable": relative values after ~ expansion, and a
+// missing AUTO_QUESTION_CONFIG file, refuse.
+func TestGateAutoAnswer_NewSourceUnverifiableRefused(t *testing.T) {
+	t.Run("relative AUTO_QUESTION_CONFIG", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		v := f.evaluate(map[string]string{"AUTO_QUESTION_CONFIG": "cfg/aq.jsonc"})
+		if v.Pass || v.Fix == "" {
+			t.Fatalf("expected a refusal with a fix, got %+v", v)
+		}
+		if !strings.Contains(v.Reason, "AUTO_QUESTION_CONFIG") || !strings.Contains(v.Reason, "cfg/aq.jsonc") {
+			t.Errorf("reason %q must name the variable and value", v.Reason)
+		}
+	})
+	t.Run("relative OPENCODE_CONFIG_DIR", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		v := f.evaluate(map[string]string{"OPENCODE_CONFIG_DIR": "~x/opencode"})
+		if v.Pass || v.Fix == "" {
+			t.Fatalf("expected a refusal with a fix, got %+v", v)
+		}
+		if !strings.Contains(v.Reason, "OPENCODE_CONFIG_DIR") {
+			t.Errorf("reason %q must name the variable", v.Reason)
+		}
+	})
+	t.Run("missing AUTO_QUESTION_CONFIG file", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		v := f.evaluate(map[string]string{"AUTO_QUESTION_CONFIG": f.aqFile})
+		assertRefusalNames(t, v, "AUTO_QUESTION_CONFIG")
+		if !strings.Contains(v.Reason, f.aqFile) {
+			t.Errorf("reason %q must name the missing file", v.Reason)
+		}
+	})
+}
+
+// TestGateAutoAnswer_NewSourceResolution covers design D4's resolution
+// rules: a missing config-directory file is absent (pass on the
+// default), ~/ values expand against HOME, blank values are unset, and
+// a source equal to an earlier candidate is checked once.
+func TestGateAutoAnswer_NewSourceResolution(t *testing.T) {
+	t.Run("missing config-directory file is absent", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		v := f.evaluate(map[string]string{"OPENCODE_CONFIG_DIR": f.configDir})
+		if !v.Pass || !v.DefaultApplied {
+			t.Fatalf("expected pass on the default, got %+v", v)
+		}
+	})
+	t.Run("tilde expands against HOME", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		dir := filepath.Join(f.homeRoot, "tool")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		f.write(t, filepath.Join(dir, autoAnswerConfigFile), `{"agents": ["curator"]}`)
+		v := f.evaluate(map[string]string{"OPENCODE_CONFIG_DIR": "~/tool"})
+		assertRefusalNames(t, v, filepath.Join(dir, autoAnswerConfigFile))
+	})
+	t.Run("blank values are unset", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		v := f.evaluate(map[string]string{"AUTO_QUESTION_CONFIG": "  ", "OPENCODE_CONFIG_DIR": ""})
+		if !v.Pass || len(v.AdditionalConfigFiles) != 0 || v.ConfigFile != f.homeFile {
+			t.Fatalf("blank values must leave the single home-directory candidate, got %+v", v)
+		}
+	})
+	t.Run("config dir equal to the home or XDG directory is checked once", func(t *testing.T) {
+		f := newGateSourcesFixture(t)
+		for _, dir := range []string{filepath.Dir(f.homeFile), filepath.Dir(f.xdgFile) + "/"} {
+			v := f.evaluate(map[string]string{"OPENCODE_CONFIG_DIR": dir, "XDG_CONFIG_HOME": f.xdgRoot})
+			if want := []string{f.homeFile, f.xdgFile}; !slices.Equal(checkedFiles(v), want) {
+				t.Errorf("OPENCODE_CONFIG_DIR=%s: checked files = %v, want %v", dir, checkedFiles(v), want)
+			}
+		}
+	})
+}

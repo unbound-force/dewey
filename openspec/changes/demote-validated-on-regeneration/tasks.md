@@ -7,12 +7,12 @@
 
 - [x] 2.1 Remove `synthesizeClusters` validated-tier lookup so every cluster is `tier: draft`; preservation is store-owned (VTB-FR-003, KD-FR-108)
 - [x] 2.2 Add truncated SHA-256 helper `contentHash` (first 8 bytes hex) and wire into `persistCompiledArticle` and `StoreCompiled` page construction over persisted bytes (VTB-FR-002)
-- [ ] 2.3 [P] Update `tools/compile_test.go`: repurpose `TestCompile_PreservesValidatedTierAndProvenance` to assert demotion on changed bytes plus byte-identical preservation and `compiled_by`; add hash-recording assertions; remove lookup-failure test with the deleted branch; cover failed-topic/total-failure/empty-collection retention carve-outs still retain validated
+- [x] 2.3 [P] Update `tools/compile_test.go`: repurpose `TestCompile_PreservesValidatedTierAndProvenance` to assert demotion on changed bytes plus byte-identical preservation and `compiled_by`; add hash-recording assertions; remove lookup-failure test with the deleted branch; cover failed-topic/total-failure/empty-collection retention carve-outs still retain validated
 - [ ] 2.4 [P] Update `tools/curate_test.go` knowledge re-index cases: changed validated file lands `curated`, unchanged validated file skipped without write (VTB-FR-004)
 
 ## 3. Curate re-index tier on change
 
-- [ ] 3.1 Update `tools/curate.go:IndexKnowledgeStore` to write `curated` on hash change and skip on hash equality, leaving validated untouched only when bytes unchanged (VTB-FR-004)
+- [x] 3.1 Update `tools/curate.go:IndexKnowledgeStore` to write `curated` on hash change and skip on hash equality, leaving validated untouched only when bytes unchanged (VTB-FR-004)
 
 ## 4. Docs and constitution alignment verification
 

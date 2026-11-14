@@ -263,8 +263,11 @@ func (c *Curate) loadStoreDocCount(cfg curate.StoreConfig) (int, error) {
 // Design decision: Follows the same PersistBlocks/GenerateEmbeddings
 // pipeline as store_learning and reIngestLearnings for consistency.
 // Pages are upserted — if a page already exists (from a previous curation),
-// its blocks and embeddings are replaced. A human-validated tier is never
-// demoted on re-index.
+// its blocks and embeddings are replaced. The validated tier is content-bound
+// (VTB-FR-004): a file whose content hash is unchanged is skipped without a
+// write, so a human-validated page keeps its vouch on identical bytes, while
+// a changed file re-indexes at tier "curated" — the same tier a fresh insert
+// receives — so regeneration never carries a human vouch onto new content.
 func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int, logger *log.Logger) int {
 	storePath := curate.ResolveStorePath(cfg, vaultPath)
 	sourceID := knowledgeSourceID(cfg.Name)
@@ -312,7 +315,9 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 
 		if existing != nil {
 			if existing.ContentHash == contentHash {
-				// Content unchanged — skip re-indexing.
+				// Content unchanged — skip without any write, so a validated
+				// tier keeps its vouch (VTB-FR-004). This check must stay
+				// ahead of the destructive steps below.
 				continue
 			}
 			// Content changed — delete old blocks and re-index.
@@ -320,12 +325,16 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 				logger.Warn("failed to delete old blocks",
 					"page", pageName, "err", err)
 			}
-			// Update existing page. Preserve a human-validated tier; a
-			// content change does not silently demote reviewed knowledge.
+			// Update existing page. Changed content lands at the machine tier
+			// "curated" — the same tier a fresh insert receives — even when the
+			// stored tier is "validated": a human vouch covers specific bytes,
+			// and unattended curation never writes "validated" (VTB-FR-004).
+			// Unchanged files were skipped above, so an intact vouch never
+			// reaches this write. The unconditional assignment is load-bearing:
+			// UpdatePage applies the caller-supplied tier when hashes differ,
+			// so a read-carried "validated" would otherwise be written back.
 			existing.ContentHash = contentHash
-			if existing.Tier != "validated" {
-				existing.Tier = "curated"
-			}
+			existing.Tier = "curated"
 			existing.SourceID = sourceID
 			if err := s.UpdatePage(existing); err != nil {
 				logger.Warn("failed to update page",

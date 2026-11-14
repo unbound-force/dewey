@@ -77,11 +77,13 @@ total-failure, and empty-collection retention scenarios are untouched
   article bytes are byte-identical to the stored article bytes
 - **THEN** the compiled page's tier MUST remain `validated` after
   the write (the store rule VTB-FR-001 preserves it on hash
-  equality)
+  equality) — the page row is the authority on the effective tier
 - **AND** the compile result's per-article `tier` field MUST report
-  `validated`
+  the write tier `draft` (a write receipt; the effective tier lives
+  on the page row)
 - **AND** the regenerated article frontmatter MUST record
-  `tier: validated`
+  `tier: draft` (the write tier compile wrote; the store row holds
+  the preserved `validated`)
 
 #### Scenario: A newly compiled topic is draft
 

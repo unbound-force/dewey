@@ -49,8 +49,9 @@ type gateOptions struct {
 	// candidate file, no environment resolution, no additional
 	// checked paths — the single-path seam every existing test pins.
 	// When empty, evaluation resolves candidates from the environment:
-	// the home-directory path always, plus the XDG path when
-	// XDG_CONFIG_HOME differs from it.
+	// the AUTO_QUESTION_CONFIG file when set, the home-directory path
+	// always, the OPENCODE_CONFIG_DIR file when set, and the XDG path
+	// when XDG_CONFIG_HOME differs from the home directory.
 	configDir string
 	// workDir is where .opencode/agents/curator.md is looked up.
 	// Defaults to the process working directory.
@@ -63,10 +64,11 @@ type gateOptions struct {
 // gateVerdict is the evaluated outcome rendered by the command.
 type gateVerdict struct {
 	Pass bool
-	// ConfigFile is the authoritative config file — the
-	// home-directory candidate, or the injected configDir's file
-	// when evaluation collapses to a single path. The reported
-	// EffectiveAgents and DefaultApplied come from it alone.
+	// ConfigFile is the first checked config file — the
+	// AUTO_QUESTION_CONFIG file when set, else the home-directory
+	// candidate, or the injected configDir's file when evaluation
+	// collapses to a single path. EffectiveAgents and DefaultApplied
+	// follow the plugin's merge rule over the checked files.
 	ConfigFile string
 	// AdditionalConfigFiles lists the checked config files after
 	// ConfigFile, in evaluation order, so the verdict names every
@@ -82,13 +84,15 @@ type gateVerdict struct {
 
 // evaluateAutoAnswerGate deterministically evaluates whether the
 // curator agent is configured for automatic question answering, per
-// CA-FR-007. It checks the home-directory config path always, plus
-// the XDG path when XDG_CONFIG_HOME resolves elsewhere. The plugin
-// reads only the home-directory file, so that file is authoritative
-// for the effective agent list and the default-applied flag; every
-// checked file — including the XDG file — is a refusal input that no
-// clean file can mask, and the verdict names every file checked, on
-// pass and refusal alike. An injected gateOptions.configDir collapses
+// CA-FR-007. It checks every file a plugin process could read given
+// this environment: the AUTO_QUESTION_CONFIG file when set, the
+// home-directory config path always, the OPENCODE_CONFIG_DIR file when
+// set, and the XDG path when XDG_CONFIG_HOME resolves elsewhere. The
+// effective agent list and default-applied flag follow the plugin's
+// merge rule (the AUTO_QUESTION_CONFIG file alone, else the
+// OPENCODE_CONFIG_DIR file's agents over the home-directory file's);
+// every checked file is a refusal input that no clean file can mask,
+// and the verdict names every file checked, on pass and refusal alike. An injected gateOptions.configDir collapses
 // evaluation to exactly that one directory and skips environment
 // resolution. Every failure path is fail-closed: an unverifiable
 // input refuses rather than assuming auto-answering is off.
@@ -111,12 +115,14 @@ func evaluateAutoAnswerGate(opts gateOptions) gateVerdict {
 	}
 
 	// Build the ordered candidate list per CA-FR-007: the
-	// home-directory file is always checked (the plugin reads only
-	// that path), plus the XDG file when XDG_CONFIG_HOME resolves
-	// elsewhere. An injected configDir collapses evaluation to exactly
-	// that one candidate and skips environment resolution.
+	// AUTO_QUESTION_CONFIG file when set, the home-directory file
+	// always, the OPENCODE_CONFIG_DIR file when set, and the XDG file
+	// when XDG_CONFIG_HOME resolves elsewhere — every file a plugin
+	// process could read given this environment. An injected
+	// configDir collapses evaluation to exactly that one candidate and
+	// skips environment resolution.
 	configDir := opts.configDir
-	var candidates []string
+	var candidates []gateCandidate
 	// scanDir is the single global config directory the advisory
 	// registration scan receives, per design D6: the injected
 	// configDir when present, else the XDG-first pick from the
@@ -133,9 +139,12 @@ func evaluateAutoAnswerGate(opts gateOptions) gateVerdict {
 				Fix:    "Set HOME to a non-empty absolute path, and XDG_CONFIG_HOME to an absolute path when set, then re-run /dewey-distill.",
 			}
 		}
-		candidates = []string{filepath.Join(dirs.homeDir, autoAnswerConfigFile)}
-		if dirs.xdgDir != "" {
-			candidates = append(candidates, filepath.Join(dirs.xdgDir, autoAnswerConfigFile))
+		candidates, err = resolveGateCandidates(dirs, lookup)
+		if err != nil {
+			return gateVerdict{
+				Reason: "cannot resolve the plugin config location: " + err.Error(),
+				Fix:    "Set AUTO_QUESTION_CONFIG and OPENCODE_CONFIG_DIR to absolute paths (or ~/...), or unset them, then re-run /dewey-distill.",
+			}
 		}
 		// XDG-first per D6: the XDG directory when it differs from
 		// the home-directory directory, else the home-directory
@@ -146,37 +155,35 @@ func evaluateAutoAnswerGate(opts gateOptions) gateVerdict {
 			scanDir = dirs.homeDir
 		}
 	} else {
-		candidates = []string{filepath.Join(configDir, autoAnswerConfigFile)}
+		candidates = []gateCandidate{{path: filepath.Join(configDir, autoAnswerConfigFile), role: roleHome}}
 	}
 
-	// The first candidate — the home-directory file, or the injected
-	// config directory's file — is the authoritative config file. The
-	// remaining candidates, in evaluation order, are additionally
-	// checked files: the verdict names every checked path on pass and
-	// refusal, and an injected configDir yields exactly one candidate
-	// so the single-path seam reports none.
-	verdict := gateVerdict{
-		ConfigFile:            candidates[0],
-		AdditionalConfigFiles: candidates[1:],
+	// The first candidate is the verdict's config file — the
+	// AUTO_QUESTION_CONFIG file when set, else the home-directory
+	// file, or the injected config directory's file. The remaining
+	// candidates, in evaluation order, are additionally checked files:
+	// the verdict names every checked path on pass and refusal, and an
+	// injected configDir yields exactly one candidate so the
+	// single-path seam reports none.
+	verdict := gateVerdict{ConfigFile: candidates[0].path}
+	for _, c := range candidates[1:] {
+		verdict.AdditionalConfigFiles = append(verdict.AdditionalConfigFiles, c.path)
 	}
 	// Advisory only: registration state never changes the verdict.
 	verdict.Registration, verdict.Warnings = scanPluginRegistration(workDir, scanDir)
 
 	// Evaluate every candidate before deciding, then refuse on the
-	// first offending or unverifiable file in the fixed home-then-XDG
-	// order, so the refusal names exactly one deterministic file.
+	// first offending or unverifiable file in candidate order, so the
+	// refusal names exactly one deterministic file.
 	results := make([]gateCandidateResult, 0, len(candidates))
-	for _, path := range candidates {
-		results = append(results, evaluateGateCandidate(path, lookup, verdict))
+	for _, c := range candidates {
+		results = append(results, evaluateGateCandidate(c, lookup, verdict))
 	}
 
-	// The first candidate is authoritative for the reported list: the
-	// effective agents and the default-applied flag come from it
-	// alone, never from a later candidate.
-	if first := results[0]; first.ok {
-		verdict.EffectiveAgents = first.agents
-		verdict.DefaultApplied = first.defaultApplied
-	}
+	// The reported effective agents and default-applied flag are the
+	// ones the plugin computes (design D3); refusal below is a union
+	// over every candidate regardless.
+	verdict.EffectiveAgents, verdict.DefaultApplied = effectiveGateAgents(candidates, results)
 
 	// No clean file masks an offending or unverifiable one.
 	for _, result := range results {
@@ -205,8 +212,8 @@ func evaluateAutoAnswerGate(opts gateOptions) gateVerdict {
 // is verifiable, or the fail-closed refusal verdict naming it when it
 // is not. Every candidate's result is a refusal input — an offending
 // or unverifiable file at any checked path refuses the gate — while
-// only the authoritative first candidate's result carries the
-// reported effective agents.
+// the reported effective agents come from the plugin's merge rule
+// (effectiveGateAgents).
 type gateCandidateResult struct {
 	// path is the evaluated candidate; a refusal names it so the
 	// reason and the fix point at exactly one deterministic file.
@@ -222,14 +229,146 @@ type gateCandidateResult struct {
 	ok bool
 }
 
-// evaluateGateCandidate evaluates one auto-question.jsonc candidate
+// gateCandidateRole is the plugin config source a checked file stands
+// for. It decides the file's part in the reported effective agent list
+// (design D3) and whether a missing file refuses (design D4).
+type gateCandidateRole int
+
+const (
+	// roleExplicit is the AUTO_QUESTION_CONFIG file: the plugin reads
+	// it alone, and a missing one is an error.
+	roleExplicit gateCandidateRole = iota
+	// roleHome is $HOME/.config/opencode/auto-question.jsonc.
+	roleHome
+	// roleConfigDir is $OPENCODE_CONFIG_DIR/auto-question.jsonc,
+	// merged over the home-directory file.
+	roleConfigDir
+	// roleXDG is $XDG_CONFIG_HOME/opencode/auto-question.jsonc: never
+	// read by the plugin, checked as a refusal input only.
+	roleXDG
+)
+
+// gateCandidate is one checked plugin config file and its source.
+type gateCandidate struct {
+	path string
+	role gateCandidateRole
+}
+
+// resolveGateCandidates returns the ordered plugin config candidates
+// per CA-FR-007 and design D1: the AUTO_QUESTION_CONFIG file when set,
+// the home-directory file always, the OPENCODE_CONFIG_DIR file when
+// set, and the XDG file when dirs carries one. A candidate whose
+// cleaned path equals an earlier one's is dropped (lexical comparison,
+// no symlink evaluation: aliasing can only over-check). With neither
+// variable set the result is exactly the home-then-XDG pair evaluated
+// before. A value that is relative after ~ expansion is an error: the
+// plugin resolves it against a working directory the gate cannot
+// observe.
+func resolveGateCandidates(dirs pluginConfigDirs, lookup func(string) (string, bool)) ([]gateCandidate, error) {
+	home, _ := lookup("HOME") // validated absolute by resolvePluginConfigDirs
+	var candidates []gateCandidate
+	add := func(path string, role gateCandidateRole) {
+		path = filepath.Clean(path)
+		for _, c := range candidates {
+			if c.path == path {
+				return
+			}
+		}
+		candidates = append(candidates, gateCandidate{path: path, role: role})
+	}
+
+	explicit, err := pluginSourceEnv(lookup, "AUTO_QUESTION_CONFIG", home)
+	if err != nil {
+		return nil, err
+	}
+	configDir, err := pluginSourceEnv(lookup, "OPENCODE_CONFIG_DIR", home)
+	if err != nil {
+		return nil, err
+	}
+	if explicit != "" {
+		add(explicit, roleExplicit)
+	}
+	add(filepath.Join(dirs.homeDir, autoAnswerConfigFile), roleHome)
+	if configDir != "" {
+		add(filepath.Join(configDir, autoAnswerConfigFile), roleConfigDir)
+	}
+	if dirs.xdgDir != "" {
+		add(filepath.Join(dirs.xdgDir, autoAnswerConfigFile), roleXDG)
+	}
+	return candidates, nil
+}
+
+// pluginSourceEnv reads one of the plugin's config-location variables
+// the way the plugin does: trimmed, blank meaning unset, and ~ or ~/...
+// expanded against home. It returns "" when the variable is unset or
+// blank, and an error when the expanded value is not absolute.
+func pluginSourceEnv(lookup func(string) (string, bool), name, home string) (string, error) {
+	raw, ok := lookup(name)
+	value := strings.TrimSpace(raw)
+	if !ok || value == "" {
+		return "", nil
+	}
+	if value == "~" {
+		value = home
+	} else if strings.HasPrefix(value, "~/") {
+		value = filepath.Join(home, value[2:])
+	}
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("%s %q is not an absolute path", name, raw)
+	}
+	return value, nil
+}
+
+// effectiveGateAgents returns the effective agent list and
+// default-applied flag the plugin computes (design D3): the
+// AUTO_QUESTION_CONFIG file alone when it is a candidate; otherwise
+// the OPENCODE_CONFIG_DIR file when it defines agents, else the
+// home-directory file. The XDG file never contributes. Results that
+// could not be verified contribute nothing; they refuse the gate.
+func effectiveGateAgents(candidates []gateCandidate, results []gateCandidateResult) ([]string, bool) {
+	var deciding *gateCandidateResult
+	for i, c := range candidates {
+		result := &results[i]
+		switch c.role {
+		case roleExplicit:
+			if result.ok {
+				return result.agents, result.defaultApplied
+			}
+			return nil, false
+		case roleHome:
+			if deciding == nil && result.ok {
+				deciding = result
+			}
+		case roleConfigDir:
+			if result.ok && !result.defaultApplied {
+				deciding = result
+			}
+		}
+	}
+	if deciding == nil {
+		return nil, false
+	}
+	return deciding.agents, deciding.defaultApplied
+}
+
+// evaluateGateCandidate evaluates one plugin config candidate
 // through the existing per-file logic — stat, JSONC parse, agents
 // extraction, {env:VAR} interpolation, trim and case-fold — wrapping
 // resolvePluginAgents so the candidate loop in evaluateAutoAnswerGate
 // stays focused. base is the partial verdict carrying the checked-file
 // set; a per-file refusal inherits it, so a refusal still names every
 // file the gate checked.
-func evaluateGateCandidate(path string, lookup func(string) (string, bool), base gateVerdict) gateCandidateResult {
+func evaluateGateCandidate(c gateCandidate, lookup func(string) (string, bool), base gateVerdict) gateCandidateResult {
+	path := c.path
+	if c.role == roleExplicit {
+		// The plugin treats a missing AUTO_QUESTION_CONFIG file as an
+		// error (design D4): refuse rather than apply the default.
+		if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+			base.Reason = fmt.Sprintf("AUTO_QUESTION_CONFIG names %s, which does not exist", path)
+			base.Fix = "Point AUTO_QUESTION_CONFIG at an existing plugin config or unset it, then re-run /dewey-distill."
+			return gateCandidateResult{path: path, refusal: base}
+		}
+	}
 	agents, defaultApplied, refusal, ok := resolvePluginAgents(path, lookup, base)
 	return gateCandidateResult{
 		path:           path,
@@ -283,12 +422,12 @@ func agentListRefusal(agents []string, configFile string) (gateVerdict, bool) {
 
 // pluginConfigDirs is the ordered pair of OpenCode global config
 // directories the gate evaluates, per CA-FR-007: the home-directory
-// directory is always present and authoritative, and the XDG directory
-// joins the pair only when XDG_CONFIG_HOME resolves elsewhere.
+// directory is always present, and the XDG directory joins the pair
+// only when XDG_CONFIG_HOME resolves elsewhere. The AUTO_QUESTION_CONFIG
+// and OPENCODE_CONFIG_DIR sources are added by resolveGateCandidates.
 type pluginConfigDirs struct {
 	// homeDir is $HOME/.config/opencode — the path the plugin reads
-	// unconditionally, so it is never skipped and its file is
-	// authoritative for the effective agent list.
+	// unless AUTO_QUESTION_CONFIG is set, so it is never skipped.
 	homeDir string
 	// xdgDir is $XDG_CONFIG_HOME/opencode when XDG_CONFIG_HOME is set,
 	// non-empty, absolute, and lexically different from homeDir; empty
@@ -298,9 +437,10 @@ type pluginConfigDirs struct {
 
 // resolvePluginConfigDirs resolves the ordered pair of OpenCode plugin
 // config directories, per CA-FR-007. The home directory,
-// $HOME/.config/opencode, is always resolved and is authoritative: the
-// plugin loads join(homedir(), ".config", "opencode") unconditionally,
-// so HOME must be set, non-empty, and absolute — including when
+// $HOME/.config/opencode, is always resolved: the plugin loads
+// join(homedir(), ".config", "opencode") unless AUTO_QUESTION_CONFIG is
+// set, and ~ in the other sources expands against it, so HOME must be
+// set, non-empty, and absolute — including when
 // XDG_CONFIG_HOME is set, because an unresolvable HOME leaves the path
 // the plugin actually reads unverifiable. The XDG directory,
 // $XDG_CONFIG_HOME/opencode, joins the pair only when XDG_CONFIG_HOME

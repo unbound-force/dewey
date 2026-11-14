@@ -405,36 +405,27 @@ func (s *Store) ListPages() ([]*Page, error) {
 // to the current time. The content_hash comparison enables incremental
 // indexing — only re-index when content changes.
 //
-// The tier column is content-bound: a stored "validated" tier is preserved
-// only when the incoming content hash equals the stored content hash; when
-// the hashes differ, the caller-supplied tier applies, so regenerated
-// content loses the human vouch. Two empty hashes compare as equal, so
-// writers that do not track content hashes keep the pre-change
-// never-demote behavior. Pages whose stored tier is not "validated" take
-// the caller-supplied tier unconditionally, on hash match and hash change
-// alike. The promotion trust boundary stays closed: a read-then-write
-// that carries an unchanged hash (for example a metadata write racing a
-// promote) does not revert the promotion. Tier transitions onto
-// "validated" remain the promote gate's exclusive responsibility — this
-// rule only preserves or demotes, never elevates.
+// The caller-supplied tier always lands, including demotions: under the
+// git-trust-source design (design D4) the DB tier is a cache recomputed
+// on next index from file state plus fetched refs, so a stale "validated"
+// row must converge to the ingestion-derived value (GTS-FR-005) — a
+// regenerated article reads as draft until re-merged (#204). The trust
+// authority is git blob equality, not this column, so UpdatePage applies
+// no tier policy of its own.
 //
 // Returns an error if the update query fails or if no page exists with
 // the given name (page not found).
 func (s *Store) UpdatePage(p *Page) error {
 	p.UpdatedAt = time.Now().UnixMilli()
 
-	// SQLite evaluates every SET expression against the pre-update row, so
-	// the "? = content_hash" check inside the CASE compares the incoming
-	// hash against the stored hash — not the value assigned by
-	// "content_hash = ?" earlier in the same statement.
 	result, err := s.db.Exec(`
 		UPDATE pages SET original_name = ?, source_id = ?, source_doc_id = ?,
 		properties = ?, content_hash = ?, is_journal = ?, updated_at = ?,
-		tier = CASE WHEN tier = 'validated' AND ? = content_hash THEN 'validated' ELSE ? END, category = ?
+		tier = ?, category = ?
 		WHERE name = ?`,
 		p.OriginalName, p.SourceID, p.SourceDocID,
 		p.Properties, p.ContentHash, boolToInt(p.IsJournal),
-		p.UpdatedAt, p.ContentHash, p.Tier, p.Category, p.Name,
+		p.UpdatedAt, p.Tier, p.Category, p.Name,
 	)
 	if err != nil {
 		return fmt.Errorf("update page %q: %w", p.Name, err)
@@ -1067,49 +1058,6 @@ func (s *Store) PagesWithoutEmbeddings() ([]*Page, error) {
 	return scanPages(rows)
 }
 
-// PromotePagesTiers atomically transitions every named page from draft to
-// validated in a single transaction. If any page is missing or no longer a
-// draft, the transaction rolls back and no page is changed. This gives batch
-// promotion an all-or-nothing guarantee at the trust boundary, and the
-// conditional UPDATE (tier = 'draft') closes the per-page read-then-write
-// window: a page deleted or re-tiered between resolution and promotion
-// changes no rows and rolls the whole batch back. Callers must still resolve
-// pages first so they can report which name was requested.
-func (s *Store) PromotePagesTiers(names []string) error {
-	if len(names) == 0 {
-		return fmt.Errorf("no pages to promote")
-	}
-
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("begin promote transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	now := time.Now().UnixMilli()
-	for _, name := range names {
-		result, err := tx.Exec(`
-			UPDATE pages SET tier = 'validated', updated_at = ? WHERE name = ? AND tier = 'draft'`,
-			now, name,
-		)
-		if err != nil {
-			return fmt.Errorf("promote page tier %q: %w", name, err)
-		}
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("check promote result for %q: %w", name, err)
-		}
-		if rows == 0 {
-			return fmt.Errorf("page %q is no longer a draft; it may have been retiered or removed", name)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit promote transaction: %w", err)
-	}
-	return nil
-}
-
 // GetPagesWithProperty returns all pages whose properties JSON column contains
 // the specified key. Uses SQLite json_extract() to query the JSON structure.
 // Returns an empty slice (not nil) if no pages match or the store is empty.
@@ -1141,10 +1089,11 @@ func (s *Store) GetPagesWithProperty(key string) ([]*Page, error) {
 // learning. It writes only the properties and updated_at columns of the
 // named page, guarded on the row still being a learning (source_id =
 // SourceLearning) whose properties record no superseded_by successor —
-// the compare-and-swap that PromotePagesTiers pioneered for this store:
-// the guard lives in the conditional UPDATE's WHERE clause with a
-// rows-affected check, so a page that was concurrently replaced or
-// already superseded changes no rows regardless of which writer raced.
+// a compare-and-swap whose guard lives in the conditional UPDATE's WHERE
+// clause with a rows-affected check (the pattern the removed
+// PromotePagesTiers batch write pioneered), so a page that was
+// concurrently replaced or already superseded changes no rows regardless
+// of which writer raced.
 // The SQL predicate defeats every writer to the row, including ones that
 // bypass tools-package locking; a read-then-write under a mutex cannot.
 // The NULL and empty-string disjuncts mirror GetPagesWithProperty's guard

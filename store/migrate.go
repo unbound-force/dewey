@@ -77,8 +77,15 @@ func (s *Store) migrate() error {
 // migrateV1toV2 adds tier and category columns to the pages table
 // for contamination separation (FR-020) and category-aware compilation (FR-008).
 // Existing learning pages are backfilled with tier = 'draft'.
-// Existing compiled pages (if any) are backfilled with tier = 'draft'.
 // All other pages default to tier = 'authored'.
+//
+// The migration is deterministic and tier-preserving
+// (git-is-the-source-of-record, IP-FR-003): it never rewrites the stored
+// tier of compiled or curated pages — the removed backfill that forced
+// compiled pages to 'draft' is gone, because pages.tier is a cache of the
+// git rule (GTS-FR-005) re-derived on the next index from file frontmatter
+// plus default-branch blob equality. Learning pages keep their backfill:
+// learnings stay draft forever (IP-FR-002).
 //
 // The migration is idempotent: re-running it on a v2 schema is safe because
 // ALTER TABLE errors for duplicate columns are silently ignored.
@@ -104,14 +111,13 @@ func (s *Store) migrateV1toV2() error {
 		}
 	}
 
-	// Backfill: learning pages are draft tier.
+	// Backfill: learning pages are draft tier (IP-FR-002 — learnings stay
+	// draft forever; this learning-path behavior is unchanged). Compiled
+	// and curated pages are deliberately NOT reset: their stored tier is
+	// preserved as-is (IP-FR-003) and the effective tier is re-derived on
+	// the next index per IP-FR-001.
 	if _, err := tx.Exec(`UPDATE pages SET tier = 'draft' WHERE source_id = 'learning'`); err != nil {
 		return fmt.Errorf("backfill learning tier: %w", err)
-	}
-
-	// Backfill: compiled pages are draft tier.
-	if _, err := tx.Exec(`UPDATE pages SET tier = 'draft' WHERE source_id = 'compiled'`); err != nil {
-		return fmt.Errorf("backfill compiled tier: %w", err)
 	}
 
 	// Create index for tier-filtered search performance.

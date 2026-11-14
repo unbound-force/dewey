@@ -148,13 +148,17 @@ func TestMigrateV1toV2_LearningPagesBackfilled(t *testing.T) {
 		t.Errorf("learning page Tier = %q, want %q", learningPage.Tier, "draft")
 	}
 
-	// Verify compiled page has tier='draft'.
+	// Verify compiled page keeps the column default. The v1→v2 step no
+	// longer backfills compiled pages to draft (IP-FR-003): pages.tier is
+	// a cache the next index re-derives from the git rule, so migration
+	// must not rewrite it. A v1 row gains the added column's default
+	// ('authored') and keeps it until that re-index.
 	compiledPage, err := s.GetPage("compiled/auth")
 	if err != nil {
 		t.Fatalf("GetPage(compiled): %v", err)
 	}
-	if compiledPage.Tier != "draft" {
-		t.Errorf("compiled page Tier = %q, want %q", compiledPage.Tier, "draft")
+	if compiledPage.Tier != "authored" {
+		t.Errorf("compiled page Tier = %q, want %q (no compiled backfill; re-derived at next index)", compiledPage.Tier, "authored")
 	}
 
 	// Verify regular page has tier='authored' (the default).

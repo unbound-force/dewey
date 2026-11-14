@@ -1349,7 +1349,7 @@ func TestServerIntegration_StoreBackedPagesSameSession(t *testing.T) {
 	nav := tools.NewNavigate(vc)
 	searchTool := tools.NewSearch(vc)
 	compileTool := tools.NewCompile(s, nil, nil, vaultDir, nil, 0)
-	promoteTool := tools.NewPromote(s)
+	promoteTool := tools.NewPromote(s, vaultDir)
 	ctx := context.Background()
 
 	// Declared sources must map to existing learnings (ES-FR-012): seed
@@ -1414,14 +1414,25 @@ func TestServerIntegration_StoreBackedPagesSameSession(t *testing.T) {
 	res, _, err = promoteTool.Promote(ctx, nil, types.PromoteInput{Page: "auth-patterns"})
 	storeAccessAssertPromoted(t, "promote(shorthand)", storeAccessOK(t, "promote", res, err), "compiled/auth-patterns")
 
-	// The transitions persisted in the store, not just in the tool results.
+	// The promotion persisted in the frontmatter files store_compiled
+	// wrote, not in the database (PW-FR-001/PW-FR-002: promote edits the
+	// file; pages.tier is a cache the next index re-derives from the git
+	// rule, so it stays draft until a merged promotion is re-indexed).
 	for _, name := range []string{pageName, "compiled/auth-patterns"} {
 		page, err := s.GetPage(name)
 		if err != nil || page == nil {
 			t.Fatalf("store GetPage(%q) after promote: %v (page=%v)", name, err, page)
 		}
-		if page.Tier != "validated" {
-			t.Errorf("store tier for %q = %q, want validated", name, page.Tier)
+		if page.Tier != "draft" {
+			t.Errorf("store tier for %q = %q, want draft (promote never writes the DB tier)", name, page.Tier)
+		}
+		rel := strings.TrimPrefix(name, "compiled/") + ".md"
+		content, err := os.ReadFile(filepath.Join(vaultDir, ".uf", "dewey", "compiled", rel))
+		if err != nil {
+			t.Fatalf("read promoted file for %q: %v", name, err)
+		}
+		if !strings.Contains(string(content), "tier: validated") {
+			t.Errorf("promoted file for %q = %q, want tier: validated in frontmatter", name, string(content))
 		}
 	}
 

@@ -442,6 +442,202 @@ func TestVaultStore_RemovePage(t *testing.T) {
 	}
 }
 
+// writeTierPolicyVaultFile writes a markdown file with frontmatter into the
+// vault directory (creating parent directories) for trust-tier wiring
+// tests.
+func writeTierPolicyVaultFile(t *testing.T, dir, relPath, frontmatter string) {
+	t.Helper()
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatalf("create vault dir: %v", err)
+	}
+	content := "---\n" + frontmatter + "---\n\nTest content.\n"
+	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write vault file: %v", err)
+	}
+}
+
+// TestVaultStore_PersistPage_TierPolicyForPageFamilies pins the
+// IP-FR-001/IP-FR-002 wiring on the vault-scan path: learning pages clamp
+// to draft regardless of frontmatter, compiled pages derive their tier
+// from frontmatter (a validated claim without blob proof reads as draft),
+// and ordinary pages keep the authored default. Non-canonical tier claims
+// (case variants, quoted whitespace padding) are pinned end-to-end here —
+// YAML preserves them as parsed, and the derivation must read them as
+// unknown → draft (GTS-FR-003) rather than normalizing them into the
+// canonical vocabulary.
+func TestVaultStore_PersistPage_TierPolicyForPageFamilies(t *testing.T) {
+	dir := t.TempDir()
+	writeTierPolicyVaultFile(t, dir, "learning/auth-1.md", "tier: validated\n")
+	writeTierPolicyVaultFile(t, dir, "compiled/authentication.md", "tier: curated\n")
+	writeTierPolicyVaultFile(t, dir, "compiled/regenerated.md", "tier: validated\n")
+	// YAML keeps a plain scalar's case and a quoted scalar's padding, so
+	// these two files arrive at the props seam as "Validated" and
+	// " validated " — both outside the canonical vocabulary.
+	writeTierPolicyVaultFile(t, dir, "compiled/case-variant.md", "tier: Validated\n")
+	writeTierPolicyVaultFile(t, dir, "compiled/padded-claim.md", "tier: \" validated \"\n")
+	writeTierPolicyVaultFile(t, dir, "notes/regular.md", "tier: validated\n")
+
+	vs, s := newTestVaultStore(t, dir)
+
+	c := New(dir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	for _, name := range []string{
+		"learning/auth-1", "compiled/authentication", "compiled/regenerated",
+		"compiled/case-variant", "compiled/padded-claim", "notes/regular",
+	} {
+		c.mu.RLock()
+		page, ok := c.pages[name]
+		c.mu.RUnlock()
+		if !ok {
+			t.Fatalf("page %q not found in vault", name)
+		}
+		if err := vs.PersistPage(page); err != nil {
+			t.Fatalf("PersistPage(%q): %v", name, err)
+		}
+	}
+
+	tests := []struct {
+		page string
+		want string
+	}{
+		{page: "learning/auth-1", want: "draft"},
+		{page: "compiled/authentication", want: "curated"},
+		{page: "compiled/regenerated", want: "draft"},
+		{page: "compiled/case-variant", want: "draft"},
+		{page: "compiled/padded-claim", want: "draft"},
+		{page: "notes/regular", want: "authored"},
+	}
+	for _, tt := range tests {
+		p, err := s.GetPage(tt.page)
+		if err != nil || p == nil {
+			t.Fatalf("GetPage(%q): %v (nil=%v)", tt.page, err, p == nil)
+		}
+		if p.Tier != tt.want {
+			t.Errorf("page %q tier = %q, want %q", tt.page, p.Tier, tt.want)
+		}
+	}
+}
+
+// TestVaultStore_PersistPage_UpdateRecomputesTier pins GTS-FR-005 on the
+// vault-scan update path: re-persisting an unchanged compiled page
+// recomputes the cached tier from frontmatter instead of preserving a
+// drifted DB value.
+func TestVaultStore_PersistPage_UpdateRecomputesTier(t *testing.T) {
+	dir := t.TempDir()
+	writeTierPolicyVaultFile(t, dir, "compiled/authentication.md", "tier: curated\n")
+
+	vs, s := newTestVaultStore(t, dir)
+
+	c := New(dir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c.mu.RLock()
+	page, ok := c.pages["compiled/authentication"]
+	c.mu.RUnlock()
+	if !ok {
+		t.Fatal("compiled page not found in vault")
+	}
+
+	// First persist takes the insert path.
+	if err := vs.PersistPage(page); err != nil {
+		t.Fatalf("PersistPage: %v", err)
+	}
+
+	// Simulate a stale cached tier — validated specifically, the hardest
+	// case for the cache semantics (design D4): the store's update path
+	// must converge a promoted-then-stale row back down to the
+	// file-derived tier.
+	drifted, err := s.GetPage("compiled/authentication")
+	if err != nil || drifted == nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	drifted.Tier = "validated"
+	if err := s.UpdatePage(drifted); err != nil {
+		t.Fatalf("UpdatePage drift: %v", err)
+	}
+
+	// Re-persist the unchanged page: the update path must recompute the
+	// tier from the file's frontmatter (GTS-FR-005).
+	if err := vs.PersistPage(page); err != nil {
+		t.Fatalf("PersistPage again: %v", err)
+	}
+
+	after, err := s.GetPage("compiled/authentication")
+	if err != nil || after == nil {
+		t.Fatalf("GetPage after: %v", err)
+	}
+	if after.Tier != "curated" {
+		t.Errorf("tier after re-persist = %q, want curated (recomputed from frontmatter)", after.Tier)
+	}
+}
+
+// TestVaultStore_PersistPage_LearningClampSurvivesUpdate pins IP-FR-002 on
+// the vault-scan update path: a learning page whose cached DB tier drifted
+// to validated converges back to draft on re-persist. The clamp is
+// unconditional — blob equality is irrelevant for learnings (the
+// GTS-FR-005 learning scenario) — so a wiring regression that stops
+// classifying learning pages (tierKnown=false, round-tripping the stored
+// tier on update) fails here.
+func TestVaultStore_PersistPage_LearningClampSurvivesUpdate(t *testing.T) {
+	dir := t.TempDir()
+	writeTierPolicyVaultFile(t, dir, "learning/auth-1.md", "tier: validated\n")
+
+	vs, s := newTestVaultStore(t, dir)
+
+	c := New(dir)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	c.mu.RLock()
+	page, ok := c.pages["learning/auth-1"]
+	c.mu.RUnlock()
+	if !ok {
+		t.Fatal("learning page not found in vault")
+	}
+
+	// First persist takes the insert path: the validated claim is clamped.
+	if err := vs.PersistPage(page); err != nil {
+		t.Fatalf("PersistPage: %v", err)
+	}
+	inserted, err := s.GetPage("learning/auth-1")
+	if err != nil || inserted == nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if inserted.Tier != "draft" {
+		t.Fatalf("tier after insert = %q, want draft (learning clamp)", inserted.Tier)
+	}
+
+	// Drift the cached tier to validated — as a pre-change DB (or an
+	// old promote-era write) would hold.
+	drifted, err := s.GetPage("learning/auth-1")
+	if err != nil || drifted == nil {
+		t.Fatalf("GetPage drift: %v", err)
+	}
+	drifted.Tier = "validated"
+	if err := s.UpdatePage(drifted); err != nil {
+		t.Fatalf("UpdatePage drift: %v", err)
+	}
+
+	// Re-persist the unchanged page: the update path must clamp the
+	// drifted cache back to draft (IP-FR-002 outranks any cached tier,
+	// on every ingestion route).
+	if err := vs.PersistPage(page); err != nil {
+		t.Fatalf("PersistPage again: %v", err)
+	}
+	after, err := s.GetPage("learning/auth-1")
+	if err != nil || after == nil {
+		t.Fatalf("GetPage after: %v", err)
+	}
+	if after.Tier != "draft" {
+		t.Errorf("tier after re-persist = %q, want draft (learning clamp converges the cache)", after.Tier)
+	}
+}
+
 func TestVaultStore_IncrementalIndex_StoreConsistency(t *testing.T) {
 	// Verify that IncrementalIndex maintains store consistency by checking
 	// page count in store matches expected after new + changed + deleted operations.

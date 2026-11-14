@@ -29,8 +29,9 @@ type VaultStore struct {
 	store         *store.Store
 	embedder      embed.Embedder // optional — nil when Ollama is unavailable
 	vaultPath     string
-	sourceID      string // e.g., "disk-local"
-	maxChunkChars int    // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	sourceID      string           // e.g., "disk-local"
+	maxChunkChars int              // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	tierBlobs     TierBlobResolver // optional — nil withholds the validated grant (IP-FR-001)
 }
 
 // NewVaultStore creates a VaultStore adapter for bridging vault and store.
@@ -55,6 +56,17 @@ func (vs *VaultStore) SetEmbedder(e embed.Embedder) {
 // embedding generation in this vault store. Pass 0 to use the default.
 func (vs *VaultStore) SetMaxChunkChars(n int) {
 	vs.maxChunkChars = n
+}
+
+// SetTierBlobResolver configures the per-index-run blob resolver that backs
+// trust-tier derivation for compiled and curated pages (IP-FR-001): the
+// default-branch blob map resolved once per index run (design D2). Pass nil
+// (or never call) to keep the no-resolver default — empty blob SHAs on every
+// lookup, validated grant withheld (GTS-FR-004), identical to the pre-wiring
+// behavior. The resolver is read on every PersistPage, including the
+// watcher-driven re-persists after the index run that installed it.
+func (vs *VaultStore) SetTierBlobResolver(r TierBlobResolver) {
+	vs.tierBlobs = r
 }
 
 // effectiveMaxChunkChars returns the configured max chunk chars, falling back
@@ -87,6 +99,17 @@ func (vs *VaultStore) PersistPage(page *cachedPage) error {
 		propsJSON = string(data)
 	}
 
+	// Trust-tier policy for the learning and git-trust page families
+	// (IP-FR-001, IP-FR-002): learning pages clamp to draft, compiled and
+	// curated pages derive from frontmatter plus default-branch blob
+	// equality through the optional resolver seam (nil withholds the
+	// validated grant per GTS-FR-004). Other families keep their
+	// existing assignment — the InsertPage authored default on insert, the
+	// stored tier round-tripped on update (tierKnown is false, so the
+	// update below writes back the value it just read from the store).
+	fileSHA, refSHA := resolveTierBlobs(vs.tierBlobs, page.filePath)
+	pageTier, tierKnown := ingestTier(pageName, page.entity.Properties, fileSHA, refSHA)
+
 	// Check if page already exists in store.
 	existing, err := vs.store.GetPage(pageName)
 	if err != nil {
@@ -101,6 +124,10 @@ func (vs *VaultStore) PersistPage(page *cachedPage) error {
 		existing.Properties = propsJSON
 		existing.ContentHash = contentHash
 		existing.IsJournal = page.entity.Journal
+		if tierKnown {
+			// Recompute the cached tier on every persist (GTS-FR-005).
+			existing.Tier = pageTier
+		}
 		if err := vs.store.UpdatePage(existing); err != nil {
 			return fmt.Errorf("update page %q: %w", pageName, err)
 		}
@@ -124,6 +151,9 @@ func (vs *VaultStore) PersistPage(page *cachedPage) error {
 			IsJournal:    page.entity.Journal,
 			CreatedAt:    page.entity.CreatedAt,
 			UpdatedAt:    page.entity.UpdatedAt,
+		}
+		if tierKnown {
+			sp.Tier = pageTier
 		}
 		if err := vs.store.InsertPage(sp); err != nil {
 			return fmt.Errorf("insert page %q: %w", pageName, err)

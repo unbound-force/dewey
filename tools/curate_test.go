@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/unbound-force/dewey/v3/curate"
 	"github.com/unbound-force/dewey/v3/llm"
@@ -428,24 +427,15 @@ func TestCurateTool_PartialStoreFailure(t *testing.T) {
 	}
 }
 
-// TestAutoIndex_ValidatedTierIsContentBound repurposes the pre-VTB-FR-004
-// preserve-on-change test for the content-bound contract: re-indexing a
-// knowledge file whose content hash changed lands its page at tier
-// "curated" — the same tier a fresh insert receives — so unattended
-// curation never carries a human vouch onto new content, while a knowledge
-// file whose content hash is unchanged is skipped without any page write,
-// leaving a validated page's tier and row exactly as the promotion left
-// them. The non-validated sibling still resets to "curated" on change.
-//
-// The no-write assertions are load-bearing: removing the hash-equality skip
-// must fail the indexed-count and updated_at assertions — on an equal-hash
-// rewrite the store's content-bound CASE keeps the tier, so only the
-// row-level signals expose the rewrite — and reverting the unconditional
-// "curated" assignment on the update path must fail the changed-file tier
-// assertion. The changed files' stored hashes are stale by construction
-// (their on-disk files are rewritten with different content before the
-// second indexing), so the skip cannot produce a vacuous pass there.
-func TestAutoIndex_ValidatedTierIsContentBound(t *testing.T) {
+// TestAutoIndex_OverwritesValidatedTierCache pins the DB-tier-as-cache
+// semantics on the knowledge-store update path (git-is-the-source-of-record,
+// design D4): re-indexing a store whose file derives a non-validated tier
+// overwrites a stale stored validated tier, because the DB tier is a cache
+// recomputed from the file rule (GTS-FR-005). The seed content hash is stale
+// by construction (the on-disk file is rewritten with different content
+// before the second indexing), so the hash-skip short-circuit cannot produce
+// a vacuous pass.
+func TestAutoIndex_OverwritesValidatedTierCache(t *testing.T) {
 	s := newTestStore(t)
 
 	vaultDir := t.TempDir()
@@ -455,11 +445,8 @@ func TestAutoIndex_ValidatedTierIsContentBound(t *testing.T) {
 	}
 
 	storePath := filepath.Join(deweyDir, "knowledge", "test-store")
-	// auth-1 and vault-2 are promoted to validated below; deploy-3 stays
-	// curated as the non-validated sibling.
 	writeKnowledgeFile(t, storePath, "auth", 1, "high", nil)
 	writeKnowledgeFile(t, storePath, "vault", 2, "high", nil)
-	writeKnowledgeFile(t, storePath, "deploy", 3, "high", nil)
 
 	cfg := curate.StoreConfig{
 		Name:    "test-store",
@@ -468,91 +455,171 @@ func TestAutoIndex_ValidatedTierIsContentBound(t *testing.T) {
 	}
 
 	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
-	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 3 {
-		t.Fatalf("first indexing = %d, want 3", indexed)
-	}
-
-	// promoteToValidated seeds the human promotion vouch on a knowledge
-	// page. The real promote gate elevates only drafts (VTB-FR-005) and
-	// knowledge pages insert at "curated", so the test writes the vouch
-	// through the store directly; the write carries the page's unchanged
-	// content hash, and the machine paths under test never perform it.
-	promoteToValidated := func(name string) *store.Page {
-		t.Helper()
-		p, err := s.GetPage(name)
-		if err != nil || p == nil {
-			t.Fatalf("get %s: %v", name, err)
-		}
-		p.Tier = "validated"
-		if err := s.UpdatePage(p); err != nil {
-			t.Fatalf("promote %s: %v", name, err)
-		}
-		vouched, err := s.GetPage(name)
-		if err != nil || vouched == nil {
-			t.Fatalf("re-read %s: %v", name, err)
-		}
-		if vouched.Tier != "validated" {
-			t.Fatalf("seed tier for %s = %q, want validated before reindex", name, vouched.Tier)
-		}
-		return vouched
-	}
-	changedBefore := promoteToValidated("knowledge/test-store/auth-1")
-	unchangedBefore := promoteToValidated("knowledge/test-store/vault-2")
-
-	// updated_at has millisecond resolution; guarantee the clock advances
-	// past the seed writes so an erroneous write during the reindex below
-	// would observably change the skipped page's updated_at.
-	time.Sleep(2 * time.Millisecond)
-
-	// Rewrite auth-1 (validated) and deploy-3 (curated) with changed content
-	// so both take the update path; vault-2's file stays byte-identical so
-	// its stored content hash still matches.
-	writeKnowledgeFile(t, storePath, "auth", 1, "medium", []string{"missing_rationale"})
-	writeKnowledgeFile(t, storePath, "deploy", 3, "medium", nil)
-
-	// The unchanged file is skipped without a write, so only the two
-	// changed files count as indexed (VTB-FR-004 scenario 2).
 	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 2 {
-		t.Fatalf("second indexing = %d, want 2 (unchanged file skipped)", indexed)
+		t.Fatalf("first indexing = %d, want 2", indexed)
 	}
 
-	// Changed validated file lands at curated — the same tier a fresh
-	// insert receives — and the update path refreshed its content hash
-	// (VTB-FR-004 scenario 1).
-	changed, err := s.GetPage("knowledge/test-store/auth-1")
-	if err != nil || changed == nil {
+	// Seed a stale validated cache row, as a pre-change DB (or an
+	// old promote-era write) would hold: promote no longer writes
+	// pages.tier under this change.
+	promoted, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || promoted == nil {
+		t.Fatalf("get auth page: %v", err)
+	}
+	promoted.Tier = "validated"
+	if err := s.UpdatePage(promoted); err != nil {
+		t.Fatalf("seed stale validated tier: %v", err)
+	}
+	before, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || before == nil {
+		t.Fatalf("get auth page: %v", err)
+	}
+	if before.Tier != "validated" {
+		t.Fatalf("seed tier = %q, want validated before reindex", before.Tier)
+	}
+
+	// Rewrite both files with changed content so the next indexing takes
+	// the update path (the stored content hashes no longer match).
+	writeKnowledgeFile(t, storePath, "auth", 1, "medium", []string{"missing_rationale"})
+	writeKnowledgeFile(t, storePath, "vault", 2, "medium", nil)
+
+	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 2 {
+		t.Fatalf("second indexing = %d, want 2 (content changed)", indexed)
+	}
+
+	// The stale validated cache must converge to the file-derived tier
+	// while the content hash is refreshed by the update path.
+	after, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || after == nil {
 		t.Fatalf("get auth page after reindex: %v", err)
 	}
-	if changed.Tier != "curated" {
-		t.Errorf("changed validated page tier = %q, want 'curated' (a vouch must not carry onto new content)", changed.Tier)
+	if after.Tier != "curated" {
+		t.Errorf("validated page tier = %q, want 'curated' (recomputed from the file, overwriting the stale cache)", after.Tier)
 	}
-	if changed.ContentHash == changedBefore.ContentHash {
-		t.Errorf("content hash unchanged (%q); update path should refresh it", changed.ContentHash)
-	}
-
-	// Unchanged validated file: skipped without any page write — the tier
-	// keeps the human vouch and the row is untouched.
-	unchanged, err := s.GetPage("knowledge/test-store/vault-2")
-	if err != nil || unchanged == nil {
-		t.Fatalf("get vault page after reindex: %v", err)
-	}
-	if unchanged.Tier != "validated" {
-		t.Errorf("unchanged validated page tier = %q, want 'validated'", unchanged.Tier)
-	}
-	if unchanged.ContentHash != unchangedBefore.ContentHash {
-		t.Errorf("unchanged page content hash = %q, want %q (skip path must not rewrite the row)", unchanged.ContentHash, unchangedBefore.ContentHash)
-	}
-	if unchanged.UpdatedAt != unchangedBefore.UpdatedAt {
-		t.Errorf("unchanged page updated_at = %d, want %d (skip path must not rewrite the row)", unchanged.UpdatedAt, unchangedBefore.UpdatedAt)
+	if after.ContentHash == before.ContentHash {
+		t.Errorf("content hash unchanged (%q); update path should refresh it", after.ContentHash)
 	}
 
 	// Complementary branch: a non-validated page is (re)set to curated on
 	// the update path.
-	other, err := s.GetPage("knowledge/test-store/deploy-3")
+	other, err := s.GetPage("knowledge/test-store/vault-2")
 	if err != nil || other == nil {
-		t.Fatalf("get deploy page: %v", err)
+		t.Fatalf("get vault page: %v", err)
 	}
 	if other.Tier != "curated" {
 		t.Errorf("non-validated page tier = %q, want 'curated'", other.Tier)
+	}
+}
+
+// writeRawKnowledgeFile writes a knowledge file with arbitrary frontmatter
+// so tier-derivation tests can vary the tier claim (writeKnowledgeFile
+// hardcodes tier: curated). extra is inserted verbatim between the tag
+// line and the frontmatter terminator; empty means no tier claim.
+func writeRawKnowledgeFile(t *testing.T, storePath, baseName, extra string) {
+	t.Helper()
+	if err := os.MkdirAll(storePath, 0o755); err != nil {
+		t.Fatalf("create store dir: %v", err)
+	}
+	content := "---\ntag: " + baseName + "\n" + extra + "---\n\nTest knowledge content.\n"
+	path := filepath.Join(storePath, baseName+".md")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write knowledge file: %v", err)
+	}
+}
+
+// TestAutoIndex_DerivesTierFromFrontmatter pins the IP-FR-001 wiring on
+// the knowledge-store path: the tier is derived from the file's frontmatter
+// rather than hardcoded — a canonical curated claim stays curated, a
+// validated claim without blob proof reads as draft (GTS-FR-002), an
+// absent tier reads as draft (GTS-FR-001), and a non-canonical case-variant
+// claim reads as unknown → draft (GTS-FR-003) rather than being normalized
+// into the vocabulary.
+func TestAutoIndex_DerivesTierFromFrontmatter(t *testing.T) {
+	s := newTestStore(t)
+
+	vaultDir := t.TempDir()
+	storePath := filepath.Join(vaultDir, ".uf", "dewey", "knowledge", "test-store")
+	writeRawKnowledgeFile(t, storePath, "curated-1", "tier: curated\n")
+	writeRawKnowledgeFile(t, storePath, "validated-1", "tier: validated\n")
+	writeRawKnowledgeFile(t, storePath, "untiered-1", "")
+	writeRawKnowledgeFile(t, storePath, "case-variant-1", "tier: Validated\n")
+
+	cfg := curate.StoreConfig{
+		Name:    "test-store",
+		Sources: []string{"disk-local"},
+		Path:    storePath,
+	}
+
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
+	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 4 {
+		t.Fatalf("indexing = %d, want 4", indexed)
+	}
+
+	tests := []struct {
+		page string
+		want string
+	}{
+		{page: "knowledge/test-store/curated-1", want: "curated"},
+		{page: "knowledge/test-store/validated-1", want: "draft"},
+		{page: "knowledge/test-store/untiered-1", want: "draft"},
+		{page: "knowledge/test-store/case-variant-1", want: "draft"},
+	}
+	for _, tt := range tests {
+		p, err := s.GetPage(tt.page)
+		if err != nil || p == nil {
+			t.Fatalf("GetPage(%q): %v (nil=%v)", tt.page, err, p == nil)
+		}
+		if p.Tier != tt.want {
+			t.Errorf("page %q tier = %q, want %q", tt.page, p.Tier, tt.want)
+		}
+	}
+}
+
+// TestAutoIndex_UnchangedContentRecomputesTier pins GTS-FR-005 on the
+// knowledge-store path: when content is unchanged the blocks are not
+// re-indexed (the indexed count stays 0), but a drifted cached tier is
+// still recomputed from the file's frontmatter.
+func TestAutoIndex_UnchangedContentRecomputesTier(t *testing.T) {
+	s := newTestStore(t)
+
+	vaultDir := t.TempDir()
+	storePath := filepath.Join(vaultDir, ".uf", "dewey", "knowledge", "test-store")
+	writeRawKnowledgeFile(t, storePath, "auth-1", "tier: curated\n")
+
+	cfg := curate.StoreConfig{
+		Name:    "test-store",
+		Sources: []string{"disk-local"},
+		Path:    storePath,
+	}
+
+	curateTool := NewCurate(s, nil, nil, vaultDir, nil, 0)
+	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 1 {
+		t.Fatalf("first indexing = %d, want 1", indexed)
+	}
+
+	// Simulate a stale cached tier — validated specifically, the hardest
+	// case for the cache semantics (design D4): the unchanged-content
+	// refresh must converge it back down to the file-derived tier.
+	drifted, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || drifted == nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	drifted.Tier = "validated"
+	if err := s.UpdatePage(drifted); err != nil {
+		t.Fatalf("UpdatePage drift: %v", err)
+	}
+
+	// Re-index with unchanged content: no block re-indexing, but the tier
+	// cache is refreshed from the file.
+	if indexed := curateTool.autoIndexKnowledgeStore(cfg); indexed != 0 {
+		t.Errorf("second indexing = %d, want 0 (content unchanged)", indexed)
+	}
+
+	after, err := s.GetPage("knowledge/test-store/auth-1")
+	if err != nil || after == nil {
+		t.Fatalf("GetPage after: %v", err)
+	}
+	if after.Tier != "curated" {
+		t.Errorf("tier after unchanged re-index = %q, want curated (recomputed)", after.Tier)
 	}
 }

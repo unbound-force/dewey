@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/curate"
 	"github.com/unbound-force/dewey/v3/embed"
+	"github.com/unbound-force/dewey/v3/gitref"
 	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
@@ -263,14 +265,31 @@ func (c *Curate) loadStoreDocCount(cfg curate.StoreConfig) (int, error) {
 // Design decision: Follows the same PersistBlocks/GenerateEmbeddings
 // pipeline as store_learning and reIngestLearnings for consistency.
 // Pages are upserted — if a page already exists (from a previous curation),
-// its blocks and embeddings are replaced. The validated tier is content-bound
-// (VTB-FR-004): a file whose content hash is unchanged is skipped without a
-// write, so a human-validated page keeps its vouch on identical bytes, while
-// a changed file re-indexes at tier "curated" — the same tier a fresh insert
-// receives — so regeneration never carries a human vouch onto new content.
+// its blocks and embeddings are replaced. Trust tiers are derived from the
+// file's frontmatter per the git-is-the-source-of-record change (IP-FR-001)
+// and overwrite any stale cached tier — including a human-promoted validated
+// row — so the DB never outlives the file rule (GTS-FR-005).
 func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int, logger *log.Logger) int {
 	storePath := curate.ResolveStorePath(cfg, vaultPath)
 	sourceID := knowledgeSourceID(cfg.Name)
+
+	// Trust-tier derivation needs the file's blob object IDs (IP-FR-001).
+	// The knowledge store lives under the vault, so the vault's repository
+	// is the trust root: resolve the default-branch ref and batch blob map
+	// once per indexing pass (design D2 — one ls-tree scoped to the store
+	// directory, not one per file). A store outside the vault, a non-git
+	// vault, or an unresolvable ref leaves the resolver nil, which withholds
+	// the validated grant (GTS-FR-004) and behaves exactly as before the
+	// wiring.
+	storeRel := ""
+	if rel, err := filepath.Rel(vaultPath, storePath); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+		storeRel = filepath.ToSlash(rel)
+	}
+	var tierBlobs vault.TierBlobResolver
+	if storeRel != "" {
+		tierBlobs = gitref.NewPageBlobResolver(context.Background(),
+			gitref.Options{VaultDir: vaultPath}, []string{storeRel})
+	}
 
 	entries, err := os.ReadDir(storePath)
 	if err != nil {
@@ -305,6 +324,24 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 		baseName := strings.TrimSuffix(entry.Name(), ".md")
 		pageName := fmt.Sprintf("knowledge/%s/%s", cfg.Name, baseName)
 
+		// Parse the document once for both the tier derivation and the
+		// block persistence (IP-FR-001). The docID seeds deterministic
+		// block UUIDs.
+		docID := fmt.Sprintf("%s-%s", sourceID, baseName)
+		props, blocks := vault.ParseDocument(docID, string(content))
+
+		// Derive the trust tier from frontmatter plus default-branch blob
+		// equality per IP-FR-001: a canonical curated claim stays curated, a
+		// validated claim without blob proof reads as draft (GTS-FR-002),
+		// and an absent tier reads as draft (GTS-FR-001). The blob map key
+		// is the file's vault-relative path (store directory + file name),
+		// matching the ls-tree pathspec above.
+		var fileSHA, refSHA string
+		if tierBlobs != nil {
+			fileSHA, refSHA = tierBlobs.PageBlobs(path.Join(storeRel, entry.Name()))
+		}
+		pageTier := vault.DeriveTierFromProps(props, fileSHA, refSHA)
+
 		// Check if page already exists and content hasn't changed.
 		existing, err := s.GetPage(pageName)
 		if err != nil {
@@ -315,9 +352,16 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 
 		if existing != nil {
 			if existing.ContentHash == contentHash {
-				// Content unchanged — skip without any write, so a validated
-				// tier keeps its vouch (VTB-FR-004). This check must stay
-				// ahead of the destructive steps below.
+				// Content unchanged — skip re-indexing blocks, but still
+				// recompute the cached tier so the DB never outlives the
+				// file rule (GTS-FR-005).
+				if existing.Tier != pageTier {
+					existing.Tier = pageTier
+					if err := s.UpdatePage(existing); err != nil {
+						logger.Warn("failed to refresh knowledge page tier",
+							"page", pageName, "err", err)
+					}
+				}
 				continue
 			}
 			// Content changed — delete old blocks and re-index.
@@ -325,16 +369,10 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 				logger.Warn("failed to delete old blocks",
 					"page", pageName, "err", err)
 			}
-			// Update existing page. Changed content lands at the machine tier
-			// "curated" — the same tier a fresh insert receives — even when the
-			// stored tier is "validated": a human vouch covers specific bytes,
-			// and unattended curation never writes "validated" (VTB-FR-004).
-			// Unchanged files were skipped above, so an intact vouch never
-			// reaches this write. The unconditional assignment is load-bearing:
-			// UpdatePage applies the caller-supplied tier when hashes differ,
-			// so a read-carried "validated" would otherwise be written back.
+			// Update existing page. The tier is recomputed from the file
+			// (GTS-FR-005) and overwrites any stale cached value.
 			existing.ContentHash = contentHash
-			existing.Tier = "curated"
+			existing.Tier = pageTier
 			existing.SourceID = sourceID
 			if err := s.UpdatePage(existing); err != nil {
 				logger.Warn("failed to update page",
@@ -349,7 +387,7 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 				SourceID:     sourceID,
 				SourceDocID:  entry.Name(),
 				ContentHash:  contentHash,
-				Tier:         "curated",
+				Tier:         pageTier,
 			}
 			if err := s.InsertPage(page); err != nil {
 				logger.Warn("failed to insert knowledge page",
@@ -357,10 +395,6 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 				continue
 			}
 		}
-
-		// Parse the document into blocks.
-		docID := fmt.Sprintf("%s-%s", sourceID, baseName)
-		_, blocks := vault.ParseDocument(docID, string(content))
 
 		// Persist blocks.
 		if err := vault.PersistBlocks(s, pageName, blocks, sql.NullString{}, 0); err != nil {

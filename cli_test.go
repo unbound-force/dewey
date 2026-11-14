@@ -3188,6 +3188,271 @@ func TestDoctorCmd_WithInitializedVault(t *testing.T) {
 	}
 }
 
+// trustFixtureGit runs one git command in dir, failing the test on error.
+func trustFixtureGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// newTrustFixtureVault builds a git-backed vault for doctor/status trust
+// diagnostics: per-vault config pinning the comparison ref (origin/main,
+// the highest-precedence IP-FR-004 leg, keeping the fixture independent of
+// machine-wide configuration), one committed compiled page claiming
+// validated, and — when fetchRef is true — refs/remotes/origin/main
+// pointing at the commit (the local state a fetch leaves behind). Without
+// fetchRef the ref is missing entirely (a fresh clone before any fetch,
+// GTS-FR-004's missing-ref fallback).
+func newTrustFixtureVault(t *testing.T, fetchRef bool) string {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping git subprocess test in short mode")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	trustFixtureGit(t, dir, "init", "-q", "-b", "main")
+	trustFixtureGit(t, dir, "config", "user.name", "t")
+	trustFixtureGit(t, dir, "config", "user.email", "t@example.com")
+
+	deweyDir := filepath.Join(dir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"),
+		[]byte("default_branch_ref: origin/main\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(dir, "compiled"), 0o755); err != nil {
+		t.Fatalf("mkdir compiled: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "compiled", "auth.md"),
+		[]byte("---\ntier: validated\n---\n\n# Auth\n\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write page: %v", err)
+	}
+	trustFixtureGit(t, dir, "add", ".")
+	trustFixtureGit(t, dir, "commit", "-q", "-m", "seed compiled page")
+	if fetchRef {
+		trustFixtureGit(t, dir, "update-ref", "refs/remotes/origin/main", "HEAD")
+	}
+	return dir
+}
+
+// TestDoctorCmd_TrustTiers_Resolved verifies the Trust Tiers section when
+// the default-branch ref resolves and every trust file matches it: the ref
+// line passes with the ref, short SHA, and precedence leg, and the tier
+// derivation line reports the validated-eligible count.
+func TestDoctorCmd_TrustTiers_Resolved(t *testing.T) {
+	vaultDir := newTrustFixtureVault(t, true)
+
+	cmd := newDoctorCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", vaultDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"Trust Tiers",
+		"✅ default-branch ref",
+		"origin/main @ ",
+		"via vault-config",
+		"✅ tier derivation",
+		"1 file(s) match origin/main",
+		"1 validated-eligible",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+// TestDoctorCmd_TrustTiers_MissingRef verifies the GTS-FR-004 fallback
+// note: a git repository whose comparison ref was never fetched warns with
+// the missing-ref status and a fetch fix hint, and the tier derivation
+// line reports the draft degradation.
+func TestDoctorCmd_TrustTiers_MissingRef(t *testing.T) {
+	vaultDir := newTrustFixtureVault(t, false)
+
+	cmd := newDoctorCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", vaultDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"⚠️ default-branch ref",
+		"missing-ref",
+		"Fix: git fetch",
+		"⚠️ tier derivation",
+		"degrade to draft",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+// TestDoctorCmd_TrustTiers_NotARepo verifies the non-git-vault fallback:
+// without a git repository the ref line warns with not-a-repo and the
+// derivation withholds validated.
+func TestDoctorCmd_TrustTiers_NotARepo(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"),
+		[]byte("default_branch_ref: origin/main\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "compiled"), 0o755); err != nil {
+		t.Fatalf("mkdir compiled: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "compiled", "auth.md"),
+		[]byte("---\ntier: validated\n---\n\n# Auth\n\nbody\n"), 0o644); err != nil {
+		t.Fatalf("write page: %v", err)
+	}
+
+	cmd := newDoctorCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", tmpDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"⚠️ default-branch ref",
+		"not-a-repo",
+		"⚠️ tier derivation",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+// TestDoctorCmd_TrustTiers_DifferingFile verifies the effective-tier
+// observability line: a working-tree edit that diverges from the fetched
+// default branch is reported as differing (indexes as draft until merged
+// and fetched) without failing the ref check.
+func TestDoctorCmd_TrustTiers_DifferingFile(t *testing.T) {
+	vaultDir := newTrustFixtureVault(t, true)
+
+	// Working-tree edit: the file blob diverges from origin/main.
+	if err := os.WriteFile(filepath.Join(vaultDir, "compiled", "auth.md"),
+		[]byte("---\ntier: validated\n---\n\n# Auth\n\nedited body\n"), 0o644); err != nil {
+		t.Fatalf("write page: %v", err)
+	}
+
+	cmd := newDoctorCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", vaultDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("doctor failed: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{
+		"✅ default-branch ref",
+		"ℹ️ tier derivation",
+		"1 of 1 file(s) differ from origin/main",
+		"index as draft until merged and fetched",
+		"0 validated-eligible",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+// TestStatusCmd_TrustTiers verifies the status command's Trust Tiers
+// reporting: the text output names the ref and eligibility counts, and the
+// JSON output carries the full trust object with the resolved ref state.
+func TestStatusCmd_TrustTiers(t *testing.T) {
+	vaultDir := newTrustFixtureVault(t, true)
+
+	t.Run("text", func(t *testing.T) {
+		cmd := newStatusCmd()
+		buf := new(bytes.Buffer)
+		cmd.SetOut(buf)
+		cmd.SetArgs([]string{"--vault", vaultDir})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("status failed: %v", err)
+		}
+		output := buf.String()
+		for _, want := range []string{
+			"Trust Tiers",
+			"Ref:        origin/main @ ",
+			"via vault-config",
+			"1 validated-eligible",
+			"0 differing",
+		} {
+			if !strings.Contains(output, want) {
+				t.Errorf("status output missing %q:\n%s", want, output)
+			}
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		cmd := newStatusCmd()
+		buf := new(bytes.Buffer)
+		cmd.SetOut(buf)
+		cmd.SetArgs([]string{"--json", "--vault", vaultDir})
+
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("status --json failed: %v", err)
+		}
+
+		var result map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+			t.Fatalf("invalid JSON output: %v\noutput: %s", err, buf.String())
+		}
+		trust, ok := result["trust"].(map[string]any)
+		if !ok {
+			t.Fatalf("JSON output missing 'trust' object:\n%s", buf.String())
+		}
+		if trust["ref"] != "origin/main" {
+			t.Errorf("trust.ref = %v, want origin/main", trust["ref"])
+		}
+		if trust["status"] != "resolved" {
+			t.Errorf("trust.status = %v, want resolved", trust["status"])
+		}
+		if trust["leg"] != "vault-config" {
+			t.Errorf("trust.leg = %v, want vault-config", trust["leg"])
+		}
+		if sha, _ := trust["sha"].(string); len(sha) != 40 {
+			t.Errorf("trust.sha = %v, want a 40-hex commit SHA", trust["sha"])
+		}
+		if trust["trust_files"] != float64(1) {
+			t.Errorf("trust.trust_files = %v, want 1", trust["trust_files"])
+		}
+		if trust["validated_eligible"] != float64(1) {
+			t.Errorf("trust.validated_eligible = %v, want 1", trust["validated_eligible"])
+		}
+		if trust["differing"] != float64(0) {
+			t.Errorf("trust.differing = %v, want 0", trust["differing"])
+		}
+	})
+}
+
 // TestDoctorCmd_SynthesisUnconfigured verifies the Synthesis Layer section
 // reports "not configured (optional)" with PASS status when no synthesis
 // provider is configured.
@@ -5688,13 +5953,25 @@ func TestPromoteCmd_MultiplePages(t *testing.T) {
 		t.Fatalf("mkdir dewey dir: %v", err)
 	}
 
+	// Promote is a frontmatter file edit (PW-FR-001), so each batch
+	// target needs its draft file on disk under the vault root.
+	if err := os.MkdirAll(filepath.Join(tmpDir, "compiled"), 0o755); err != nil {
+		t.Fatalf("mkdir compiled dir: %v", err)
+	}
+	for _, rel := range []string{"gateway.md", "auth-patterns.md"} {
+		path := filepath.Join(tmpDir, "compiled", rel)
+		if err := os.WriteFile(path, []byte("---\ntier: draft\n---\n\n# Article\n\nBody.\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
 	s, err := store.New(filepath.Join(deweyDir, "graph.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	for _, p := range []struct{ name, sourceID, sourceDocID string }{
 		{"compiled/gateway", "compiled", "gateway"},
-		{"learning/auth-20260101T000000-test", "learning", "auth-20260101T000000-test"},
+		{"compiled/auth-patterns", "compiled", "auth-patterns"},
 	} {
 		if err := s.InsertPage(&store.Page{
 			Name:         p.name,
@@ -5711,9 +5988,21 @@ func TestPromoteCmd_MultiplePages(t *testing.T) {
 	}
 
 	cmd := newPromoteCmd()
-	cmd.SetArgs([]string{"--vault", tmpDir, "gateway", "learning/auth-20260101T000000-test"})
+	cmd.SetArgs([]string{"--vault", tmpDir, "gateway", "compiled/auth-patterns"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("promote cmd: %v", err)
+	}
+
+	// The promotions landed in the files' frontmatter, not the database
+	// (PW-FR-002: pages.tier is a cache the next index re-derives).
+	for _, rel := range []string{"gateway.md", "auth-patterns.md"} {
+		content, err := os.ReadFile(filepath.Join(tmpDir, "compiled", rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if !strings.Contains(string(content), "tier: validated") {
+			t.Errorf("%s = %q, want tier: validated in frontmatter", rel, string(content))
+		}
 	}
 
 	s, err = store.New(filepath.Join(deweyDir, "graph.db"))
@@ -5722,13 +6011,13 @@ func TestPromoteCmd_MultiplePages(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	for _, name := range []string{"compiled/gateway", "learning/auth-20260101T000000-test"} {
+	for _, name := range []string{"compiled/gateway", "compiled/auth-patterns"} {
 		page, err := s.GetPage(name)
 		if err != nil {
 			t.Fatalf("GetPage(%q): %v", name, err)
 		}
-		if page.Tier != "validated" {
-			t.Errorf("%s tier = %q, want validated", name, page.Tier)
+		if page.Tier != "draft" {
+			t.Errorf("%s tier = %q, want draft (promote never writes the DB tier)", name, page.Tier)
 		}
 	}
 }

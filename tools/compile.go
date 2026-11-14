@@ -362,8 +362,11 @@ func (c *Compile) processClusters(ctx context.Context, clusters []Cluster, total
 }
 
 // synthesizeClusters runs the provider for every cluster and returns the
-// successful articles plus per-topic failures. A validated tier is preserved
-// across recompiles, and the synthesizing model is recorded.
+// successful articles plus per-topic failures. Every article carries tier
+// draft (VTB-FR-003): compile never looks up the existing page's tier, and
+// preserving a validated tier across byte-identical regeneration is
+// exclusively the store's content-bound UpdatePage rule (VTB-FR-001). The
+// synthesizing model is recorded.
 func (c *Compile) synthesizeClusters(ctx context.Context, clusters []Cluster, model string) ([]synthesizedCluster, []map[string]string) {
 	produced := make([]synthesizedCluster, 0, len(clusters))
 	failures := make([]map[string]string, 0)
@@ -376,20 +379,12 @@ func (c *Compile) synthesizeClusters(ctx context.Context, clusters []Cluster, mo
 			continue
 		}
 
+		// Compile is a machine write path and must never write tier
+		// "validated" (VTB-FR-003). Preservation of an existing validated
+		// tier is exclusively the store's content-bound rule (VTB-FR-001):
+		// byte-identical article bytes keep validated; changed bytes land
+		// at draft.
 		tier := "draft"
-		existing, findErr := c.store.GetPage(store.CompiledPrefix + cl.DominantTag)
-		if findErr != nil {
-			// A lookup failure must fail the topic, not silently default the
-			// tier — the existing article's tier would be demoted on write.
-			failures = append(failures, map[string]string{
-				"topic": cl.DominantTag,
-				"error": fmt.Sprintf("look up existing compiled page: %v", findErr),
-			})
-			continue
-		}
-		if existing != nil && existing.Tier == "validated" {
-			tier = "validated"
-		}
 		// Parse, validate, and strip the trailing Supersession Proposals
 		// section before the article is built, so stored articles never
 		// contain it (ES-FR-005) and the proposals ride the result to the
@@ -1070,9 +1065,10 @@ func (c *Compile) upsertCompiledPage(page *store.Page) error {
 }
 
 // persistCompiledArticle stores a compiled article as a page in the store
-// with source_id="compiled" and the supplied tier (draft, or validated when
-// the previous article was already approved). Also persists blocks and
-// generates embeddings.
+// with source_id="compiled" and the supplied tier (always draft from the
+// compile path — a machine write never carries validated; preserving an
+// existing validated tier is exclusively the store's content-bound rule,
+// VTB-FR-001). Also persists blocks and generates embeddings.
 func (c *Compile) persistCompiledArticle(cl Cluster, articleContent, tier, model string) error {
 	if tier == "" {
 		tier = "draft"

@@ -101,7 +101,7 @@ passes unmodified.
 - [ ] 3.3 Website sync: extend unbound-force/website#371 with a comment
   describing the two new config sources and refusals (posted only with
   the maintainer's approval; record the comment id here).
-- [ ] 3.4 Constitution alignment verification (per proposal); record
+- [x] 3.4 Constitution alignment verification (per proposal); record
   the confirmation in the PR body.
 
 **Checkpoint (Phase 3)**: re-run `go build ./...`, `go vet ./...`,

@@ -227,3 +227,146 @@ func TestSC007_UnattendedCycleYieldsValidatedViaGitVouch(t *testing.T) {
 		t.Errorf("post-edit derived tier = %q, want draft (a working-tree edit cannot self-promote)", editedTier)
 	}
 }
+
+// TestBacklogBootstrap_PreviewThenRealRun walks the one-time backlog
+// bootstrap (T043; FR-020, research.md D-008, quickstart.md Backlog
+// bootstrap): the watched-pane sequence a maintainer runs once —
+// `--backlog-from <date> --dry-run` to preview, then the same bounded
+// scope without --dry-run to open the rolling PRs. The fixture mirrors
+// the real backlog shape: an existing compiled-article partition at the
+// cutoff date (the index the themes seed from), backlog learnings
+// created on or before the date, one steady-state learning created
+// after it (excluded from this run's window), and a legacy no-timestamp
+// identity that always passes.
+func TestBacklogBootstrap_PreviewThenRealRun(t *testing.T) {
+	const zed = "auth-20260101T000000-zed"     // cited by the seed article — out of scope
+	const alice = "auth-20261020T000001-alice" // backlog: joins the existing auth article
+	const bob = "governance-20261021T000002-bob"
+	const carol = "auth-20261101T000003-carol" // created after the cutoff — outside the window
+	const legacy = "deploy-42"                  // legacy identity: no timestamp, always passes
+	texts := map[string]string{
+		zed:    rollingFixtureLearning("auth", "Zed's old auth learning, already cited."),
+		alice:  rollingFixtureLearning("auth", "Alice's backlog auth learning."),
+		bob:    rollingFixtureLearning("governance", "Bob's backlog governance learning."),
+		carol:  rollingFixtureLearning("auth", "Carol's post-cutoff auth learning."),
+		legacy: rollingFixtureLearning("deploy", "A legacy pre-migration learning."),
+	}
+	vaultDir := initRollingPRFixture(t, texts)
+
+	// The 2026-10-25 index partition: one existing compiled article
+	// citing zed. Themes seed from this partition — alice's auth tag
+	// matches the existing article, so her theme carries it as the
+	// existing_article rather than proposing a new one.
+	writeFixtureFile(t, vaultDir, distillCompiledPrefix+"auth.md",
+		"---\ntier: draft\nsources:\n  - "+zed+"\ntopic: auth\n---\n\n# Authentication\n\nZed's compiled knowledge.\n")
+	writeFixtureFile(t, vaultDir, ".uf/dewey/config.yaml", "default_branch_ref: origin/main\n")
+	rollingGit(t, vaultDir, "add", ".")
+	rollingGit(t, vaultDir, "commit", "-q", "-m", "chore: seed compiled partition and pin fixture ref")
+	rollingGit(t, vaultDir, "push", "-q", "origin", "main")
+
+	ctx := context.Background()
+	d := &Distill{vaultPath: vaultDir, ghRunner: newFakeGH(t, 31)}
+
+	// --- The --backlog-from bound: scope narrows to the backlog
+	// window (learnings created on or before 2026-10-25 UTC), the
+	// cited zed stays out, carol's post-cutoff learning waits for the
+	// weekly steady state, and the legacy identity passes. ---
+	scopeRes, _, err := d.Scope(ctx, nil, DistillScopeInput{BacklogFrom: "2026-10-25"})
+	if err != nil {
+		t.Fatalf("scope tool: %v", err)
+	}
+	var scopePayload distillScopeResult
+	decodeToolJSON(t, "scope", scopeRes, &scopePayload)
+	wantScope := []string{alice, legacy, bob} // sorted: auth-*, deploy-42, governance-*
+	if !reflect.DeepEqual(scopePayload.Scope.InScope, wantScope) {
+		t.Fatalf("backlog in_scope = %v, want %v (cited out, post-cutoff out, legacy in)", scopePayload.Scope.InScope, wantScope)
+	}
+	if scopePayload.Scope.Empty || scopePayload.NoOp {
+		t.Fatal("backlog scope reports empty/no-op; want a live bounded scope")
+	}
+
+	// --- Themes seeded from the existing partition: alice joins the
+	// existing auth article; governance and deploy open new themes. ---
+	groupRes, _, err := d.GroupLearners(ctx, nil, DistillGroupInput{InScope: scopePayload.Scope.InScope})
+	if err != nil {
+		t.Fatalf("group_learners tool: %v", err)
+	}
+	var groupPayload distillGroupResult
+	decodeToolJSON(t, "group_learners", groupRes, &groupPayload)
+	themes := make(map[string]Theme, len(groupPayload.Themes))
+	for _, theme := range groupPayload.Themes {
+		themes[theme.Name] = theme
+	}
+	if len(groupPayload.Themes) != 3 {
+		t.Fatalf("themes = %d, want 3 (auth, deploy, governance): %+v", len(groupPayload.Themes), groupPayload.Themes)
+	}
+	if got := themes["auth"].ExistingArticle; got != distillCompiledPrefix+"auth.md" {
+		t.Errorf("auth theme existing_article = %q, want %q (seeded from the index partition)", got, distillCompiledPrefix+"auth.md")
+	}
+	if got := themes["governance"].ExistingArticle; got != "" {
+		t.Errorf("governance theme existing_article = %q, want empty (new theme)", got)
+	}
+	if got := themes["deploy"].ExistingArticle; got != "" {
+		t.Errorf("deploy theme existing_article = %q, want empty (new theme)", got)
+	}
+
+	// --- The --dry-run preview: one would_create per theme, nothing
+	// mutated (no remote branches, no run artifact). ---
+	previewRes, _, err := d.RollingPR(ctx, nil, DistillRollingPRInput{Themes: groupPayload.Themes, DryRun: true})
+	if err != nil {
+		t.Fatalf("rolling_pr preview: %v", err)
+	}
+	var previewPayload distillRollingPRResult
+	decodeToolJSON(t, "rolling_pr preview", previewRes, &previewPayload)
+	if len(previewPayload.Results) != 3 {
+		t.Fatalf("preview results = %d, want 3", len(previewPayload.Results))
+	}
+	for _, result := range previewPayload.Results {
+		if result.State != RollingPRWouldCreate {
+			t.Errorf("preview theme %s state = %q, want %q", result.Theme, result.State, RollingPRWouldCreate)
+		}
+	}
+	if previewPayload.Artifact != "" {
+		t.Errorf("preview artifact = %q, want empty (a dry run records no artifact)", previewPayload.Artifact)
+	}
+	branches := AssignThemeBranches([]string{"auth", "deploy", "governance"})
+	for theme, branch := range branches {
+		if out := rollingGit(t, vaultDir, "ls-remote", "origin", "refs/heads/"+branch); strings.TrimSpace(out) != "" {
+			t.Errorf("preview created remote branch for %s; the preview must not push", theme)
+		}
+	}
+
+	// --- The real run: the same bounded scope opens one rolling PR per
+	// theme and records the run artifact. ---
+	runRes, _, err := d.RollingPR(ctx, nil, DistillRollingPRInput{Themes: groupPayload.Themes})
+	if err != nil {
+		t.Fatalf("rolling_pr run: %v", err)
+	}
+	var runPayload distillRollingPRResult
+	decodeToolJSON(t, "rolling_pr run", runRes, &runPayload)
+	if len(runPayload.Results) != 3 {
+		t.Fatalf("run results = %d, want 3", len(runPayload.Results))
+	}
+	for _, result := range runPayload.Results {
+		if result.State != RollingPRCreated {
+			t.Errorf("run theme %s state = %q, want %q", result.Theme, result.State, RollingPRCreated)
+		}
+		if result.TierWritten != DistillTierDraft {
+			t.Errorf("run theme %s tier_written = %q, want %q", result.Theme, result.TierWritten, DistillTierDraft)
+		}
+	}
+	if runPayload.Artifact == "" {
+		t.Error("run artifact is empty, want the recorded FR-021 audit path")
+	}
+
+	// The seeded auth article regenerates in place on its PR branch and
+	// newly cites alice; the post-cutoff carol stays uncited until the
+	// weekly run reaches her.
+	authArticle := remoteFile(t, vaultDir, branches["auth"], distillCompiledPrefix+"auth.md")
+	if !strings.Contains(authArticle, "  - "+alice) {
+		t.Errorf("auth article missing newly cited %s:\n%s", alice, authArticle)
+	}
+	if strings.Contains(authArticle, carol) {
+		t.Errorf("auth article cites post-cutoff %s; the backlog window must exclude her:\n%s", carol, authArticle)
+	}
+}

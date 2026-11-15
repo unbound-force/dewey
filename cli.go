@@ -488,6 +488,18 @@ sources:
 			if !alreadyInitialized {
 				logger.Info("initialized", "path", deweyDir)
 				logger.Info("run 'dewey index' to build the initial index")
+			} else {
+				logger.Info("re-initialized", "path", deweyDir)
+			}
+			// Weekly distill workflow template (T005): shipped as
+			// .github/workflows/dewey-distill.yml.example — no auto-install
+			// on init; opt-in copy documented per FR-001/FR-022 and
+			// contracts/workflow-template.md quickstart Enable steps 1-3.
+			workflowExample := filepath.Join(vaultPath, ".github", "workflows", "dewey-distill.yml.example")
+			if fileExists(workflowExample) {
+				logger.Info("weekly distill workflow template available",
+					"example", workflowExample,
+					"enable", "cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml")
 			}
 
 			return nil

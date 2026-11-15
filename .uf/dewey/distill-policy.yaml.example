@@ -1,0 +1,9 @@
+# Dewey distill policy — optional exclusions for unattended distill.
+# Copy to .uf/dewey/distill-policy.yaml to activate; when absent, all uncited
+# learnings are in scope. Invalid entries are logged and skipped, not fatal.
+# Size: max 16 KiB, depth <=3, <=100 entries. Deny list ["*"] is rejected.
+exclude_tags:
+  # - scratch-*
+  # - WIP
+exclude_stores:
+  # - scratch-store

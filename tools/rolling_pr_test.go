@@ -190,6 +190,64 @@ func TestValidateThemeBranch(t *testing.T) {
 	}
 }
 
+func TestValidateAssignedBranches_PassesSanitizerOutput(t *testing.T) {
+	// Hostile theme names: the runtime leg must accept everything the
+	// sanitizer legitimately produces — a defense-in-depth check that
+	// rejected valid output would block every run.
+	names := []string{
+		"auth", "Auth/SSO..Flow", "../../etc/passwd", "/",
+		"\x00\x01", "", "MIXED CASE 123", strings.Repeat("x", 250),
+	}
+	branches := AssignThemeBranches(names)
+	if err := validateAssignedBranches(names, branches); err != nil {
+		t.Errorf("validateAssignedBranches(sanitizer output) = %v, want nil", err)
+	}
+}
+
+// TestValidateAssignedBranches_FailsClosedOnPoisonedAssignment pins the
+// runtime leg of the Branch Sanitization invariant: an assignment that
+// regressed the sanitizer — or bypassed it — fails closed before any
+// branch reaches git, with the offending branch named in the error.
+func TestValidateAssignedBranches_FailsClosedOnPoisonedAssignment(t *testing.T) {
+	cases := []struct {
+		label   string
+		branch  string // the poisoned branch a regression emitted for "auth"
+		wantErr string // stable fragment of the expected grammar error
+	}{
+		{"missing prefix", "main", "must start with"},
+		{"empty segment", DistillBranchPrefix, "empty theme segment"},
+		{"uppercase segment", DistillBranchPrefix + "Auth", "outside [a-z0-9-]"},
+		{"slash in segment", DistillBranchPrefix + "auth/escape", "outside [a-z0-9-]"},
+		{"traversal segment", DistillBranchPrefix + "..", "outside [a-z0-9-]"},
+		{"overlong branch", DistillBranchPrefix + strings.Repeat("a", 70), "exceeds"},
+	}
+	for _, tc := range cases {
+		branches := map[string]string{
+			"auth": tc.branch,
+			"db":   DistillBranchPrefix + "db-a1b2c3d4",
+		}
+		err := validateAssignedBranches([]string{"auth", "db"}, branches)
+		if err == nil {
+			t.Errorf("%s: validateAssignedBranches accepted %q", tc.label, tc.branch)
+			continue
+		}
+		if !strings.Contains(err.Error(), "distill rolling pr: ") {
+			t.Errorf("%s: error %q missing the rolling-pr context", tc.label, err)
+		}
+		if !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("%s: error %q missing %q", tc.label, err, tc.wantErr)
+		}
+		if !strings.Contains(err.Error(), tc.branch) {
+			t.Errorf("%s: error %q does not name the offending branch %q", tc.label, err, tc.branch)
+		}
+	}
+	// A theme the assignment never mapped reads as the zero value: the
+	// empty branch fails the grammar fail-closed, not silently passes.
+	if err := validateAssignedBranches([]string{"auth"}, map[string]string{}); err == nil {
+		t.Error("absent theme branch accepted")
+	}
+}
+
 // hashSuffixFor computes the expected 8-hex sha256(theme) suffix so tests
 // assert the contract's exact hash input (the ORIGINAL theme bytes).
 func hashSuffixFor(t *testing.T, theme string) string {

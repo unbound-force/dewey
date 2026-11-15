@@ -14,7 +14,7 @@ import (
 )
 
 func TestGuardDistillTier_RejectsValidated(t *testing.T) {
-	err := GuardDistillTier(TierValidated)
+	err := GuardDistillTier(tierValidated)
 	if err == nil {
 		t.Fatal("GuardDistillTier(validated) = nil, want rejection")
 	}

@@ -243,7 +243,7 @@ func TestBacklogBootstrap_PreviewThenRealRun(t *testing.T) {
 	const alice = "auth-20261020T000001-alice" // backlog: joins the existing auth article
 	const bob = "governance-20261021T000002-bob"
 	const carol = "auth-20261101T000003-carol" // created after the cutoff — outside the window
-	const legacy = "deploy-42"                  // legacy identity: no timestamp, always passes
+	const legacy = "deploy-42"                 // legacy identity: no timestamp, always passes
 	texts := map[string]string{
 		zed:    rollingFixtureLearning("auth", "Zed's old auth learning, already cited."),
 		alice:  rollingFixtureLearning("auth", "Alice's backlog auth learning."),

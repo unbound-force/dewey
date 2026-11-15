@@ -143,7 +143,7 @@
 - [x] T045 [P] Validate performance goals in `tools/scope_test.go`/`tools/group_test.go`: scope <2s for ~2k learnings, grouping <5s for 500/week steady state, <30s for 1,729 backlog (watched pane acceptable), PR body <1s per theme per plan.md Performance Goals
 - [x] T046 [P] Update website docs sync issue in `unbound-force/website` repo per Development Workflow: workflow template install, `dewey-distill-auto` command, distiller vs curator agents, distill-policy.yaml, rolling PR body format, backlog bootstrap per constitution Website Documentation Sync
 - [x] T047 Run full CI parity gate per constitution Development Workflow: `go build -v ./...`, `go vet ./...`, `go test -race -count=1 -coverprofile=coverage.out ./...`, `gaze crap --max-crapload=48 --max-gaze-crapload=45` and verify all four reviewers (Adversary, Architect, Guard, Tester) APPROVE before PR per constitution Development Workflow Review Council Gate
-- [ ] T048 Verify no orphaned code/unused dependencies per Behavioral Constraints Zero-Waste: template is copy-not-install, no Feature Zombie bloat, 37 inherited graphthulhu MCP tools still work identically per AGENTS.md Neighborhood Rule
+- [x] T048 Verify no orphaned code/unused dependencies per Behavioral Constraints Zero-Waste: template is copy-not-install, no Feature Zombie bloat, 37 inherited graphthulhu MCP tools still work identically per AGENTS.md Neighborhood Rule
 
 ---
 

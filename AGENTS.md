@@ -246,6 +246,27 @@ design). They MUST NOT be committed on a feature or PR branch:
 - Never force publication through the staging sweep: if a learning is not
   ready to be public, leave it uncommitted.
 
+### Human-Gate Enforcement (Code Owners)
+
+The `human-gate` GitHub label marks a PR as hands-off for tooling: agents and
+bots must not approve, merge, or force it through. The label is an instruction
+to tooling; CODEOWNERS is what actually enforces the gate. `.github/CODEOWNERS`
+owns `.uf/dewey/compiled/**` and `.uf/dewey/knowledge/**`, so a PR touching
+those paths stays blocked when a bot (e.g. `uf-divisor`) is the only approver
+and becomes mergeable only once the code owner approves. This matters because
+the default-branch ruleset requires a single approving review that a bot can
+already satisfy and gh-hud auto-merge is on — without the code-owner
+requirement a bot approval could merge knowledge no human reviewed. Under
+dewey #203 the merged, code-owner-approved PR is the trust vouch that makes a
+page `validated`. Learnings-only `chore(dewey)` PRs remain auto-mergeable
+because `.uf/dewey/learnings/**` is deliberately unowned; learnings are always
+draft tier.
+
+Enabling "Require review from Code Owners" in the default-branch ruleset
+(ruleset 26764121 in unbound-force/dewey, and the corresponding ruleset in
+unbound-force/unbound-force) is a repository-settings edit only an admin can
+make. It is not code and is not committed here.
+
 ### Spec Commit Gate
 
 All spec artifacts (`spec.md`, `plan.md`, `tasks.md`, and any other files under `specs/`) **must** be committed and pushed before implementation begins. Run `/speckit.implement` only after the spec commit is on the remote.

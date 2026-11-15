@@ -1,0 +1,18 @@
+# Human gate for knowledge artifacts (dewey #194, epic #153 Phase 5).
+#
+# Under dewey #203, merging a code-owner-approved PR is the trust vouch that
+# marks a knowledge page as validated, so compiled and curated knowledge
+# requires human code-owner review before it can merge. A bot approval
+# (e.g. uf-divisor) does not satisfy the code-owner requirement, so a PR
+# touching these paths stays blocked until @jflowers approves.
+#
+# .uf/dewey/learnings/** is deliberately unowned: learnings are always draft
+# tier and reach main through daily chore(dewey) PRs that must keep
+# auto-merging. All other paths are likewise unowned, so regular code PRs
+# pick up no new review requirement.
+#
+# This file only takes effect once "Require review from Code Owners" is
+# enabled on the default-branch ruleset — an admin repo-settings edit, not
+# code, and not committed here.
+.uf/dewey/compiled/** @jflowers
+.uf/dewey/knowledge/** @jflowers

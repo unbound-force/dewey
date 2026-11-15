@@ -1294,6 +1294,157 @@ func TestManageRollingPRs_DryRunPreviewMutatesNothing(t *testing.T) {
 	}
 }
 
+// TestManageRollingPRs_ReviewerValidatedSuggestionPreserved covers the
+// gh-hud feedback integration for the reviewer vouch (T041, spec.md US6
+// acceptance scenario 3): a reviewer's tier: validated suggestion —
+// applied by gh-hud's feedback task as a frontmatter edit committed on
+// the PR branch — is the only file change the feedback task makes (an
+// unrelated review comment produces none), and the next weekly run
+// refuses to overwrite it (FR-015 regeneration guard): the validated
+// claim survives on the branch, the PR gains needs-human-resolution,
+// and the run itself still writes only draft.
+func TestManageRollingPRs_ReviewerValidatedSuggestionPreserved(t *testing.T) {
+	const alice = "auth-20260101T000001-alice"
+	const govAlice = "governance-20260101T000001-alice"
+	authPath := distillCompiledPrefix + "auth.md"
+	govPath := distillCompiledPrefix + "governance.md"
+	texts := map[string]string{
+		alice:    rollingFixtureLearning("auth", "Alice's auth learning."),
+		govAlice: rollingFixtureLearning("governance", "Alice's governance learning."),
+	}
+	vault := initRollingPRFixture(t, texts)
+	gh := newFakeGH(t, 11)
+	if _, err := ManageRollingPRs(context.Background(),
+		RollingPROptions{VaultDir: vault, GhRunner: gh},
+		RollingPRInput{Themes: []Theme{
+			distillTestTheme("auth", "", alice),
+			distillTestTheme("governance", "", govAlice),
+		}, Texts: texts}); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	branches := AssignThemeBranches([]string{"auth", "governance"})
+	authBranch, govBranch := branches["auth"], branches["governance"]
+	authDraft := remoteFile(t, vault, authBranch, authPath)
+	govDraft := remoteFile(t, vault, govBranch, govPath)
+
+	// gh-hud's feedback task applies the reviewer's tier: validated
+	// suggestion on the auth article: a frontmatter edit committed on
+	// the PR branch under the reviewer's identity (any author other
+	// than the distiller is human work the run must preserve). The
+	// unrelated review comment on the governance article ("please
+	// clarify X") is prose on GitHub — the feedback task translates it
+	// into no file edit.
+	rollingGit(t, vault, "checkout", "-q", authBranch)
+	writeFixtureFile(t, vault, authPath, strings.Replace(authDraft, "tier: draft", "tier: validated", 1))
+	rollingGit(t, vault, "add", authPath)
+	rollingGit(t, vault, "-c", "user.name=Reviewer", "-c", "user.email=reviewer@example.com",
+		"commit", "-q", "-m", "reviewer: accept article at validated")
+	rollingGit(t, vault, "push", "-q", "origin", authBranch)
+	reviewerTip := remoteSHA(t, vault, authBranch)
+	rollingGit(t, vault, "checkout", "-q", "main")
+
+	// Only the suggestion became a file change: the governance article
+	// is byte-identical to the run's output (the unrelated comment
+	// changed nothing), and the auth article carries the applied vouch.
+	if auth := remoteFile(t, vault, authBranch, authPath); !strings.Contains(auth, "tier: validated") {
+		t.Errorf("auth article missing the applied tier: validated suggestion:\n%s", auth)
+	}
+	if gov := remoteFile(t, vault, govBranch, govPath); gov != govDraft {
+		t.Errorf("governance article changed although its comment was unrelated:\n%s", gov)
+	}
+
+	// The next weekly run would regenerate both articles (new learnings
+	// joined each theme on main, delivered by the daily chore PRs).
+	const bob = "auth-20260101T000002-bob"
+	const govBob = "governance-20260101T000002-bob"
+	secondTexts := map[string]string{
+		alice:    texts[alice],
+		govAlice: texts[govAlice],
+		bob:      rollingFixtureLearning("auth", "Bob's auth learning."),
+		govBob:   rollingFixtureLearning("governance", "Bob's governance learning."),
+	}
+	writeFixtureFile(t, vault, ".uf/dewey/learnings/"+bob+".md", secondTexts[bob])
+	writeFixtureFile(t, vault, ".uf/dewey/learnings/"+govBob+".md", secondTexts[govBob])
+	rollingGit(t, vault, "add", ".")
+	rollingGit(t, vault, "commit", "-q", "-m", "chore(dewey): new learnings")
+	rollingGit(t, vault, "push", "-q", "origin", "main")
+
+	gh2 := newFakeGH(t, 20)
+	gh2.listResponses = [][]OpenDistillPR{{
+		{Number: 11, HeadRefName: authBranch},
+		{Number: 12, HeadRefName: govBranch},
+	}}
+	results, err := ManageRollingPRs(context.Background(),
+		RollingPROptions{VaultDir: vault, GhRunner: gh2},
+		RollingPRInput{Themes: []Theme{
+			distillTestTheme("auth", "", alice, bob),
+			distillTestTheme("governance", "", govAlice, govBob),
+		}, Texts: secondTexts})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	byTheme := make(map[string]RollingPRResult)
+	for _, r := range results {
+		byTheme[r.Theme] = r
+	}
+
+	// The auth PR carries the reviewer's validated edit: the run refuses
+	// to overwrite it (FR-015), flags needs-human-resolution, and pushes
+	// nothing over the reviewer's tip.
+	auth := byTheme["auth"]
+	if auth.State != RollingPRUntouched {
+		t.Errorf("auth state = %q, want %q (the guard skipped the only write)", auth.State, RollingPRUntouched)
+	}
+	if len(auth.SkippedFiles) != 1 || auth.SkippedFiles[0] != authPath {
+		t.Errorf("auth SkippedFiles = %v, want [%s]", auth.SkippedFiles, authPath)
+	}
+	if !containsLabel(auth.Labels, LabelNeedsHumanResolution) {
+		t.Errorf("auth Labels = %v, want %s", auth.Labels, LabelNeedsHumanResolution)
+	}
+	if auth.TierWritten != DistillTierDraft {
+		t.Errorf("auth TierWritten = %q, want %q (the run itself never writes validated)", auth.TierWritten, DistillTierDraft)
+	}
+	if after := remoteSHA(t, vault, authBranch); after != reviewerTip {
+		t.Errorf("auth remote tip moved %s → %s; the reviewer's edit must not be pushed over", reviewerTip, after)
+	}
+	if article := remoteFile(t, vault, authBranch, authPath); !strings.Contains(article, "tier: validated") {
+		t.Errorf("the reviewer's validated claim did not survive the run:\n%s", article)
+	}
+	if labels := gh2.editLabels[11]; !containsLabel(labels, LabelNeedsHumanResolution) {
+		t.Errorf("auth PR edit labels = %v, want %s", labels, LabelNeedsHumanResolution)
+	}
+	if body := gh2.editBodies[11]; !strings.Contains(body, "regeneration guard: skipped `"+authPath+"`") {
+		t.Errorf("auth PR body missing the regeneration-guard note:\n%s", body)
+	}
+
+	// The governance PR — whose only review activity was the unrelated
+	// comment — updates normally: the regenerated article stays
+	// tier: draft, cites both learnings, and no human-resolution label
+	// appears.
+	gov := byTheme["governance"]
+	if gov.State != RollingPRUpdated {
+		t.Errorf("governance state = %q, want %q", gov.State, RollingPRUpdated)
+	}
+	if gov.TierWritten != DistillTierDraft {
+		t.Errorf("governance TierWritten = %q, want %q", gov.TierWritten, DistillTierDraft)
+	}
+	if !gov.HumanCommitsPreserved {
+		t.Error("governance rebase dropped a human commit")
+	}
+	if labels := gh2.editLabels[12]; containsLabel(labels, LabelNeedsHumanResolution) {
+		t.Errorf("governance PR edit labels = %v; an unrelated comment must not flag the PR", labels)
+	}
+	article := remoteFile(t, vault, govBranch, govPath)
+	if !strings.Contains(article, "tier: draft") {
+		t.Errorf("governance article lost its draft tier:\n%s", article)
+	}
+	for _, id := range []string{govAlice, govBob} {
+		if !strings.Contains(article, id) {
+			t.Errorf("governance article missing newly cited %s:\n%s", id, article)
+		}
+	}
+}
+
 // TestRenderDraftArticle_DraftRender covers the deterministic article
 // render: draft tier, distiller provenance, sources list, per-member
 // sections, and no learning frontmatter leakage.

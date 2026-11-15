@@ -442,6 +442,65 @@ func TestInitCmd_ScaffoldsSlashCommands(t *testing.T) {
 	}
 }
 
+// TestInitCmd_DoesNotInstallDistillWorkflow verifies that dewey init never
+// auto-installs the weekly distill workflow (FR-001: the copy is the opt-in)
+// but documents it when the example template ships in the vault.
+func TestInitCmd_DoesNotInstallDistillWorkflow(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Ship the example template in the vault so the availability hint path
+	// is exercised (T015).
+	workflowDir := filepath.Join(tmpDir, ".github", "workflows")
+	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+		t.Fatalf("create workflows dir: %v", err)
+	}
+	examplePath := filepath.Join(workflowDir, "dewey-distill.yml.example")
+	exampleContent := []byte("# example template fixture\n")
+	if err := os.WriteFile(examplePath, exampleContent, 0o644); err != nil {
+		t.Fatalf("write example workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// Capture logger output for the availability hint.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// The workflow itself must NOT be installed — the copy is the opt-in.
+	installed := filepath.Join(workflowDir, "dewey-distill.yml")
+	if _, err := os.Stat(installed); err == nil {
+		t.Error("dewey init auto-installed .github/workflows/dewey-distill.yml; the copy must be manual (FR-001)")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("stat installed workflow: %v", err)
+	}
+
+	// The example template must be untouched.
+	got, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatalf("read example workflow: %v", err)
+	}
+	if string(got) != string(exampleContent) {
+		t.Error("dewey init modified the example workflow template")
+	}
+
+	// The opt-in copy must be documented in the hint.
+	logs := logBuf.String()
+	if !strings.Contains(logs, "weekly distill workflow template available") {
+		t.Errorf("init should log the template availability hint, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml") {
+		t.Errorf("init hint should document the opt-in copy command, got:\n%s", logs)
+	}
+}
+
 // TestInitCmd_SkipsExistingSlashCommands verifies that dewey init does
 // not overwrite existing slash command files (preserves user customizations).
 func TestInitCmd_SkipsExistingSlashCommands(t *testing.T) {

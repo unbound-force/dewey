@@ -899,6 +899,47 @@ When patterns are updated in a new Dewey release, `dewey lint` flags stale findi
 
 When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexing runs in the background — tools serve from the persistent store (previous session's data) while indexing completes. The `health` tool reports indexing status.
 
+## Weekly Unattended Distill
+
+Dewey ships an opt-in GitHub Actions template that automates the *demotion* side of knowledge curation on a weekly schedule: it computes the deterministic distill scope (uncited learnings), groups them into themes, and opens rolling per-theme review PRs at `tier: draft` — never `tier: validated`. Promotion stays human: the vouch is the merge of a CODEOWNERS-approved PR (#203), and the `human-gate` label keeps tooling hands-off.
+
+### Enable
+
+Copy the template into place (the copy is the opt-in — `dewey init` never auto-installs a workflow):
+
+```bash
+cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml
+gh label create dewey-distill --color 0E8A16 --description "Unattended weekly distill" 2>/dev/null || true
+gh label create human-gate --color D93F0B --description "Requires code-owner review" 2>/dev/null || true
+```
+
+The workflow runs every Monday 09:00 UTC (edit the cron to taste) and on manual `workflow_dispatch`. It needs no secrets: it runs on the built-in `github.token` with `contents: read`, `issues: write`, and `pull-requests: write`.
+
+Prerequisites (per #194): `CODEOWNERS` must own `.uf/dewey/compiled/**` and the default-branch ruleset (26764121 in this repository) must require code-owner review, so rolling PRs labeled `human-gate` stay blocked until a code owner approves. Without that, PRs still open but nothing enforces the human gate.
+
+### gh-hud dispatch contract
+
+The workflow itself only opens or re-triggers a `dewey-distill` issue. Dispatching the run is [gh-hud](https://github.com/jflowers/gh-hud)'s side of the contract (jflowers/gh-hud#28): gh-hud watches issues labeled `dewey-distill` and, observing one, dispatches `/dewey-distill-auto #<issue-number>` as the `autonomy` agent in a TUI pane. Dewey exposes exactly what gh-hud needs:
+
+| Contract element | Value |
+|---|---|
+| Issue label | `dewey-distill` |
+| Assignee | the workflow actor (`@me` at issue creation) |
+| Re-trigger marker | comment body starting `<!-- dewey-distill-trigger -->` |
+| Dispatch command | `/dewey-distill-auto #<num>` |
+
+The dedup invariant (at most one open `dewey-distill` issue at any time) is enforced by the workflow's check-then-create step plus a `concurrency` group that serializes a manual re-trigger racing the schedule; a second trigger posts a re-trigger comment instead of opening a duplicate.
+
+### The unattended run
+
+`/dewey-distill-auto` runs as the `distiller` agent (`.opencode/agents/distiller.md`, scaffolded by `dewey init`): deterministic scope from git (`learning` identities minus `compiled` citations via one batch `git ls-tree`, with a filesystem fallback for non-git vaults), theme grouping with supersession co-location and per-decision provenance, and rolling `dewey-distill/<theme>` PRs whose review-queue bodies carry what changed, newly cited identities, supersessions, lint drift, and assignment confidence. The distiller never calls the `question` tool and never writes `tier: validated` — both are rejected server-side and logged, with a fallback to deterministic scope.
+
+An optional `.uf/dewey/distill-policy.yaml` (see `.uf/dewey/distill-policy.yaml.example`) excludes tags or knowledge stores from the weekly scope; when absent, all uncited learnings are in scope. Invalid entries are warned and skipped, never fatal.
+
+```bash
+gh workflow run dewey-distill.yml   # manual trigger
+```
+
 ## Architecture
 
 ```text

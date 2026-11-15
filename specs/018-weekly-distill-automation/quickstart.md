@@ -34,7 +34,7 @@ Run in a watched TUI pane once: `/dewey-distill-auto --backlog-from 2026-10-25 -
 - Scope determinism: `go test -run Scope -count=1 -race ./...` — 10 learnings / 2 cited → 8 in-scope.
 - Dedup: run workflow twice → one open issue + comment.
 - Never-question / never-validated: log grep in `tools/*_test.go` fixtures.
-- Merge one `dewey-distill/<theme>` PR at `validated` → `dewey doctor` shows `validated` via #203 blob equality.
+- Merge one `dewey-distill/<theme>` PR at `validated` → the merged, code-owner-approved PR is the vouch recorded in git; #203 blob-equality derivation yields `validated` (verified in tests via `vault.DeriveEffectiveTier` with a workspace pathspec — distill articles live under `.uf/dewey/compiled/`, which the `dewey doctor`/`status` vouch display does not yet surface for the workspace layout; see spec US6 known limitation and unbound-force/dewey#210).
 
 ## What to watch
 

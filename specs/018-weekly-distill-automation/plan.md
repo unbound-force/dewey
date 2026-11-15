@@ -36,7 +36,7 @@ Automate curation **demotion, never promotion**: a weekly GitHub Action fires, d
 |-----------|------|---------|----------|
 | I. Composability First | No hard dependency on `gh-hud`/supervisor/opencode; graceful fallback if unavailable | PASS | Workflow template is opt-in copy (`dewey init` ships example); scope fallback to filesystem scan when not git; embeddings fallback to tag grouping when unavailable; MCP unavailable → direct file reads |
 | II. Autonomous Collaboration | All agent communication via MCP tool calls, no shared memory | PASS | Distiller uses `lint`, `list_pages`, `compile`, `curate`, `verify_candidates`, `store_compiled`, `supersede_learning`, `promote` via MCP; background index respects `indexReady` + shared mutex; no new direct function coupling |
-| III. Observable Quality | Every result carries provenance; index state auditable via `health`/`status`/`doctor` | PASS | Grouping decisions log provenance (embedding distance / rule / judge + confidence); PR bodies expose newly cited identities, supersessions, drift; `dewey status`/`doctor` report trust tiers via `DeriveEffectiveTier` + blob equality; compile `coverage` surfaced |
+| III. Observable Quality | Every result carries provenance; index state auditable via `health`/`status`/`doctor` | PASS | Grouping decisions log provenance (embedding distance / rule / judge + confidence); PR bodies expose newly cited identities, supersessions, drift; durable run artifacts (`.uf/dewey/distill-runs/`) audit every run incl. no-ops; `dewey status`/`doctor` report trust tiers via `DeriveEffectiveTier` + blob equality for vault-root `compiled/`/`knowledge/` layouts today — distill articles' `.uf/dewey/compiled` workspace layout is displayed pending dewey#210 (US6 known limitation); compile `coverage` surfaced |
 | IV. Testability | Every package testable isolation; no external service required; contract tests required | PASS | Scope has git-only pure function + filesystem fixture tests; allowlist has unit tests denying `question`/`validated`; rebase preservation via fixture repos with temp git dirs; `NoopSynthesizer`/`anchorChecker` seams retained; coverage ratchets enforced in CI |
 | **Development Workflow** | Spec-first, branch naming, review council, CI parity, task bookkeeping, docs sync | PASS | Feature branch `018-weekly-distill-automation` (Speckit `NNN-*`); spec exists before plan; PR requires council APPROVE *all four*; CI parity `go build/vet/test -race` + gaze thresholds replicated locally; tasks marked `[x]` immediately; website sync issues for new workflow template |
 
@@ -69,7 +69,8 @@ specs/018-weekly-distill-automation/
 └── workflows/
     └── dewey-distill.yml.example   # shipped template (FR-001/FR-022)
 
-templates/ or .github/workflows/     # documented copy path for adopting repos
+workflow_templates.go               # embedded deweyWorkflowTemplates map — the template's scaffold source
+                                    # (dewey init writes the example into adopting repos; never overwrites)
 
 .uf/dewey/
 ├── distill-policy.yaml.example     # optional exclusions (FR-007)
@@ -80,13 +81,13 @@ opencode/
 │   └── distiller.md               # new: /dewey-distill-auto unattended (allowlist doc)
 └── commands/
     ├── dewey-distill.md           # existing interactive — unchanged
-    └── dewey-distill-auto.md      # new: unattended entry point
+    └── dewey-distill-auto.md      # new: unattended entry point (also embedded in slash_commands.go)
 
 server.go                           # register new MCP tool(s) if needed (scope/dry-run)
 tools/
-├── scope.go / scope_test.go        # deterministic scope from git ls-tree
+├── scope.go / scope_test.go        # deterministic scope from git ls-tree + backlog_from filter
 ├── group.go / group_test.go        # theme assignment + supersession coercion
-├── rolling_pr.go / rolling_pr_test.go # PR create/update/rebase + body render
+├── rolling_pr.go / rolling_pr_test.go # PR create/update/rebase + body render + dry-run preview
 └── verify.go (existing)            # reused for per-theme review queue
 
 vault/                              # Vault.GetPage / tier derivation interaction

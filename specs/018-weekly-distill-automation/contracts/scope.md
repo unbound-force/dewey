@@ -5,6 +5,7 @@
 - `default_ref`: remote default branch (resolved via `gitref` precedence chain)
 - `compiled_prefix`: `.uf/dewey/compiled/` (configurable via distill-policy if needed)
 - `learnings_prefix`: `.uf/dewey/learnings/`
+- `backlog_from` (optional, `YYYY-MM-DD`): bound the scope to learnings created on or before this UTC date — the `--backlog-from` backlog bootstrap (FR-020). Identities embed `{tag}-{YYYYMMDDTHHMMSS}-{author}` timestamps; a learning passes when its timestamp is strictly before the end of the cutoff day. Legacy identities without an embedded timestamp always pass. An unparseable date fails closed with an error — never a silently unbounded or silently empty scope.
 
 ## Behavior
 
@@ -42,7 +43,7 @@ Optional file; when present it is bounded before use (FR-007):
 
 Empty scope exits no-op with no PR and no comment, but MUST still record a durable run artifact (FR-021):
 
-- Path `.uf/dewey/distill-runs/<YYYYMMDD-HHMMSS>.json` (also logged to pane) `{ run_at, scope_size, themes, prs_touched[], no_op_reason }`.
+- Path `.uf/dewey/distill-runs/<YYYYMMDD-HHMMSS>.json` (also logged to pane) `{ schema, run_at, scope_size, themes, prs_touched[], no_op_reason }`. `schema` is the record's JSON schema version (`1` today) so future field changes remain distinguishable across the append-only history.
 - If `in_scope == ∅`, artifact says `no_op_reason: "empty scope"` and is the sole audit surface (PR/issue bodies do not exist on that path).
 
 ## Invariants
@@ -58,6 +59,7 @@ Empty scope exits no-op with no PR and no comment, but MUST still record a durab
 - Policy excludes `scratch-*` → removed.
 - Missing policy → default, no error.
 - Empty → no-op with artifact.
+- `backlog_from` on/after every fixture timestamp → full set; before every timestamp → empty no-op; invalid date → error result.
 - Non-git → degraded, no panic.
 - Over-broad `["*"]` → warn, not starved.
 - 5 MB / 500-entry policy → bounded, warn.

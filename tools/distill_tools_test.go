@@ -251,6 +251,102 @@ func TestDistillRollingPR_EmptyThemesRejected(t *testing.T) {
 	}
 }
 
+// TestDistillScope_BacklogFromBoundsWindow pins the FR-020 backlog
+// bootstrap bound at the tool boundary: a cutoff on or after every
+// fixture timestamp keeps the scope, an earlier cutoff empties it (the
+// FR-021 no-op path fires), and legacy identities without a timestamp
+// always pass.
+func TestDistillScope_BacklogFromBoundsWindow(t *testing.T) {
+	dir, _ := initDistillFixtureRepo(t)
+	d := NewDistill(nil, nil, dir)
+
+	// The fixture's identities all carry 20260101T0000xx timestamps, so
+	// a 2026-01-01 cutoff keeps the full in-scope set.
+	res, _, err := d.Scope(context.Background(), nil, DistillScopeInput{BacklogFrom: "2026-01-01"})
+	if err != nil {
+		t.Fatalf("Scope returned err %v, want result", err)
+	}
+	var payload distillScopeResult
+	decodeToolJSON(t, "scope", res, &payload)
+	if payload.NoOp {
+		t.Error("no_op = true, want false (cutoff covers every fixture learning)")
+	}
+	if want := expectedFixtureInScope(); !reflect.DeepEqual(payload.Scope.InScope, want) {
+		t.Errorf("in_scope = %v, want %v", payload.Scope.InScope, want)
+	}
+
+	// A cutoff before every timestamp leaves nothing in scope: the
+	// no-op exit fires and the artifact records why.
+	res, _, err = d.Scope(context.Background(), nil, DistillScopeInput{BacklogFrom: "2025-12-31"})
+	if err != nil {
+		t.Fatalf("Scope returned err %v, want result", err)
+	}
+	decodeToolJSON(t, "scope", res, &payload)
+	if !payload.NoOp {
+		t.Fatal("no_op = false, want true (cutoff predates every fixture learning)")
+	}
+	if payload.NoOpReason != NoOpReasonEmptyScope {
+		t.Errorf("no_op_reason = %q, want %q", payload.NoOpReason, NoOpReasonEmptyScope)
+	}
+	if payload.Artifact == "" {
+		t.Error("artifact empty on the bounded no-op, want the recorded path")
+	}
+}
+
+// TestDistillScope_BacklogFromInvalidDateFailsClosed pins the fail-closed
+// bound: an unparseable backlog_from is an error result, never a silently
+// unbounded or silently empty scope.
+func TestDistillScope_BacklogFromInvalidDateFailsClosed(t *testing.T) {
+	dir, _ := initDistillFixtureRepo(t)
+	d := NewDistill(nil, nil, dir)
+
+	res, _, err := d.Scope(context.Background(), nil, DistillScopeInput{BacklogFrom: "2026/01/01"})
+	if err != nil {
+		t.Fatalf("Scope returned err %v, want error result", err)
+	}
+	if got := toolErrorText(t, "scope", res); !strings.Contains(got, "backlog_from") {
+		t.Errorf("scope error = %q, want backlog_from mention", got)
+	}
+}
+
+// TestDistillRollingPR_DryRunPreviewNoArtifact pins the dry-run preview at
+// the tool boundary (FR-020): each theme reports its would-be state, no
+// mutation happens, and no run artifact is recorded — the preview result
+// is the run's entire output.
+func TestDistillRollingPR_DryRunPreviewNoArtifact(t *testing.T) {
+	const alice = "auth-20260101T000001-alice"
+	texts := map[string]string{alice: rollingFixtureLearning("auth", "Alice's auth learning.")}
+	vault := initRollingPRFixture(t, texts)
+	gh := newFakeGH(t, 11)
+	d := &Distill{vaultPath: vault, ghRunner: gh}
+
+	res, _, err := d.RollingPR(context.Background(), nil, DistillRollingPRInput{
+		Themes: []Theme{distillTestTheme("auth", "", alice)},
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("RollingPR returned err %v, want result", err)
+	}
+	var payload distillRollingPRResult
+	decodeToolJSON(t, "rolling_pr", res, &payload)
+	if len(payload.Results) != 1 {
+		t.Fatalf("results = %d, want 1", len(payload.Results))
+	}
+	if payload.Results[0].State != RollingPRWouldCreate {
+		t.Errorf("state = %q, want %q", payload.Results[0].State, RollingPRWouldCreate)
+	}
+	if payload.Artifact != "" {
+		t.Errorf("artifact = %q, want empty — a dry run records no artifact", payload.Artifact)
+	}
+	if got, want := gh.calls, []string{"list"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("gh calls = %v, want %v", got, want)
+	}
+	branch := AssignThemeBranches([]string{"auth"})["auth"]
+	if out := rollingGit(t, vault, "ls-remote", "origin", "refs/heads/"+branch); strings.TrimSpace(out) != "" {
+		t.Error("dry run created a remote branch; the preview must not push")
+	}
+}
+
 // TestDistillRollingPR_TwoThemesRunArtifact pins the happy path with an
 // injected gh runner: one draft PR per theme, tier written draft, and
 // the FR-021 run artifact recorded server-side with the themes and
@@ -310,6 +406,9 @@ func TestDistillRollingPR_TwoThemesRunArtifact(t *testing.T) {
 	}
 	if record.ScopeSize != 3 {
 		t.Errorf("artifact scope_size = %d, want 3", record.ScopeSize)
+	}
+	if record.Schema != distillRunRecordSchema {
+		t.Errorf("artifact schema = %d, want %d", record.Schema, distillRunRecordSchema)
 	}
 	if len(record.Themes) != 2 || len(record.PRsTouched) != 2 {
 		t.Errorf("artifact themes = %v, prs_touched = %v, want 2 and 2", record.Themes, record.PRsTouched)

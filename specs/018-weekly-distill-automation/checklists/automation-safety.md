@@ -12,8 +12,8 @@
 
 - [ ] CHK001 Are requirements specified for dedup invariant — at most one open `dewey-distill` issue — across sequential and overlapping workflow runs? [Spec §FR-003, US1 IS+AS]
 - [ ] CHK002 Are requirements specified for re-trigger behavior (post `<!-- dewey-distill-trigger -->` comment) vs. create-new-issue behavior with distinct Given/When/Then? [Spec §FR-002, US1 AS-2]
-- [ ] CHK003 Are requirements specified for `gh-hud#28` contract exposure (label `dewey-distill`, assignee, dispatch command `/dewey-distill-auto #{num}` as `autonomy`) without requiring reverse-engineering? [Spec §FR-004, FR-022]
-- [ ] CHK004 Are failure requirements specified when workflow lacks permissions (contents:read, issues:write, pull-requests:write) or label does not exist? [Plan §Constraints, contracts/workflow-template.md]
+- [ ] CHK003 Are requirements specified for `gh-hud#28` contract exposure (label `dewey-distill`, re-trigger marker, dispatch command `/dewey-distill-auto #{num}` as `autonomy`; no assignee — dispatch keys off the label) without requiring reverse-engineering? [Spec §FR-004, FR-022]
+- [ ] CHK004 Are failure requirements specified when workflow lacks permissions (contents:read, issues:write — least privilege; the job only creates/comments issues, no PR write) or label does not exist? [Plan §Constraints, contracts/workflow-template.md]
 - [ ] CHK005 Are requirements specified for manual re-trigger race (scheduled + `workflow_dispatch` overlap) preserving single-issue invariant? [Spec §Edge Cases, FR-003]
 
 ## Deterministic Scope & Policy Handling

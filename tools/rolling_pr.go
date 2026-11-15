@@ -221,11 +221,21 @@ const NoOpReasonEmptyScope = "empty scope"
 // degradation.
 const NoOpReasonSupervisorUnavailable = "supervisor command profile unavailable"
 
+// distillRunRecordSchema is the current DistillRunRecord JSON schema
+// version. Consumers that evolve the record shape bump this constant and
+// branch on the written value; historical files keep the version they
+// were written with, so the append-only history stays interpretable.
+const distillRunRecordSchema = 1
+
 // DistillRunRecord is the durable run artifact written to
 // .uf/dewey/distill-runs/<YYYYMMDD-HHMMSS>.json (FR-021). On no-op paths
 // — no PR, no comment — this artifact is the run's sole audit surface, so
 // every distill run writes exactly one.
 type DistillRunRecord struct {
+	// Schema is the record's JSON schema version (1 today) so future
+	// field changes remain distinguishable across the append-only
+	// history.
+	Schema int `json:"schema"`
 	// RunAt is the run's start time (UTC).
 	RunAt time.Time `json:"run_at"`
 	// ScopeSize is len(in_scope) at scope computation time.
@@ -291,6 +301,7 @@ func RecordNoOpDistillRun(vaultDir string, scope ScopeSet) (string, error) {
 		return "", fmt.Errorf("distill run artifact: no-op record for non-empty scope (%d in scope)", len(scope.InScope))
 	}
 	record := DistillRunRecord{
+		Schema:     distillRunRecordSchema,
 		RunAt:      time.Now().UTC(),
 		ScopeSize:  0,
 		Themes:     []string{},
@@ -387,6 +398,14 @@ const (
 	// and the remote branch is left at its pre-rebase state so no human
 	// change is dropped (FR-015).
 	RollingPRConflict = "conflict"
+	// RollingPRWouldCreate marks a dry-run theme whose PR a real run
+	// would open: no open PR exists for its branch, and the preview
+	// performed no mutation (no branch, no article, no push).
+	RollingPRWouldCreate = "would_create"
+	// RollingPRWouldUpdate marks a dry-run theme whose open PR a real
+	// run would update in place (rebase, regenerate, push). The preview
+	// performed no mutation.
+	RollingPRWouldUpdate = "would_update"
 )
 
 // distillCompiledBy is the constant compiled_by marker identifying
@@ -428,7 +447,8 @@ type RollingPRResult struct {
 	// every non-conflict path ends with a PR).
 	PRNumber int `json:"pr_number"`
 	// State is one of RollingPRCreated, RollingPRUpdated,
-	// RollingPRUntouched, RollingPRConflict.
+	// RollingPRUntouched, RollingPRConflict; a dry run reports
+	// RollingPRWouldCreate or RollingPRWouldUpdate instead.
 	State string `json:"state"`
 	// Labels lists the PR's labels after the run.
 	Labels []string `json:"labels"`
@@ -462,6 +482,15 @@ type RollingPRInput struct {
 	// Lint optionally maps theme name → lint finding lines for the
 	// review queue body (#147 anchor_drift / embedding_gap).
 	Lint map[string][]string
+	// DryRun selects the output-only preview (the /dewey-distill-auto
+	// --dry-run flag, FR-020 backlog preview): the run enforces the same
+	// clean-tracked-tree precondition and resolves the same open-PR
+	// mapping a real run would, but performs no mutation — no branch
+	// checkout, no article write, no push, no PR create or edit — and
+	// returns one would-be result per theme (RollingPRWouldCreate or
+	// RollingPRWouldUpdate). A dry run records no durable run artifact:
+	// the preview result is the run's entire output.
+	DryRun bool
 }
 
 // gitEnv bundles one run's resolved options so every helper shares the
@@ -536,6 +565,31 @@ func ManageRollingPRs(ctx context.Context, opts RollingPROptions, input RollingP
 	themes := append([]Theme(nil), input.Themes...)
 	sort.Slice(themes, func(i, j int) bool { return themes[i].Name < themes[j].Name })
 	branches := AssignThemeBranches(themeNames(themes))
+
+	// Dry run (the --dry-run preview): the preconditions above ran —
+	// a dirty tracked tree fails here exactly as a real run would, so a
+	// passing preview means an executable run — and the open-PR mapping
+	// is resolved, but no theme is touched: one would-be result per
+	// theme is the entire output.
+	if input.DryRun {
+		results := make([]RollingPRResult, 0, len(themes))
+		for _, theme := range themes {
+			branch := branches[theme.Name]
+			result := RollingPRResult{
+				Theme:       theme.Name,
+				Branch:      branch,
+				State:       RollingPRWouldCreate,
+				Labels:      []string{"human-gate"},
+				TierWritten: "draft",
+			}
+			if pr, ok := openByBranch[branch]; ok {
+				result.State = RollingPRWouldUpdate
+				result.PRNumber = pr.Number
+			}
+			results = append(results, result)
+		}
+		return results, nil
+	}
 
 	var results []RollingPRResult
 	for _, theme := range themes {

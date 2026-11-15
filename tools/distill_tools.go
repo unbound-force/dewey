@@ -69,12 +69,20 @@ func NewDistill(s *store.Store, e embed.Embedder, vaultPath string) *Distill {
 
 // --- scope (contracts/scope.md) ---
 
-// DistillScopeInput is the scope tool's input: no fields. The vault,
-// default-branch ref, and exclusion policy are resolved server-side
-// from the server's configuration — the tool takes nothing from the
-// caller, so the same server state always yields the same scope
-// (FR-005 determinism).
-type DistillScopeInput struct{}
+// DistillScopeInput is the scope tool's input: the vault, default-branch
+// ref, and exclusion policy are resolved server-side from the server's
+// configuration — the tool takes nothing from the caller but the
+// optional backlog window, so the same server state always yields the
+// same scope (FR-005 determinism).
+type DistillScopeInput struct {
+	// BacklogFrom optionally bounds the scope to learnings created on or
+	// before this UTC date (YYYY-MM-DD) — the --backlog-from backlog
+	// bootstrap (FR-020). Empty means the current unbounded scope.
+	// Legacy identities without an embedded timestamp always pass the
+	// filter; an unparseable date fails closed with an error rather
+	// than silently dropping the bound.
+	BacklogFrom string `json:"backlog_from,omitempty"`
+}
 
 // distillScopeResult is the scope tool's result: the computed set, the
 // FR-021 no-op signal, and the policy warnings the computation logged.
@@ -104,9 +112,18 @@ type distillScopeResult struct {
 // FR-021 artifact is recorded server-side (the agent cannot write
 // files) and the result carries no_op with the artifact path so the
 // caller knows to stop without opening or commenting on anything.
-func (d *Distill) Scope(ctx context.Context, _ *mcp.CallToolRequest, _ DistillScopeInput) (*mcp.CallToolResult, any, error) {
+func (d *Distill) Scope(ctx context.Context, _ *mcp.CallToolRequest, input DistillScopeInput) (*mcp.CallToolResult, any, error) {
 	if d.vaultPath == "" {
 		return errorResult("scope: vault path is not configured"), nil, nil
+	}
+	if input.BacklogFrom != "" {
+		// Fail closed on an unparseable date: a typo'd bound must
+		// surface as an error, never as a silently unbounded scope
+		// (which would distill the wrong learnings) or an empty one
+		// (which would record a bogus no-op run).
+		if _, err := time.Parse("2006-01-02", input.BacklogFrom); err != nil {
+			return errorResult(fmt.Sprintf("scope: backlog_from must be YYYY-MM-DD, got %q: %v", input.BacklogFrom, err)), nil, nil
+		}
 	}
 	// The policy file is vault-rooted, never CWD-rooted
 	// (contracts/scope.md Policy Exclusions: repository root resolved
@@ -117,6 +134,15 @@ func (d *Distill) Scope(ctx context.Context, _ *mcp.CallToolRequest, _ DistillSc
 	scope, err := ComputeScope(ctx, d.vaultPath, StoreLearningPageNames(d.store), policy)
 	if err != nil {
 		return errorResult(err.Error()), nil, nil
+	}
+	if input.BacklogFrom != "" {
+		// The window bound is the only caller input, and it is a
+		// pure narrowing of the deterministic set: FilterScopeBy-
+		// BacklogDate keeps sorted order and provenance, drops only
+		// identities created after the cutoff date, and lets
+		// legacy no-timestamp identities pass.
+		from, _ := time.Parse("2006-01-02", input.BacklogFrom)
+		scope = FilterScopeByBacklogDate(scope, from)
 	}
 	result := distillScopeResult{Scope: scope, Warnings: warnings}
 	if scope.Empty {
@@ -214,6 +240,11 @@ type DistillRollingPRInput struct {
 	// Lint optionally maps theme name → lint finding lines for the
 	// review queue body (#147 anchor_drift / embedding_gap).
 	Lint map[string][]string `json:"lint,omitempty"`
+	// DryRun selects the output-only preview (the /dewey-distill-auto
+	// --dry-run flag): the tool runs the same preconditions and open-PR
+	// resolution as a real run but mutates nothing and records no run
+	// artifact — each theme reports would_create or would_update.
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 // distillRollingPRResult is the rolling_pr tool's result: the per-theme
@@ -261,9 +292,21 @@ func (d *Distill) RollingPR(ctx context.Context, _ *mcp.CallToolRequest, input D
 		Themes: input.Themes,
 		Texts:  groupInput.Texts,
 		Lint:   input.Lint,
+		DryRun: input.DryRun,
 	})
 	if err != nil {
 		return errorResult(err.Error()), nil, nil
+	}
+	// A dry run records no artifact: the preview result is the run's
+	// entire output (contracts/rolling-pr.md), and a preview must not
+	// append to the audit history that describes real runs.
+	if input.DryRun {
+		payload := distillRollingPRResult{Results: results, Artifact: ""}
+		res, err := jsonTextResult(payload)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rolling_pr: %w", err)
+		}
+		return res, nil, nil
 	}
 	// The run artifact is the audit surface for what the run touched
 	// (FR-021): every theme grouped, every PR created or updated, and
@@ -313,6 +356,7 @@ func distillRunRecord(themes []Theme, results []RollingPRResult) DistillRunRecor
 	}
 	sort.Strings(touched)
 	return DistillRunRecord{
+		Schema:     distillRunRecordSchema,
 		RunAt:      time.Now().UTC(),
 		ScopeSize:  scopeSize,
 		Themes:     themeNames,

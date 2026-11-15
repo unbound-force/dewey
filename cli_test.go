@@ -443,14 +443,103 @@ func TestInitCmd_ScaffoldsSlashCommands(t *testing.T) {
 	}
 }
 
+// TestInitCmd_ScaffoldsDistillWorkflowExample verifies that dewey init
+// ships the weekly distill workflow template EXAMPLE into the vault —
+// the SC-008 install-from-scratch path: an adopting repository that has
+// run `dewey init` finds `.github/workflows/dewey-distill.yml.example`
+// locally, byte-identical to the tracked template, and the live
+// workflow is never installed (FR-001: the copy remains the opt-in).
+func TestInitCmd_ScaffoldsDistillWorkflowExample(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	examplePath := filepath.Join(tmpDir, ".github", "workflows", "dewey-distill.yml.example")
+	got, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatalf("dewey init did not scaffold the workflow template example at %s: %v", examplePath, err)
+	}
+
+	// The scaffolded example must be byte-identical to both the embedded
+	// copy and the tracked repository file, so the three cannot drift.
+	want, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
+	if !ok {
+		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
+	}
+	if string(got) != want {
+		t.Error("scaffolded dewey-distill.yml.example differs from deweyWorkflowTemplates map entry")
+	}
+	tracked, err := os.ReadFile(filepath.Join(".github", "workflows", "dewey-distill.yml.example"))
+	if err != nil {
+		t.Fatalf("read tracked workflow template: %v", err)
+	}
+	if string(got) != string(tracked) {
+		t.Error("scaffolded dewey-distill.yml.example differs from tracked .github/workflows/dewey-distill.yml.example")
+	}
+
+	// The live workflow must NOT be installed — the copy is the opt-in.
+	installed := filepath.Join(tmpDir, ".github", "workflows", "dewey-distill.yml")
+	if _, err := os.Stat(installed); err == nil {
+		t.Error("dewey init auto-installed .github/workflows/dewey-distill.yml; the copy must be manual (FR-001)")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("stat installed workflow: %v", err)
+	}
+
+	// Scaffolding is idempotent: a re-run never overwrites the user's
+	// customized example.
+	custom := []byte("# user-customized example\n")
+	if err := os.WriteFile(examplePath, custom, 0o644); err != nil {
+		t.Fatalf("customize example: %v", err)
+	}
+	cmd = newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("re-init failed: %v", err)
+	}
+	got, err = os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatalf("re-read example: %v", err)
+	}
+	if string(got) != string(custom) {
+		t.Error("dewey init overwrote an existing workflow template example; user customizations must be preserved")
+	}
+}
+
+// TestDistillWorkflowTemplate_ScaffoldParity asserts the embedded
+// deweyWorkflowTemplates entry stays byte-identical to the tracked
+// .github/workflows/dewey-distill.yml.example — the same parity pattern
+// the agent definitions and slash commands follow, so the scaffolded
+// copy can never drift from the reviewed template.
+func TestDistillWorkflowTemplate_ScaffoldParity(t *testing.T) {
+	want, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
+	if !ok {
+		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
+	}
+	tracked, err := os.ReadFile(filepath.Join(".github", "workflows", "dewey-distill.yml.example"))
+	if err != nil {
+		t.Fatalf("read tracked workflow template: %v", err)
+	}
+	if string(tracked) != want {
+		t.Error("tracked .github/workflows/dewey-distill.yml.example differs from deweyWorkflowTemplates map entry")
+	}
+}
+
 // TestInitCmd_DoesNotInstallDistillWorkflow verifies that dewey init never
 // auto-installs the weekly distill workflow (FR-001: the copy is the opt-in)
 // but documents it when the example template ships in the vault.
 func TestInitCmd_DoesNotInstallDistillWorkflow(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Ship the example template in the vault so the availability hint path
-	// is exercised (T015).
+	// Ship a user-owned example template in the vault so the skip-scaffold
+	// and availability-hint paths are exercised (T015).
 	workflowDir := filepath.Join(tmpDir, ".github", "workflows")
 	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
 		t.Fatalf("create workflows dir: %v", err)
@@ -6264,6 +6353,48 @@ func distillerBodyToolNames(body string) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// TestInitCmd_ScaffoldsDistillAutoCommand verifies the unattended distill
+// entry point ships to adopting repositories: `dewey init` scaffolds
+// .opencode/commands/dewey-distill-auto.md byte-identical to its
+// deweySlashCommands map entry and to the tracked command file — without
+// it, the gh-hud dispatch contract (/dewey-distill-auto #N) would invoke
+// a command the adopting repo never received.
+func TestInitCmd_ScaffoldsDistillAutoCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode", "commands"), 0o755); err != nil {
+		t.Fatalf("create opencode commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	scaffolded, err := os.ReadFile(filepath.Join(tmpDir, ".opencode", "commands", "dewey-distill-auto.md"))
+	if err != nil {
+		t.Fatalf("read scaffolded dewey-distill-auto.md: %v", err)
+	}
+	want, ok := deweySlashCommands["dewey-distill-auto.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-distill-auto.md entry")
+	}
+	if string(scaffolded) != want {
+		t.Errorf("scaffolded dewey-distill-auto.md differs from deweySlashCommands map entry")
+	}
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill-auto.md"))
+	if err != nil {
+		t.Fatalf("read tracked dewey-distill-auto.md: %v", err)
+	}
+	if string(scaffolded) != string(tracked) {
+		t.Error("scaffolded dewey-distill-auto.md differs from tracked .opencode/commands/dewey-distill-auto.md")
+	}
 }
 
 // assertDistillerAllowlistParity asserts, on one shipped copy of the

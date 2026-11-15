@@ -34,18 +34,6 @@ permission:
     "*": deny
     "dewey gate auto-answer": allow
     "dewey gate distill-unattended": allow
-    "git fetch": allow
-    "git ls-tree": allow
-    "git show": allow
-    "git rev-parse": allow
-    "git fetch origin/*": allow
-    "git rebase": allow
-    "git commit": allow
-    "git push --force-with-lease": allow
-    "gh pr list": allow
-    "gh pr create": allow
-    "gh pr edit": allow
-    "gh issue list": allow
     "gh issue comment": allow
 ---
 
@@ -80,23 +68,25 @@ and any "tier: validated" write (server guard in tools/promote.go and store/
 rejects, file stays "draft"). If a step seems to need a forbidden tool, stop and
 report why.
 
-Additional filesystem and git operations allowed only as documented:
-
-- Filesystem: write/regenerate only under .uf/dewey/compiled/** and
-  .uf/dewey/distill-runs/** ("tier: draft" only; validated write rejected).
-- Git: "git fetch", "git rebase", "git commit",
-  "git push --force-with-lease" for dewey-distill/* branches only; no
-  "push --force" without lease, no branch deletion, no rebase/force on other refs.
-- GitHub: "gh pr list --label dewey-distill --state open", "gh pr create --label human-gate",
-  "gh pr edit", "gh issue list/comment" via MCP gh tool — no "gh api" generic write,
-  no CODEOWNERS edits, no workflow file writes.
+Shell surface: the bash allowlist carries exactly three commands — the two
+mandatory startup gates and "gh issue comment" (the no-op notice posted on the
+dispatch issue when a gate refuses). Every git write operation (fetch, rebase,
+commit, push --force-with-lease) and every gh PR operation (list, create, edit)
+happens server-side inside the "rolling_pr" MCP tool, so this agent holds no
+raw git or gh write capability at all. This is deliberate: allowlist entries
+are prefix globs that cannot restrict a command's arguments, so allowing a raw
+"git push --force-with-lease" would permit force-pushing any ref regardless of
+branch — the "dewey-distill/* branches only" scoping lives in the server-side
+tool, never in the shell.
 
 ## Boundaries
 
 - Never call "question" tool — rejected and logged, fallback to deterministic scope
   per FR-006. Asserted by log grep "question" == 0 in distiller run.
 - Never write "tier: validated" — server guard rejects, file stays "draft" per FR-012.
-- Never run "git push --force" without "--force-with-lease"; only on dewey-distill/*.
+- Never run raw git write commands (fetch, rebase, commit, push) or gh PR
+  commands — they are not on the bash allowlist. The "rolling_pr" tool performs
+  every git and gh mutation server-side, confined to dewey-distill/* branches.
 - No workflow file writes, CODEOWNERS or .github/** edits, replicator_* servers.
 - No subagent spawning; delegation disabled.
 - Only shell commands listed in permission.bash are permitted; startup gates

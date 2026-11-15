@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/unbound-force/dewey/v3/gitref"
 	"github.com/unbound-force/dewey/v3/store"
@@ -79,6 +80,96 @@ func TestIdentityTag(t *testing.T) {
 		if got := IdentityTag(tc.identity); got != tc.want {
 			t.Errorf("IdentityTag(%q) = %q, want %q", tc.identity, got, tc.want)
 		}
+	}
+}
+
+func TestIdentityTimestamp(t *testing.T) {
+	// Current format: the timestamp segment parses as a UTC calendar
+	// time.
+	ts, ok := IdentityTimestamp("authentication-20260502T143022-alice")
+	if !ok {
+		t.Fatal("IdentityTimestamp(current format) ok = false, want true")
+	}
+	if want := time.Date(2026, 5, 2, 14, 30, 22, 0, time.UTC); !ts.Equal(want) {
+		t.Errorf("IdentityTimestamp = %v, want %v", ts, want)
+	}
+
+	// Legacy {tag}-{sequence}: no timestamp, ok = false.
+	if _, ok := IdentityTimestamp("auth-1"); ok {
+		t.Error("IdentityTimestamp(legacy sequence) ok = true, want false")
+	}
+	// Bare tag: no timestamp.
+	if _, ok := IdentityTimestamp("auth"); ok {
+		t.Error("IdentityTimestamp(bare tag) ok = true, want false")
+	}
+	// Leading-timestamp shape (the parser requires the timestamp after
+	// the first segment): no timestamp.
+	if _, ok := IdentityTimestamp("20260101T000000-leading"); ok {
+		t.Error("IdentityTimestamp(leading timestamp) ok = true, want false")
+	}
+	// Shape-matching but calendar-invalid segment (month 13): treated
+	// like a legacy identity, not an error.
+	if _, ok := IdentityTimestamp("auth-20261301T000000-alice"); ok {
+		t.Error("IdentityTimestamp(month 13) ok = true, want false")
+	}
+}
+
+func TestFilterScopeByBacklogDate(t *testing.T) {
+	scope := ScopeSet{
+		AllLearnings: []string{
+			"auth-20260101T000000-a",
+			"auth-20261114T235959-a",
+			"auth-20261116T000000-a",
+			"auth-legacy-1",
+			"cited-20261116T000000-a",
+		},
+		Cited:      []string{"cited-20261116T000000-a"},
+		InScope:    []string{"auth-20260101T000000-a", "auth-20261114T235959-a", "auth-20261116T000000-a", "auth-legacy-1"},
+		Empty:      false,
+		Provenance: "git:origin/main:abc",
+	}
+
+	// Cutoff 2026-11-15: both November-14-and-earlier identities pass
+	// (the 23:59:59 identity is inside the day), the November-16 identity
+	// drops, and the legacy no-timestamp identity always passes.
+	from := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
+	got := FilterScopeByBacklogDate(scope, from)
+	want := []string{"auth-20260101T000000-a", "auth-20261114T235959-a", "auth-legacy-1"}
+	if !reflect.DeepEqual(got.InScope, want) {
+		t.Errorf("FilterScopeByBacklogDate InScope = %v, want %v", got.InScope, want)
+	}
+	if got.Empty {
+		t.Error("Empty = true, want false")
+	}
+	// All/Cited/Provenance describe the ref, not the window: they pass
+	// through untouched.
+	if !reflect.DeepEqual(got.AllLearnings, scope.AllLearnings) {
+		t.Errorf("AllLearnings changed: %v", got.AllLearnings)
+	}
+	if !reflect.DeepEqual(got.Cited, scope.Cited) {
+		t.Errorf("Cited changed: %v", got.Cited)
+	}
+	if got.Provenance != scope.Provenance {
+		t.Errorf("Provenance = %q, want %q", got.Provenance, scope.Provenance)
+	}
+
+	// A cutoff before every timestamp leaves only legacy identities.
+	early := FilterScopeByBacklogDate(scope, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+	if want := []string{"auth-legacy-1"}; !reflect.DeepEqual(early.InScope, want) {
+		t.Errorf("early cutoff InScope = %v, want %v", early.InScope, want)
+	}
+
+	// A cutoff after every timestamp keeps the set unchanged (still
+	// sorted).
+	late := FilterScopeByBacklogDate(scope, time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !reflect.DeepEqual(late.InScope, scope.InScope) {
+		t.Errorf("late cutoff InScope = %v, want %v", late.InScope, scope.InScope)
+	}
+
+	// Empty input stays empty and reports Empty.
+	empty := FilterScopeByBacklogDate(ScopeSet{InScope: []string{}, Empty: true}, from)
+	if !empty.Empty {
+		t.Error("Empty = false for empty input, want true")
 	}
 }
 

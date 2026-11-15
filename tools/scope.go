@@ -26,6 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/unbound-force/dewey/v3/gitref"
+	"github.com/unbound-force/dewey/v3/store"
 )
 
 // scopeLogger is the package-level structured logger for distill scope
@@ -711,4 +712,162 @@ func frontmatterBlock(content string) (string, bool) {
 	block := strings.TrimPrefix(parts[0], "\n")
 	block = strings.TrimPrefix(block, "\r\n")
 	return block, true
+}
+
+// --- Scope computation (T016/T017; contracts/scope.md Behavior) ---
+
+// LearningPageNames yields the learning page identities held by the
+// persistent store — the SQLite half of the filesystem fallback's union
+// (contracts/scope.md Fallback). It is a function seam so ComputeScope
+// stays testable without a database; production callers pass
+// StoreLearningPageNames.
+type LearningPageNames func() ([]string, error)
+
+// StoreLearningPageNames adapts a *store.Store to the LearningPageNames
+// seam. ListDraftCandidatePages already enumerates the learning/ namespace
+// index-backed and NOCASE-ranged (learnings clamp to draft on every write
+// route, so the tier filter matches the namespace's steady state); the
+// adapter keeps only learning/ names and strips the prefix to identities.
+// A nil store yields a nil seam — no store, no union, FS scan only.
+func StoreLearningPageNames(s *store.Store) LearningPageNames {
+	if s == nil {
+		return nil
+	}
+	return func() ([]string, error) {
+		pages, err := s.ListDraftCandidatePages()
+		if err != nil {
+			return nil, fmt.Errorf("list learning pages: %w", err)
+		}
+		const prefixLen = len(store.LearningPrefix)
+		ids := make([]string, 0, len(pages))
+		for _, p := range pages {
+			if len(p.Name) > prefixLen && strings.EqualFold(p.Name[:prefixLen], store.LearningPrefix) {
+				ids = append(ids, p.Name[prefixLen:])
+			}
+		}
+		return ids, nil
+	}
+}
+
+// ComputeScope computes one distill run's scope over vaultDir
+// (contracts/scope.md Behavior): every learning identity at the resolved
+// default-branch ref, minus the identities cited by compiled articles'
+// frontmatter sources, minus policy tag exclusions. Deterministic from git
+// alone (FR-005) and never interactive (FR-006): ambiguity — an unreadable
+// blob, unparseable frontmatter, an invalid policy entry — degrades to
+// warn-and-skip, never a question, so the same ref and policy always yield
+// the same set.
+//
+// The git leg needs a resolved ref and one healthy batch ls-tree; when
+// either is missing (non-git vault, unresolved ref, failed invocation) the
+// computation falls back to scanning .uf/dewey directly, unioned with the
+// SQLite learning/ names when learningPages is non-nil, and reports
+// ScopeProvenanceDegraded (contracts/scope.md Fallback: degraded mode, no
+// panic). A vaultDir that does not exist is the one hard error — a
+// misconfigured vault must not masquerade as an empty no-op scope.
+func ComputeScope(ctx context.Context, vaultDir string, learningPages LearningPageNames, policy DistillPolicy) (ScopeSet, error) {
+	if vaultDir == "" {
+		return ScopeSet{}, fmt.Errorf("distill scope: vault dir is empty")
+	}
+	info, err := os.Stat(vaultDir)
+	if err != nil {
+		return ScopeSet{}, fmt.Errorf("distill scope: stat vault dir: %w", err)
+	}
+	if !info.IsDir() {
+		return ScopeSet{}, fmt.Errorf("distill scope: vault dir %s is not a directory", vaultDir)
+	}
+
+	res := gitref.New(gitref.Options{VaultDir: vaultDir}).Resolve(ctx)
+	if res.Resolved() {
+		if tree, ok := enumerateDistillTreeGit(ctx, nil, vaultDir, res); ok {
+			return scopeFromGitTree(ctx, vaultDir, tree, res, policy), nil
+		}
+		scopeLogger.Warn("distill scope: git enumeration failed at resolved ref, falling back to filesystem scan",
+			"ref", res.Ref, "reason", res.Reason)
+	} else {
+		scopeLogger.Warn("distill scope: default-branch ref unresolved, falling back to filesystem scan",
+			"ref", res.Ref, "reason", res.Reason)
+	}
+	return scopeFromFilesystem(vaultDir, learningPages, policy), nil
+}
+
+// scopeFromGitTree applies the citation pass over the enumerated git tree:
+// each compiled blob is read at its ls-tree sha and its frontmatter
+// sources join the cited union. A blob that cannot be read or parsed
+// contributes no citations — over-scope, human-visible — because silently
+// dropping its learnings from scope would hide them from review.
+func scopeFromGitTree(ctx context.Context, vaultDir string, tree *gitDistillTree, res gitref.RefResolution, policy DistillPolicy) ScopeSet {
+	all := make(map[string]struct{})
+	for _, id := range tree.learningIdentities() {
+		all[id] = struct{}{}
+	}
+	cited := make(map[string]struct{})
+	run := gitref.ExecRunner{}
+	for _, p := range tree.compiledPaths() {
+		content, ok := blobContent(ctx, run, vaultDir, tree.blobs[p])
+		if !ok {
+			scopeLogger.Warn("distill scope: compiled blob unreadable at ref, treated as uncited", "path", p)
+			continue
+		}
+		sources, ok := parseCompiledSources(content)
+		if !ok {
+			scopeLogger.Warn("distill scope: compiled frontmatter unparseable at ref, treated as uncited", "path", p)
+			continue
+		}
+		for _, id := range sources {
+			cited[id] = struct{}{}
+		}
+	}
+	return NewScopeSet(all, cited, filterScope(all, cited, policy), gitProvenance(res))
+}
+
+// scopeFromFilesystem computes the degraded scope (contracts/scope.md
+// Fallback): learning identities scanned from .uf/dewey/learnings unioned
+// with the SQLite learning/ names when the seam is provided, citations
+// parsed from the compiled files on disk.
+func scopeFromFilesystem(vaultDir string, learningPages LearningPageNames, policy DistillPolicy) ScopeSet {
+	fsTree := scanDistillTreeFS(vaultDir)
+	all := make(map[string]struct{})
+	for _, id := range fsTree.LearningIdentities {
+		all[id] = struct{}{}
+	}
+	if learningPages != nil {
+		names, err := learningPages()
+		if err != nil {
+			scopeLogger.Warn("distill scope: learning pages unavailable in degraded mode", "err", err)
+		} else {
+			for _, id := range names {
+				all[id] = struct{}{}
+			}
+		}
+	}
+	cited := make(map[string]struct{})
+	for _, sources := range fsTree.CompiledCitations {
+		for _, id := range sources {
+			cited[id] = struct{}{}
+		}
+	}
+	return NewScopeSet(all, cited, filterScope(all, cited, policy), ScopeProvenanceDegraded)
+}
+
+// filterScope subtracts the cited set and the policy's tag exclusions from
+// the learning set (contracts/scope.md Behavior: raw = learnings − cited;
+// filtered = raw − policy.exclude_tags.matches(raw)).
+func filterScope(all, cited map[string]struct{}, policy DistillPolicy) map[string]struct{} {
+	inScope := make(map[string]struct{}, len(all))
+	for id := range all {
+		if _, isCited := cited[id]; isCited {
+			continue
+		}
+		if policy.ExcludesIdentity(id) {
+			continue
+		}
+		inScope[id] = struct{}{}
+	}
+	return inScope
+}
+
+// gitProvenance renders the git leg's provenance string, git:<ref>:<sha>.
+func gitProvenance(res gitref.RefResolution) string {
+	return fmt.Sprintf("git:%s:%s", res.Ref, res.SHA)
 }

@@ -5,9 +5,13 @@ package tools
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSanitizeThemeBranch_ContractExamples(t *testing.T) {
@@ -185,4 +189,118 @@ func hashSuffixFor(t *testing.T, theme string) string {
 	t.Helper()
 	sum := sha256.Sum256([]byte(theme))
 	return "-" + hex.EncodeToString(sum[:])[:hashSuffixLen]
+}
+
+// --- Durable run record (T019; FR-021; contracts/scope.md Durable No-Op Record) ---
+
+// TestWriteDistillRunArtifact writes one record and reads it back: the
+// filename carries the UTC timestamp, the JSON round-trips, and the file
+// is the artifact the run reports.
+func TestWriteDistillRunArtifact(t *testing.T) {
+	vault := t.TempDir()
+	runAt := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	record := DistillRunRecord{
+		RunAt:      runAt,
+		ScopeSize:  3,
+		Themes:     []string{"auth", "vault"},
+		PRsTouched: []string{"dewey-distill/auth-1a2b3c4d"},
+	}
+
+	path, err := WriteDistillRunArtifact(vault, record)
+	if err != nil {
+		t.Fatalf("WriteDistillRunArtifact: %v", err)
+	}
+	if want := filepath.Join(vault, ".uf/dewey/distill-runs", "20261115-090000.json"); path != want {
+		t.Errorf("artifact path = %q, want %q", path, want)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	var got DistillRunRecord
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal artifact: %v\n%s", err, raw)
+	}
+	if got.ScopeSize != 3 || got.NoOpReason != "" {
+		t.Errorf("round-trip = %+v, want scope_size 3 and no no_op_reason", got)
+	}
+	if len(got.Themes) != 2 || got.Themes[0] != "auth" || got.Themes[1] != "vault" {
+		t.Errorf("round-trip themes = %v, want [auth vault]", got.Themes)
+	}
+}
+
+// TestWriteDistillRunArtifact_CollisionSuffix: two records in the same
+// second append a -2 suffix instead of overwriting the earlier artifact —
+// run history is append-only.
+func TestWriteDistillRunArtifact_CollisionSuffix(t *testing.T) {
+	vault := t.TempDir()
+	runAt := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	record := DistillRunRecord{RunAt: runAt, Themes: []string{}, PRsTouched: []string{}}
+
+	first, err := WriteDistillRunArtifact(vault, record)
+	if err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	second, err := WriteDistillRunArtifact(vault, record)
+	if err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	if want := filepath.Join(vault, ".uf/dewey/distill-runs", "20261115-090000.json"); first != want {
+		t.Errorf("first path = %q, want %q", first, want)
+	}
+	if want := filepath.Join(vault, ".uf/dewey/distill-runs", "20261115-090000-2.json"); second != want {
+		t.Errorf("second path = %q, want %q", second, want)
+	}
+	for _, p := range []string{first, second} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("artifact %s missing after collision: %v", p, err)
+		}
+	}
+}
+
+// TestRecordNoOpDistillRun verifies the FR-021 empty-scope exit: the
+// artifact names the no-op reason and records scope_size 0, and a
+// non-empty scope is refused — recording a no-op while learnings wait in
+// scope would hide them from every audit surface at once.
+func TestRecordNoOpDistillRun(t *testing.T) {
+	vault := t.TempDir()
+	empty := NewScopeSet(
+		map[string]struct{}{"auth-20260101T000001-alice": {}},
+		map[string]struct{}{"auth-20260101T000001-alice": {}},
+		map[string]struct{}{},
+		"git:origin/main:abc",
+	)
+
+	path, err := RecordNoOpDistillRun(vault, empty)
+	if err != nil {
+		t.Fatalf("RecordNoOpDistillRun: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	var got DistillRunRecord
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal artifact: %v\n%s", err, raw)
+	}
+	if got.NoOpReason != NoOpReasonEmptyScope {
+		t.Errorf("no_op_reason = %q, want %q", got.NoOpReason, NoOpReasonEmptyScope)
+	}
+	if got.ScopeSize != 0 {
+		t.Errorf("scope_size = %d, want 0", got.ScopeSize)
+	}
+	if len(got.Themes) != 0 || len(got.PRsTouched) != 0 {
+		t.Errorf("no-op artifact lists themes/PRs: %+v", got)
+	}
+
+	nonEmpty := NewScopeSet(
+		map[string]struct{}{"auth-20260101T000001-alice": {}},
+		map[string]struct{}{},
+		map[string]struct{}{"auth-20260101T000001-alice": {}},
+		"git:origin/main:abc",
+	)
+	if _, err := RecordNoOpDistillRun(vault, nonEmpty); err == nil {
+		t.Error("RecordNoOpDistillRun accepted a non-empty scope; want a refusal")
+	}
 }

@@ -294,6 +294,20 @@ type ReviewQueueArticle struct {
 	// Decisions carries the per-decision distances behind
 	// ConfidenceAvg.
 	Decisions []AssignmentDecision `json:"decisions,omitempty"`
+	// TotalCited is the article's total citation count after this
+	// run's render (members kept by the sanitization gate).
+	TotalCited int `json:"total_cited,omitempty"`
+	// Dropped lists member identities the sanitization gate removed
+	// from the article (FR-013: critical/high findings, missing text);
+	// the PR body notes each drop.
+	Dropped []string `json:"dropped,omitempty"`
+	// SkippedFiles lists vault-relative paths the regeneration guard
+	// protected this run (FR-015: human edits never overwritten).
+	SkippedFiles []string `json:"skipped_files,omitempty"`
+	// ConflictFiles lists paths that conflicted during the rebase
+	// (FR-015); the PR is labeled needs-human-resolution and the
+	// remote branch is left untouched.
+	ConflictFiles []string `json:"conflict_files,omitempty"`
 }
 
 // --- Policy loading (FR-007; contracts/scope.md Policy Exclusions) ---

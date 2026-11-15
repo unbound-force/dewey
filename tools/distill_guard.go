@@ -33,10 +33,6 @@ import (
 // GuardDistillTier so the invariant is asserted, not assumed.
 const DistillTierDraft = "draft"
 
-// TierValidated is the human-only tier: a merged, code-owner-approved
-// promotion (#203). Distiller write paths never carry it.
-const TierValidated = "validated"
-
 // ErrValidatedTierRejected is the sentinel error GuardDistillTier returns
 // on a rejected write. The file on disk stays draft — nothing was
 // written.
@@ -44,13 +40,14 @@ var ErrValidatedTierRejected = errors.New("distiller write rejected: tier 'valid
 
 // GuardDistillTier enforces the FR-012/FR-017 invariant at a
 // distiller-mode write path: the run MUST never write `tier: validated`
-// into any file. A validated tier is rejected with the sentinel error
-// and a logged warning (FR-017: attempts MUST be rejected and logged);
-// every other tier — draft in normal operation — passes. Callers
-// translate the error into an error result and leave the target file
-// untouched.
+// into any file. A validated tier — tierValidated, the canonical value
+// promote writes (promote_file.go), i.e. the human-only tier — is
+// rejected with the sentinel error and a logged warning (FR-017:
+// attempts MUST be rejected and logged); every other tier — draft in
+// normal operation — passes. Callers translate the error into an error
+// result and leave the target file untouched.
 func GuardDistillTier(tier string) error {
-	if tier == TierValidated {
+	if tier == tierValidated {
 		scopeLogger.Warn("distiller attempted a tier:validated write; rejected, file stays draft",
 			"tier", tier)
 		return ErrValidatedTierRejected

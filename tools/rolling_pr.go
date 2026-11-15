@@ -201,6 +201,27 @@ func ValidateThemeBranch(branch string) error {
 	return nil
 }
 
+// validateAssignedBranches is the runtime leg of the FR-011 Branch
+// Sanitization invariant: it re-asserts ValidateThemeBranch's grammar
+// over every theme's assigned branch before ManageRollingPRs uses any
+// of them. Theme names derive from attacker-influenced tags and
+// embedding clusters, and the assigned branch flows into git refspecs,
+// so the grammar is asserted rather than assumed of the sanitizer — a
+// sanitizer regression (or an assignment path that bypasses
+// SanitizeThemeBranch) fails closed before any branch reaches git or a
+// dry-run preview reports it. The sanitizer-side invariant is pinned on
+// AssignThemeBranches output in rolling_pr_test.go;
+// TestValidateAssignedBranches_FailsClosedOnPoisonedAssignment pins
+// this leg against a poisoned assignment.
+func validateAssignedBranches(names []string, branches map[string]string) error {
+	for _, name := range names {
+		if err := ValidateThemeBranch(branches[name]); err != nil {
+			return fmt.Errorf("distill rolling pr: %w", err)
+		}
+	}
+	return nil
+}
+
 // --- Durable run record (FR-021; contracts/scope.md Durable No-Op Record) ---
 
 // distillRunsDir is the vault-relative directory holding one JSON run
@@ -564,7 +585,16 @@ func ManageRollingPRs(ctx context.Context, opts RollingPROptions, input RollingP
 
 	themes := append([]Theme(nil), input.Themes...)
 	sort.Slice(themes, func(i, j int) bool { return themes[i].Name < themes[j].Name })
-	branches := AssignThemeBranches(themeNames(themes))
+	names := themeNames(themes)
+	branches := AssignThemeBranches(names)
+	// Defense in depth (FR-011, contracts/rolling-pr.md Branch
+	// Sanitization): the assigned branches flow into git refspecs, so
+	// the grammar is asserted over the assignment at runtime rather
+	// than assumed of the sanitizer — a regression fails closed here,
+	// before any branch reaches git or a dry-run preview reports it.
+	if err := validateAssignedBranches(names, branches); err != nil {
+		return nil, err
+	}
 
 	// Dry run (the --dry-run preview): the preconditions above ran —
 	// a dirty tracked tree fails here exactly as a real run would, so a

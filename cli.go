@@ -437,35 +437,35 @@ sources:
 				if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 					return fmt.Errorf("create agents directory %s: %w", agentsDir, err)
 				}
-			// Iterate in sorted name order: scaffolding (and any
-			// failure it reports) stays deterministic — map order
-			// would randomize which agent a write failure names.
-			agentNames := make([]string, 0, len(deweyAgentDefinitions))
-			for name := range deweyAgentDefinitions {
-				agentNames = append(agentNames, name)
-			}
-			sort.Strings(agentNames)
-			for _, name := range agentNames {
-				content := deweyAgentDefinitions[name]
-				agentPath := filepath.Join(agentsDir, name)
-				f, err := os.OpenFile(agentPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-				if err != nil {
-					if os.IsExist(err) {
-						continue // Preserve user customization.
+				// Iterate in sorted name order: scaffolding (and any
+				// failure it reports) stays deterministic — map order
+				// would randomize which agent a write failure names.
+				agentNames := make([]string, 0, len(deweyAgentDefinitions))
+				for name := range deweyAgentDefinitions {
+					agentNames = append(agentNames, name)
+				}
+				sort.Strings(agentNames)
+				for _, name := range agentNames {
+					content := deweyAgentDefinitions[name]
+					agentPath := filepath.Join(agentsDir, name)
+					f, err := os.OpenFile(agentPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+					if err != nil {
+						if os.IsExist(err) {
+							continue // Preserve user customization.
+						}
+						return fmt.Errorf("scaffold agent %s: %w", agentPath, err)
 					}
-					return fmt.Errorf("scaffold agent %s: %w", agentPath, err)
+					if _, writeErr := f.WriteString(content); writeErr != nil {
+						_ = f.Close()
+						_ = os.Remove(agentPath)
+						return fmt.Errorf("scaffold agent %s: %w", agentPath, writeErr)
+					}
+					if closeErr := f.Close(); closeErr != nil {
+						_ = os.Remove(agentPath)
+						return fmt.Errorf("scaffold agent %s: %w", agentPath, closeErr)
+					}
+					logger.Info("scaffolded agent", "path", agentPath)
 				}
-				if _, writeErr := f.WriteString(content); writeErr != nil {
-					_ = f.Close()
-					_ = os.Remove(agentPath)
-					return fmt.Errorf("scaffold agent %s: %w", agentPath, writeErr)
-				}
-				if closeErr := f.Close(); closeErr != nil {
-					_ = os.Remove(agentPath)
-					return fmt.Errorf("scaffold agent %s: %w", agentPath, closeErr)
-				}
-				logger.Info("scaffolded agent", "path", agentPath)
-			}
 			}
 
 			// Scaffold DCP configuration (.opencode/dcp.jsonc) to enable

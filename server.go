@@ -156,6 +156,17 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 		// skipped.
 		verify := tools.NewVerify(cfg.store, cfg.vaultPath)
 		toolCount += registerVerifyTools(srv, verify)
+
+		// Distill automation tools (018-weekly-distill-automation,
+		// T036): the unattended pipeline's server-side stages — scope,
+		// grouping, rolling PRs — named by the distiller agent's
+		// frontmatter allowlist. The embedder backs grouping's
+		// embedding assignments (nil degrades to tag centroids); the
+		// store backs the scope's SQLite learning union (nil degrades
+		// to the filesystem leg); the vault path anchors git, files,
+		// and artifacts.
+		distill := tools.NewDistill(cfg.store, cfg.embedder, cfg.vaultPath)
+		toolCount += registerDistillTools(srv, distill)
 	}
 
 	toolCount += registerHealthTool(srv, b, readOnly, &cfg)
@@ -562,6 +573,31 @@ func registerVerifyTools(srv *mcp.Server, verify *tools.Verify) int {
 	}, verify.VerifyCandidates)
 
 	return 1
+}
+
+// registerDistillTools registers the unattended distill pipeline tools
+// (018-weekly-distill-automation, T036): scope, group_learners, and
+// rolling_pr, registered with the other store-backed knowledge tools —
+// rolling_pr writes branches and PRs, so read-only mode excludes all
+// three.
+// Returns the number of tools registered.
+func registerDistillTools(srv *mcp.Server, distill *tools.Distill) int {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "scope",
+		Description: "Compute the unattended distill scope — every learning identity at the vault's default-branch ref, minus identities cited by compiled articles' frontmatter sources, minus distill-policy tag exclusions — deterministically from git alone (filesystem fallback when the ref is unavailable; provenance carries which leg ran). Never interactive: ambiguity or policy absence degrades with warnings, never a question. An empty scope exits no-op: the durable run artifact is recorded server-side and the result carries no_op with the artifact path — no PR, no comment.",
+	}, distill.Scope)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "group_learners",
+		Description: "Group in-scope learnings into per-theme clusters for the rolling distill PRs: must-colocate supersession components first, then embedding-cosine assignment to the closest compiled article with tag-centroid fallback when embeddings are unavailable, and a deterministic tie-breaker within the margin. Every assignment carries its source and confidence. Learning texts, supersession edges, and existing articles are re-derived server-side from the vault; pass the scope tool's in_scope identities.",
+	}, distill.GroupLearners)
+
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "rolling_pr",
+		Description: "Create or update one rolling dewey-distill/<theme> PR per grouped theme: a fresh branch with draft articles and a human-gate PR for new themes, and rebase-preserving-human-commits updates with review-queue bodies and force-with-lease pushes for existing ones. Human edits are never overwritten (the regeneration guard skips them and the PR body lists them), closed PRs are never reopened, and no path writes tier: validated — the server guard rejects it. The durable run artifact is recorded server-side. Pass the group_learners output and optional per-theme lint findings.",
+	}, distill.RollingPR)
+
+	return 3
 }
 
 // registerHealthTool registers the health check tool that reports server status,

@@ -33,6 +33,7 @@ permission:
   bash:
     "*": deny
     "dewey gate auto-answer": allow
+    "dewey gate distill-unattended": allow
     "git fetch": allow
     "git ls-tree": allow
     "git show": allow
@@ -98,12 +99,17 @@ Additional filesystem and git operations allowed only as documented:
 - Never run "git push --force" without "--force-with-lease"; only on dewey-distill/*.
 - No workflow file writes, CODEOWNERS or .github/** edits, replicator_* servers.
 - No subagent spawning; delegation disabled.
-- Only shell commands listed in permission.bash are permitted; startup gate
-  "dewey gate auto-answer" is mandatory.
+- Only shell commands listed in permission.bash are permitted; startup gates
+  "dewey gate auto-answer" and "dewey gate distill-unattended" are mandatory.
 
-## Startup gate
+## Startup gates
 
 Before any pipeline stage, run "dewey gate auto-answer" and refuse on non-pass.
+Then run "dewey gate distill-unattended". On its refusal (exit 1 — the expected
+state until jflowers/opencode-supervisor#51 ships), the no-op run artifact is
+already recorded under .uf/dewey/distill-runs/; post the verdict's Notice line
+as a comment on the dispatch issue via "gh issue comment" and stop before
+scope. Do not retry.
 
 ## Human gates
 

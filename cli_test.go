@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -5288,17 +5289,22 @@ func TestDeweyDistill_CuratorBindingAndHumanGates(t *testing.T) {
 		}
 	}
 
-	// Every Dewey MCP tool referenced must be within the allowlist. The
+	// Every Dewey MCP tool cited must be within the allowlist. The
 	// candidate set is derived from the server's tool registry, so a
-	// newly referenced tool fails rather than passing unnoticed.
+	// newly cited tool fails rather than passing unnoticed. A citation
+	// is a backticked tool name — the command file's own convention for
+	// tool calls ("Call the `lint` MCP tool") — not a bare prose word:
+	// bare "scope" is the command's Scope Gate section and ordinary
+	// English ("in scope", "tags-scoped"), which the registered `scope`
+	// tool would otherwise collide with as a substring.
 	allowlist := []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "supersede_learning", "promote"}
 	allowedSet := make(map[string]bool, len(allowlist))
 	for _, tool := range allowlist {
 		allowedSet[tool] = true
 	}
 	for _, tool := range registeredMCPToolNames(t) {
-		if !allowedSet[tool] && strings.Contains(command, tool) {
-			t.Errorf("dewey-distill.md references non-allowlisted tool %q", tool)
+		if !allowedSet[tool] && strings.Contains(command, "`"+tool+"`") {
+			t.Errorf("dewey-distill.md cites non-allowlisted tool %q", tool)
 		}
 	}
 	for _, tool := range allowlist {
@@ -6028,6 +6034,309 @@ func TestDistillerAgent_QuestionDenied(t *testing.T) {
 		}
 		if strings.Contains(doc, "question: allow") {
 			t.Errorf("%s: permission block allows question — unattended runs must never ask (FR-006)", label)
+		}
+	}
+}
+
+// TestDistillerAgent_FrontmatterToolAllowlist verifies the distiller
+// agent's frontmatter enforces the deny-all-then-allow boundary
+// (018-weekly-distill-automation FR-016/FR-017,
+// contracts/distiller-allowlist.md Allowed): the broad "dewey_*" deny
+// is false and precedes the eleven allow entries, exactly the
+// allowlisted tools carry true, every allow is anchored against the
+// tools registered in server.go, every non-dewey configured MCP server
+// is denied wholesale, and the permission block denies question — the
+// unattended run must never ask (FR-006) — with both startup gates
+// allowed in the bash submap. The same shape assertions run against the
+// deweyAgentDefinitions map entry so both shipped copies carry the
+// boundary.
+func TestDistillerAgent_FrontmatterToolAllowlist(t *testing.T) {
+	serverKeys := configuredMCPServerKeys(t)
+
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "distiller.md"))
+	if err != nil {
+		t.Fatalf("read tracked distiller.md: %v", err)
+	}
+	assertDistillerFrontmatterShape(t, "tracked .opencode/agents/distiller.md", string(tracked), serverKeys)
+
+	def, ok := deweyAgentDefinitions["distiller.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing distiller.md entry")
+	}
+	assertDistillerFrontmatterShape(t, `deweyAgentDefinitions["distiller.md"]`, def, serverKeys)
+}
+
+// distillerAllowedTools is the distiller agent's allow set: the
+// knowledge-store tools the interactive curator shares, plus get_page
+// and the three unattended pipeline tools
+// (contracts/distiller-allowlist.md Allowed).
+var distillerAllowedTools = []string{
+	"lint", "list_pages", "get_page", "compile", "curate",
+	"store_compiled", "verify_candidates", "supersede_learning",
+	"scope", "group_learners", "rolling_pr",
+}
+
+// assertDistillerFrontmatterShape asserts the distiller agent
+// frontmatter shape on one shipped copy. The parsing helpers are shared
+// with the curator guards (curatorFrontmatter, curatorAllowedDeweyTools,
+// yamlMappingPairs, yamlPairValue) — the mechanics are generic; only the
+// asserted set and the permission block are distiller-specific.
+func assertDistillerFrontmatterShape(t testing.TB, label, content string, serverKeys []string) {
+	t.Helper()
+
+	root, flags, _ := curatorFrontmatter(t, label, content)
+
+	flagByKey := make(map[string]bool, len(flags))
+	for _, flag := range flags {
+		flagByKey[flag.key] = flag.grant
+	}
+
+	// Built-in entries: read and bash stay true (the startup gates run
+	// through bash); write, edit, and webfetch stay false.
+	for key, want := range map[string]bool{
+		"read":     true,
+		"bash":     true,
+		"write":    false,
+		"edit":     false,
+		"webfetch": false,
+	} {
+		got, ok := flagByKey[key]
+		if !ok {
+			t.Errorf("%s: tools block is missing built-in entry %q", label, key)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s: built-in tools entry %q = %v, want %v", label, key, got, want)
+		}
+	}
+
+	// The broad deny is present, false, and precedes every dewey_* allow
+	// (design D2: a last-matching-rule-wins matcher must resolve an
+	// allowlisted tool to true and every other dewey_* tool to false).
+	denyIndex := -1
+	for i, flag := range flags {
+		if flag.key == "dewey_*" {
+			denyIndex = i
+			break
+		}
+	}
+	if denyIndex < 0 {
+		t.Errorf("%s: tools block is missing the \"dewey_*\" deny entry", label)
+	} else {
+		if flagByKey["dewey_*"] {
+			t.Errorf("%s: \"dewey_*\" entry is true, want false", label)
+		}
+		for i, flag := range flags {
+			if i < denyIndex && flag.grant && strings.HasPrefix(flag.key, "dewey_") {
+				t.Errorf("%s: allow entry %q (position %d) precedes the \"dewey_*\" deny (position %d)", label, flag.key, i, denyIndex)
+			}
+		}
+	}
+
+	// Exactly the eleven allowlisted tools carry true.
+	allowedTools := curatorAllowedDeweyTools(flags)
+	if !sameStringSet(allowedTools, distillerAllowedTools) {
+		t.Errorf("%s: dewey_* tools carrying true = %v, want exactly %v", label, allowedTools, distillerAllowedTools)
+	}
+
+	// Ground-truth anchoring: every allow entry must resolve to a tool
+	// actually registered in server.go, so a typo or rename fails here
+	// rather than silently dropping a distill capability.
+	registered := registeredMCPToolNames(t)
+	registeredSet := make(map[string]bool, len(registered))
+	for _, name := range registered {
+		registeredSet[name] = true
+	}
+	for _, tool := range allowedTools {
+		if !registeredSet[tool] {
+			t.Errorf("%s: allowlisted tool %q is not registered in server.go (typo or rename?); the frontmatter allow is inert", label, tool)
+		}
+	}
+
+	// Grant exhaustiveness, fail closed: beyond the built-in read and
+	// bash grants, no key of any kind carries true.
+	wantGranted := []string{"read", "bash"}
+	for _, tool := range distillerAllowedTools {
+		wantGranted = append(wantGranted, "dewey_"+tool)
+	}
+	var granted []string
+	for _, flag := range flags {
+		if flag.grant {
+			granted = append(granted, flag.key)
+		}
+	}
+	if !sameStringSet(granted, wantGranted) {
+		t.Errorf("%s: tools entries carrying true = %v, want exactly %v", label, granted, wantGranted)
+	}
+
+	// Every non-dewey MCP server configured in the repository-root
+	// opencode.json is denied wholesale, so a server added to the config
+	// fails this test until the distiller's deny list is updated.
+	for _, key := range serverKeys {
+		if key == "dewey" {
+			continue
+		}
+		if flagByKey[key+"_*"] {
+			t.Errorf("%s: configured MCP server %q lacks its wholesale \"<key>_*\" deny", label, key)
+		}
+	}
+
+	// Permission block: question is denied — the unattended run must
+	// never ask (FR-006) — and so are the other interactive surfaces.
+	permPairs := yamlMappingPairs(t, label, "permission", yamlPairValue(root, "permission"))
+	permByKey := make(map[string]string, len(permPairs))
+	for _, pair := range permPairs {
+		var value string
+		if err := pair.value.Decode(&value); err != nil {
+			continue // bash is a mapping, decoded below
+		}
+		permByKey[pair.key] = value
+	}
+	for _, key := range []string{"question", "task", "edit", "write", "patch", "webfetch"} {
+		if permByKey[key] != "deny" {
+			t.Errorf("%s: permission.%s = %q, want deny", label, key, permByKey[key])
+		}
+	}
+
+	// The bash permission submap denies everything by default and allows
+	// the documented commands; both startup gates are among the allows.
+	bashPairs := yamlMappingPairs(t, label, "permission.bash", yamlPairValue(permPairs, "bash"))
+	bashByKey := make(map[string]string, len(bashPairs))
+	for _, pair := range bashPairs {
+		var value string
+		if err := pair.value.Decode(&value); err != nil {
+			t.Fatalf("%s: permission.bash entry %q is not a string: %v", label, pair.key, err)
+		}
+		bashByKey[pair.key] = value
+	}
+	if bashByKey["*"] != "deny" {
+		t.Errorf("%s: permission.bash \"*\" = %q, want deny", label, bashByKey["*"])
+	}
+	for _, cmd := range []string{"dewey gate auto-answer", "dewey gate distill-unattended"} {
+		if bashByKey[cmd] != "allow" {
+			t.Errorf("%s: permission.bash %q = %q, want allow — the startup gates must stay runnable", label, cmd, bashByKey[cmd])
+		}
+	}
+}
+
+// TestDistillerAgent_AllowlistParity asserts, on both shipped copies of
+// the distiller agent definition, that the frontmatter allow set and the
+// prompt-text allowlist name the same Dewey tools — the #192 parity
+// pattern applied to the distiller, so the two lists cannot drift apart
+// in either direction.
+func TestDistillerAgent_AllowlistParity(t *testing.T) {
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "distiller.md"))
+	if err != nil {
+		t.Fatalf("read tracked distiller.md: %v", err)
+	}
+	assertDistillerAllowlistParity(t, "tracked .opencode/agents/distiller.md", string(tracked))
+
+	def, ok := deweyAgentDefinitions["distiller.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing distiller.md entry")
+	}
+	assertDistillerAllowlistParity(t, `deweyAgentDefinitions["distiller.md"]`, def)
+}
+
+// distillerBodyToolNames normalizes the distiller body's allowlist
+// entries for set comparison with the frontmatter dewey_* allows: each
+// bulleted entry names one tool, optionally followed by a parenthetical
+// constraint ("store_compiled (draft only; …)"). Two kinds of entries
+// are not Dewey tool names: the built-in "read" allow (an OpenCode
+// built-in with no dewey_* frontmatter counterpart) and the section's
+// second list summarizing the bash allows as category lines
+// ("- Filesystem: …", "- Git: …", "- GitHub: …") — colon-terminated
+// labels, not tools.
+func distillerBodyToolNames(body string) []string {
+	var names []string
+	for _, entry := range agentAllowlistEntries(body) {
+		fields := strings.Fields(entry)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if strings.HasSuffix(name, ":") {
+			continue
+		}
+		if name == "read" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// assertDistillerAllowlistParity asserts, on one shipped copy of the
+// distiller agent definition, that the frontmatter allow set and the
+// prompt-text allowlist name the same Dewey tools.
+func assertDistillerAllowlistParity(t testing.TB, label, content string) {
+	t.Helper()
+
+	_, flags, body := curatorFrontmatter(t, label, content)
+	frontmatterTools := curatorAllowedDeweyTools(flags)
+	bodyTools := distillerBodyToolNames(body)
+	if !sameStringSet(frontmatterTools, bodyTools) {
+		t.Errorf("%s: frontmatter dewey_* allows = %v, prompt-body allowlist = %v; the two lists must name the same tools", label, frontmatterTools, bodyTools)
+	}
+}
+
+// TestDeweyDistill_InteractivePathUnchangedByDistiller pins FR-018: the
+// interactive /dewey-distill keeps both HUMAN_GATE prompts and the full
+// curator tool set — the unattended distiller's narrower allowlist must
+// not leak into the interactive path, and the distiller-only pipeline
+// tools must not leak into it either.
+func TestDeweyDistill_InteractivePathUnchangedByDistiller(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill.md"))
+	if err != nil {
+		t.Fatalf("read dewey-distill.md: %v", err)
+	}
+	command := string(data)
+
+	// Both HUMAN_GATE prompts retained.
+	markers := 0
+	for _, line := range strings.Split(command, "\n") {
+		if strings.HasPrefix(line, "HUMAN_GATE: ") {
+			markers++
+		}
+	}
+	if markers != 2 {
+		t.Errorf("dewey-distill.md carries %d HUMAN_GATE marker lines, want exactly 2 (FR-018)", markers)
+	}
+
+	// The full curator tool set is still referenced — no restriction
+	// leaked from the distiller's narrower allowlist.
+	for _, tool := range []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "supersede_learning", "promote"} {
+		if !strings.Contains(command, tool) {
+			t.Errorf("dewey-distill.md no longer references curator tool %q (FR-018: full curator tool set without restriction)", tool)
+		}
+	}
+
+	// The distiller-only pipeline tools are absent from the interactive
+	// command: the interactive path must not be dragged onto the
+	// unattended surface.
+	for _, tool := range []string{"scope", "group_learners", "rolling_pr"} {
+		if strings.Contains(command, "`"+tool+"`") {
+			t.Errorf("dewey-distill.md cites distiller-only tool %q; the interactive path must not use the unattended pipeline tools", tool)
+		}
+	}
+
+	// The curator agent's frontmatter still carries the full allow set —
+	// the distiller's existence must not narrow it — and has not gained
+	// the distiller-only tools.
+	curatorData, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
+	if err != nil {
+		t.Fatalf("read tracked curator.md: %v", err)
+	}
+	_, flags, _ := curatorFrontmatter(t, "tracked .opencode/agents/curator.md", string(curatorData))
+	allowed := curatorAllowedDeweyTools(flags)
+	for _, tool := range []string{"lint", "list_pages", "compile", "curate", "store_compiled", "verify_candidates", "supersede_learning", "promote"} {
+		if !slices.Contains(allowed, tool) {
+			t.Errorf("curator.md frontmatter no longer allows %q — the distiller work must not narrow the interactive tool set (FR-018)", tool)
+		}
+	}
+	for _, tool := range []string{"scope", "group_learners", "rolling_pr"} {
+		if slices.Contains(allowed, tool) {
+			t.Errorf("curator.md frontmatter allows distiller-only tool %q — the interactive path must not gain unattended pipeline tools", tool)
 		}
 	}
 }

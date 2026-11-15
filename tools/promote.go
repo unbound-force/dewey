@@ -32,6 +32,14 @@ import (
 // in either the vault-root or the .uf/dewey workspace layout, can be
 // edited (PW-FR-004).
 //
+// Boundary (018-weekly-distill-automation FR-012/FR-017): Promote is the
+// single `tier: validated` file-write path, human-facing by design — the
+// distiller agent's allowlist denies this tool entirely, and every
+// distiller-reachable write path instead asserts its tier through
+// GuardDistillTier (tools/distill_guard.go), which rejects validated
+// writes server-side so a `tier: validated` file can only ever originate
+// from this human-driven path.
+//
 // Promotion accepts either a single page name (Page) or a batch (Pages).
 // Batch promotion validates every page and prepares every edit before any
 // is applied: if one page is missing, ambiguous, not draft, or has no

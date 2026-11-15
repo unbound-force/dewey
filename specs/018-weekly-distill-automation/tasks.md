@@ -38,11 +38,11 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T006 Define core data-model types in `tools/scope.go` per data-model.md: `ScopeSet` (all_learnings, cited, in_scope, empty, provenance `git:<ref>:<sha>` or `filesystem:degraded`), `DistillPolicy` (exclude_tags/exclude_stores), `Theme` (name, existing_article, members, supersessions, decisions), `AssignmentDecision` (identity, target_theme, source enum, confidence, details), `RollingPR` (branch `dewey-distill/<theme>`, pr_number, state, labels, head_sha, human_commits_preserved, body, tier_written `draft`), `ReviewQueue` per-article rendering struct
-- [ ] T007 Implement `DistillPolicy` YAML loader in `tools/scope.go` with malformed-entry handling: log warning, skip invalid exclusion, proceed with valid scope (edge case: malformed policy) - supports `.uf/dewey/distill-policy.yaml` optional file per FR-007
-- [ ] T008 Add branch-name sanitizer utility in `tools/rolling_pr.go` (or `tools/scope.go` shared): sanitize theme→branch `[a-z0-9-_/]+`, max 100 chars, used for `dewey-distill/<theme>` per data-model.md Validation
-- [ ] T009 Configure server-side guard enforcement hook in `tools/promote.go` and `store/page.go` (or verify existing): reject any write with `tier: validated` from distiller context, file stays `draft` per FR-012, FR-017, data-model.md RollingPR.tier_written
-- [ ] T010 Add shared git helper fallback path using existing `gitref/` batch `ls-tree` + `vault/` filesystem scan precedent from `tools/lint.go` for non-git vault degraded mode per research.md D-002
+- [x] T006 Define core data-model types in `tools/scope.go` per data-model.md: `ScopeSet` (all_learnings, cited, in_scope, empty, provenance `git:<ref>:<sha>` or `filesystem:degraded`), `DistillPolicy` (exclude_tags/exclude_stores), `Theme` (name, existing_article, members, supersessions, decisions), `AssignmentDecision` (identity, target_theme, source enum, confidence, details), `RollingPR` (branch `dewey-distill/<theme>`, pr_number, state, labels, head_sha, human_commits_preserved, body, tier_written `draft`), `ReviewQueue` per-article rendering struct
+- [x] T007 Implement `DistillPolicy` YAML loader in `tools/scope.go` with malformed-entry handling: log warning, skip invalid exclusion, proceed with valid scope (edge case: malformed policy) - supports `.uf/dewey/distill-policy.yaml` optional file per FR-007
+- [x] T008 Add branch-name sanitizer utility in `tools/rolling_pr.go` (or `tools/scope.go` shared): sanitize theme→branch `[a-z0-9-_/]+`, max 100 chars, used for `dewey-distill/<theme>` per data-model.md Validation
+- [x] T009 Configure server-side guard enforcement hook in `tools/promote.go` and `store/page.go` (or verify existing): reject any write with `tier: validated` from distiller context, file stays `draft` per FR-012, FR-017, data-model.md RollingPR.tier_written
+- [x] T010 Add shared git helper fallback path using existing `gitref/` batch `ls-tree` + `vault/` filesystem scan precedent from `tools/lint.go` for non-git vault degraded mode per research.md D-002
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 

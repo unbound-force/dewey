@@ -1325,7 +1325,14 @@ func (c *Compile) StoreCompiled(_ context.Context, _ *mcp.CallToolRequest, input
 
 	// Never overwrite human-validated content with agent-generated text.
 	pageName := "compiled/" + input.Tag
-	tier := "draft"
+	// FR-012/FR-017 enforcement hook (tools/distill_guard.go): the tier
+	// is a constant today, and the guard makes that invariant asserted
+	// rather than assumed — any refactor that introduces a tier input on
+	// this distiller-reachable path fails closed through GuardDistillTier.
+	tier := DistillTierDraft
+	if err := GuardDistillTier(tier); err != nil {
+		return errorResult(err.Error()), nil, nil
+	}
 	existing, err := c.store.GetPage(pageName)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to look up existing compiled page: %v", err)), nil, nil

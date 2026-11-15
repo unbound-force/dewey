@@ -6003,6 +6003,66 @@ func TestCuratorAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
 	})
 }
 
+// TestDistillerAgent_QuestionDenied verifies the unattended distiller's
+// hard denial of the interactive question tool (FR-006): both the tracked
+// agent definition and the embedded copy dewey init scaffolds must carry
+// `question: deny` in the permission block, and neither may allow it. The
+// scope computation's structural half of FR-006 — warn-and-skip instead of
+// asking — is covered by the tools scope tests; this is the agent-side
+// gate that rejects any attempted question call before it reaches a human.
+func TestDistillerAgent_QuestionDenied(t *testing.T) {
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "distiller.md"))
+	if err != nil {
+		t.Fatalf("read tracked distiller.md: %v", err)
+	}
+	def, ok := deweyAgentDefinitions["distiller.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing distiller.md entry")
+	}
+	for label, doc := range map[string]string{
+		"tracked .opencode/agents/distiller.md": string(tracked),
+		`deweyAgentDefinitions["distiller.md"]`: def,
+	} {
+		if !strings.Contains(doc, "question: deny") {
+			t.Errorf("%s: permission block does not deny question (FR-006)", label)
+		}
+		if strings.Contains(doc, "question: allow") {
+			t.Errorf("%s: permission block allows question — unattended runs must never ask (FR-006)", label)
+		}
+	}
+}
+
+// TestDeweyDistillAutoCommand_NoHumanGates verifies the unattended command
+// carries no HUMAN_GATE markers — every gate in the unattended path is
+// deterministic (server-side guards), so no stage may pause for a human —
+// while the interactive /dewey-distill retains its gates (the contrast
+// proves the marker check detects real gates, not prose mentions).
+func TestDeweyDistillAutoCommand_NoHumanGates(t *testing.T) {
+	autoCmd, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill-auto.md"))
+	if err != nil {
+		t.Fatalf("read dewey-distill-auto.md: %v", err)
+	}
+	for i, line := range strings.Split(string(autoCmd), "\n") {
+		if strings.HasPrefix(line, "HUMAN_GATE:") {
+			t.Errorf("dewey-distill-auto.md line %d carries a HUMAN_GATE marker; the unattended path must be gate-free: %s", i+1, line)
+		}
+	}
+
+	interactive, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill.md"))
+	if err != nil {
+		t.Fatalf("read dewey-distill.md: %v", err)
+	}
+	gates := 0
+	for _, line := range strings.Split(string(interactive), "\n") {
+		if strings.HasPrefix(line, "HUMAN_GATE:") {
+			gates++
+		}
+	}
+	if gates == 0 {
+		t.Error("dewey-distill.md lost its HUMAN_GATE markers; the interactive command must keep both gates")
+	}
+}
+
 // TestPromoteCmd_MultiplePages verifies the CLI accepts multiple page names
 // and resolves bare tags through the compiled namespace (#91).
 func TestPromoteCmd_MultiplePages(t *testing.T) {

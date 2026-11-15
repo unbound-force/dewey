@@ -7,12 +7,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/unbound-force/dewey/v3/gitref"
+	"github.com/unbound-force/dewey/v3/store"
 )
 
 // --- Data model (T006) ---
@@ -258,10 +261,10 @@ func TestParseCompiledSources(t *testing.T) {
 		ok      bool
 	}{
 		{
-			name: "sources list",
+			name:    "sources list",
 			content: "---\ntier: draft\ncompiled_at: 2026-11-15T00:00:00Z\nsources:\n  - auth-1\n  - auth-3\ntopic: auth\n---\n\n# Auth\n",
-			want: []string{"auth-1", "auth-3"},
-			ok:   true,
+			want:    []string{"auth-1", "auth-3"},
+			ok:      true,
 		},
 		{
 			name:    "no sources key cites nothing",
@@ -483,5 +486,328 @@ func TestBlobContent(t *testing.T) {
 	}
 	if _, ok := blobContent(context.Background(), run, "/vault", ""); ok {
 		t.Error("blobContent succeeded for an empty sha")
+	}
+}
+
+// --- ComputeScope (T016/T017/T020; contracts/scope.md Behavior + Tests) ---
+
+// distillFixtureIdentities is the ten-learning fixture (SC-001): the first
+// two are cited by the compiled article's frontmatter sources, one carries
+// the scratch-notes tag for policy exclusion, and the remaining seven stay in
+// scope unconditionally.
+var distillFixtureIdentities = []string{
+	"auth-20260101T000001-alice", // cited
+	"auth-20260101T000002-bob",   // cited
+	"deploy-20260101T000003-carol",
+	"vault-20260101T000004-dave",
+	"scope-20260101T000005-eve",
+	"gate-20260101T000006-frank",
+	"doctor-20260101T000007-grace",
+	"embed-20260101T000008-heidi",
+	"scratch-notes-20260101T000009-ivan", // policy-excluded
+	"tmp-notes-20260101T000010-judy",
+}
+
+// distillFixtureCompiled cites the first two fixture learnings.
+const distillFixtureCompiled = `---
+tier: draft
+sources:
+  - auth-20260101T000001-alice
+  - auth-20260101T000002-bob
+---
+# Authentication
+`
+
+// expectedFixtureInScope lists the uncited fixture identities, sorted, with
+// the scratch-tagged one included — the default (no policy) expectation.
+func expectedFixtureInScope() []string {
+	var ids []string
+	for _, id := range distillFixtureIdentities {
+		if id == "auth-20260101T000001-alice" || id == "auth-20260101T000002-bob" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// initDistillFixtureRepo creates a real git repository whose committed tree
+// carries the distill fixture: the ten learnings and the citing compiled
+// article. refs/remotes/origin/main points at the commit so the gitref
+// precedence chain resolves without a remote, and the vault config leg
+// pins origin/main so ambient env or global config cannot redirect the
+// fixture. Returns the vault dir and the HEAD sha.
+func initDistillFixtureRepo(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	git("init", "-q")
+	// Pin the resolver's highest-precedence leg (vault config) so the
+	// fixture resolves origin/main regardless of ambient environment.
+	write(".uf/dewey/config.yaml", "default_branch_ref: origin/main\n")
+	for _, id := range distillFixtureIdentities {
+		write(".uf/dewey/learnings/"+id+".md", "---\ntier: draft\n---\n# "+id+"\n")
+	}
+	write(".uf/dewey/compiled/auth.md", distillFixtureCompiled)
+	git("add", ".")
+	git("commit", "-q", "-m", "distill fixture")
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v\n%s", err, out)
+	}
+	return dir, strings.TrimSpace(string(out))
+}
+
+// TestComputeScope_GitFixture verifies SC-001's exact-equality case against
+// a real git repository: ten learnings, two cited by the compiled article's
+// frontmatter, no policy — eight in scope, deterministic from git alone
+// with git:<ref>:<sha> provenance.
+func TestComputeScope_GitFixture(t *testing.T) {
+	dir, sha := initDistillFixtureRepo(t)
+
+	scope, err := ComputeScope(context.Background(), dir, nil, DistillPolicy{})
+	if err != nil {
+		t.Fatalf("ComputeScope: %v", err)
+	}
+
+	wantAll := append([]string(nil), distillFixtureIdentities...)
+	sort.Strings(wantAll)
+	if !reflect.DeepEqual(scope.AllLearnings, wantAll) {
+		t.Errorf("AllLearnings = %v, want %v", scope.AllLearnings, wantAll)
+	}
+	wantCited := []string{"auth-20260101T000001-alice", "auth-20260101T000002-bob"}
+	if !reflect.DeepEqual(scope.Cited, wantCited) {
+		t.Errorf("Cited = %v, want %v", scope.Cited, wantCited)
+	}
+	if want := expectedFixtureInScope(); !reflect.DeepEqual(scope.InScope, want) {
+		t.Errorf("InScope = %v, want %v (SC-001 exact equality)", scope.InScope, want)
+	}
+	if scope.Empty {
+		t.Error("Empty = true, want false")
+	}
+	if want := "git:origin/main:" + sha; scope.Provenance != want {
+		t.Errorf("Provenance = %q, want %q", scope.Provenance, want)
+	}
+
+	// FR-005 determinism: the same repo and policy compute the same set.
+	again, err := ComputeScope(context.Background(), dir, nil, DistillPolicy{})
+	if err != nil {
+		t.Fatalf("ComputeScope (second pass): %v", err)
+	}
+	if !reflect.DeepEqual(scope, again) {
+		t.Errorf("second computation differs: %+v vs %+v (FR-005 determinism)", scope, again)
+	}
+}
+
+// TestComputeScope_PolicyExcludesScratch applies an exclude_tags policy to
+// the fixture: scratch-* removes the scratch-tagged learning, everything
+// else stays.
+func TestComputeScope_PolicyExcludesScratch(t *testing.T) {
+	dir, _ := initDistillFixtureRepo(t)
+
+	policy := DistillPolicy{ExcludeTags: []string{"scratch-*"}}
+	scope, err := ComputeScope(context.Background(), dir, nil, policy)
+	if err != nil {
+		t.Fatalf("ComputeScope: %v", err)
+	}
+
+	want := expectedFixtureInScope()
+	filtered := want[:0]
+	for _, id := range want {
+		if id != "scratch-notes-20260101T000009-ivan" {
+			filtered = append(filtered, id)
+		}
+	}
+	if !reflect.DeepEqual(scope.InScope, filtered) {
+		t.Errorf("InScope = %v, want %v (scratch-* excluded)", scope.InScope, filtered)
+	}
+}
+
+// TestComputeScope_OverlyBroadPolicyNotStarved: a ["*"] exclusion is
+// rejected by the loader (warn + skip), so the scope it computes is the
+// unfiltered default — never starved to empty.
+func TestComputeScope_OverlyBroadPolicyNotStarved(t *testing.T) {
+	dir, _ := initDistillFixtureRepo(t)
+
+	policy, warnings := LoadDistillPolicy(writePolicy(t, "exclude_tags: [\"*\"]\n"))
+	if len(warnings) == 0 {
+		t.Fatal("overly broad policy produced no warnings")
+	}
+	scope, err := ComputeScope(context.Background(), dir, nil, policy)
+	if err != nil {
+		t.Fatalf("ComputeScope: %v", err)
+	}
+	if want := expectedFixtureInScope(); !reflect.DeepEqual(scope.InScope, want) {
+		t.Errorf("InScope = %v, want the unfiltered default %v", scope.InScope, want)
+	}
+	if scope.Empty {
+		t.Error("Empty = true; an overly broad policy must not starve scope")
+	}
+}
+
+// TestComputeScope_EmptyScopeIsNoOpSignal verifies the FR-021 signal: a
+// repo whose every learning is cited computes an empty in-scope set —
+// no-op territory, no PR, no comment.
+func TestComputeScope_EmptyScopeIsNoOpSignal(t *testing.T) {
+	dir, _ := initDistillFixtureRepo(t)
+
+	// Cite every learning: one compiled article listing all ten sources.
+	citing := "---\ntier: draft\nsources:\n"
+	for _, id := range distillFixtureIdentities {
+		citing += "  - " + id + "\n"
+	}
+	citing += "---\n# Everything\n"
+	if err := os.WriteFile(filepath.Join(dir, ".uf/dewey/compiled/everything.md"), []byte(citing), 0o644); err != nil {
+		t.Fatalf("write everything.md: %v", err)
+	}
+	git := func(args ...string) {
+		t.Helper()
+		full := append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "cite everything")
+	// Scope enumerates at the ref, not HEAD: re-point origin/main at the
+	// citing commit so the new article is visible to the ls-tree pass.
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+	scope, err := ComputeScope(context.Background(), dir, nil, DistillPolicy{})
+	if err != nil {
+		t.Fatalf("ComputeScope: %v", err)
+	}
+	if !scope.Empty || len(scope.InScope) != 0 {
+		t.Errorf("InScope = %v, want empty (every learning cited)", scope.InScope)
+	}
+}
+
+// TestComputeScope_NonGitFallsBackDegraded verifies the fallback (edge
+// case: non-git vault): the same tree scanned from the filesystem, unioned
+// with the SQLite seam's learning names, provenance filesystem:degraded,
+// no panic.
+func TestComputeScope_NonGitFallsBackDegraded(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	for _, id := range distillFixtureIdentities {
+		write(".uf/dewey/learnings/"+id+".md", "---\ntier: draft\n---\n")
+	}
+	write(".uf/dewey/compiled/auth.md", distillFixtureCompiled)
+	// A learning present only in the store seam: the union must pick it
+	// up even though no file backs it.
+	storeOnly := "orphan-20260101T000011-karl"
+	pages := LearningPageNames(func() ([]string, error) {
+		return []string{"auth-20260101T000001-alice", storeOnly}, nil
+	})
+
+	scope, err := ComputeScope(context.Background(), dir, pages, DistillPolicy{})
+	if err != nil {
+		t.Fatalf("ComputeScope: %v", err)
+	}
+	if scope.Provenance != ScopeProvenanceDegraded {
+		t.Errorf("Provenance = %q, want %q", scope.Provenance, ScopeProvenanceDegraded)
+	}
+	want := expectedFixtureInScope()
+	want = append(want, storeOnly)
+	sort.Strings(want)
+	if !reflect.DeepEqual(scope.InScope, want) {
+		t.Errorf("InScope = %v, want %v (FS scan unioned with store names)", scope.InScope, want)
+	}
+}
+
+// TestComputeScope_BadVaultDirErrors: a vault dir that does not exist is a
+// hard error — it must not masquerade as an empty no-op scope.
+func TestComputeScope_BadVaultDirErrors(t *testing.T) {
+	if _, err := ComputeScope(context.Background(), filepath.Join(t.TempDir(), "missing"), nil, DistillPolicy{}); err == nil {
+		t.Error("ComputeScope accepted a nonexistent vault dir; want an error")
+	}
+	if _, err := ComputeScope(context.Background(), "", nil, DistillPolicy{}); err == nil {
+		t.Error("ComputeScope accepted an empty vault dir; want an error")
+	}
+}
+
+// TestStoreLearningPageNames verifies the SQLite fallback seam adapter:
+// learning/ draft pages yield their identities, other namespaces are
+// dropped, a closed store surfaces a wrapped error, and a nil store yields
+// a nil seam (no store, no union).
+func TestStoreLearningPageNames(t *testing.T) {
+	if got := StoreLearningPageNames(nil); got != nil {
+		t.Error("StoreLearningPageNames(nil) returned a non-nil seam, want nil")
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	seed := []struct {
+		name string
+		tier string
+	}{
+		{"learning/auth-20260101T000001-alice", "draft"},
+		{"learning/vault-20260101T000004-dave", "draft"},
+		{"learning/legacy-1", "draft"},
+		{"compiled/auth", "draft"},        // draft, but not the learning/ namespace
+		{"knowledge/team", "draft"},       // draft, but not the learning/ namespace
+		{"Learning/case-folded", "draft"}, // NOCASE range still prefixes learning/
+	}
+	for _, p := range seed {
+		if err := s.InsertPage(&store.Page{
+			Name:         p.name,
+			OriginalName: p.name,
+			SourceID:     store.SourceLearning,
+			SourceDocID:  p.name, // unique per row for the (source_id, source_doc_id) key
+			Tier:         p.tier,
+		}); err != nil {
+			t.Fatalf("insert %s: %v", p.name, err)
+		}
+	}
+
+	pages := StoreLearningPageNames(s)
+	ids, err := pages()
+	if err != nil {
+		t.Fatalf("seam: %v", err)
+	}
+	sort.Strings(ids)
+	want := []string{"auth-20260101T000001-alice", "case-folded", "legacy-1", "vault-20260101T000004-dave"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Errorf("seam identities = %v, want %v", ids, want)
+	}
+
+	// A closed store surfaces a wrapped error, never a panic — the
+	// fallback path logs and continues with the filesystem scan.
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	if _, err := pages(); err == nil || !strings.Contains(err.Error(), "list learning pages") {
+		t.Errorf("seam error = %v, want a wrapped list learning pages error", err)
 	}
 }

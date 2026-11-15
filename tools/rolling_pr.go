@@ -13,9 +13,13 @@ package tools
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // DistillBranchPrefix namespaces every rolling distill branch
@@ -173,4 +177,94 @@ func ValidateThemeBranch(branch string) error {
 		return fmt.Errorf("branch %q segment contains a traversal", branch)
 	}
 	return nil
+}
+
+// --- Durable run record (FR-021; contracts/scope.md Durable No-Op Record) ---
+
+// distillRunsDir is the vault-relative directory holding one JSON run
+// artifact per distill run — the audit surface that exists even when no
+// PR does.
+const distillRunsDir = ".uf/dewey/distill-runs"
+
+// NoOpReasonEmptyScope is the FR-021 no-op reason for an empty in-scope
+// set: the run wrote its artifact and touched nothing else.
+const NoOpReasonEmptyScope = "empty scope"
+
+// DistillRunRecord is the durable run artifact written to
+// .uf/dewey/distill-runs/<YYYYMMDD-HHMMSS>.json (FR-021). On no-op paths
+// — no PR, no comment — this artifact is the run's sole audit surface, so
+// every distill run writes exactly one.
+type DistillRunRecord struct {
+	// RunAt is the run's start time (UTC).
+	RunAt time.Time `json:"run_at"`
+	// ScopeSize is len(in_scope) at scope computation time.
+	ScopeSize int `json:"scope_size"`
+	// Themes lists the theme names the run grouped, sorted.
+	Themes []string `json:"themes"`
+	// PRsTouched lists the rolling PR branches the run created or
+	// updated, sorted.
+	PRsTouched []string `json:"prs_touched"`
+	// NoOpReason carries the FR-021 reason on no-op runs; empty on runs
+	// that opened or updated PRs.
+	NoOpReason string `json:"no_op_reason,omitempty"`
+}
+
+// WriteDistillRunArtifact writes record to the vault's distill-runs
+// directory as <YYYYMMDD-HHMMSS>.json (record.RunAt, UTC) and returns the
+// written path. Run artifacts are append-only audit history: a
+// same-second collision appends a -2, -3, … suffix rather than
+// overwriting the earlier record.
+func WriteDistillRunArtifact(vaultDir string, record DistillRunRecord) (string, error) {
+	dir := filepath.Join(vaultDir, distillRunsDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("distill run artifact: create dir: %w", err)
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("distill run artifact: marshal: %w", err)
+	}
+	base := record.RunAt.UTC().Format("20060102-150405")
+	for n := 1; ; n++ {
+		name := base + ".json"
+		if n > 1 {
+			name = fmt.Sprintf("%s-%d.json", base, n)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			if os.IsExist(err) {
+				continue // same-second collision: next suffix
+			}
+			return "", fmt.Errorf("distill run artifact: create: %w", err)
+		}
+		if _, err := f.Write(append(data, '\n')); err != nil {
+			_ = f.Close()
+			return "", fmt.Errorf("distill run artifact: write: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("distill run artifact: close: %w", err)
+		}
+		return path, nil
+	}
+}
+
+// RecordNoOpDistillRun writes the FR-021 no-op artifact for an empty
+// scope and returns the artifact path. The pipeline's empty-scope exit:
+// the caller computes scope, sees InScope == ∅, records this artifact,
+// and exits without opening or updating any PR and without commenting on
+// the distill issue. Refuses a non-empty scope fail-closed — recording a
+// no-op while learnings wait in scope would hide them from every audit
+// surface at once.
+func RecordNoOpDistillRun(vaultDir string, scope ScopeSet) (string, error) {
+	if !scope.Empty {
+		return "", fmt.Errorf("distill run artifact: no-op record for non-empty scope (%d in scope)", len(scope.InScope))
+	}
+	record := DistillRunRecord{
+		RunAt:      time.Now().UTC(),
+		ScopeSize:  0,
+		Themes:     []string{},
+		PRsTouched: []string{},
+		NoOpReason: NoOpReasonEmptyScope,
+	}
+	return WriteDistillRunArtifact(vaultDir, record)
 }

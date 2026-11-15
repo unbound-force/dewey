@@ -24,7 +24,7 @@
 
 **Purpose**: Project initialization and basic structure for weekly unattended distill
 
-- [ ] T001 Create workflow template file `.github/workflows/dewey-distill.yml.example` with `on: schedule` cron `0 9 * * 1` + `workflow_dispatch`, permissions `contents: read, issues: write, pull-requests: write` per contracts/workflow-template.md
+- [x] T001 Create workflow template file `.github/workflows/dewey-distill.yml.example` with `on: schedule` cron `0 9 * * 1` + `workflow_dispatch`, permissions `contents: read, issues: write, pull-requests: write` per contracts/workflow-template.md
 - [ ] T002 [P] Create optional policy example `.uf/dewey/distill-policy.yaml.example` with `exclude_tags` and `exclude_stores` defaults per research.md D-009 and data-model.md DistillPolicy
 - [ ] T003 [P] Create distiller agent definition `.opencode/agents/distiller.md` with `command: dewey-distill-auto`, allowlist documentation (`read`, `list_pages`, `get_page`, `lint`, `compile`, `curate`, `verify_candidates`, `store_compiled` draft-only, `supersede_learning`), denied `question` + `tier: validated` per contracts/distiller-allowlist.md
 - [ ] T004 [P] Create unattended command `.opencode/commands/dewey-distill-auto.md` as unattended entry point (scope→group→rolling PR pipeline, no HUMAN_GATE questions) distinct from existing `.opencode/commands/dewey-distill.md`

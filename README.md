@@ -26,7 +26,7 @@ It turns "tell me about X" into an AI that actually understands your knowledge g
 
 ## Tools
 
-52 tools across 16 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
+55 tools across 17 categories. Most work with both backends; some are Logseq-only (DataScript queries, flashcards, whiteboards).
 
 Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) return a unified live view of vault files and internal store pages (learnings, compiled articles) — pages stored this session via `store_learning` or `store_compiled` are visible immediately, with no restart. Vault files take precedence over same-named store pages. Read store-backed pages by their canonical names (`compiled/<tag>` for compiled articles, `learning/<identity>` for learnings) or by the bare name: `list_pages` shows compiled articles under their bare topic, and `get_page` tries the exact name, then `compiled/<name>`, then `learning/<name>`. Every name-based read through the vault client — including `get_links` forward direction, `traverse` start pages, `get_whiteboard`, `bulk_update_properties`, and `journal_range`, whose journal-format page names are slash-free — shares the resolution. The blast radius is every `GetPage`/`GetPageBlocksTree` caller, so the list is illustrative, not exhaustive. Name-based tools that resolve through other paths — `similar` and `find_connections` — still need the canonical name. `promote` accepts either form, but reports a name that matches both namespaces as ambiguous, while reads serve the compiled article. On store-backed pages, `find_by_tag` matches frontmatter `tag`/`tags` properties, block `#tags`, and the `topic` property of compiled articles.
 
@@ -946,9 +946,10 @@ gh workflow run dewey-distill.yml   # manual trigger
 main.go              Entry point — backend routing, MCP server startup
 cli.go               CLI subcommands: journal, add, search, init, index, reindex, status,
                      source, doctor, manifest, compile, lint, promote, curate, artifacts
-gate.go              CLI gate subcommands: dewey gate auto-answer (deterministic startup gates)
+gate.go              CLI gate subcommands: dewey gate auto-answer, dewey gate
+                     distill-unattended (deterministic startup gates)
 agents.go            Shipped agent definitions scaffolded by dewey init
-server.go            MCP server setup — 51 tool registrations
+server.go            MCP server setup — 54 tool registrations
 backend/backend.go   Backend interface + optional capability interfaces
 client/logseq.go     Logseq HTTP API client with retry/backoff
 vault/
@@ -976,7 +977,7 @@ graph/
 parser/content.go    Regex extraction of [[links]], ((refs)), #tags, properties
 types/
   logseq.go          Shared types with custom JSON unmarshaling
-  tools.go           Input types for all 51 tools
+  tools.go           Input types for the MCP tools (distill pipeline inputs live beside their handlers in tools/)
   semantic.go        Semantic search types
 llm/                 LLM synthesis interface (Synthesizer, OllamaSynthesizer, VertexSynthesizer, OpenAICompatibleSynthesizer, NoopSynthesizer)
 openaicompat/        Shared OpenAI-compatible transport (endpoint, auth, retry, errors, client, availability)

@@ -566,7 +566,7 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "non-DataScript read-write",
 			backend:  &serverMockBackend{},
 			readOnly: false,
-			want:     44, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(2: store_learning, supersede_learning) + indexing(2) + compile(2) + curate(1) + lint(1) + promote(1) + verify(1) + health(1)
+			want:     47, // navigate(5) + search(3) + analyze(5) + write(10) + decision(5) + journal(2) + semantic(3) + learning(2: store_learning, supersede_learning) + indexing(2) + compile(2) + curate(1) + lint(1) + promote(1) + verify(1) + distill(3: scope, group_learners, rolling_pr) + health(1)
 		},
 		{
 			name:     "non-DataScript read-only",
@@ -578,7 +578,7 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "DataScript read-write",
 			backend:  &serverMockBackendWithDataScript{},
 			readOnly: false,
-			want:     51, // non-DataScript read-write + get_references + query_datalog + flashcard(3) + whiteboard(2)
+			want:     54, // non-DataScript read-write + get_references + query_datalog + flashcard(3) + whiteboard(2)
 		},
 		{
 			name:     "DataScript read-only",
@@ -590,7 +590,7 @@ func TestNewServer_ToolCount(t *testing.T) {
 			name:     "vault read-write",
 			backend:  vault.New(t.TempDir()),
 			readOnly: false,
-			want:     45, // non-DataScript read-write + reload
+			want:     48, // non-DataScript read-write + reload
 		},
 	}
 

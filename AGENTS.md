@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 52 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, learning (storage and confirmed supersession), curate, and verification categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, pluggable LLM providers (Ollama, Vertex AI, any OpenAI-compatible gateway), and trust tiers.
+Dewey is a knowledge graph MCP server that gives AI agents full access to Markdown knowledge bases. It supports **Logseq** and **Obsidian** with full read-write support — 55 MCP tools across navigate, search, analyze, write, decision, journal, flashcard, whiteboard, semantic search, compile, lint, promote, indexing, learning (storage and confirmed supersession), curate, verification, and distill automation categories. Hard fork of [graphthulhu](https://github.com/skridlevsky/graphthulhu), extended with persistent SQLite storage, vector-based semantic search via Ollama, pluggable content sources (disk, GitHub, web crawl, code), knowledge compilation with temporal intelligence, curated knowledge stores, pluggable LLM providers (Ollama, Vertex AI, any OpenAI-compatible gateway), and trust tiers.
 
 - **Language**: Go 1.25+
 - **Module**: `github.com/unbound-force/dewey/v3`
@@ -354,9 +354,9 @@ MCP server + CLI tool with flat package layout:
 ```text
 main.go              # Entry point, Cobra root command, serve logic
 cli.go               # CLI subcommands (journal, add, search, init, index, reindex, status, source, doctor, manifest, compile, lint, promote, curate, artifacts)
-gate.go              # CLI gate subcommands (dewey gate auto-answer — deterministic startup gates)
+gate.go              # CLI gate subcommands (dewey gate auto-answer, dewey gate distill-unattended — deterministic startup gates)
 agents.go            # Shipped agent definitions (scaffolded into .opencode/agents/ by dewey init)
-server.go            # MCP server setup, 51 tool registrations
+server.go            # MCP server setup, 54 tool registrations
 backend/             # Backend interface + capability interfaces
 client/              # Logseq HTTP API client with retry/backoff
 vault/               # Obsidian vault backend (file parsing, indexing, watcher, persistence)

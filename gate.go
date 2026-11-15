@@ -10,9 +10,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/unbound-force/dewey/v3/tools"
 )
 
 // errAutoAnswerGateRefused is returned by the `gate auto-answer`
@@ -59,6 +63,17 @@ type gateOptions struct {
 	// lookupEnv reads an environment variable and reports whether it
 	// is set. Defaults to os.LookupEnv.
 	lookupEnv func(string) (string, bool)
+	// supervisorConfigDir overrides the opencode-supervisor global
+	// config directory for the distill-unattended gate. When set,
+	// evaluation checks exactly that directory's supervisor.yaml and
+	// skips environment resolution. The repo-local
+	// .opencode/supervisor.yaml is never a candidate in any mode — the
+	// widening rule reads global config only (FR-016).
+	supervisorConfigDir string
+	// vaultDir overrides the vault root for the distill-unattended
+	// gate's refusal artifact. Empty selects the working directory —
+	// the unattended command dispatches in the repository.
+	vaultDir string
 }
 
 // gateVerdict is the evaluated outcome rendered by the command.
@@ -924,6 +939,7 @@ through their exit code, so command prose and scripts consume the
 verdict directly rather than reconstructing it.`,
 	}
 	cmd.AddCommand(newGateAutoAnswerCmd())
+	cmd.AddCommand(newGateDistillUnattendedCmd())
 	return cmd
 }
 
@@ -963,4 +979,268 @@ func runAutoAnswerGate(cmd *cobra.Command, opts gateOptions) error {
 		return errAutoAnswerGateRefused
 	}
 	return nil
+}
+
+// --- distill-unattended gate (018-weekly-distill-automation) ---
+
+// supervisorConfigDirName is the opencode-supervisor global config
+// directory within an OpenCode global config root. The location is a
+// documented probe contract, not an observed one:
+// jflowers/opencode-supervisor#51 (command-scoped profiles) is
+// unshipped, so no real config exists yet. When #51 ships with a
+// different location, update these candidates — the gate keeps failing
+// closed until then, which is the Assumptions' specified posture, not a
+// defect.
+const supervisorConfigDirName = "opencode-supervisor"
+
+// supervisorConfigFile is the supervisor's config file name.
+const supervisorConfigFile = "supervisor.yaml"
+
+// distillCommandProfile is the command-scoped profile key the widening
+// rule recognizes (FR-016): only the global opencode-supervisor profile
+// keyed to this command may narrow or widen the distiller's allowlist.
+const distillCommandProfile = "dewey-distill-auto"
+
+// supervisorUnavailableNotice is the notice comment text a refused
+// unattended run posts on the dispatch issue (spec Assumptions).
+const supervisorUnavailableNotice = "supervisor command profile unavailable, unattended distill skipped"
+
+// errDistillUnattendedGateRefused is returned by `gate
+// distill-unattended` when the gate refuses. main() logs it and exits 1;
+// the tool-rendered verdict was already printed to stdout, so the error
+// carries no user-facing detail.
+var errDistillUnattendedGateRefused = errors.New("distill-unattended gate refused")
+
+// distillUnattendedVerdict is the evaluated outcome rendered by the
+// distill-unattended gate.
+type distillUnattendedVerdict struct {
+	Pass bool
+	// Candidates lists every global config file evaluated, in order —
+	// the verdict names them on pass and refusal alike. The repo-local
+	// .opencode/supervisor.yaml is never a candidate (FR-016: only
+	// global config can widen).
+	Candidates []string
+	// ConfigFile names the candidate that holds the command profile
+	// (pass only).
+	ConfigFile string
+	// Reason carries the refusal cause.
+	Reason string
+	// Fix names the remediation on refusal.
+	Fix string
+}
+
+// supervisorConfigCandidates resolves the global opencode-supervisor
+// config candidates: the home-directory file always, plus the XDG file
+// when XDG_CONFIG_HOME resolves to a different directory — the same
+// home-then-XDG convention the auto-answer gate uses, applied to the
+// supervisor's own config directory. As with the plugin candidates,
+// paths compare lexically, never by symlink, and a relative HOME or
+// XDG_CONFIG_HOME fails resolution: it is unverifiable.
+func supervisorConfigCandidates(lookup func(string) (string, bool)) ([]string, error) {
+	home, ok := lookup("HOME")
+	if !ok || home == "" {
+		return nil, errors.New("HOME is not set or is empty")
+	}
+	if !filepath.IsAbs(home) {
+		return nil, fmt.Errorf("HOME %q is not an absolute path", home)
+	}
+	candidates := []string{filepath.Join(home, ".config", supervisorConfigDirName, supervisorConfigFile)}
+	xdg, ok := lookup("XDG_CONFIG_HOME")
+	if !ok || xdg == "" {
+		return candidates, nil
+	}
+	if !filepath.IsAbs(xdg) {
+		return nil, fmt.Errorf("XDG_CONFIG_HOME %q is not an absolute path", xdg)
+	}
+	if xdgPath := filepath.Join(xdg, supervisorConfigDirName, supervisorConfigFile); xdgPath != candidates[0] {
+		candidates = append(candidates, xdgPath)
+	}
+	return candidates, nil
+}
+
+// supervisorHasDistillProfile reports whether the parsed supervisor
+// config carries the command-scoped dewey-distill-auto profile. The
+// profile's contents are the supervisor's contract (#51), not the
+// gate's — presence alone enables unattended mode.
+func supervisorHasDistillProfile(data []byte) (bool, error) {
+	var cfg struct {
+		Commands map[string]any `yaml:"commands"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return false, err
+	}
+	_, ok := cfg.Commands[distillCommandProfile]
+	return ok, nil
+}
+
+// evaluateDistillUnattendedGate deterministically evaluates whether the
+// global opencode-supervisor config carries the command-scoped
+// dewey-distill-auto profile (FR-016). Global candidates only — the
+// repo-local .opencode/supervisor.yaml is never read, so repository
+// content cannot widen the distiller's privileges. Every failure path
+// is fail-closed: an unreadable or unparseable global config refuses,
+// and an absent config — the expected state until
+// jflowers/opencode-supervisor#51 ships — refuses with the
+// supervisor-unavailable reason. An injected
+// gateOptions.supervisorConfigDir collapses evaluation to exactly that
+// directory's supervisor.yaml.
+func evaluateDistillUnattendedGate(opts gateOptions) distillUnattendedVerdict {
+	lookup := opts.lookupEnv
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
+	var candidates []string
+	if opts.supervisorConfigDir != "" {
+		candidates = []string{filepath.Join(opts.supervisorConfigDir, supervisorConfigFile)}
+	} else {
+		var err error
+		candidates, err = supervisorConfigCandidates(lookup)
+		if err != nil {
+			return distillUnattendedVerdict{
+				Reason: "cannot resolve the supervisor config location: " + err.Error(),
+				Fix:    "Set HOME to a non-empty absolute path, and XDG_CONFIG_HOME to an absolute path when set, then re-run /dewey-distill-auto.",
+			}
+		}
+	}
+	verdict := distillUnattendedVerdict{Candidates: candidates}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // absent candidate — the expected state until #51 ships
+			}
+			verdict.Reason = fmt.Sprintf("the supervisor config exists but cannot be read: %v", err)
+			verdict.Fix = fmt.Sprintf("Make %s readable, then re-run /dewey-distill-auto.", path)
+			return verdict
+		}
+		has, err := supervisorHasDistillProfile(data)
+		if err != nil {
+			verdict.Reason = fmt.Sprintf("the supervisor config is not valid YAML: %v", err)
+			verdict.Fix = fmt.Sprintf("Fix the YAML syntax in %s, then re-run /dewey-distill-auto.", path)
+			return verdict
+		}
+		if has {
+			verdict.Pass = true
+			verdict.ConfigFile = path
+			return verdict
+		}
+	}
+	verdict.Reason = tools.NoOpReasonSupervisorUnavailable
+	verdict.Fix = "Wait for jflowers/opencode-supervisor#51 (command-scoped profiles), then configure the global command: dewey-distill-auto profile."
+	return verdict
+}
+
+// recordSupervisorNoOp writes the FR-021 no-op artifact for a refused
+// distill-unattended gate: a run that never started is still a run, and
+// the artifact is its sole audit surface. Returns the artifact path.
+func recordSupervisorNoOp(vaultDir string) (string, error) {
+	record := tools.DistillRunRecord{
+		RunAt:      time.Now().UTC(),
+		ScopeSize:  0,
+		Themes:     []string{},
+		PRsTouched: []string{},
+		NoOpReason: tools.NoOpReasonSupervisorUnavailable,
+	}
+	return tools.WriteDistillRunArtifact(vaultDir, record)
+}
+
+// renderDistillUnattendedVerdict renders the tool-owned verdict text.
+// The command relays this verbatim; config-supplied values are
+// sanitized so a pathological entry cannot spoof the output. On
+// refusal the verdict carries the artifact path (when recorded) and
+// the notice comment text the dispatch issue receives.
+func renderDistillUnattendedVerdict(v distillUnattendedVerdict, artifact string) string {
+	var b strings.Builder
+	if v.Pass {
+		b.WriteString("Distill-unattended gate: PASS\n")
+		fmt.Fprintf(&b, "Config file: %s\n", safeValue(v.ConfigFile))
+		fmt.Fprintf(&b, "Command profile: %s\n", distillCommandProfile)
+		return b.String()
+	}
+	b.WriteString("Distill-unattended gate: REFUSED\n")
+	for _, path := range v.Candidates {
+		fmt.Fprintf(&b, "Checked: %s\n", safeValue(path))
+	}
+	fmt.Fprintf(&b, "Reason: %s\n", safeValue(v.Reason))
+	if v.Fix != "" {
+		fmt.Fprintf(&b, "Fix: %s\n", safeValue(v.Fix))
+	}
+	if artifact != "" {
+		fmt.Fprintf(&b, "Artifact: %s\n", safeValue(artifact))
+	}
+	fmt.Fprintf(&b, "Notice: %s\n", supervisorUnavailableNotice)
+	return b.String()
+}
+
+// runDistillUnattendedGate evaluates the gate, records the refusal
+// no-op artifact into the vault (working directory — the unattended
+// command dispatches in the repository; the same CWD convention the
+// auto-answer gate uses for the curator definition), writes the
+// tool-rendered verdict, and maps a refusal to an error so the process
+// exits non-zero. A verdict-write failure is itself an error: the
+// consumer keys on both the exit code and the rendered output, so an
+// unverifiable verdict must fail closed. An artifact-write failure
+// does not change the refusal — it surfaces as a warning line in the
+// verdict so the audit gap is visible, not silent.
+func runDistillUnattendedGate(cmd *cobra.Command, opts gateOptions) error {
+	verdict := evaluateDistillUnattendedGate(opts)
+	var artifact string
+	var artifactWarning string
+	if !verdict.Pass {
+		vaultDir := opts.vaultDir
+		if vaultDir == "" {
+			wd, err := os.Getwd()
+			if err != nil {
+				artifactWarning = "could not resolve the working directory for the no-op artifact: " + err.Error()
+			} else {
+				vaultDir = wd
+			}
+		}
+		if vaultDir != "" {
+			path, err := recordSupervisorNoOp(vaultDir)
+			if err != nil {
+				artifactWarning = "could not record the no-op artifact: " + err.Error()
+			} else {
+				artifact = path
+			}
+		}
+	}
+	out := renderDistillUnattendedVerdict(verdict, artifact)
+	if artifactWarning != "" {
+		out += "Warning: " + artifactWarning + "\n"
+	}
+	if _, err := fmt.Fprint(cmd.OutOrStdout(), out); err != nil {
+		return fmt.Errorf("write gate verdict: %w", err)
+	}
+	if !verdict.Pass {
+		return errDistillUnattendedGateRefused
+	}
+	return nil
+}
+
+// newGateDistillUnattendedCmd creates `dewey gate distill-unattended`,
+// the /dewey-distill-auto startup gate (018-weekly-distill-automation
+// FR-016/FR-017 fail-closed posture).
+func newGateDistillUnattendedCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "distill-unattended",
+		Short: "Refuse until the global opencode-supervisor command profile exists",
+		Long: `Evaluate whether the global opencode-supervisor config carries the
+command-scoped dewey-distill-auto profile — the sole authority that may
+widen the distiller agent's allowlist (FR-016).
+
+Exit 0 means the profile is present in the global config. Exit 1 means
+the gate refuses: the profile is absent, or the config is unreadable or
+unparseable. Refusal is fail-closed — until
+jflowers/opencode-supervisor#51 ships, unattended mode stays disabled,
+the gate records a no-op run artifact under .uf/dewey/distill-runs/ in
+the working directory, and the verdict carries the notice comment text
+for the dispatch issue. The repo-local .opencode/supervisor.yaml is
+never read: repository content cannot widen the allowlist.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDistillUnattendedGate(cmd, gateOptions{})
+		},
+	}
+	return cmd
 }

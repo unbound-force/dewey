@@ -14,9 +14,10 @@ and manages rolling per-theme PRs (`dewey-distill/<sanitized>` branch, draft
 `tier: draft` only, review-queue body). No `HUMAN_GATE` questions; no validated
 writes. Triggered via scheduled workflow dispatch (`/dewey-distill-auto #N`).
 
-Uses MCP tools exclusively, with one documented exception: the mandatory startup
-gate runs `dewey gate auto-answer`, which never touches the store. While the
-server runs it holds an exclusive lock on `.uf/dewey/dewey.lock`.
+Uses MCP tools exclusively, with two documented exceptions: the mandatory startup
+gates run `dewey gate auto-answer` and `dewey gate distill-unattended`, which
+never touch the store. While the server runs it holds an exclusive lock on
+`.uf/dewey/dewey.lock`.
 
 ## Usage
 
@@ -30,16 +31,25 @@ Triggered by `gh-hud` from workflow issue comment `<!-- dewey-distill-trigger --
 
 ## Instructions
 
-### 0. Startup Gate (MANDATORY)
+### 0. Startup Gates (MANDATORY)
 
 Before any pipeline stage, run `dewey gate auto-answer`. Treat non-pass as
 refusal: stop before scope and relay output. Do not retry.
 
+Then run `dewey gate distill-unattended`. On refusal (exit 1 — the expected
+state until jflowers/opencode-supervisor#51 ships), the no-op run artifact is
+already recorded under `.uf/dewey/distill-runs/`: post the verdict's Notice
+line (`supervisor command profile unavailable, unattended distill skipped`) as
+a comment on the dispatch issue via `gh issue comment <N>` and stop before
+scope. Do not retry.
+
 ### 1. Scope Computation (Deterministic, No Question)
 
-Call the `scope` MCP tool with `default_ref` (resolved via `gitref` precedence:
-vault config → global config → `DEWEY_DEFAULT_BRANCH_REF` → git config
-`dewey.defaultBranchRef` → `origin/main`). Tool behavior per `contracts/scope.md`:
+Call the `scope` MCP tool (no arguments — the vault, the default-branch ref
+via the `gitref` precedence chain: vault config → global config →
+`DEWEY_DEFAULT_BRANCH_REF` → git config `dewey.defaultBranchRef` →
+`origin/main`, and the exclusion policy all resolve server-side). Tool behavior
+per `contracts/scope.md`:
 
 ```
 learnings = ls_tree(ref, .uf/dewey/learnings/) -> {identities}

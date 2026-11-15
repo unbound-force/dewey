@@ -28,11 +28,15 @@ const distillWorkflowTemplatePath = ".github/workflows/dewey-distill.yml.example
 //	open  — number of the single open labeled issue (absent = none)
 //	next  — next issue number to allocate
 //	log   — one line per mutating call:
-//	          "create <n> <label> <assignee>" | "comment <n> <body>"
+//	          "create <n> <label>" | "comment <n> <body>"
 //
 // create refuses when an open labeled issue already exists: the dedup
 // invariant is the trigger script's job, so a violation must fail the run
 // loudly (set -eu propagates) rather than silently open a second issue.
+// create also refuses an --assignee flag: the template runs under the
+// built-in GITHUB_TOKEN (a GitHub App installation identity that cannot
+// resolve "@me"), so the flag would fail the real create step under
+// set -eu — the test locks that contract in rather than the defect.
 const fakeGhScript = `#!/bin/sh
 state="$FAKE_GH_STATE"
 cmd="$1 $2"
@@ -58,19 +62,21 @@ case "$cmd" in
     exit 1
   fi
   label=""
-  assignee=""
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --label) label="$2"; shift ;;
-      --assignee) assignee="$2"; shift ;;
+      --assignee)
+        echo "fake gh: --assignee is not part of the template contract (GITHUB_TOKEN cannot resolve @me)" >&2
+        exit 1
+        ;;
     esac
     shift
   done
   n=$(cat "$state/next" 2>/dev/null || echo 1)
   echo $((n + 1)) >"$state/next"
   echo "$n" >"$state/open"
-  printf 'create %s %s %s\n' "$n" "$label" "$assignee" >>"$state/log"
+  printf 'create %s %s\n' "$n" "$label" >>"$state/log"
   ;;
 *)
   echo "fake gh: unexpected arguments: $*" >&2
@@ -197,14 +203,19 @@ func TestDistillWorkflowTemplate_Structure(t *testing.T) {
 	}
 
 	wantPerms := map[string]string{
-		"contents":      "read",
-		"issues":        "write",
-		"pull-requests": "write",
+		"contents": "read",
+		"issues":   "write",
 	}
 	for key, want := range wantPerms {
 		if got := wf.Permissions[key]; got != want {
 			t.Errorf("permissions[%q] = %q, want %q", key, got, want)
 		}
+	}
+	// Least privilege (CI-020): the job only calls issue endpoints —
+	// rolling PRs are opened by the distiller run with the developer's
+	// own credentials — so no pull-requests grant may appear.
+	if got, ok := wf.Permissions["pull-requests"]; ok {
+		t.Errorf("permissions[\"pull-requests\"] = %q, want absent (the job never calls a PR endpoint)", got)
 	}
 
 	// The concurrency group serializes a manual re-trigger racing the
@@ -221,13 +232,21 @@ func TestDistillWorkflowTemplate_Structure(t *testing.T) {
 		"gh issue list --label dewey-distill --state open",
 		"gh issue comment",
 		"<!-- dewey-distill-trigger --> /dewey-distill-auto #",
-		"gh issue create --label dewey-distill --assignee \"@me\"",
+		"gh issue create --label dewey-distill",
 		"--title \"Weekly dewey-distill\"",
 		"--body \"Dispatch: /dewey-distill-auto\"",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("trigger script missing contract command %q;\nscript:\n%s", want, script)
 		}
+	}
+	// The issue is created unassigned: the workflow runs under the
+	// built-in GITHUB_TOKEN (a GitHub App installation identity that
+	// cannot resolve "@me"), so an --assignee flag would fail the
+	// create step under set -eu and the first scheduled run would open
+	// no issue at all (spec-review iteration 3, HIGH finding).
+	if strings.Contains(script, "--assignee") {
+		t.Errorf("trigger script must not assign the created issue (--assignee present);\nscript:\n%s", script)
 	}
 }
 
@@ -248,12 +267,13 @@ func TestDistillWorkflowTemplate_DedupInvariant(t *testing.T) {
 		t.Fatalf("write fake gh: %v", err)
 	}
 
-	// Week 1: no open issue — the trigger creates one, labeled and
-	// assigned to the workflow actor.
+	// Week 1: no open issue — the trigger creates one, labeled (never
+	// assigned: the GITHUB_TOKEN installation identity cannot resolve
+	// "@me", so the template omits the flag entirely).
 	runDistillTrigger(t, script, stateDir, binDir)
 	lines := readFixtureLog(t, stateDir)
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "create 1 dewey-distill @me") {
-		t.Fatalf("week 1: want a single create of issue 1 with label and assignee, got %v", lines)
+	if len(lines) != 1 || lines[0] != "create 1 dewey-distill" {
+		t.Fatalf("week 1: want a single create of issue 1 with label, got %v", lines)
 	}
 
 	// Week 2: issue #1 still open — second trigger posts a re-trigger
@@ -274,7 +294,7 @@ func TestDistillWorkflowTemplate_DedupInvariant(t *testing.T) {
 	}
 	runDistillTrigger(t, script, stateDir, binDir)
 	lines = readFixtureLog(t, stateDir)
-	if len(lines) != 3 || !strings.HasPrefix(lines[2], "create 2 dewey-distill @me") {
+	if len(lines) != 3 || lines[2] != "create 2 dewey-distill" {
 		t.Fatalf("week 3: want create of issue 2, got %v", lines)
 	}
 

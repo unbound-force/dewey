@@ -9,7 +9,7 @@
 |-------|------|-------------|
 | number | int | GitHub issue number |
 | label | string | always `dewey-distill` |
-| assignee | string | repo maintainer (workflow var) |
+| assignee | string | none — the workflow runs as the `GITHUB_TOKEN` installation identity, which cannot resolve `@me`; dispatch keys off the label, not the assignee |
 | state | enum | `open` \| `closed` |
 | dispatch_marker | string | comment `<!-- dewey-distill-trigger -->` |
 
@@ -69,6 +69,20 @@ Transitions: `∄open → create`, `open → rebase/update`, `closed → create 
 
 ### ReviewQueue (PR body)
 Per-article section: `## <article>` + `### What changed` + `Newly cited: [ids]` + `Supersessions: [links]` + `Lint: [drift findings]` + `Confidence: [per-decision]`.
+
+### DistillRun (durable run record, FR-021)
+One JSON artifact per run at `.uf/dewey/distill-runs/<YYYYMMDD-HHMMSS>.json` (collision suffix `-2`); append-only history.
+
+| Field | Type | Constraints |
+|-------|------|-------------|
+| schema | int | record's JSON schema version — `1` today; future field changes bump it so historical files stay interpretable |
+| run_at | timestamp | run start, UTC |
+| scope_size | int | `len(in_scope)` at scope time (0 on no-op) |
+| themes | list<string> | theme names grouped, sorted |
+| prs_touched | list<string> | rolling branches created or updated, sorted |
+| no_op_reason | string? | `empty scope` \| `supervisor command profile unavailable` on no-op runs |
+
+The relationships below reference this entity: DistillIssue 1—1 DistillRun, DistillRun 1—N Theme.
 
 ## Relationships
 

@@ -8,7 +8,7 @@
 
 ### D-001: Trigger — shipped template workflow with dedup
 
-**Decision**: Dewey ships `.github/workflows/dewey-distill.yml.example` with `on: schedule` weekly cron (default Mon 09:00 UTC, editable), `workflow_dispatch` manual re-trigger, and `permissions: contents:read, issues:write, pull-requests:write`. Dedup job lists open issues with label `dewey-distill`; if found posts a comment `<!-- dewey-distill-trigger --> /dewey-distill-auto #N`, else creates issue. Copied via `dewey init` docs, not auto-installed.
+**Decision**: Dewey ships `.github/workflows/dewey-distill.yml.example` with `on: schedule` weekly cron (default Mon 09:00 UTC, editable), `workflow_dispatch` manual re-trigger, and `permissions: contents:read, issues:write` (least privilege: the job only reads the repository and creates/comments issues — no PR write). Dedup job lists open issues with label `dewey-distill`; if found posts a comment `<!-- dewey-distill-trigger --> /dewey-distill-auto #N`, else creates the issue with no assignee (the `GITHUB_TOKEN` installation identity cannot resolve `@me`; gh-hud dispatch keys off the label). Copied via `dewey init` docs, not auto-installed.
 
 **Rationale**: Follows existing Dewey pattern: `dewey init` scaffolds `.opencode/agents/curator.md` when `.opencode/` exists, never overwriting. Opt-in copy respects Constitution I (composability) — repos without gh-hud get no-op issues, no failure.
 
@@ -76,5 +76,6 @@
 - #194 CODEOWNERS human-gate: `.uf/dewey/compiled/**`
 - #150 explicit supersession
 - #147 anchor drift lint
+- #210 workspace-layout trust display (`.uf/dewey/compiled`) — pending follow-up documented in US6
 - jflowers/gh-hud#28 dispatch, jflowers/opencode-supervisor#51 command-scoped profile
 - Existing: `.opencode/agents/curator.md`, `.opencode/commands/dewey-distill.md` (292 lines), `tools/compile.go`, `store/` schema v3

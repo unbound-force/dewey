@@ -3,7 +3,13 @@
 ## Input
 
 - `themes: Theme[]`
+- `dry_run` (optional, bool): output-only preview (the `--dry-run` flag) — see Dry Run below
 - Existing open PRs (via `gh pr list --label dewey-distill --state open`)
+
+## Preconditions
+
+- **Clean tracked tree**: the run takes over the working tree (branch checkout, article writes, rebase, push), so the vault's tracked files MUST be clean before the run starts; uncommitted tracked changes refuse with `vault has uncommitted tracked changes; commit or stash before distilling`. This precondition is enforced identically on real runs and dry runs — a passing preview means an executable run. Untracked files are tolerated (they are never touched).
+- **Working-tree takeover**: during the run the vault's checked-out branch moves (`dewey-distill/<theme>` per theme, back to the starting branch at the end). Concurrent editors will observe branch switches; humans should not edit the vault while a distill run is in progress.
 
 ## Behavior
 
@@ -16,6 +22,10 @@ Per theme:
 5. Closed PR for same theme → fresh create, never reopen.
 6. No new learnings → leave open PR untouched, no empty push.
 7. Never write `tier: validated`; server guard rejects.
+
+## Dry Run
+
+`dry_run: true` (the `/dewey-distill-auto --dry-run` preview, FR-020 backlog planning): the run enforces the same clean-tree precondition and resolves the same open-PR mapping a real run would, then performs **no mutation** — no branch checkout, no article write, no push, no `gh pr create`/`gh pr edit`. Each theme returns one would-be result: `would_create` (no open PR for its branch) or `would_update` (open PR found, PR number carried). A dry run records **no durable run artifact** — the preview result is the run's entire output, and the append-only `.uf/dewey/distill-runs/` history describes only real runs.
 
 ## Branch Sanitization (FR-011)
 
@@ -78,3 +88,5 @@ Escaped per Sanitization Gate; capped at 65k chars total body.
 - Poison tag `../../x` → sanitized branch, no traversal.
 - Human edit + regeneration → not overwritten, flagged.
 - Racing create → single PR, second becomes update.
+- Dry run → `would_create`/`would_update` per theme, no gh call past list, no branch, no artifact; dirty tree still refuses.
+- Run artifact carries `schema: 1`.

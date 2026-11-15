@@ -1,0 +1,108 @@
+package main
+
+// deweyWorkflowTemplates contains the GitHub Actions workflow template
+// examples that `dewey init` scaffolds into the vault's
+// `.github/workflows/` directory so adopting repositories can reach the
+// shipped templates without a Dewey checkout (spec-review iteration 3,
+// template-delivery finding): the example lands in the vault and the
+// opt-in copy —
+//
+//	cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml
+//
+// — runs there. The live workflow is never auto-installed (FR-001: the
+// copy is the opt-in). Each entry maps a filename to the file content.
+// Files that already exist are not overwritten to preserve user
+// customizations. The tracked copy at
+// `.github/workflows/dewey-distill.yml.example` MUST stay byte-identical
+// to the embedded value, and cli_test.go asserts that parity.
+//
+// The contents are raw string literals, so a workflow template MUST NOT
+// contain a backtick.
+var deweyWorkflowTemplates = map[string]string{
+	"dewey-distill.yml.example": `# Weekly unattended dewey-distill trigger (template).
+#
+# Dewey ships this file as an example; copying it into place is the opt-in:
+#
+#   cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml
+#
+# ` + "`dewey init`" + ` scaffolds this example into the vault (never overwriting an
+# existing file), so the copy above also runs inside a knowledge repository
+# that has run ` + "`dewey init`" + `.
+#
+# What it does: every Monday 09:00 UTC (editable below), the workflow
+# looks for an open issue labeled "dewey-distill". When one exists it
+# posts a re-trigger comment instead of opening a duplicate; otherwise it
+# opens a new issue. gh-hud (jflowers/gh-hud#28) observes that issue and
+# dispatches "/dewey-distill-auto #<number>" as the "autonomy" agent in
+# a TUI pane. Dewey exposes the contract — the "dewey-distill" label and
+# the dispatch marker in the comment body — and gh-hud owns the dispatch
+# side.
+#
+# The created issue carries no assignee: the workflow runs under the
+# built-in GITHUB_TOKEN, a GitHub App installation identity that cannot
+# resolve "@me", so an --assignee flag would fail the create step under
+# set -eu and the first scheduled run would open no issue at all. gh-hud
+# dispatch keys off the label, not an assignee.
+#
+# Adoption prerequisites (once per repository):
+#   1. Create the labels:
+#        gh label create dewey-distill --color 0E8A16 --description "Unattended weekly distill"
+#        gh label create human-gate --color D93F0B --description "Requires code-owner review"
+#   2. Ensure CODEOWNERS owns ".uf/dewey/compiled/**" and the
+#      default-branch ruleset requires code-owner review
+#      (unbound-force/dewey#194, ruleset 26764121), so rolling PRs
+#      labeled "human-gate" stay blocked until a code owner approves.
+#   3. Optional: add ".uf/dewey/distill-policy.yaml" to exclude tags or
+#      knowledge stores from the weekly scope. When absent, the default
+#      scope (all uncited learnings) applies without error.
+#
+# Dedup invariant (specs/018-weekly-distill-automation FR-003): at most
+# one open issue labeled "dewey-distill" exists at any time. The
+# concurrency group below serializes overlapping runs — a manual
+# re-trigger racing the schedule — so the check-then-create window
+# cannot produce a second issue.
+#
+# No secrets are required: the workflow runs on the built-in github.token
+# with the permissions granted below. The job only calls issue endpoints
+# (gh issue list/comment/create); rolling PRs are opened by the distiller
+# run in the developer's pane with the developer's own gh credentials, so
+# no pull-requests permission is granted here.
+
+name: dewey-distill
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Monday 09:00 UTC — edit to taste
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: dewey-distill-trigger
+  cancel-in-progress: false
+
+jobs:
+  distill-trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open or re-trigger the dewey-distill issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          number="$(gh issue list --label dewey-distill --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            echo "Open dewey-distill issue #$number found — posting re-trigger comment"
+            gh issue comment "$number" --body "<!-- dewey-distill-trigger --> /dewey-distill-auto #$number"
+          else
+            echo "No open dewey-distill issue — creating one"
+            gh issue create --label dewey-distill \
+              --title "Weekly dewey-distill" \
+              --body "Dispatch: /dewey-distill-auto"
+          fi
+`,
+}

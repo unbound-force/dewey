@@ -155,6 +155,55 @@ func IdentityTag(identity string) string {
 	return identity
 }
 
+// IdentityTimestamp extracts the creation timestamp embedded in a
+// current-format learning identity "{tag}-{YYYYMMDDTHHMMSS}-{author}".
+// It walks the same segments IdentityTag walks, so the two parses agree
+// on which identity shapes carry a timestamp; a segment that matches the
+// YYYYMMDDTHHMMSS shape but is not a real calendar time (e.g. month 13)
+// reports no timestamp rather than an error — the filter treats it like
+// a legacy identity. Pure string shape: no page properties are read.
+func IdentityTimestamp(identity string) (time.Time, bool) {
+	segs := strings.Split(identity, "-")
+	for i, seg := range segs {
+		if i > 0 && isTimestampSegment(seg) {
+			ts, err := time.Parse("20060102T150405", seg)
+			if err != nil {
+				return time.Time{}, false
+			}
+			return ts, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// FilterScopeByBacklogDate narrows a ScopeSet's InScope to identities
+// created on or before the cutoff date (the /dewey-distill-auto
+// --backlog-from flag, FR-020 backlog bootstrap). Identities embed UTC
+// timestamps; a learning is in the backlog window when its timestamp is
+// strictly before the end of from's day. Legacy identities without an
+// embedded timestamp always pass — age data does not exist for them, and
+// the bootstrap must not silently drop pre-migration learnings. All,
+// Cited, and Provenance pass through untouched: they describe the ref,
+// not the window.
+func FilterScopeByBacklogDate(scope ScopeSet, from time.Time) ScopeSet {
+	limit := from.Add(24 * time.Hour) // exclusive end of the cutoff date
+	filtered := make([]string, 0, len(scope.InScope))
+	for _, id := range scope.InScope {
+		if ts, ok := IdentityTimestamp(id); ok && !ts.Before(limit) {
+			continue // created after the cutoff date — outside this run's window
+		}
+		filtered = append(filtered, id)
+	}
+	out := ScopeSet{
+		AllLearnings: scope.AllLearnings,
+		Cited:        scope.Cited,
+		InScope:      filtered,
+		Empty:        len(filtered) == 0,
+		Provenance:   scope.Provenance,
+	}
+	return out
+}
+
 // SupersessionLink is one explicit supersede pair that must co-locate in
 // a single theme (FR-009; data-model.md Theme.supersessions).
 type SupersessionLink struct {

@@ -584,7 +584,7 @@ func registerVerifyTools(srv *mcp.Server, verify *tools.Verify) int {
 func registerDistillTools(srv *mcp.Server, distill *tools.Distill) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "scope",
-		Description: "Compute the unattended distill scope — every learning identity at the vault's default-branch ref, minus identities cited by compiled articles' frontmatter sources, minus distill-policy tag exclusions — deterministically from git alone (filesystem fallback when the ref is unavailable; provenance carries which leg ran). Never interactive: ambiguity or policy absence degrades with warnings, never a question. An empty scope exits no-op: the durable run artifact is recorded server-side and the result carries no_op with the artifact path — no PR, no comment.",
+		Description: "Compute the unattended distill scope — every learning identity at the vault's default-branch ref, minus identities cited by compiled articles' frontmatter sources, minus distill-policy tag exclusions — deterministically from git alone (filesystem fallback when the ref is unavailable; provenance carries which leg ran). Never interactive: ambiguity or policy absence degrades with warnings, never a question. Optionally pass backlog_from (YYYY-MM-DD) to bound the scope to learnings created on or before that UTC date — the backlog bootstrap; legacy identities without an embedded timestamp always pass. An empty scope exits no-op: the durable run artifact is recorded server-side and the result carries no_op with the artifact path — no PR, no comment.",
 	}, distill.Scope)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -594,7 +594,7 @@ func registerDistillTools(srv *mcp.Server, distill *tools.Distill) int {
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "rolling_pr",
-		Description: "Create or update one rolling dewey-distill/<theme> PR per grouped theme: a fresh branch with draft articles and a human-gate PR for new themes, and rebase-preserving-human-commits updates with review-queue bodies and force-with-lease pushes for existing ones. Human edits are never overwritten (the regeneration guard skips them and the PR body lists them), closed PRs are never reopened, and no path writes tier: validated — the server guard rejects it. The durable run artifact is recorded server-side. Pass the group_learners output and optional per-theme lint findings.",
+		Description: "Create or update one rolling dewey-distill/<theme> PR per grouped theme: a fresh branch with draft articles and a human-gate PR for new themes, and rebase-preserving-human-commits updates with review-queue bodies and force-with-lease pushes for existing ones. Human edits are never overwritten (the regeneration guard skips them and the PR body lists them), closed PRs are never reopened, and no path writes tier: validated — the server guard rejects it. The durable run artifact is recorded server-side. Pass the group_learners output and optional per-theme lint findings; pass dry_run: true for the output-only preview — no branch, article, push, PR, or artifact is recorded, each theme reports would_create or would_update.",
 	}, distill.RollingPR)
 
 	return 3

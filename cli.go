@@ -501,10 +501,37 @@ sources:
 			} else {
 				logger.Info("re-initialized", "path", deweyDir)
 			}
-			// Weekly distill workflow template (T005): shipped as
-			// .github/workflows/dewey-distill.yml.example — no auto-install
-			// on init; opt-in copy documented per FR-001/FR-022 and
-			// contracts/workflow-template.md quickstart Enable steps 1-3.
+			// Weekly distill workflow template (T005, FR-001/FR-022):
+			// `dewey init` ships the example into the vault so adopting
+			// repositories can reach the template without a Dewey
+			// checkout; the live workflow is never auto-installed — the
+			// copy is the opt-in. Scaffolding is idempotent: an existing
+			// file is never overwritten (user customizations preserved).
+			// Iterate in sorted name order so scaffolding (and any
+			// failure it reports) stays deterministic.
+			templateNames := make([]string, 0, len(deweyWorkflowTemplates))
+			for name := range deweyWorkflowTemplates {
+				templateNames = append(templateNames, name)
+			}
+			sort.Strings(templateNames)
+			for _, name := range templateNames {
+				examplePath := filepath.Join(vaultPath, ".github", "workflows", name)
+				if fileExists(examplePath) {
+					continue // Preserve user customization.
+				}
+				if err := os.MkdirAll(filepath.Dir(examplePath), 0o755); err != nil {
+					logger.Warn("failed to create workflows directory for template", "path", filepath.Dir(examplePath), "err", err)
+					continue
+				}
+				if err := os.WriteFile(examplePath, []byte(deweyWorkflowTemplates[name]), 0o644); err != nil {
+					logger.Warn("failed to scaffold workflow template", "path", examplePath, "err", err)
+					continue
+				}
+				logger.Info("scaffolded workflow template example", "path", examplePath)
+			}
+			// The opt-in copy hint: after scaffolding (or when the user
+			// already ships their own example) the template is available
+			// in the vault, and copying it enables the weekly trigger.
 			workflowExample := filepath.Join(vaultPath, ".github", "workflows", "dewey-distill.yml.example")
 			if fileExists(workflowExample) {
 				logger.Info("weekly distill workflow template available",

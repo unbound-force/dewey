@@ -905,17 +905,20 @@ Dewey ships an opt-in GitHub Actions template that automates the *demotion* side
 
 ### Enable
 
-Copy the template into place (the copy is the opt-in — `dewey init` never auto-installs a workflow):
+Run `dewey init` in the repository — it scaffolds the inert `.github/workflows/dewey-distill.yml.example` (an existing file is never overwritten) — then copy it into place; the copy is the opt-in:
 
 ```bash
+dewey init   # scaffolds .github/workflows/dewey-distill.yml.example if absent
 cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml
 gh label create dewey-distill --color 0E8A16 --description "Unattended weekly distill" 2>/dev/null || true
 gh label create human-gate --color D93F0B --description "Requires code-owner review" 2>/dev/null || true
 ```
 
-The workflow runs every Monday 09:00 UTC (edit the cron to taste) and on manual `workflow_dispatch`. It needs no secrets: it runs on the built-in `github.token` with `contents: read`, `issues: write`, and `pull-requests: write`.
+The workflow runs every Monday 09:00 UTC (edit the cron to taste) and on manual `workflow_dispatch`. It needs no secrets: it runs on the built-in `github.token` with least-privilege permissions — `contents: read` and `issues: write` only (the job only opens or comments on issues; rolling PRs are opened by the server-side `rolling_pr` tool, not by the workflow). The issue it creates carries no assignee: the `GITHUB_TOKEN` installation identity cannot resolve `@me`, and dispatch keys off the label, not the assignee.
 
 Prerequisites (per #194): `CODEOWNERS` must own `.uf/dewey/compiled/**` and the default-branch ruleset (26764121 in this repository) must require code-owner review, so rolling PRs labeled `human-gate` stay blocked until a code owner approves. Without that, PRs still open but nothing enforces the human gate.
+
+Supervisor prerequisite (jflowers/opencode-supervisor#51): unattended mode additionally requires `opencode-supervisor` support for a `command: dewey-distill-auto` profile in global config. Until that ships, the weekly run exits as a no-op — a run artifact with `no_op_reason: supervisor command profile unavailable` plus a notice comment on the dispatch issue — and distills nothing; interactive `/dewey-distill` is unaffected.
 
 ### gh-hud dispatch contract
 
@@ -924,9 +927,10 @@ The workflow itself only opens or re-triggers a `dewey-distill` issue. Dispatchi
 | Contract element | Value |
 |---|---|
 | Issue label | `dewey-distill` |
-| Assignee | the workflow actor (`@me` at issue creation) |
 | Re-trigger marker | comment body starting `<!-- dewey-distill-trigger -->` |
 | Dispatch command | `/dewey-distill-auto #<num>` |
+
+Issues carry no assignee — gh-hud keys dispatch off the label.
 
 The dedup invariant (at most one open `dewey-distill` issue at any time) is enforced by the workflow's check-then-create step plus a `concurrency` group that serializes a manual re-trigger racing the schedule; a second trigger posts a re-trigger comment instead of opening a duplicate.
 

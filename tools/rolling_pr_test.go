@@ -207,6 +207,7 @@ func TestWriteDistillRunArtifact(t *testing.T) {
 	vault := t.TempDir()
 	runAt := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
 	record := DistillRunRecord{
+		Schema:     distillRunRecordSchema,
 		RunAt:      runAt,
 		ScopeSize:  3,
 		Themes:     []string{"auth", "vault"},
@@ -228,6 +229,9 @@ func TestWriteDistillRunArtifact(t *testing.T) {
 	var got DistillRunRecord
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal artifact: %v\n%s", err, raw)
+	}
+	if got.Schema != distillRunRecordSchema {
+		t.Errorf("round-trip schema = %d, want %d", got.Schema, distillRunRecordSchema)
 	}
 	if got.ScopeSize != 3 || got.NoOpReason != "" {
 		t.Errorf("round-trip = %+v, want scope_size 3 and no no_op_reason", got)
@@ -293,6 +297,9 @@ func TestRecordNoOpDistillRun(t *testing.T) {
 	}
 	if got.NoOpReason != NoOpReasonEmptyScope {
 		t.Errorf("no_op_reason = %q, want %q", got.NoOpReason, NoOpReasonEmptyScope)
+	}
+	if got.Schema != distillRunRecordSchema {
+		t.Errorf("schema = %d, want %d (no-op records carry the version too)", got.Schema, distillRunRecordSchema)
 	}
 	if got.ScopeSize != 0 {
 		t.Errorf("scope_size = %d, want 0", got.ScopeSize)
@@ -1181,6 +1188,109 @@ func TestManageRollingPRs_CleanTreeRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "uncommitted") {
 		t.Errorf("err = %v, want an uncommitted-changes refusal", err)
+	}
+}
+
+// TestManageRollingPRs_DryRunPreviewMutatesNothing covers the --dry-run
+// preview (FR-020): the clean-tree precondition still fails closed, a
+// fresh theme reports would_create, a theme with an open PR reports
+// would_update, and the preview mutates nothing — no gh call past the
+// initial list, no branch, no article, no remote movement.
+func TestManageRollingPRs_DryRunPreviewMutatesNothing(t *testing.T) {
+	const alice = "auth-20260101T000001-alice"
+	texts := map[string]string{alice: rollingFixtureLearning("auth", "Alice's auth learning.")}
+	vault := initRollingPRFixture(t, texts)
+	themes := []Theme{distillTestTheme("auth", "", alice)}
+	branches := AssignThemeBranches([]string{"auth"})
+
+	// The precondition is enforced on the preview path too: a dirty
+	// tracked tree refuses before any result is produced.
+	writeFixtureFile(t, vault, ".uf/dewey/learnings/"+alice+".md",
+		rollingFixtureLearning("auth", "modified"))
+	if _, err := ManageRollingPRs(context.Background(),
+		RollingPROptions{VaultDir: vault, GhRunner: newFakeGH(t, 11)},
+		RollingPRInput{Themes: themes, Texts: texts, DryRun: true}); err == nil {
+		t.Fatal("dry run accepted a dirty tree; want a refusal")
+	}
+	// Restore the clean tree for the preview itself.
+	writeFixtureFile(t, vault, ".uf/dewey/learnings/"+alice+".md", texts[alice])
+
+	// Fresh theme, no open PR: would_create, and nothing beyond the
+	// initial list call.
+	gh := newFakeGH(t, 11)
+	results, err := ManageRollingPRs(context.Background(),
+		RollingPROptions{VaultDir: vault, GhRunner: gh},
+		RollingPRInput{Themes: themes, Texts: texts, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	r := results[0]
+	if r.State != RollingPRWouldCreate {
+		t.Errorf("state = %q, want %q", r.State, RollingPRWouldCreate)
+	}
+	if r.PRNumber != 0 {
+		t.Errorf("PRNumber = %d, want 0 on a would-create preview", r.PRNumber)
+	}
+	if r.Branch != branches["auth"] {
+		t.Errorf("Branch = %q, want %q", r.Branch, branches["auth"])
+	}
+	if r.TierWritten != DistillTierDraft {
+		t.Errorf("TierWritten = %q, want %q", r.TierWritten, DistillTierDraft)
+	}
+	if got, want := gh.calls, []string{"list"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("gh calls = %v, want %v (preview performs no create or edit)", got, want)
+	}
+	if out := rollingGit(t, vault, "ls-remote", "origin", "refs/heads/"+branches["auth"]); strings.TrimSpace(out) != "" {
+		t.Error("dry run created a remote branch; the preview must not push")
+	}
+	if _, err := os.Stat(filepath.Join(vault, distillRunsDir)); err == nil {
+		// A directory alone is harmless (created by a prior artifact
+		// write); the invariant under test is that no *new* file appears.
+		entries, _ := os.ReadDir(filepath.Join(vault, distillRunsDir))
+		if len(entries) != 0 {
+			t.Errorf("dry run left %d files in %s; the preview records no artifact", len(entries), distillRunsDir)
+		}
+	}
+	if branch := rollingGit(t, vault, "rev-parse", "--abbrev-ref", "HEAD"); branch != "main" {
+		t.Errorf("vault left on %q, want main", branch)
+	}
+
+	// Open PR present: would_update, PR number carried, remote tip
+	// stable across the preview.
+	real := newFakeGH(t, 11)
+	if _, err := ManageRollingPRs(context.Background(),
+		RollingPROptions{VaultDir: vault, GhRunner: real},
+		RollingPRInput{Themes: themes, Texts: texts}); err != nil {
+		t.Fatalf("real run to open the PR: %v", err)
+	}
+	sha := remoteSHA(t, vault, branches["auth"])
+
+	gh2 := newFakeGH(t, 20)
+	gh2.listResponses = [][]OpenDistillPR{{{Number: 11, HeadRefName: branches["auth"]}}}
+	results, err = ManageRollingPRs(context.Background(),
+		RollingPROptions{VaultDir: vault, GhRunner: gh2},
+		RollingPRInput{Themes: themes, Texts: texts, DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run with open PR: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	r = results[0]
+	if r.State != RollingPRWouldUpdate {
+		t.Errorf("state = %q, want %q", r.State, RollingPRWouldUpdate)
+	}
+	if r.PRNumber != 11 {
+		t.Errorf("PRNumber = %d, want 11", r.PRNumber)
+	}
+	if got, want := gh2.calls, []string{"list"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("gh calls = %v, want %v", got, want)
+	}
+	if after := remoteSHA(t, vault, branches["auth"]); after != sha {
+		t.Errorf("remote tip moved %s → %s; a preview must not push", sha, after)
 	}
 }
 

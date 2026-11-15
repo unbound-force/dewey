@@ -20,16 +20,44 @@ scope(ref):
 
 Fallback when not git / no ref: scan `.uf/dewey/learnings/*.md` + SQLite `pages` with `namespace=learning`; provenance `filesystem:degraded` + warning.
 
+## Policy Exclusions (`.uf/dewey/distill-policy.yaml`)
+
+Optional file; when present it is bounded before use (FR-007):
+
+- **Base path**: repository root (vault root if different, resolved via `git rev-parse --show-toplevel` or `config/vault` path; CWD never used). Non-existent → no exclusions.
+- **Bounds**: file ≤ 16 KiB, depth ≤ 3, arrays ≤ 100 entries, entries ≤ 200 chars. Over-limit → warn `distill-policy: over limit, ignored` and apply no exclusions; run proceeds.
+- **Schema**:
+
+| Key | Type | Valid values | On invalid |
+|-----|------|--------------|------------|
+| `exclude_tags` | `[]string` | glob per `path.Match` subset `*` `?` `[seq]` on tag namespace; no recursive `**` | warn + skip entry |
+| `exclude_stores` | `[]string` | knowledge store names `[a-z0-9-]{1,50}` existing in `knowledge-stores.yaml` | warn + skip entry |
+| unknown key | - | - | warn + ignore key |
+
+- **Deny overly broad**: `exclude_tags: ["*"]` or `exclude_tags: ["*/*"]` that would starve scope to empty is rejected with warn `overly broad exclusion ignored`; require at least one non-wildcard char.
+- **Precedence**: repo-local `distill-policy.yaml` only; no global policy exists; malformed entry → warn + skip that entry, do not fail run.
+- Writes to this file are not produced by distiller; humans own it.
+
+## Durable No-Op Record
+
+Empty scope exits no-op with no PR and no comment, but MUST still record a durable run artifact (FR-021):
+
+- Path `.uf/dewey/distill-runs/<YYYYMMDD-HHMMSS>.json` (also logged to pane) `{ run_at, scope_size, themes, prs_touched[], no_op_reason }`.
+- If `in_scope == ∅`, artifact says `no_op_reason: "empty scope"` and is the sole audit surface (PR/issue bodies do not exist on that path).
+
 ## Invariants
 
 - FR-005: deterministic from git alone.
 - FR-006: never calls `question` tool. Asserted by log grep `question` == 0 in distiller run.
-- Empty scope → exit no-op, no PR, no comment.
+- Empty scope → exit no-op, no PR, no comment, but durable artifact written.
+- Provenance logging per grouping decision (FR-010) persisted to durable artifact.
 
 ## Tests
 
 - Fixture: 10 learnings, 2 cited → 8 in-scope exact equality.
 - Policy excludes `scratch-*` → removed.
 - Missing policy → default, no error.
-- Empty → no-op.
+- Empty → no-op with artifact.
 - Non-git → degraded, no panic.
+- Over-broad `["*"]` → warn, not starved.
+- 5 MB / 500-entry policy → bounded, warn.

@@ -568,13 +568,13 @@ follows:
   generation). Record `actions_taken` with all fields
   set to their "not executed" defaults.
 
-**Mutation safety reminder**: All GitHub mutations in
-steps 4.2, 4.3, and 4.4 MUST use the temp file +
-`--input` pattern (see Guardrail 8). Write all untrusted
-content to a temporary file with restrictive permissions
-(`chmod 600` or `umask 077`), pass via `gh api --input
-<tmpfile>`, and clean up the file on ALL exit paths.
-MUST NOT interpolate untrusted text into shell arguments.
+**Mutation safety reminder**: The GitHub mutations in steps 4.3 and 4.4
+MUST go through the `post_issue_comment` and `create_child_issue`
+tools (see Guardrail 8). The tools own temp-file creation with 0o600
+permissions, JSON serialization, `gh --input` posting, failure-stop,
+and cleanup on all exit paths. MUST NOT interpolate untrusted text
+into shell arguments, and MUST NOT hand-compose the mutation if a
+tool call fails.
 
 >>> END MANDATORY GATE <<<
 
@@ -866,25 +866,27 @@ session text, then present the decision as follows:
 
 **Post the comment** (on Approve or Modify):
 
-Write the comment body to a temporary file and post via `gh api --input`. NEVER interpolate comment text into shell arguments.
+Call the `post_issue_comment` tool with the confirmed comment:
 
-```bash
-# Write comment body to temp file (never interpolate into shell args)
-COMMENT_FILE=$(mktemp)
-chmod 600 "$COMMENT_FILE"
-cat > "$COMMENT_FILE" << 'COMMENT_EOF'
-{"body": "<comment content as JSON-escaped string>"}
-COMMENT_EOF
-
-# Post the comment
-gh api repos/{owner}/{repo}/issues/<ISSUE_NUMBER>/comments \
-  --method POST --input "$COMMENT_FILE"
-
-# Clean up temp file in ALL paths (success, failure, abort)
-rm -f "$COMMENT_FILE"
+```json
+{
+  "repo": "<owner>/<repo>",
+  "issue_number": <ISSUE_NUMBER>,
+  "body": "<confirmed comment text, exactly as approved>"
+}
 ```
 
-**On API failure**: Report the error, do NOT retry. Record the failure in `actions_taken`. Clean up the temp file.
+The tool owns the entire posting choreography: temporary-file creation
+with 0o600 permissions, JSON serialization, `gh api --input`,
+failure-stop, and cleanup on all paths. The comment body reaches `gh` as
+a validated parameter — it is never interpolated into shell arguments
+and never written through a shell heredoc (a heredoc ends at any line
+equal to its delimiter, so comment text containing that line would run
+as shell). Omit `repo` to resolve the repository from the working tree.
+
+**On failure**: Report the tool's error envelope verbatim. Do NOT retry,
+do NOT fall back to a shell write, and do NOT hand-compose the post.
+Record the failure in `actions_taken`.
 
 ### 4.4 Child Issue Creation (If Splitting)
 
@@ -969,22 +971,29 @@ gh issue list --search "<sanitized-child-title>" --state open --json number,titl
 
 Each child issue body MUST include a cross-reference: `Split from #<ISSUE_NUMBER>`.
 
-Write the child issue payload to a temporary file and create via `gh api --input`:
+Call the `create_child_issue` tool with the confirmed title and body:
 
-```bash
-CHILD_FILE=$(mktemp)
-chmod 600 "$CHILD_FILE"
-cat > "$CHILD_FILE" << 'CHILD_EOF'
-{"title": "<child title>", "body": "<child body with Split from #N>"}
-CHILD_EOF
-
-gh api repos/{owner}/{repo}/issues \
-  --method POST --input "$CHILD_FILE"
-
-rm -f "$CHILD_FILE"
+```json
+{
+  "repo": "<owner>/<repo>",
+  "title": "<confirmed child title>",
+  "body": "<confirmed child body with Split from #N>"
+}
 ```
 
-Record each created child issue number and title.
+The tool owns the entire creation choreography: temporary-file creation
+with 0o600 permissions, `gh issue create --body-file`, its documented
+retry policy, and cleanup on all paths. The title and body reach `gh` as
+validated parameters — never shell text. Omit `repo` to resolve the
+repository from the working tree.
+
+**On failure**: Report the tool's error envelope verbatim. Do NOT retry,
+do NOT fall back to a shell write, and do NOT hand-compose the creation.
+Record the failure in `actions_taken`.
+
+Record each created child issue's `issue_number` and `issue_url` from the tool's
+response, and take its title from the confirmed child-issue list produced by the
+step-1 confirmation gate.
 
 4. **Post parent comment**: After all confirmed child issues are created, post a comment on the parent issue listing the created children:
 
@@ -996,7 +1005,8 @@ This issue has been split into the following child issues:
 _This triage was performed by the Divisor review panel._
 ```
 
-Post this comment using the same temp file + `--input` pattern from 4.3.
+Post this comment by calling `post_issue_comment` (the Section 4.3
+tool) with this body on the parent issue number.
 
 5. **Parent issue remains open**: The parent issue MUST NOT be auto-closed after splitting.
 
@@ -1237,7 +1247,7 @@ Always report:
 
 7. **Idempotent re-run**: On re-invocation for the same issue, detect previously applied labels (from issue data) to avoid duplication. Detect previously posted triage comments by checking for the Divisor review panel footer. Use round numbers for artifacts to preserve history.
 
-8. **Shell injection prevention**: All untrusted text (issue content, agent output, synthesized comments, child issue content) MUST be written to temporary files and passed via `--input` for all `gh api` calls. Untrusted text MUST NOT be interpolated into shell arguments. Temp files MUST use restrictive permissions (`chmod 600`) and be cleaned up in all exit paths (success, failure, abort).
+8. **Shell injection prevention**: The GitHub mutations that carry untrusted text (issue content, agent output, synthesized comments, child issue content) — issue-comment posting (Section 4.3) and child-issue creation (Section 4.4) — MUST go through the `post_issue_comment` and `create_child_issue` tools, which own the 0o600 temp-file writes, payload serialization, `gh --input` / `--body-file` posting, and cleanup. Two non-tool `gh` channels are sanctioned for constrained values only: `gh label create` and `gh issue edit --add-label` (Section 4.2) carry human-confirmed label names, descriptions, and colors; `gh issue list --search` (Phase 1 and Section 4.4) carries keyword-sanitized text (shell metacharacters removed, `--` prefixes stripped). Arbitrary untrusted text MUST NOT be interpolated into shell arguments, MUST NOT be written through a shell heredoc, and MUST NOT be hand-composed into a comment or child issue when a tool call fails.
 
 9. **Safe artifact paths**: The issue number is validated as a positive integer (matching `^[1-9][0-9]*$`) before use in any file path. This validation occurs in the Arguments section before any other processing.
 

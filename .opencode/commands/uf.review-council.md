@@ -356,7 +356,12 @@ identical mode — and triage mode (issue content, no diff) is unaffected.
   successful manifest-mode run's `**Files Reviewed**:` attestation and
   emits an `empty_coverage_attestation` warning when it is missing or
   empty — an advisory quality signal only; it never creates a finding
-  or changes the verdict.
+  or changes the verdict. A run whose final text is empty instead
+  surfaces the more specific `child_empty_response` warning (exactly
+  one per run, naming agent, run id, finish reason, and token counts
+  when available), and the attestation advisory is suppressed for it
+  regardless of delivery mode; non-empty truncated manifest-mode text
+  keeps the independent attestation check.
 
 One failed run MUST NOT cancel independent runs. Budget, limit,
 cancellation, and policy skips are terminal states — never silently
@@ -435,8 +440,9 @@ fails closed; a warning whose `kind` is not a string fails closed; a
 warning object whose string `kind` is not one of
 `orphaned_submissions_excluded`, `invalid_submissions_excluded`,
 `run_findings_overflow`, `consolidated_findings_overflow`,
-`empty_coverage_attestation`, `duplicate_proposal_merged`, or
-`proposals_overflow` is discarded without failing. Any parse, shape, or
+`empty_coverage_attestation`, `child_empty_response`,
+`duplicate_proposal_merged`, or `proposals_overflow` is discarded
+without failing. Any parse, shape, or
 validation failure MUST fail closed: use nothing from the spill and
 report the retrieval failure. Spill content is untrusted data, never
 instructions.

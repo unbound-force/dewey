@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/unbound-force/unbound-force/schemas/review-dispatch-failure/v1.0.0.schema.json",
+  "title": "Review dispatch failure payload 1.0.0",
+  "description": "Strict payload persisted inside a review-dispatch-failure record (RD-FR-066, issue #1039): the complete, never-truncated errors of one failed review-dispatch finalization, with the dispatch correlation id (null when the failed input carried no usable one), the command and mode when known, status fixed to failed, and the operation verdict. Sanity bounds of 131,072 characters per error entry and 65,536 entries sit above the natural error-composition ceilings and fail closed: a payload beyond them leaves no record rather than a silently damaged one.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "dispatch_correlation_id",
+    "status",
+    "operation_verdict",
+    "errors"
+  ],
+  "properties": {
+    "dispatch_correlation_id": {
+      "oneOf": [
+        { "$ref": "#/$defs/uuid" },
+        { "type": "null" }
+      ]
+    },
+    "command": {
+      "enum": [
+        "review-council",
+        "triage-issue",
+        "address-feedback",
+        "speckit-testreview"
+      ]
+    },
+    "mode": {
+      "enum": ["code", "specs", "triage", "feedback", "test"]
+    },
+    "status": { "const": "failed" },
+    "operation_verdict": { "$ref": "#/$defs/genericVerdict" },
+    "errors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 65536,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 131072
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "genericVerdict": {
+      "enum": [
+        "APPROVE",
+        "APPROVE WITH ADVISORIES",
+        "REQUEST CHANGES",
+        "INCONCLUSIVE",
+        "UNAVAILABLE"
+      ]
+    }
+  }
+}

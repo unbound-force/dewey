@@ -200,13 +200,13 @@ copies in place.
 
 ## 4. Verification and Documentation
 
-- [ ] 4.1 [P] CI-parity gate derived from `.github/workflows/ci.yml`:
+- [x] 4.1 [P] CI-parity gate derived from `.github/workflows/ci.yml`:
   `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...`, the
   Gaze CRAP threshold step with the repository's flags
   (`gaze crap --format=json --coverprofile=coverage.out --max-crapload=48
   --max-gaze-crapload=45 ./...` after the coverage run), and
   golangci-lint. Record results in the PR body.
-- [ ] 4.2 [P] Documentation gate — a README claim-site audit, not just
+- [x] 4.2 [P] Documentation gate — a README claim-site audit, not just
   the `dewey init` section: grep `never overwrit` and `if absent`
   across README.md and update every claim site the reversed
   invariant touches — the `dewey init` section plus at least
@@ -226,7 +226,7 @@ copies in place.
   init` CLI-table row and the scaffold mention in Key Patterns updated
   to ownership-aware refresh, plus a Recent Changes entry; GoDoc
   covered by 1.1/2.1.
-- [ ] 4.3 [P] Website content pipeline per AGENTS.md and the org's
+- [x] 4.3 [P] Website content pipeline per AGENTS.md and the org's
   three-issue convention for operator-facing trust-boundary changes —
   file all three in `unbound-force/website` and record the issue
   numbers here: (1) the docs sync issue (`gh issue create --repo
@@ -239,6 +239,7 @@ copies in place.
   auto-update"; (3) a tutorial issue (label tutorial) — e.g.
   "bringing a drifted vault current after a Dewey upgrade: reading
   the marker, deciding delete-vs-keep".
+  Issues filed: website#421 (docs), website#422 (blog), website#423 (tutorial).
 - [x] 4.4 Constitution alignment verification per the proposal's four
   PASS assessments and the design's Constitution Alignment section —
   confirm composability guards unchanged, no new dependency, outcome

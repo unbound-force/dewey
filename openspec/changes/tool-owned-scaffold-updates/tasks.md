@@ -239,7 +239,7 @@ copies in place.
   auto-update"; (3) a tutorial issue (label tutorial) — e.g.
   "bringing a drifted vault current after a Dewey upgrade: reading
   the marker, deciding delete-vs-keep".
-- [ ] 4.4 Constitution alignment verification per the proposal's four
+- [x] 4.4 Constitution alignment verification per the proposal's four
   PASS assessments and the design's Constitution Alignment section —
   confirm composability guards unchanged, no new dependency, outcome
   events with paths emitted, classification pure-function tested — and

@@ -138,7 +138,7 @@ allowlist parity tests.
   and the affected `content/docs/` pages (the dewey init and agent
   scaffold documentation). Record the issue number here:
   website#____.
-- [ ] 3.4 Constitution alignment verification per the proposal's four
+- [x] 3.4 Constitution alignment verification per the proposal's four
   PASS assessments and the design's Constitution Alignment section —
   confirm the permission map remains the self-describing enforcement
   boundary with no runtime coupling (I), no new dependency and inert

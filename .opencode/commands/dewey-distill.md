@@ -290,3 +290,4 @@ be committed to the repository.
 - Keep the API key out of output. If a synthesis error mentions
   credentials, report only that authentication failed.
 </protect>
+<!-- dewey:scaffold dev sha256:03202fcea4ff69209e949ee251895f6bb367d72383439b50041faf372c983b0a -->

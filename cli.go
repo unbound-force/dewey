@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -366,8 +365,10 @@ sources:
 
 			// Scaffold Dewey-specific slash commands into .opencode/commands/
 			// if the .opencode/ directory exists (composability — only scaffold
-			// when OpenCode is present). Idempotent — skip files that already
-			// exist to avoid overwriting user customizations.
+			// when OpenCode is present). Tool-owned refresh (DI-FR-002):
+			// untouched scaffolds are refreshed to the embedded content;
+			// customized files are preserved; a write failure fails init
+			// naming the path (DI-FR-001, design R2).
 			opencodeCmdDir := filepath.Join(vaultPath, ".opencode", "commands")
 			if _, err := os.Stat(filepath.Join(vaultPath, ".opencode")); err == nil {
 				// Migrate Dewey slash commands from old .opencode/command/ (singular)
@@ -411,60 +412,23 @@ sources:
 					}
 				}
 
-				if err := os.MkdirAll(opencodeCmdDir, 0o755); err == nil {
-					for name, content := range deweySlashCommands {
-						cmdPath := filepath.Join(opencodeCmdDir, name)
-						if _, err := os.Stat(cmdPath); err != nil {
-							// File doesn't exist — scaffold it.
-							if writeErr := os.WriteFile(cmdPath, []byte(content), 0o644); writeErr == nil {
-								logger.Info("scaffolded slash command", "path", cmdPath)
-							}
-						}
-					}
+				if err := scaffoldToolOwnedFiles(opencodeCmdDir, deweySlashCommands, scaffoldMarkdown, "slash command"); err != nil {
+					return err
 				}
 			}
 
 			// Scaffold Dewey-specific agent definitions into
 			// .opencode/agents/ when the .opencode/ directory exists
 			// (composability — only scaffold when OpenCode is present).
-			// Idempotent via O_CREATE|O_EXCL: an existing user-customized
-			// agent is never overwritten. A failed or partial write is
-			// rolled back so a later run does not mistake the residue for a
-			// user-owned file and skip it; the failure is surfaced as an
-			// init error naming the target path.
+			// Tool-owned refresh through the shared scaffold discipline
+			// (DI-FR-001/DI-FR-002): untouched scaffolds are refreshed to
+			// the embedded content, customized files are preserved, and a
+			// failed or partial write is rolled back and fails init naming
+			// the target path.
 			if fileExists(filepath.Join(vaultPath, ".opencode")) {
 				agentsDir := filepath.Join(vaultPath, ".opencode", "agents")
-				if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-					return fmt.Errorf("create agents directory %s: %w", agentsDir, err)
-				}
-				// Iterate in sorted name order: scaffolding (and any
-				// failure it reports) stays deterministic — map order
-				// would randomize which agent a write failure names.
-				agentNames := make([]string, 0, len(deweyAgentDefinitions))
-				for name := range deweyAgentDefinitions {
-					agentNames = append(agentNames, name)
-				}
-				sort.Strings(agentNames)
-				for _, name := range agentNames {
-					content := deweyAgentDefinitions[name]
-					agentPath := filepath.Join(agentsDir, name)
-					f, err := os.OpenFile(agentPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-					if err != nil {
-						if os.IsExist(err) {
-							continue // Preserve user customization.
-						}
-						return fmt.Errorf("scaffold agent %s: %w", agentPath, err)
-					}
-					if _, writeErr := f.WriteString(content); writeErr != nil {
-						_ = f.Close()
-						_ = os.Remove(agentPath)
-						return fmt.Errorf("scaffold agent %s: %w", agentPath, writeErr)
-					}
-					if closeErr := f.Close(); closeErr != nil {
-						_ = os.Remove(agentPath)
-						return fmt.Errorf("scaffold agent %s: %w", agentPath, closeErr)
-					}
-					logger.Info("scaffolded agent", "path", agentPath)
+				if err := scaffoldToolOwnedFiles(agentsDir, deweyAgentDefinitions, scaffoldMarkdown, "agent"); err != nil {
+					return err
 				}
 			}
 
@@ -505,29 +469,13 @@ sources:
 			// `dewey init` ships the example into the vault so adopting
 			// repositories can reach the template without a Dewey
 			// checkout; the live workflow is never auto-installed — the
-			// copy is the opt-in. Scaffolding is idempotent: an existing
-			// file is never overwritten (user customizations preserved).
-			// Iterate in sorted name order so scaffolding (and any
-			// failure it reports) stays deterministic.
-			templateNames := make([]string, 0, len(deweyWorkflowTemplates))
-			for name := range deweyWorkflowTemplates {
-				templateNames = append(templateNames, name)
-			}
-			sort.Strings(templateNames)
-			for _, name := range templateNames {
-				examplePath := filepath.Join(vaultPath, ".github", "workflows", name)
-				if fileExists(examplePath) {
-					continue // Preserve user customization.
-				}
-				if err := os.MkdirAll(filepath.Dir(examplePath), 0o755); err != nil {
-					logger.Warn("failed to create workflows directory for template", "path", filepath.Dir(examplePath), "err", err)
-					continue
-				}
-				if err := os.WriteFile(examplePath, []byte(deweyWorkflowTemplates[name]), 0o644); err != nil {
-					logger.Warn("failed to scaffold workflow template", "path", examplePath, "err", err)
-					continue
-				}
-				logger.Info("scaffolded workflow template example", "path", examplePath)
+			// copy is the opt-in. Tool-owned refresh through the shared
+			// scaffold discipline (DI-FR-001/DI-FR-002): an untouched
+			// example is refreshed to the embedded content, a customized
+			// file is preserved, and a write failure fails init naming
+			// the path (design R2).
+			if err := scaffoldToolOwnedFiles(filepath.Join(vaultPath, ".github", "workflows"), deweyWorkflowTemplates, scaffoldYAML, "workflow template example"); err != nil {
+				return err
 			}
 			// The opt-in copy hint: after scaffolding (or when the user
 			// already ships their own example) the template is available

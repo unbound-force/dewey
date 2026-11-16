@@ -6,8 +6,16 @@
 // an independently computed SHA-256, the full classifyScaffold decision
 // table (DIO-FR-004), version-independence of classification
 // (DIO-FR-003), and YAML resilience of the marked real workflow
-// template (DIO-FR-002). The filesystem writer and its outcome events
-// are tasks 2.1/2.3 and are tested there.
+// template (DIO-FR-002). The task 2.3 tests below cover the shared
+// writer (scaffoldToolOwnedFiles) and its factored create arm over
+// t.TempDir() trees: every decision-table outcome, the write-failure
+// discipline (DI-FR-001), and the input-acquisition edges of DIO-FR-004
+// (symlink, unreadable) plus the EEXIST concurrent-create race.
+//
+// PARALLEL SAFETY: Tests in this file MUST NOT use t.Parallel(). The
+// writer tests mutate process-global state: logger (for log-output
+// assertions, via captureLoggerOutput). Running them in parallel with
+// other package tests would cause data races and flaky failures.
 package main
 
 import (
@@ -15,8 +23,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -509,5 +520,481 @@ func TestScaffoldDecision_DistinctValues(t *testing.T) {
 			t.Errorf("decisions %s and %s share value %d", other, d.name, int(d.val))
 		}
 		seen[d.val] = d.name
+	}
+}
+
+// captureLoggerOutput redirects the package logger into a fresh buffer for
+// the duration of t and returns the buffer, so writer tests can assert the
+// outcome events scaffoldToolOwnedFiles emits (DIO-FR-006: `scaffolded`,
+// `updated`, `skip (customized)`, `skip (concurrent)`, each naming its
+// path). This wraps the established cli_test.go pattern (logger.SetOutput
+// plus restore) once, so every writer test restores the logger even on
+// t.Fatal paths; the logger is process-global state, which is why this file
+// forbids t.Parallel().
+func captureLoggerOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	logger.SetOutput(&buf)
+	t.Cleanup(func() { logger.SetOutput(os.Stderr) })
+	return &buf
+}
+
+// TestScaffoldToolOwnedFiles_CreateWritesExactPayload verifies the create
+// outcome of the shared writer (DIO-FR-004 "Missing" row): a map entry whose
+// path is absent is written as exactly scaffoldPayload — canonical body plus
+// the kind's marker — and the run logs `scaffolded <label>` naming the path.
+// The target directory is a fresh subdirectory, matching how newInitCmd
+// calls the writer with .opencode/commands/ before that directory exists.
+func TestScaffoldToolOwnedFiles_CreateWritesExactPayload(t *testing.T) {
+	tests := []struct {
+		name  string
+		file  string
+		body  string
+		kind  scaffoldKind
+		label string
+	}{
+		{
+			name:  "markdown kind writes the HTML-comment marker",
+			file:  "dewey-new.md",
+			body:  "---\ndescription: test\n---\n\ncommand body\n",
+			kind:  scaffoldMarkdown,
+			label: "slash command",
+		},
+		{
+			name:  "yaml kind writes the hash-comment marker",
+			file:  "dewey-distill.yml.example",
+			body:  "name: dewey-distill\non:\n  schedule:\n    - cron: '0 8 * * 1'\n",
+			kind:  scaffoldYAML,
+			label: "workflow template example",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "scaffold")
+			logBuf := captureLoggerOutput(t)
+
+			if err := scaffoldToolOwnedFiles(dir, map[string]string{tt.file: tt.body}, tt.kind, tt.label); err != nil {
+				t.Fatalf("scaffoldToolOwnedFiles(create) failed: %v", err)
+			}
+
+			path := filepath.Join(dir, tt.file)
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read scaffolded file: %v", err)
+			}
+			want := scaffoldPayload([]byte(tt.body), tt.kind)
+			if !bytes.Equal(got, want) {
+				t.Errorf("created file = %q, want the exact scaffoldPayload %q", got, want)
+			}
+
+			logs := logBuf.String()
+			if !strings.Contains(logs, "scaffolded "+tt.label) {
+				t.Errorf("create must log `scaffolded %s`, got:\n%s", tt.label, logs)
+			}
+			if !strings.Contains(logs, path) {
+				t.Errorf("scaffolded event must name the path %s, got:\n%s", path, logs)
+			}
+		})
+	}
+}
+
+// TestScaffoldToolOwnedFiles_UpdateReplacesContentAndRefreshesMarker
+// verifies the DIO-FR-004 "Untouched, drifted" row end to end: a
+// marker-valid scaffold of an older embedded body is rewritten to the
+// current embedded payload, and the rewrite carries a fresh marker whose
+// digest matches the new payload — not the old one (DIO-FR-002 "Rewritten
+// file carries a fresh marker").
+func TestScaffoldToolOwnedFiles_UpdateReplacesContentAndRefreshesMarker(t *testing.T) {
+	dir := t.TempDir()
+	older := "---\ndescription: test\n---\n\nbody of an older embedded version\n"
+	current := "---\ndescription: test\n---\n\nbody of the current embedded version\n"
+	path := filepath.Join(dir, "dewey-drifted.md")
+
+	// The fixture is what an untouched scaffold of an older Dewey looks
+	// like: the marker digest still matches the payload it was written
+	// with, but that payload differs from the current embedded body.
+	drifted := scaffoldPayload([]byte(older), scaffoldMarkdown)
+	if err := os.WriteFile(path, drifted, 0o644); err != nil {
+		t.Fatalf("write drifted scaffold: %v", err)
+	}
+	oldDigest, _, ok := parseScaffoldMarker(drifted)
+	if !ok || oldDigest != sha256Hex(canonicalBody(older)) {
+		t.Fatal("fixture precondition: drifted scaffold must carry a marker valid for the older body")
+	}
+
+	logBuf := captureLoggerOutput(t)
+	if err := scaffoldToolOwnedFiles(dir, map[string]string{"dewey-drifted.md": current}, scaffoldMarkdown, "slash command"); err != nil {
+		t.Fatalf("scaffoldToolOwnedFiles(update) failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated file: %v", err)
+	}
+	if want := scaffoldPayload([]byte(current), scaffoldMarkdown); !bytes.Equal(got, want) {
+		t.Errorf("updated file = %q, want the current embedded scaffoldPayload %q", got, want)
+	}
+
+	// The marker was refreshed with the rewrite: it now verifies against
+	// the new payload and no longer carries the old body's digest.
+	newDigest, newPayload, ok := parseScaffoldMarker(got)
+	if !ok {
+		t.Fatalf("updated file does not end in a parseable marker:\n%s", got)
+	}
+	if want := sha256Hex(canonicalBody(current)); newDigest != want {
+		t.Errorf("refreshed marker digest = %q, want %q (the new payload's digest)", newDigest, want)
+	}
+	if newDigest == oldDigest {
+		t.Error("marker digest was not refreshed: the rewrite kept the old body's digest")
+	}
+	if !bytes.Equal(newPayload, canonicalBody(current)) {
+		t.Errorf("updated marker payload = %q, want the current canonical body %q", newPayload, canonicalBody(current))
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "updated slash command") {
+		t.Errorf("update must log `updated slash command`, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, path) {
+		t.Errorf("updated event must name the path %s, got:\n%s", path, logs)
+	}
+}
+
+// TestScaffoldToolOwnedFiles_CurrentLeavesFileUntouched verifies the
+// DIO-FR-004 "Untouched (digest matches), current" row: a scaffold already
+// equal to the embedded payload is neither rewritten (bytes and mtime are
+// preserved) nor logged (idempotent silence, design D4).
+func TestScaffoldToolOwnedFiles_CurrentLeavesFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	body := "---\ndescription: test\n---\n\ncurrent embedded body\n"
+	path := filepath.Join(dir, "dewey-current.md")
+	want := scaffoldPayload([]byte(body), scaffoldMarkdown)
+	if err := os.WriteFile(path, want, 0o644); err != nil {
+		t.Fatalf("write current scaffold: %v", err)
+	}
+
+	// Pin a recognizable old mtime, then re-stat it: the filesystem may
+	// round the stored timestamp, so the comparison baseline is what the
+	// filesystem actually kept, not what was requested. Any rewrite —
+	// create or temp-and-rename — would set a fresh mtime hours away.
+	forced := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, forced, forced); err != nil {
+		t.Fatalf("pin mtime: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before run: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	if err := scaffoldToolOwnedFiles(dir, map[string]string{"dewey-current.md": body}, scaffoldMarkdown, "slash command"); err != nil {
+		t.Fatalf("scaffoldToolOwnedFiles(current) failed: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after run: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("current scaffold was rewritten: mtime changed from %v to %v", before.ModTime(), after.ModTime())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read current scaffold: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("current scaffold bytes changed: got %q, want %q", got, want)
+	}
+
+	// Idempotent silence (D4): no outcome event for a current scaffold.
+	logs := logBuf.String()
+	for _, event := range []string{"scaffolded", "updated", "skip"} {
+		if strings.Contains(logs, event) {
+			t.Errorf("current scaffold must log nothing; found %q in:\n%s", event, logs)
+		}
+	}
+}
+
+// TestScaffoldToolOwnedFiles_SkipLeavesCustomizedFileByteIdentical verifies
+// the DIO-FR-004 "Otherwise" row: a marker-less customized file is preserved
+// byte-for-byte and the run logs `skip (customized)` naming the path.
+func TestScaffoldToolOwnedFiles_SkipLeavesCustomizedFileByteIdentical(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dewey-custom.md")
+	custom := []byte("# my customized command\n\nlocal edits the user made\n")
+	if err := os.WriteFile(path, custom, 0o644); err != nil {
+		t.Fatalf("write customized scaffold: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	if err := scaffoldToolOwnedFiles(dir, map[string]string{"dewey-custom.md": "embedded body\n"}, scaffoldMarkdown, "slash command"); err != nil {
+		t.Fatalf("scaffoldToolOwnedFiles(skip) failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read customized scaffold: %v", err)
+	}
+	if !bytes.Equal(got, custom) {
+		t.Errorf("customized file was modified: got %q, want byte-identical %q", got, custom)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "skip (customized)") {
+		t.Errorf("customized scaffold must log `skip (customized)`, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, path) {
+		t.Errorf("skip event must name the path %s, got:\n%s", path, logs)
+	}
+	if strings.Contains(logs, "updated") {
+		t.Errorf("customized scaffold must not be rewritten; `updated` logged:\n%s", logs)
+	}
+}
+
+// TestScaffoldToolOwnedFiles_FailedCreateFailsNamingPathWithoutResidue
+// verifies the DI-FR-001 write-failure discipline for the create arm over a
+// read-only directory: the run fails naming the target path and leaves no
+// partial file behind, so a later run cannot mistake residue for a
+// user-owned file. With a read-only directory the exclusive open itself
+// fails, so the no-residue postcondition is what the rollback discipline
+// guarantees here; the remove-on-write-failure branch inside the arm
+// enforces the same postcondition when a write fails mid-file.
+func TestScaffoldToolOwnedFiles_FailedCreateFailsNamingPathWithoutResidue(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only directory does not reject writes")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("make directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	path := filepath.Join(dir, "dewey-new.md")
+	err := scaffoldToolOwnedFiles(dir, map[string]string{"dewey-new.md": "embedded body\n"}, scaffoldMarkdown, "slash command")
+	if err == nil {
+		t.Fatal("expected create to fail on a read-only directory")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("create failure %q does not name the target path %s", err.Error(), path)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("failed create left a partial file behind")
+	} else if !os.IsNotExist(statErr) {
+		t.Errorf("stat after failed create: %v", statErr)
+	}
+}
+
+// TestScaffoldToolOwnedFiles_FailedUpdateLeavesOriginalIntact verifies the
+// DI-FR-001 overwrite-failure discipline: when a tool-owned file classified
+// for update cannot be replaced — a read-only directory blocks the temp
+// file the atomic rename needs — the run fails naming the path, the
+// pre-existing file's content survives byte-for-byte, and no
+// `.dewey-scaffold-*` temp residue remains in the directory.
+func TestScaffoldToolOwnedFiles_FailedUpdateLeavesOriginalIntact(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only directory does not reject writes")
+	}
+	dir := t.TempDir()
+	older := "body of an older embedded version\n"
+	current := "body of the current embedded version\n"
+	path := filepath.Join(dir, "dewey-drifted.md")
+
+	// A marker-valid drifted scaffold classifies for update; the file
+	// itself stays readable (0o644) because only the directory is
+	// read-only.
+	drifted := scaffoldPayload([]byte(older), scaffoldMarkdown)
+	if err := os.WriteFile(path, drifted, 0o644); err != nil {
+		t.Fatalf("write drifted scaffold: %v", err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("make directory read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	err := scaffoldToolOwnedFiles(dir, map[string]string{"dewey-drifted.md": current}, scaffoldMarkdown, "slash command")
+	if err == nil {
+		t.Fatal("expected update to fail on a read-only directory")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("update failure %q does not name the target path %s", err.Error(), path)
+	}
+
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read original after failed update: %v", readErr)
+	}
+	if !bytes.Equal(got, drifted) {
+		t.Errorf("failed update modified the original file: got %q, want %q", got, drifted)
+	}
+
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("read directory after failed update: %v", readErr)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".dewey-scaffold-") {
+			t.Errorf("failed update left temp residue %s behind", e.Name())
+		}
+	}
+}
+
+// TestScaffoldToolOwnedFiles_SymlinkedPathIsPreserved verifies the DIO-FR-004
+// symlink row: a tool-owned path that is a symlink — here to a marker-valid
+// drifted payload, the sharpest fixture, because content classification
+// alone would choose update — is treated as customized. The symlink is not
+// replaced by a regular file, nothing is written through it to the referent,
+// and `skip (customized)` is logged naming the path.
+func TestScaffoldToolOwnedFiles_SymlinkedPathIsPreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	older := "body of an older shared curator\n"
+	current := "body of the current embedded curator\n"
+
+	// The referent is the canonical copy the user shares across repos.
+	referent := filepath.Join(tmpDir, "shared", "curator.md")
+	if err := os.MkdirAll(filepath.Dir(referent), 0o755); err != nil {
+		t.Fatalf("create shared dir: %v", err)
+	}
+	drifted := scaffoldPayload([]byte(older), scaffoldMarkdown)
+	if err := os.WriteFile(referent, drifted, 0o644); err != nil {
+		t.Fatalf("write referent: %v", err)
+	}
+
+	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+	linkPath := filepath.Join(agentsDir, "curator.md")
+	if err := os.Symlink(referent, linkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	if err := scaffoldToolOwnedFiles(agentsDir, map[string]string{"curator.md": current}, scaffoldMarkdown, "agent"); err != nil {
+		t.Fatalf("symlinked tool-owned path must not fail the run: %v", err)
+	}
+
+	// The path is still a symlink pointing at the same referent: neither
+	// a temp-and-rename replace (which swaps the link itself for a
+	// regular file) nor an open-for-write (which writes through the link)
+	// happened.
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("symlink was replaced by a regular file (mode %s)", info.Mode())
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != referent {
+		t.Errorf("symlink target = %q, want unchanged %q", target, referent)
+	}
+
+	got, err := os.ReadFile(referent)
+	if err != nil {
+		t.Fatalf("read referent: %v", err)
+	}
+	if !bytes.Equal(got, drifted) {
+		t.Errorf("referent was written through the symlink: got %q, want %q", got, drifted)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "skip (customized)") {
+		t.Errorf("symlinked path must log `skip (customized)`, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, linkPath) {
+		t.Errorf("skip event must name the path %s, got:\n%s", linkPath, logs)
+	}
+	if strings.Contains(logs, "updated") {
+		t.Errorf("symlinked path must not be rewritten; `updated` logged:\n%s", logs)
+	}
+}
+
+// TestScaffoldToolOwnedFiles_UnreadableExistingFileFailsNamingPath verifies
+// the DIO-FR-004 unreadable row: an existing tool-owned path whose content
+// cannot be read fails the run naming the path, and the failure is never
+// mislabeled as a customization — no `skip (customized)` event is logged —
+// because an environment failure masked as a user edit would hide the
+// problem from the operator.
+func TestScaffoldToolOwnedFiles_UnreadableExistingFileFailsNamingPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: chmod 0o000 does not prevent reading")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dewey-unreadable.md")
+	custom := []byte("# customized command the run cannot read\n")
+	if err := os.WriteFile(path, custom, 0o644); err != nil {
+		t.Fatalf("write unreadable fixture: %v", err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatalf("make fixture unreadable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+
+	logBuf := captureLoggerOutput(t)
+	err := scaffoldToolOwnedFiles(dir, map[string]string{"dewey-unreadable.md": "embedded body\n"}, scaffoldMarkdown, "slash command")
+	if err == nil {
+		t.Fatal("expected unreadable existing file to fail the run")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("read failure %q does not name the path %s", err.Error(), path)
+	}
+
+	logs := logBuf.String()
+	if strings.Contains(logs, "skip (customized)") {
+		t.Errorf("read failure was mislabeled as a customization; got:\n%s", logs)
+	}
+
+	// The file was not modified: restore readability and compare bytes.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("restore readability: %v", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read fixture after run: %v", readErr)
+	}
+	if !bytes.Equal(got, custom) {
+		t.Errorf("unreadable file was modified: got %q, want %q", got, custom)
+	}
+}
+
+// TestCreateScaffoldFile_ConcurrentCreateIsBenignRace verifies the DI-FR-001
+// EEXIST exception: invoking the factored create arm against an
+// already-present path — what losing the create race to a concurrent
+// `dewey init` looks like — does not fail, does not replace the concurrent
+// writer's file, and logs `skip (concurrent)` naming the path.
+func TestCreateScaffoldFile_ConcurrentCreateIsBenignRace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dewey-store.md")
+	concurrent := []byte("file the concurrent init run wrote\n")
+	if err := os.WriteFile(path, concurrent, 0o644); err != nil {
+		t.Fatalf("write concurrent winner's file: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	payload := scaffoldPayload([]byte("embedded body\n"), scaffoldMarkdown)
+	if err := createScaffoldFile(path, payload, "slash command"); err != nil {
+		t.Fatalf("EEXIST is a benign race and must not fail: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file after lost race: %v", err)
+	}
+	if !bytes.Equal(got, concurrent) {
+		t.Errorf("lost race replaced the concurrent writer's file: got %q, want %q", got, concurrent)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "skip (concurrent)") {
+		t.Errorf("lost race must log `skip (concurrent)`, got:\n%s", logs)
+	}
+	if !strings.Contains(logs, path) {
+		t.Errorf("skip (concurrent) event must name the path %s, got:\n%s", path, logs)
+	}
+	if strings.Contains(logs, "scaffolded") {
+		t.Errorf("lost race must not log a `scaffolded` event; got:\n%s", logs)
 	}
 }

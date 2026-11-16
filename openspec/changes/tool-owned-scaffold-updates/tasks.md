@@ -71,7 +71,7 @@
 
 ## 2. Shared Writer and Init Rewiring (scaffold.go, cli.go)
 
-- [ ] 2.1 Add `scaffoldToolOwnedFiles(dir string, files map[string]string,
+- [x] 2.1 Add `scaffoldToolOwnedFiles(dir string, files map[string]string,
   kind scaffoldKind, label string) error` per design D4: sorted key
   iteration; `os.MkdirAll` failure fails init naming the directory;
   read-and-classify per design D3's input-acquisition rules —
@@ -96,7 +96,7 @@
   create arm as a small function so the EEXIST branch is directly
   testable. GoDoc per house
   style; keep `gofmt`/`go vet` clean.
-- [ ] 2.2 Rewire `newInitCmd` in cli.go: replace the three tool-owned
+- [x] 2.2 Rewire `newInitCmd` in cli.go: replace the three tool-owned
   scaffold blocks with `scaffoldToolOwnedFiles` calls — slash commands
   and agents behind their existing `.opencode/` existence guards
   (guards and labels unchanged), workflow templates unconditionally
@@ -106,7 +106,7 @@
   (design D5). Do not touch the user-owned blocks: config.yaml /
   sources.yaml / knowledge-stores.yaml write-once, dcp.jsonc three-way
   logic, `.gitignore` handling, `alreadyInitialized` gating.
-- [ ] 2.3 Writer unit tests in `scaffold_test.go` over `t.TempDir()`
+- [x] 2.3 Writer unit tests in `scaffold_test.go` over `t.TempDir()`
   trees: create writes the exact `scaffoldPayload`; update replaces
   content and refreshes the marker; current leaves mtime and bytes
   untouched; skip leaves a customized file byte-identical; a failed
@@ -154,7 +154,7 @@
   entry) is byte-for-byte untouched (DIO-FR-001; real vaults hold 45
   files from multiple toolchains alongside the nine dewey-* commands,
   so this is a live data-preservation criterion).
-- [ ] 3.2 Update the byte-parity tests to compare through
+- [x] 3.2 Update the byte-parity tests to compare through
   `scaffoldPayload` (design D6): `TestInitCmd_ScaffoldsDeweyPublishFromMap`,
   `TestInitCmd_ScaffoldsDeweyCompileFromMap`,
   `TestInitCmd_ScaffoldsDeweyDistillFromMap`,
@@ -168,7 +168,7 @@
   frontmatter shape tests, `TestDeweyDistill_CuratorBindingAndHumanGates`)
   must pass unmodified — the trailing marker line is inert to their
   frontmatter/section parsing.
-- [ ] 3.3 Regenerate the tracked copies: build the binary and run
+- [x] 3.3 Regenerate the tracked copies: build the binary and run
   `dewey init --vault .` at the repo root; verify `git status`/`git
   diff` shows only the appended marker line on
   `.opencode/commands/dewey-*.md`, `.opencode/agents/curator.md`,

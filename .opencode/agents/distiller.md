@@ -115,3 +115,4 @@ Only the global "opencode-supervisor" "command: dewey-distill-auto" profile may
 narrow or widen this allowlist; repo-local ".opencode/supervisor.yaml" additions
 for distiller are ignored. Verified by config-precedence test where repo-local
 "question" add remains denied.
+<!-- dewey:scaffold dev sha256:9e1c30544781f16ff994c12b91a15e19e6ff6d1757121953081416bee728f074 -->

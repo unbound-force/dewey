@@ -744,7 +744,11 @@ sections instead of embedding their text.
   verdicts never trigger the decision gate below.
 
 - If `operation_verdict` is REQUEST CHANGES: present the
-  per-finding spec review decision gate. The council's
+  per-finding spec review decision gate. The findings
+  presented are the artifact's findings -- the
+  `read_dispatch_artifact` results above, keyed by the
+  iteration's recorded `finding_ids` -- never
+  session-memory or child-text sourced. The council's
   "Spec Review Mode" MANDATORY GATE in
   `.opencode/commands/uf.review-council.md` governs the
   protocol -- present each finding one at a time, in
@@ -762,17 +766,25 @@ sections instead of embedding their text.
     command itself applies the suggested fix for this
     one finding. Available for every severity -- a
     human-directed fix is a consented edit, not an
-    autonomous auto-fix.
+    autonomous auto-fix. The choice is recorded as
+    `{"finding_id": N, "decision": "apply",
+    "fix_reference": <fix reference>}` in the checkpoint
+    call below.
   - **"Override & continue"** (waive): obtain a recorded
-    justification, then record the override (severity,
-    description, justification) in the checkpoint data
-    below and as a final-report advisory, and continue.
+    justification, then record the decision
+    `{"finding_id": N, "decision": "override", "reason":
+    <justification>}` in the checkpoint call below and
+    the override (severity, description, justification)
+    as a final-report advisory, and continue.
   - **"Show more context"**: print the full finding
     context, then re-present the same options. No spec
     edit occurs.
   - **"Pause & exit"**: stop the review, making no
-    further spec edits -- exit through the tool-rendered
-    `spec-review` exit path below.
+    further spec edits -- record pause decisions for the
+    unresolved findings (alongside the decisions already
+    collected) in the checkpoint call below, then exit
+    through the tool-rendered `spec-review` exit path
+    below.
   - **"Apply all remaining LOW/MEDIUM fixes"** (bulk
     shortcut, offered only when the current finding is
     LOW/MEDIUM): apply the remaining LOW/MEDIUM
@@ -801,9 +813,13 @@ sections instead of embedding their text.
   recorded override (same file and root cause)
   carry forward as resolved on re-runs and are not
   re-presented unless materially new information emerges;
-  the overrides array below carries all overrides recorded
-  across iterations. After applied fixes (per-finding
-  choices or the bulk shortcut), re-run the review:
+  the checkpoint tool derives the overrides array
+  mechanically from the recorded override decisions --
+  never hand-write `overrides`, an empty adjudication, or
+  `overrides: []` in place of decided findings. After
+  applied fixes (per-finding choices or the bulk
+  shortcut), record the decisions (checkpoint call
+  below), then re-run the review:
   re-resolve the immutable
   input, re-validate the full plan, and rerun every
   included reviewer (not just failing or
@@ -812,7 +828,12 @@ sections instead of embedding their text.
   Each re-dispatch reports a fresh `correlation_id` in
   its one-line counts summary — capture it and pass it
   on every `consolidate_dispatch` call for that
-  re-dispatch. Keep the iteration counter. Each re-run verdict is
+  re-dispatch. Keep the iteration counter, always
+  dispatching the next iteration number: the dispatch
+  layer refuses re-rolling a recorded iteration
+  (`iteration_already_recorded`) and refuses a dispatch
+  while the recorded iteration's findings remain
+  undecided or paused. Each re-run verdict is
   processed through these same rules -- the gate
   re-presents on every REQUEST CHANGES verdict. Cap at
   3 iterations: if REQUEST CHANGES persists to a fourth
@@ -822,20 +843,41 @@ sections instead of embedding their text.
 
   > CHECKPOINT: Call `checkpoint` with `command:
   > "uf.unleash"`, `step: "spec-review"`, and
-  > `data: '{"iteration": N, "overrides": [...]}'` -- the
-  > overrides array carries each waived finding's
-  > severity, description, and justification (an empty
-  > array when none).
+  > `spec_review_decisions` carrying one entry per
+  > finding of the recorded iteration: `{"finding_id":
+  > N, "decision": "apply", "fix_reference": <fix
+  > reference>}`, `{"finding_id": N, "decision":
+  > "override", "reason": <justification>}`, or
+  > `{"finding_id": N, "decision": "pause"}`. The tool
+  > validates the set against the iteration's recorded
+  > `finding_ids` and derives the overrides array
+  > mechanically. Never write `overrides: []`, an empty
+  > decision set, or a partial set in place of
+  > adjudication: the tool refuses advancement while any
+  > finding lacks a decision
+  > (`missing_per_finding_decisions`). The refusal
+  > outcomes are the expected control flow: an
+  > all-override set advances; any `apply` decision
+  > refuses with `pending_approving_iteration` (proceed
+  > to the re-run above); any `pause` decision refuses
+  > with `spec_review_gate_paused` (exit below).
 
 - If the human chooses "Pause & exit", or the 3 iteration
   cap is reached with findings unresolved: **EXIT** by
-  calling `format_unleash_exit` with:
+  first calling `relay_spec_review_gate` with `{command:
+  "uf.unleash"}` -- when it returns `gate_paused: true`,
+  emit its rendered relay verbatim (every finding's
+  severity, description, file:line, and the correlation
+  id, rendered from the dispatch artifact -- never
+  session-memory or child-text sourced) -- then calling
+  `format_unleash_exit` with:
 
   ```
   format_unleash_exit
     variant: "spec-review"
     tier: WORKFLOW_TIER
-    findings: [unresolved findings with context]
+    findings: [unresolved artifact-sourced findings with
+    context]
     change_name: [change name]
   ```
 
@@ -1181,6 +1223,36 @@ its spent budget the same way, from its budget-only
 
 **For each phase in tasks.md**:
 
+**Per-task delegation budget contract**: the per-task
+implement delegations below carry `checkpoint_step:
+"implement"` and `phase`, routing them through the
+per-task executor wrapper. Omit `timeout` and
+`idle_timeout` on these calls -- the budget is tool-owned
+(per-task-delegation-budgets PTB-FR-001..002):
+
+- The tool derives each call's wall clock via
+  `derivePerTaskTimeoutMs` from the phase's work signals
+  -- phase task count (from the `parse_tasks` result),
+  files the phase's tasks touch, and the child's resolved
+  throughput tier -- clamped to the `1_800_000` ms
+  ceiling and the inherited parent budget, with the
+  derivation and clamp outcome recorded as timeout
+  provenance on the result (PTB-FR-001). An explicit
+  `timeout` argument overrides the derivation entirely;
+  pass one only when the human instructs.
+- Under a budgeted command-path parent the wrapper
+  inherits the parent's idle watchdog through the
+  delegation-budget registry: a progressing child
+  (`child_active: true` or a running tool part) is not
+  aborted by its wall clock while it progresses, a
+  stalled child aborts with `idle_timeout` (retryable),
+  and `budget_exhausted` (non-retryable) fails fast when
+  the parent budget is spent (PTB-FR-002). Wall-clock
+  stays the absolute backstop, each result reports the
+  remaining parent budget (`remaining_ms`), and unbudgeted
+  top-level invocations keep the existing delegation
+  defaults.
+
 1. Separate the phase's tasks into two groups from the
    parse result:
    - **Sequential** (`parallel: false`): run first, in
@@ -1215,7 +1287,12 @@ its spent budget the same way, from its budget-only
 
    The tool auto-checkpoints `implement` with the phase
    data on success. On failure, emit the envelope's error
-   and **STOP**.
+   and **STOP** -- the per-task executor already re-issued
+   a retryable timeout termination once, with the resume
+   context tool-rendered into the retry prompt (PTB-FR-003;
+   `retry` provenance on the envelope), so the returned
+   failure is final. `error.retryable: false` failures
+   (e.g. `budget_exhausted`) were never retried (MP-024).
 
    After each successful delegation, mark the task
    complete immediately -- the checkbox is the
@@ -1409,13 +1486,13 @@ its spent budget the same way, from its budget-only
      checkpoint
        command: "uf.unleash"
        step: "implement-phase-[N]"
-       phase:
-         number: [N]
-         verdict: "green" | "failed"
-         inventory:
-           - name: [failing check]
-             classification: pre-existing | environmental
-                            | change-caused
+      phase:
+        number: [N]
+        verdict: "green" | "failed"
+        inventory:
+          - name: [failing check]
+            classification: pre-existing | environmental
+                           | change-caused
        data:
          fixLoopPhase[N]: [fix-loop iterations used so far, 0
                            if the loop never ran]
@@ -1424,17 +1501,33 @@ its spent budget the same way, from its budget-only
      `verdict` is `"green"` when every check passed or
      every failure was classified `pre-existing` or
      `environmental` (inventory carries those entries);
-     otherwise `"failed"` (inventory carries every
-     classified failure). The iteration count rides the
-     free-form `data` parameter as the gate-distinct
-     `fixLoopPhase[N]` key -- the checkpoint tool
-     persists only `number`, `verdict`, and `inventory`
-     from the structured `phase` object, while `data`
-     round-trips through `get_progress` -- so record it
-     on every checkpoint, increment it after each
-     delegated fix attempt, and read it back on resume
-     so the 3-iteration budget spans sessions rather
-     than resetting per resume.
+    otherwise `"failed"` (inventory carries every
+    classified failure). The iteration count rides the
+    free-form `data` parameter as the gate-distinct
+    `fixLoopPhase[N]` key -- the remaining parent budget
+    (`remaining_ms`) is tool-derived: the checkpoint tool
+    resolves the budgeted ancestor from the
+    delegation-budget registry at record time and derives
+    the value itself (PTB-FR-004, DE-001) -- never supply
+    it from the envelope. The tool persists `number`,
+    `verdict`, `inventory`, and the derived
+    `remaining_ms` from the structured `phase`
+    object, while `data` round-trips through
+    `get_progress` -- so record it
+    on every checkpoint, increment it after each
+    delegated fix attempt, and read it back on resume
+    so the 3-iteration budget spans sessions rather
+    than resetting per resume.
+
+    The checkpoint result also carries a tool-rendered
+    `phase_checkpoint_line`, with the remaining-budget
+    clause exactly when the tool derived a positive
+    remaining budget. Emit it verbatim as the phase
+    checkpoint line --
+    never reconstruct it -- so the resume boundary is
+    plannable before the parent budget expires (the
+    value is informational; wall-clock and hierarchical
+    clamping stay authoritative) (PTB-FR-004).
 
    - If green: proceed to the next phase.
    - If failed: run the build/test fix loop (above)
@@ -1972,9 +2065,13 @@ retains its no-artifact fallback.
   confirmation** -- proceed immediately from one step to
   the next. The only legitimate mid-pipeline human
   interactions are the interactive clarify ask gate in
-  Step 1 (Speckit) and the per-finding spec review
-  decision gate in Step 4 -- required human input
-  within a step, not between-step confirmations. At
+  Step 1 (Speckit), the per-finding spec review
+  decision gate in Step 4, and the enforcement-code
+  recovery on `missing_human_decision`,
+  `undeclared_step`, or `escalated_advisory_unrelayed`
+  (via the `question` tool or orchestrator relay) --
+  required human input within a step, not between-step
+  confirmations. At
   the ask gate, every question Dewey cannot answer
   MUST be asked through the question tool, one at a
   time, before the clarify exit is taken. At the
@@ -2028,5 +2125,19 @@ retains its no-artifact fallback.
   demo output by calling `format_unleash_demo`, emitting
   the returned text verbatim; never reconstruct it from
   memory or paraphrase it
+
+<!-- instruction-lint-disable-next-line IL-050 -- pin-anchored duplication: synthetic prompt guard intentionally mirrored in 6 command/agent locations (tracked by TestCommandContracts_SyntheticPromptNotConsent) -->
+Compaction and synthetic continue prompts (including
+"Continue if you have next steps, or stop and ask for
+clarification if you are unsure how to proceed") are not
+human input and MUST NOT be treated as authorization for
+any gate override.
+
+On `missing_human_decision`, `undeclared_step`, or
+`escalated_advisory_unrelayed`, you MUST stop and obtain
+a real human decision via the `question` tool or the
+orchestrator relay and MUST NOT compose a
+`record_human_decision` entry for a decision not actually
+received.
 
 </protect>

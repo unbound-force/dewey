@@ -146,6 +146,30 @@ const ClassifierSchema = z
   })
   .strict()
 
+// Selection headroom knobs (compaction-storm change D4, DELEG-FR-001): the
+// key set is closed, but the knob VALUE is deliberately unconstrained at
+// parse time. D4 substitution semantics replace an invalid value with the
+// documented default plus a logged warning at consumption
+// (resolveFootprintMarginTokens), so a misconfigured knob can never fail
+// the whole matrix load — and can never silently disable the headroom gate.
+const SelectionSchema = z
+  .object({
+    footprint_margin_tokens: z.unknown().optional(),
+  })
+  .strict()
+
+// Delegation storm knob (compaction-storm change D4, DELEG-FR-002): the
+// same closed-key, unconstrained-value shape as the selection knobs. D4
+// substitution semantics replace an invalid value with the documented
+// default plus a logged warning at consumption (resolveStormThreshold),
+// so a misconfigured knob can never fail the whole matrix load — and can
+// never silently disable the compaction-storm detector.
+const DelegationSchema = z
+  .object({
+    storm_threshold: z.unknown().optional(),
+  })
+  .strict()
+
 /** Closed Zod schema for the v1 model matrix surface (mirrors v1.schema.json). */
 export const ModelMatrixSchema = z
   .object({
@@ -155,6 +179,8 @@ export const ModelMatrixSchema = z
     defaults: DefaultsSchema.optional(),
     agents: AgentsSchema.optional(),
     classifier: ClassifierSchema.optional(),
+    selection: SelectionSchema.optional(),
+    delegation: DelegationSchema.optional(),
   })
   .strict()
   .superRefine((matrix, context) => {
@@ -200,6 +226,8 @@ export const EMPTY_MODEL_MATRIX: ModelMatrix = Object.freeze({
   defaults: Object.freeze({}),
   agents: Object.freeze({}),
   classifier: Object.freeze({}),
+  selection: Object.freeze({}),
+  delegation: Object.freeze({}),
 } satisfies ModelMatrix)
 
 // ── Parsing ───────────────────────────────────────────────────
@@ -641,6 +669,20 @@ export type ClassifierOutcome =
     }
 
 /**
+ * Declared provider limits for one `provider/model` identity, in tokens
+ * (DELEG-FR-001, compaction-storm task 2.1). The usable input window is
+ * `context - output`: the context window minus the provider's maximum
+ * output reservation, because a child response up to the output bound
+ * must still fit alongside its input inside the context window.
+ */
+export interface ModelLimits {
+  /** Declared context window in tokens. */
+  readonly context: number
+  /** Declared maximum output reservation in tokens. */
+  readonly output: number
+}
+
+/**
  * Selection parameters as supplied by one delegation call (design D2).
  * Parameter shapes are validated at the tool boundary (the delegation
  * schema's model, variant, profile, and pack parameters); this module treats
@@ -659,6 +701,23 @@ export interface SelectionInputs {
   readonly checkpoint_step?: string
   /** Delegated agent name, consulted for the `agents:` pin (step 4). */
   readonly agent?: string
+  /**
+   * Caller-computed delegation footprint in tokens: the estimated prompt
+   * material the child will receive (cached prefix plus command body plus
+   * prompt material), supplied by the delegating caller (DELEG-FR-001,
+   * compaction-storm task 1.1). Selection consumes it for the headroom
+   * gate; absent means the caller did not measure a footprint.
+   */
+  readonly footprint?: number
+  /**
+   * Caller-supplied declared model limits keyed by `provider/model`
+   * identity, consumed by the selection headroom gate (DELEG-FR-001,
+   * compaction-storm task 2.1). An absent map — or an identity with no
+   * entry — means no declared limits: the gate passes that candidate
+   * unchanged, rejecting only on limits it can read. Explicit-model
+   * selections (step 1) are never gated.
+   */
+  readonly model_limits?: Readonly<Record<string, ModelLimits>>
 }
 
 /** Stable failure codes for non-retryable selection validation failures (design D2). */
@@ -858,6 +917,100 @@ function nameList(names: readonly string[]): string {
   return names.length > 0 ? [...names].sort().join(", ") : "(none)"
 }
 
+/** Headroom-gate evaluation state for one selection chain (internal). */
+interface HeadroomGate {
+  /**
+   * Applies the gate to one matrix-resolved resolution: the (possibly
+   * chain-decorated) resolution when its candidate passes, or null when
+   * the candidate is rejected — the rejection entry is recorded first, so
+   * the chain continues at the next eligible step.
+   */
+  readonly evaluate: (resolution: SelectionResolution) => SelectionResolution | null
+  /**
+   * Decorates a winning or terminal resolution's selection with the
+   * accumulated rejection chain: a null chain returns the resolution
+   * unchanged, so ungated chains keep their exact pre-gate audit output.
+   */
+  readonly decorate: (resolution: SelectionResolution) => SelectionResolution
+}
+
+/**
+ * Creates the selection headroom gate (DELEG-FR-001, compaction-storm
+ * task 2.1). A matrix-resolved candidate is rejected when its declared
+ * limits leave no usable input window (the output reservation meets or
+ * exceeds the context window), or when the caller-measured footprint plus
+ * the resolved working margin exceeds the usable window
+ * `context - output`. The margin resolves through D4 substitution
+ * semantics (resolveFootprintMarginTokens), so a misconfigured knob can
+ * never disable the gate. Candidates without declared limits pass
+ * unchanged — the gate never blocks on unknown limits — and an unmeasured
+ * footprint (`undefined`) still rejects inconsistent limits. Explicit-model
+ * selections never reach the gate (design D1: the explicit-model bypass).
+ * @param inputs The delegation call's selection parameters (footprint and
+ *   declared model limits).
+ * @param matrix The loaded matrix supplying the margin knob, or null.
+ * @returns The gate carrying its rejection-chain state.
+ */
+function createHeadroomGate(inputs: SelectionInputs, matrix: ModelMatrix | null): HeadroomGate {
+  const margin = resolveFootprintMarginTokens(matrix).tokens
+  const rejections: string[] = []
+  const chain = (): string | null => (rejections.length > 0 ? rejections.join("; ") : null)
+  const pass = (selection: SelectionResult): SelectionResult | null => {
+    if (selection.model === null || inputs.model_limits === undefined) {
+      return selection
+    }
+    const limits = inputs.model_limits[selection.model]
+    if (
+      limits === undefined ||
+      !Number.isFinite(limits.context) ||
+      !Number.isFinite(limits.output)
+    ) {
+      // No readable declaration: the gate passes rather than rejecting on
+      // data it cannot interpret (fail-open on unknown limits).
+      return selection
+    }
+    const usable = limits.context - limits.output
+    if (usable <= 0) {
+      rejections.push(
+        `headroom: ${selection.selection_source} model "${selection.model}" declares inconsistent limits ` +
+          `(output ${limits.output} >= context ${limits.context}, leaving no usable input)`,
+      )
+      return null
+    }
+    if (inputs.footprint !== undefined && usable < inputs.footprint + margin) {
+      rejections.push(
+        `headroom: ${selection.selection_source} model "${selection.model}" usable ${usable} ` +
+          `< required ${inputs.footprint + margin} (footprint ${inputs.footprint} + margin ${margin})`,
+      )
+      return null
+    }
+    return selection
+  }
+  const decorateSelection = (selection: SelectionResult): SelectionResult => {
+    const reason = chain()
+    if (reason === null) {
+      return selection
+    }
+    const base =
+      selection.fallback_reason !== null ? `${reason}; ${selection.fallback_reason}` : reason
+    const destination =
+      selection.model === null
+        ? "the host model"
+        : `${selection.selection_source} model "${selection.model}"`
+    return { ...selection, fallback_reason: `${base} — fell back to ${destination}` }
+  }
+  const evaluate = (resolution: SelectionResolution): SelectionResolution | null => {
+    if (!resolution.ok) {
+      return resolution
+    }
+    const passed = pass(resolution.selection)
+    return passed === null ? null : { ok: true, selection: decorateSelection(passed) }
+  }
+  const decorate = (resolution: SelectionResolution): SelectionResolution =>
+    !resolution.ok ? resolution : { ok: true, selection: decorateSelection(resolution.selection) }
+  return { evaluate, decorate }
+}
+
 /**
  * Resolves one delegation's model selection through the fixed precedence
  * chain (design D2, MM-FR-003), stopping at the first step that yields:
@@ -888,6 +1041,19 @@ function nameList(names: readonly string[]): string {
  * unknown explicit profile, an explicit pack that is not a `packs` key, or
  * an explicit `profile`/`pack` with no matrix configured fails closed with
  * a non-retryable error naming the remediation (MM-FR-003/MM-FR-004).
+ *
+ * Headroom gate (DELEG-FR-001, compaction-storm task 2.1): every
+ * matrix-resolved candidate (steps 2-6) passes through the gate before it
+ * can win. A rejected candidate records its rejection on the audit chain
+ * and the selection falls through to the next eligible chain step; when
+ * every eligible step is exhausted the chain terminates at host with the
+ * full rejection chain recorded (never stalling, never spawning on a
+ * context-starved model). Candidates without declared limits pass
+ * unchanged, and the explicit-model step 1 bypass is preserved — a
+ * headroom rejection can never demote an explicit model. A winning
+ * selection reached after rejections carries the chain plus a "fell back
+ * to" clause in `fallback_reason`, keeping every fallback auditable
+ * (MM-FR-007).
  * @param matrix The loaded matrix, or null when none is configured. The
  *   canonical no-op matrix (comments-only file) counts as not configured.
  * @param inputs The delegation call's selection parameters.
@@ -953,7 +1119,8 @@ export function resolveSelection(
 
   // Step 1: an explicit model wins outright and needs no matrix (MM-FR-004).
   // An explicitly supplied, validated pack rides along for directive
-  // rendering — never silently dropped (MM-FR-003, UF-FR-002).
+  // rendering — never silently dropped (MM-FR-003, UF-FR-002). The explicit
+  // model is never gated: a headroom rejection can never demote it (D1).
   if (inputs.model !== undefined) {
     return {
       ok: true,
@@ -969,10 +1136,22 @@ export function resolveSelection(
     }
   }
 
+  // Selection headroom gate (DELEG-FR-001): every matrix-resolved candidate
+  // below passes through it. Rejected candidates record their rejection and
+  // fall through to the next eligible chain step; the gate's decorate()
+  // returns ungated selections unchanged, so chains with no rejections keep
+  // their exact pre-gate audit output.
+  const gate = createHeadroomGate(inputs, matrix)
+
   // Step 2: an explicit profile (validated above) resolves through its
   // profile; an explicitly supplied pack rides along.
   if (inputs.profile !== undefined && configured !== null) {
-    return capabilitySelection(configured, inputs.profile, "explicit-profile", inputs.pack ?? null, null)
+    const candidate = gate.evaluate(
+      capabilitySelection(configured, inputs.profile, "explicit-profile", inputs.pack ?? null, null),
+    )
+    if (candidate !== null) {
+      return candidate
+    }
   }
 
   // Step 3: an explicit pack (validated above) resolves through its mapped
@@ -981,14 +1160,24 @@ export function resolveSelection(
   // to the key-membership test above.
   if (inputs.pack !== undefined && configured !== null) {
     const packs = configured.packs ?? {}
-    return capabilitySelection(configured, packs[inputs.pack], "explicit-pack", inputs.pack, null)
+    const candidate = gate.evaluate(
+      capabilitySelection(configured, packs[inputs.pack], "explicit-pack", inputs.pack, null),
+    )
+    if (candidate !== null) {
+      return candidate
+    }
   }
 
   // Step 4: an `agents:` pin for the delegated agent.
   if (configured !== null && inputs.agent !== undefined) {
     const pins = configured.agents ?? {}
     if (Object.hasOwn(pins, inputs.agent)) {
-      return capabilitySelection(configured, pins[inputs.agent], "agent-pin", null, null)
+      const candidate = gate.evaluate(
+        capabilitySelection(configured, pins[inputs.agent], "agent-pin", null, null),
+      )
+      if (candidate !== null) {
+        return candidate
+      }
     }
   }
 
@@ -1000,34 +1189,217 @@ export function resolveSelection(
     if (configured !== null) {
       const capability = configured.defaults?.[kind]
       if (capability !== undefined) {
-        return capabilitySelection(configured, capability, "default-kind", null, null)
+        const candidate = gate.evaluate(
+          capabilitySelection(configured, capability, "default-kind", null, null),
+        )
+        if (candidate !== null) {
+          return candidate
+        }
       }
     }
-    return hostSelection(null, null, null)
+    // No eligible static default (absent, or its model was headroom-
+    // rejected): `plan`/`tasks` resolve statically and never reach the
+    // classifier (MM-FR-003), so the chain terminates at host with any
+    // headroom rejections recorded.
+    return gate.decorate(hostSelection(null, null, null))
   }
 
   // Step 6: the classifier cascade for `implement` and unknown kinds
   // (MM-FR-005). With no matrix there is no static default and no classifier
-  // participation — plain host, zero-config semantics (MM-FR-004).
+  // participation — plain host, zero-config semantics (MM-FR-004). The gate
+  // cannot have rejected anything here: no matrix means no gated candidates.
   if (configured === null) {
-    return hostSelection(null, null, null)
+    return gate.decorate(hostSelection(null, null, null))
   }
   const attempt: ClassifierAttempt =
     classifier.status === "selected"
       ? attemptClassifierSelection(configured, classifier)
       : { resolved: false, fallbackReason: classifierFallbackReason(classifier) }
+  // Why the chain reached the static fallback: the classifier outcome's own
+  // fallback reason when it yielded no selection, or null when its selection
+  // was headroom-rejected (the chain entry already names the rejected model
+  // and its numbers, so no separate context is needed).
+  let classifierContext: string | null
   if (attempt.resolved) {
-    return attempt.result
+    const candidate = gate.evaluate(attempt.result)
+    if (candidate !== null) {
+      return candidate
+    }
+    classifierContext = null
+  } else {
+    classifierContext = attempt.fallbackReason
   }
   // Static fallback: the `defaults` entry for the kind when present (only
   // `implement` can have one — unknown kinds are outside the closed key set).
   if (kind === "implement") {
     const staticCapability = configured.defaults?.implement
     if (staticCapability !== undefined) {
-      return capabilitySelection(configured, staticCapability, "default-kind", null, attempt.fallbackReason)
+      const candidate = gate.evaluate(
+        capabilitySelection(configured, staticCapability, "default-kind", null, classifierContext),
+      )
+      if (candidate !== null) {
+        return candidate
+      }
+      // The static default exists but was headroom-rejected: the chain
+      // terminates at host recording the classifier context and the full
+      // rejection chain — never "no static default", which would misreport
+      // the configured matrix.
+      return gate.decorate(hostSelection(null, null, classifierContext))
     }
   }
-  return hostSelection(null, null, `${attempt.fallbackReason}; no static default for task kind "${kind ?? "unknown"}"`)
+  const terminalContext =
+    classifierContext !== null
+      ? `${classifierContext}; no static default for task kind "${kind ?? "unknown"}"`
+      : `no static default for task kind "${kind ?? "unknown"}"`
+  return gate.decorate(hostSelection(null, null, terminalContext))
+}
+
+// ── Selection headroom config (DELEG-FR-001, compaction-storm D4) ──
+
+/** Config key for the selection headroom working margin (DELEG-FR-001). */
+export const FOOTPRINT_MARGIN_TOKENS_KEY = "selection.footprint_margin_tokens"
+
+/** Default working margin in tokens: 24k of guaranteed child working memory (compaction-storm design D4). */
+export const DEFAULT_FOOTPRINT_MARGIN_TOKENS = 24_000
+
+/** Minimum accepted working margin in tokens (D4 documented range: 1k-256k). */
+export const MIN_FOOTPRINT_MARGIN_TOKENS = 1_000
+
+/** Maximum accepted working margin in tokens (D4 documented range: 1k-256k). */
+export const MAX_FOOTPRINT_MARGIN_TOKENS = 256_000
+
+/** Resolution outcome for the selection headroom margin knob. */
+export interface FootprintMarginResolution {
+  /** Effective margin in tokens: the configured value, or the documented default. */
+  readonly tokens: number
+  /**
+   * The D4 substitution warning naming the key, the invalid value, and the
+   * default applied — null when the configured value was valid or absent.
+   */
+  readonly warning: string | null
+}
+
+/**
+ * Renders an invalid knob value for a D4 substitution warning. Non-finite
+ * numbers use String() directly because JSON.stringify(NaN) renders "null",
+ * which would misreport what was configured.
+ */
+function describeInvalidKnobValue(value: unknown): string {
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    return String(value)
+  }
+  const serialized = JSON.stringify(value)
+  return serialized === undefined ? String(value) : serialized
+}
+
+/**
+ * Resolves the selection headroom working margin from a parsed matrix
+ * (DELEG-FR-001, compaction-storm design D4). The schema accepts any value
+ * for the knob, so validation lives here at consumption: a missing or null
+ * value resolves to the documented default silently; a wrong-type,
+ * non-integer, or out-of-range value is replaced with the default plus a
+ * warning naming the key, the invalid value, and the default applied. The
+ * matrix never fails to load on this knob, and the headroom gate is never
+ * silently disabled.
+ */
+export function resolveFootprintMarginTokens(matrix: ModelMatrix | null): FootprintMarginResolution {
+  const raw = matrix?.selection?.footprint_margin_tokens
+  if (raw === undefined || raw === null) {
+    return { tokens: DEFAULT_FOOTPRINT_MARGIN_TOKENS, warning: null }
+  }
+  if (
+    typeof raw === "number" &&
+    Number.isInteger(raw) &&
+    raw >= MIN_FOOTPRINT_MARGIN_TOKENS &&
+    raw <= MAX_FOOTPRINT_MARGIN_TOKENS
+  ) {
+    return { tokens: raw, warning: null }
+  }
+  return {
+    tokens: DEFAULT_FOOTPRINT_MARGIN_TOKENS,
+    warning:
+      `${FOOTPRINT_MARGIN_TOKENS_KEY} is invalid (${describeInvalidKnobValue(raw)}); ` +
+      `replaced with the documented default ${DEFAULT_FOOTPRINT_MARGIN_TOKENS} ` +
+      `(accepted range ${MIN_FOOTPRINT_MARGIN_TOKENS}-${MAX_FOOTPRINT_MARGIN_TOKENS} integer tokens); ` +
+      "the headroom gate is not disabled",
+  }
+}
+
+// ── Delegation storm config (DELEG-FR-002, compaction-storm D4) ──
+
+/** Config key for the compaction-storm threshold (DELEG-FR-002). */
+export const STORM_THRESHOLD_KEY = "delegation.storm_threshold"
+
+/** Default compaction-storm threshold: 3 consecutive compactions without substantive progress (design D4). */
+export const DEFAULT_STORM_THRESHOLD = 3
+
+/** Minimum accepted compaction-storm threshold (D4 documented range: 2-10). */
+export const MIN_STORM_THRESHOLD = 2
+
+/** Maximum accepted compaction-storm threshold (D4 documented range: 2-10). */
+export const MAX_STORM_THRESHOLD = 10
+
+/** Resolution outcome for the compaction-storm threshold knob. */
+export interface StormThresholdResolution {
+  /** Effective threshold: the configured value, or the documented default. */
+  readonly threshold: number
+  /**
+   * The D4 substitution warning naming the key, the invalid value, and the
+   * default applied — null when the configured value was valid or absent.
+   */
+  readonly warning: string | null
+}
+
+/**
+ * Normalizes a raw storm-threshold value to a safe integer inside the
+ * documented range (DELEG-FR-002): a valid configured value passes through;
+ * undefined, null, wrong-type, non-integer, and out-of-range values fall
+ * back to the documented default. Shared by the matrix resolver (the D4
+ * substitution path, which additionally records a warning) and the
+ * executor's injected dependency (defense in depth: a badly injected value
+ * can neither disable the detector — a missing value defaults — nor abort
+ * instantly — zero and negative values never pass).
+ *
+ * @param raw The raw configured or injected value.
+ * @returns The effective threshold, always an integer in the documented range.
+ */
+export function normalizeStormThreshold(raw: unknown): number {
+  return typeof raw === "number" &&
+    Number.isInteger(raw) &&
+    raw >= MIN_STORM_THRESHOLD &&
+    raw <= MAX_STORM_THRESHOLD
+    ? raw
+    : DEFAULT_STORM_THRESHOLD
+}
+
+/**
+ * Resolves the compaction-storm threshold from a parsed matrix (DELEG-FR-002,
+ * compaction-storm design D4). The schema accepts any value for the knob, so
+ * validation lives here at consumption: a missing or null value resolves to
+ * the documented default silently; a wrong-type, non-integer, or
+ * out-of-range value is replaced with the default plus a warning naming the
+ * key, the invalid value, and the default applied. The matrix never fails to
+ * load on this knob, and the storm detector is never silently disabled.
+ *
+ * @param matrix The parsed matrix carrying the delegation block, or null.
+ * @returns The effective threshold and any substitution warning.
+ */
+export function resolveStormThreshold(matrix: ModelMatrix | null): StormThresholdResolution {
+  const raw = matrix?.delegation?.storm_threshold
+  if (raw === undefined || raw === null) {
+    return { threshold: DEFAULT_STORM_THRESHOLD, warning: null }
+  }
+  if (normalizeStormThreshold(raw) === raw) {
+    return { threshold: raw, warning: null }
+  }
+  return {
+    threshold: DEFAULT_STORM_THRESHOLD,
+    warning:
+      `${STORM_THRESHOLD_KEY} is invalid (${describeInvalidKnobValue(raw)}); ` +
+      `replaced with the documented default ${DEFAULT_STORM_THRESHOLD} ` +
+      `(accepted range ${MIN_STORM_THRESHOLD}-${MAX_STORM_THRESHOLD} consecutive compactions); ` +
+      "the storm detector is not disabled",
+  }
 }
 
 // ── Classifier cascade (design D5, MM-FR-005/MM-FR-006) ────────

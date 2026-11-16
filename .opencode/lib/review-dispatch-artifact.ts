@@ -42,23 +42,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Parse one dispatch artifact envelope into the decision fields resume
- * detection consumes (payload mode/verdict, context branch, input_context
- * head SHA, envelope write timestamp). Returns null for anything that does
- * not match the review-dispatch envelope shape — malformed JSON, a foreign
- * artifact type, or missing decision fields — so callers skip it
- * (fail-open to "not done").
+ * Shared envelope validation for both public parsers: proves the parsed
+ * value is a review-dispatch envelope and extracts the decision fields.
+ * Returns null for anything that does not match the envelope shape so
+ * callers skip it (fail-open to "not done").
  */
-export function parseReviewDispatchArtifact(
-  raw: string,
+function envelopeDecisionFields(
+  parsed: unknown,
   source: string,
 ): ReviewDispatchArtifactSummary | null {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return null
-  }
   if (!isRecord(parsed)) return null
   if (parsed.artifact_type !== REVIEW_DISPATCH_ARTIFACT_TYPE) return null
   const context = parsed.context
@@ -91,4 +83,96 @@ export function parseReviewDispatchArtifact(
     // artifact valid.
     writtenAt: Number.isNaN(writtenAt) ? 0 : writtenAt,
   }
+}
+
+/**
+ * Parse one dispatch artifact envelope into the decision fields resume
+ * detection consumes (payload mode/verdict, context branch, input_context
+ * head SHA, envelope write timestamp). Returns null for anything that does
+ * not match the review-dispatch envelope shape — malformed JSON, a foreign
+ * artifact type, or missing decision fields — so callers skip it
+ * (fail-open to "not done").
+ */
+export function parseReviewDispatchArtifact(
+  raw: string,
+  source: string,
+): ReviewDispatchArtifactSummary | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  return envelopeDecisionFields(parsed, source)
+}
+
+/** Lenient per-finding projection for gate rendering (harden-spec-review-gate). */
+export interface ReviewDispatchFindingSummary {
+  readonly severity: string
+  readonly category: string
+  readonly description: string
+  readonly file: string | null
+  readonly line: number | null
+}
+
+/**
+ * Artifact decision fields plus the finding detail the spec-review gate
+ * consumes (HARDEN-001/004, harden-spec-review-gate): the correlation ID
+ * identifying the artifact store entry, the raw findings count that
+ * anchors per-finding identity, and a lenient per-finding projection whose
+ * index `i` is finding identity `String(i + 1)` — the same identity the
+ * gate record's finding_ids carry, stable because a finalized artifact
+ * never changes.
+ */
+export interface ReviewDispatchArtifactDetail extends ReviewDispatchArtifactSummary {
+  /** Dispatch correlation ID (payload value; source stem as fallback). */
+  readonly correlationId: string
+  /** Raw length of payload.findings — the identity basis for finding_ids. */
+  readonly findingCount: number
+  /** Lenient per-finding projection; index i+1 is finding identity "i+1". */
+  readonly findings: readonly ReviewDispatchFindingSummary[]
+}
+
+/**
+ * Parse one dispatch artifact envelope into the detail the spec-review
+ * gate consumes: the summary decision fields plus correlation ID and the
+ * findings projection. Envelope validation is shared with
+ * parseReviewDispatchArtifact so the two parsers cannot drift. Finding
+ * entries are projected leniently (missing fields become empty strings or
+ * null) because they feed rendering and counting, not gate decisions —
+ * the verdict and counts that drive decisions come from the validated
+ * envelope fields.
+ */
+export function parseReviewDispatchArtifactDetail(
+  raw: string,
+  source: string,
+): ReviewDispatchArtifactDetail | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  const summary = envelopeDecisionFields(parsed, source)
+  if (summary === null) return null
+  const payload = (parsed as Record<string, unknown>).payload as Record<string, unknown>
+  const correlationId =
+    typeof payload.correlation_id === "string" && payload.correlation_id !== ""
+      ? payload.correlation_id
+      : source.replace(/\.json$/, "")
+  const rawFindings = Array.isArray(payload.findings) ? payload.findings : []
+  const findings = rawFindings.map((entry): ReviewDispatchFindingSummary => {
+    const record = isRecord(entry) ? entry : {}
+    return {
+      severity: typeof record.severity === "string" ? record.severity : "",
+      category: typeof record.category === "string" ? record.category : "",
+      description: typeof record.description === "string" ? record.description : "",
+      file: typeof record.file === "string" ? record.file : null,
+      line:
+        typeof record.line === "number" && Number.isInteger(record.line)
+          ? record.line
+          : null,
+    }
+  })
+  return { ...summary, correlationId, findingCount: rawFindings.length, findings }
 }

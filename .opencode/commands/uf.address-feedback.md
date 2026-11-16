@@ -68,7 +68,8 @@ Progress steps in order:
 - `push` — Phase 4.4 complete
 - `reply-comments` — Phase 4.6 complete (recorded by
   `post_feedback_replies` once every reply is posted and every
-  approved thread is resolved; cleared after Phase 4.7)
+  approved thread is resolved; cleared by
+  `write_feedback_triage_artifact` after the artifact is written)
 
 ### TodoWrite Progress Tracking
 
@@ -298,7 +299,7 @@ Check local cache at `.uf/feedback/pr-<PR_NUMBER>/state.json`:
 - **Thread resolved on GitHub since last run**: skip entirely
 - **Cache missing**: assess from scratch (correct but slower)
 
-On crash-recovery re-entry: pass items whose replies were already posted to `post_feedback_replies` again unchanged. The tool reads its own per-item record (`replies` in the cache) and skips posted replies and resolved threads, so a re-run never duplicates a comment or an issue and still resolves threads a prior run left open.
+On crash-recovery re-entry: pass the full confirmed item list to `post_feedback_replies` again, unchanged — including items whose replies were already posted. The tool reads its own per-item record (`replies` in the cache) and skips posted replies and resolved threads, so a re-run never duplicates a comment or an issue, still posts the replies a prior run left pending, and still resolves threads a prior run left open.
 
 If no items remain after filtering: report "No unresolved feedback to address" and **STOP**.
 
@@ -861,7 +862,7 @@ For each item, present the decision as follows:
      If the assessment data does not ground any option, the
      gate MUST say so, present the trade-off, and still ask
      the full option set (fail-closed, per FR-006/FR-012)
-2. Present the **question tool** below the printed text with
+2. Call the `question` tool below the printed text — do not write the call as text (`<invoke name="question">`) in your reply — with
    the same options, the recommended option FIRST and
    labeled "(Recommended)":
    `["Accept", "Modify", "Reject", "Ask"]`.
@@ -886,9 +887,9 @@ The author chooses exactly one:
 | Decision | Follow-up | Queued action |
 |---|---|---|
 | **Accept** | (none) | Code change using suggested approach |
-| **Modify** | Use **question tool** (open-ended, no preset options) to collect the alternative approach | Code change using author's approach |
-| **Reject** | Use **question tool** (open-ended, no preset options) to collect evidence-based reasoning | Reply comment with reasoning |
-| **Ask** | Use **question tool** (open-ended, no preset options) to collect the clarification question | Reply comment with question |
+| **Modify** | Call the `question` tool (open-ended, no preset options) to collect the alternative approach — do not write `<invoke name="question">` as text | Code change using author's approach |
+| **Reject** | Call the `question` tool (open-ended, no preset options) to collect evidence-based reasoning — do not write `<invoke name="question">` as text | Reply comment with reasoning |
+| **Ask** | Call the `question` tool (open-ended, no preset options) to collect the clarification question — do not write `<invoke name="question">` as text | Reply comment with question |
 | **File issue** | (none) | GitHub issue for the finding, then a reply comment linking it |
 | **Reply** | (none) | Reply comment acknowledging the finding |
 
@@ -939,7 +940,7 @@ follows:
      If the assessment data does not ground any option, the
      gate MUST say so, present the trade-off, and still ask
      the full option set (fail-closed, per FR-006/FR-012)
-2. Present the **question tool** below the printed text with
+2. Call the `question` tool below the printed text — do not write the call as text (`<invoke name="question">`) in your reply — with
    the same options, the recommended option FIRST and
    labeled "(Recommended)":
    `["Confirm -- proceed with execution",
@@ -963,7 +964,7 @@ from compressed context, or if you cannot verify that
 the human explicitly confirmed the Phase 4 execution
 plan in the current uncompressed conversation history,
 you MUST re-present the execution summary below and
-obtain fresh confirmation via the **question tool**
+obtain fresh confirmation via the `question` tool — do not write `<invoke name="question">` as text —
 before proceeding. Do NOT rely on confirmation recorded
 in compressed context. When in doubt, re-confirm —
 false re-confirmation is harmless; executing mutations
@@ -1011,7 +1012,7 @@ Present the decision as follows:
      If the assessment data does not ground any option, the
      gate MUST say so, present the trade-off, and still ask
      the full option set (fail-closed, per FR-006/FR-012)
-2. Present the **question tool** below the printed text with
+2. Call the `question` tool below the printed text — do not write the call as text (`<invoke name="question">`) in your reply — with
    the same options, the recommended option FIRST and
    labeled "(Recommended)":
    `["Proceed with Phase 4 execution",
@@ -1023,7 +1024,7 @@ Present the decision as follows:
 **CRITICAL RULE**: NEVER begin Phase 4 execution
 (code changes, commits, push, reply comments, or
 thread resolutions) without explicit human
-confirmation via the **question tool**.
+confirmation via the `question` tool — do not write `<invoke name="question">` as text.
 
 >>> END MANDATORY GATE <<<
 
@@ -1151,7 +1152,7 @@ decision as follows:
      If the assessment data does not ground any option, the
      gate MUST say so, present the trade-off, and still ask
      the full option set (fail-closed, per FR-006/FR-012)
-2. Present the **question tool** below the printed text with
+2. Call the `question` tool below the printed text — do not write the call as text (`<invoke name="question">`) in your reply — with
    the same options, the recommended option FIRST and
    labeled "(Recommended)":
    `["Rebase onto remote and push",
@@ -1248,7 +1249,7 @@ session text and present the decision as follows:
      If the assessment data does not ground any option, the
      gate MUST say so, present the trade-off, and still ask
      the full option set (fail-closed, per FR-006/FR-012)
-2. Present the **question tool** below the printed text with
+2. Call the `question` tool below the printed text — do not write the call as text (`<invoke name="question">`) in your reply — with
    the same options, the recommended option FIRST and
    labeled "(Recommended)":
    `["Yes -- post reply comments", "No -- skip posting"]`.
@@ -1283,7 +1284,7 @@ Present the decision as follows:
      If the assessment data does not ground any option, the
      gate MUST say so, present the trade-off, and still ask
      the full option set (fail-closed, per FR-006/FR-012)
-2. Present the **question tool** below the printed text with
+2. Call the `question` tool below the printed text — do not write the call as text (`<invoke name="question">`) in your reply — with
    the same options, the recommended option FIRST and
    labeled "(Recommended)":
    `["Yes -- resolve addressed threads", "No -- leave
@@ -1322,6 +1323,19 @@ Posted 4 of 4 reply comments. Resolved 3 of 3 addressed threads.
 Posted 3 of 6 reply comments. Items 4, 5, 6 not posted. Resolved 2 of 3 addressed threads. Re-run `/uf.address-feedback 42` to retry.
 ```
 
+A `complete: false` result — including the skip branch where
+a FILE item's issue filing fails (`reply: "issue_failed"`,
+`issue_number: null`, `thread: "reply_not_posted"`) — ends the
+run at Section 4.6: print the `summary` line verbatim plus each
+item whose `error` is set, do not record the `reply-comments`
+checkpoint, and do not run Section 4.7 (no artifact is written
+and no progress is cleared). Re-run `/uf.address-feedback
+<PR_NUMBER>` with the same confirmed items resumes from the
+cache. Section 4.7 runs only after `complete: true` with its
+checkpoint, or after the skip-posting path at Section
+4.5 (which skips Section 4.6 entirely and omits
+`replies_result`).
+
 Do not post, file, or resolve anything by hand: the re-run
 resumes from the cache. On an error envelope (`status: "error"`,
 with `code`, `message`, and `retryable`), report it verbatim and
@@ -1334,7 +1348,8 @@ reuse an issue already recorded for the same comment.
 
 ### 4.7 Produce Feedback-Triage Artifact
 
-Write the artifact to `.uf/artifacts/feedback-triage/pr-<PR_NUMBER>-round-<M>.json`.
+Call the `write_feedback_triage_artifact` plugin tool once. It writes
+the artifact to `.uf/artifacts/feedback-triage/pr-<PR_NUMBER>-round-<M>.json`.
 This existing feedback-triage artifact uses schema 1.1.0
 (`schemas/feedback-triage/v1.1.0.schema.json`). It is emitted in addition to each Tier 2 `review-dispatch` artifact and returned
 canonical `review-verdict` version 2 decision; it does not replace or embed
@@ -1346,78 +1361,65 @@ as a non-authoritative compatibility value selected only after human handling.
 The separate native `INCONCLUSIVE` or `UNAVAILABLE` dispatch result remains
 authoritative and MUST NOT be interpreted as approval.
 
-**Round number**: scan existing files for the highest round number and add 1 (not a file count — handles gaps from deleted files).
+Build one item per feedback item, in the order shown, each carrying
+the fields the tool's `items` input schema accepts: the triage
+record plus the `comment_kind`/`comment_id` identity Section 4.6
+passed to `post_feedback_replies`. Do not pass `filed_issue_number`
+or `filed_issue_url` — the tool derives both from the
+`replies_result` projection when it joins each FILE item to its
+filed issue, and an item carrying either fails `invalid_input`
+validation with nothing written. The `file`, `line`,
+`decision_reasoning`, and `commit_sha` fields may be `null` (general
+PR comments have null file/line; REJECT/ASK items have null
+commit_sha). Record FILE items with `decision: "file"` and REPLY
+items with `decision: "reply"`, each with
+`recommendation: "author-decides"` and a null `commit_sha`.
 
-**Atomic write**: write to a temp file first, then rename to the final path.
+Then call `write_feedback_triage_artifact` once, with:
 
-**Envelope wrapper** (standard schema):
+- `pr_number`: `<PR_NUMBER>`
+- `pr_url`: the PR URL recorded in Section 1.2
+- `branch`: the PR source branch
+- `commit`: the current HEAD SHA at call time — after the Phase
+  4.1 through 4.4 fixes are committed, or the pre-fix HEAD when no
+  fixes were needed; both are simply the current HEAD. Never reuse
+  the frozen Section 1.2 `head_sha` after fixes have added commits.
+- `backlog_item_id`: the linked issue number, or `PR-<PR_NUMBER>`
+- `items`: the built items, in posting order
+- `replies_result`: the `post_feedback_replies` success data, when
+  Section 4.6 ran; omit it entirely when the author skipped posting
+
+On a `complete: true` run, every FILE item's `filed_issue_number`
+and `filed_issue_url` carry the joined identity from
+`replies_result` — a complete run cannot contain a failed filing.
+On the skip-posting path (`replies_result` omitted), every FILE
+item renders `filed_issue_number: null` and `filed_issue_url:
+null`; the `filed` count is decision-based
+(`countDecision("file")`), and `joinFiledIssues` renders those
+nulls as data, recording reality rather than an error.
+
+The tool owns the mechanics: it joins each FILE item to its filed
+issue from the replies result by comment identity (cross-checking
+the decisions), derives the summary counts, scans the next round
+number, renders and validates the 1.1.0 envelope, writes it
+atomically, and clears the `uf.address-feedback` progress state —
+a clear failure is a warning, not a failed call, because the
+artifact is already durable. Print the returned `summary` line
+verbatim. A successful call returns:
 
 ```json
-{
-  "hero": "cobalt-crush",
-  "version": "1.0.0",
-  "timestamp": "<ISO 8601>",
-  "artifact_type": "feedback-triage",
-  "schema_version": "1.1.0",
-  "context": {
-    "branch": "<PR source branch>",
-    "commit": "<HEAD SHA after fixes, or pre-fix HEAD>",
-    "backlog_item_id": "<linked issue or PR-N>"
-  },
-  "payload": {
-    "pr_number": 42,
-    "pr_url": "https://github.com/...",
-    "branch": "<PR source branch>",
-    "round": 1,
-    "items": [
-      {
-        "thread_id": "...",
-        "reviewer": "<login>",
-        "reviewer_role": "maintainer|collaborator|contributor|external|bot",
-        "file": "internal/foo/bar.go",
-        "line": 42,
-        "classification": "data-driven|subjective",
-        "tier": 1,
-        "evidence": ["go.md CS-001: ..."],
-        "recommendation": "accept|author-decides",
-        "decision": "accept|modify|reject|ask|file|reply",
-        "decision_reasoning": "...",
-        "commit_sha": "abc1234",
-        "filed_issue_number": null,
-        "filed_issue_url": null,
-        "divisor_agents_used": [],
-        "tier2_unavailable": false,
-        "conflict_flag": false
-      }
-    ],
-    "summary": {
-      "total_items": 6,
-      "accepted": 3,
-      "modified": 1,
-      "rejected": 1,
-      "asked": 1,
-      "filed": 0,
-      "replied": 0,
-      "tier1_count": 4,
-      "tier2_count": 2,
-      "divisor_agents_invoked": ["adversary", "architect"]
-    }
-  }
-}
+{"status": "ok", "data": {"pr_number": 42,
+  "path": "/repo/.uf/artifacts/feedback-triage/pr-42-round-1.json",
+  "round": 1, "bytes": 2871,
+  "counts": {"total_items": 6, "accepted": 3, "modified": 1, "rejected": 1,
+    "asked": 1, "filed": 0, "replied": 0, "tier1_count": 4, "tier2_count": 2,
+    "divisor_agents_invoked": ["adversary", "architect"]},
+  "progress_cleared": true, "warnings": [],
+  "summary": "Wrote feedback-triage round 1 for PR 42: 6 items (3 accepted, 1 modified, 1 rejected, 1 asked, 0 filed, 0 replied) to /repo/.uf/artifacts/feedback-triage/pr-42-round-1.json."}}
 ```
 
-Fields `file`, `line`, `decision_reasoning`, and `commit_sha` may be `null` (general PR comments have null file/line; REJECT/ASK items have null commit_sha).
-
-Record FILE items with `decision: "file"` and REPLY items with
-`decision: "reply"`, each with `recommendation: "author-decides"` and
-a null `commit_sha`. Take a FILE item's `filed_issue_number` and
-`filed_issue_url` from the `issue_number` and `issue_url` that
-`post_feedback_replies` returned for it; every other item has null
-for both. Count FILE items under `filed` and REPLY items under
-`replied`, not under `rejected`.
-
-After the artifact is written, call `clear_progress` with
-`command: "uf.address-feedback"` to clean up progress state.
+On an error envelope (`status: "error"`, with `code`, `message`,
+and `retryable`), report it verbatim and **STOP**.
 
 ---
 

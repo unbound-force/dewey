@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/unbound-force/unbound-force/schemas/model-matrix/v1.schema.json",
   "title": "Model Matrix Version 1",
-  "description": "Closed contract for capability-driven content-agent model selection (uf_delegate_command). The tracked file carries structure only; per-developer identities arrive via the gitignored .uf/model-matrix.override.yaml (whitelist: profiles.*.model, profiles.*.variant, classifier.llm.*). Cross-reference rules (packs/defaults/agents values must be declared profiles) and the tracked-role population rule (tracked classifier.llm must be structure-only) are loader-level runtime checks beyond plain JSON Schema expressiveness; the runtime Zod surface enforces them.",
+  "description": "Closed contract for capability-driven content-agent model selection (uf_delegate_command). The tracked file carries structure only; per-developer identities arrive via the gitignored .uf/model-matrix.override.yaml (whitelist: profiles.*.model, profiles.*.variant, classifier.llm.*). Cross-reference rules (packs/defaults/agents values must be declared profiles) and the tracked-role population rule (tracked classifier.llm must be structure-only) are loader-level runtime checks beyond plain JSON Schema expressiveness; the runtime Zod surface enforces them. The selection.footprint_margin_tokens (DELEG-FR-001) and delegation.storm_threshold (DELEG-FR-002) knob values are intentionally unconstrained here: an invalid value is replaced with the documented default plus a recorded warning by the runtime normalizer, never a load failure — the key sets under selection and delegation stay closed.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -60,6 +60,20 @@
     },
     "classifier": {
       "$ref": "#/$defs/classifier"
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "footprint_margin_tokens": {}
+      }
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "storm_threshold": {}
+      }
     }
   },
   "$defs": {

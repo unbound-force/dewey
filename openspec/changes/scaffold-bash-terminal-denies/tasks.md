@@ -111,14 +111,14 @@ allowlist parity tests.
 
 ## 3. Verification and Documentation
 
-- [ ] 3.1 [P] CI-parity gate derived from `.github/workflows/ci.yml`:
+- [x] 3.1 [P] CI-parity gate derived from `.github/workflows/ci.yml`:
   `go mod download`, `go build -v ./...`, `go vet ./...`,
   `go test -race -v -count=1 -coverprofile=coverage.out ./...`, the
   Gaze threshold gate with the repository's flags
   (`gaze crap --format=json --coverprofile=coverage.out
   --max-crapload=48 --max-gaze-crapload=45 ./...`), and golangci-lint.
   Record results in the PR body.
-- [ ] 3.2 [P] Documentation gate: AGENTS.md — add a Recent Changes
+- [x] 3.2 [P] Documentation gate: AGENTS.md — add a Recent Changes
   entry for scaffold-bash-terminal-denies (terminal metacharacter
   denies closing every scaffolded agent bash map, the backtick splice
   exception in agents.go, recomputed mirror markers, the extended
@@ -129,7 +129,7 @@ allowlist parity tests.
   stays true, extend it with one clause noting the terminal
   metacharacter denies so the scaffolded security shape is documented.
   GoDoc is covered by task 1.3.
-- [ ] 3.3 [P] Website documentation sync issue per the AGENTS.md
+- [x] 3.3 [P] Website documentation sync issue per the AGENTS.md
   website-sync rule (user-facing `dewey init` output changed): file
   `gh issue create --repo unbound-force/website --label docs` titled
   "docs: sync dewey init agent scaffold documentation" describing the
@@ -137,7 +137,7 @@ allowlist parity tests.
   curator/distiller `permission.bash` map, the explanatory comment,
   and the affected `content/docs/` pages (the dewey init and agent
   scaffold documentation). Record the issue number here:
-  website#____.
+  website#426.
 - [x] 3.4 Constitution alignment verification per the proposal's four
   PASS assessments and the design's Constitution Alignment section —
   confirm the permission map remains the self-describing enforcement

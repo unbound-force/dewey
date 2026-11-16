@@ -447,8 +447,9 @@ func TestInitCmd_ScaffoldsSlashCommands(t *testing.T) {
 // ships the weekly distill workflow template EXAMPLE into the vault —
 // the SC-008 install-from-scratch path: an adopting repository that has
 // run `dewey init` finds `.github/workflows/dewey-distill.yml.example`
-// locally, byte-identical to the tracked template, and the live
-// workflow is never installed (FR-001: the copy remains the opt-in).
+// locally, byte-identical to the payload constructed from the embedded
+// map entry and to the tracked template, and the live workflow is never
+// installed (FR-001: the copy remains the opt-in).
 func TestInitCmd_ScaffoldsDistillWorkflowExample(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -468,21 +469,25 @@ func TestInitCmd_ScaffoldsDistillWorkflowExample(t *testing.T) {
 		t.Fatalf("dewey init did not scaffold the workflow template example at %s: %v", examplePath, err)
 	}
 
-	// The scaffolded example must be byte-identical to both the embedded
-	// copy and the tracked repository file, so the three cannot drift.
+	// The scaffolded example must be byte-identical to the payload
+	// constructed from the embedded map entry — canonical body plus the
+	// trailing ownership marker (design D6: parity compares through
+	// scaffoldPayload, the same constructor the writer uses) — and to the
+	// tracked repository file, so the copies cannot drift.
 	want, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
 	if !ok {
 		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
 	}
-	if string(got) != want {
-		t.Error("scaffolded dewey-distill.yml.example differs from deweyWorkflowTemplates map entry")
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldYAML))
+	if string(got) != wantPayload {
+		t.Error("scaffolded dewey-distill.yml.example differs from deweyWorkflowTemplates map entry payload (canonical body + marker)")
 	}
 	tracked, err := os.ReadFile(filepath.Join(".github", "workflows", "dewey-distill.yml.example"))
 	if err != nil {
 		t.Fatalf("read tracked workflow template: %v", err)
 	}
-	if string(got) != string(tracked) {
-		t.Error("scaffolded dewey-distill.yml.example differs from tracked .github/workflows/dewey-distill.yml.example")
+	if string(tracked) != wantPayload {
+		t.Error("tracked .github/workflows/dewey-distill.yml.example differs from deweyWorkflowTemplates map entry payload (canonical body + marker)")
 	}
 
 	// The live workflow must NOT be installed — the copy is the opt-in.
@@ -513,22 +518,25 @@ func TestInitCmd_ScaffoldsDistillWorkflowExample(t *testing.T) {
 	}
 }
 
-// TestDistillWorkflowTemplate_ScaffoldParity asserts the embedded
-// deweyWorkflowTemplates entry stays byte-identical to the tracked
-// .github/workflows/dewey-distill.yml.example — the same parity pattern
-// the agent definitions and slash commands follow, so the scaffolded
-// copy can never drift from the reviewed template.
+// TestDistillWorkflowTemplate_ScaffoldParity asserts the tracked
+// .github/workflows/dewey-distill.yml.example stays byte-identical to the
+// payload constructed from the embedded deweyWorkflowTemplates entry —
+// canonical body plus the trailing ownership marker (design D6: compare
+// through scaffoldPayload, the same constructor the writer uses) — the same
+// parity pattern the agent definitions and slash commands follow, so the
+// scaffolded copy can never drift from the reviewed template.
 func TestDistillWorkflowTemplate_ScaffoldParity(t *testing.T) {
 	want, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
 	if !ok {
 		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
 	}
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldYAML))
 	tracked, err := os.ReadFile(filepath.Join(".github", "workflows", "dewey-distill.yml.example"))
 	if err != nil {
 		t.Fatalf("read tracked workflow template: %v", err)
 	}
-	if string(tracked) != want {
-		t.Error("tracked .github/workflows/dewey-distill.yml.example differs from deweyWorkflowTemplates map entry")
+	if string(tracked) != wantPayload {
+		t.Error("tracked .github/workflows/dewey-distill.yml.example differs from deweyWorkflowTemplates map entry payload (canonical body + marker)")
 	}
 }
 
@@ -4867,8 +4875,10 @@ func TestArtifactsPlanSync_EndToEnd(t *testing.T) {
 }
 
 // TestInitCmd_ScaffoldsDeweyPublishFromMap verifies the dewey-publish command
-// file scaffolds byte-identical to its deweySlashCommands map entry and to the
-// command file tracked in this repository (task 5.2 identity requirement).
+// file scaffolds byte-identical to the payload constructed from its
+// deweySlashCommands map entry — canonical body plus the trailing ownership
+// marker (design D6) — and to the command file tracked in this repository
+// (task 5.2 identity requirement).
 func TestInitCmd_ScaffoldsDeweyPublishFromMap(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -4895,26 +4905,31 @@ func TestInitCmd_ScaffoldsDeweyPublishFromMap(t *testing.T) {
 	if !ok {
 		t.Fatal("deweySlashCommands missing dewey-publish.md entry")
 	}
-	if string(scaffolded) != want {
-		t.Errorf("scaffolded dewey-publish.md differs from deweySlashCommands map entry")
+	// Compare through the payload constructor the writer uses (design D6):
+	// the scaffolded form is the canonical body plus the trailing marker.
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldMarkdown))
+	if string(scaffolded) != wantPayload {
+		t.Errorf("scaffolded dewey-publish.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 
-	// The command file tracked in this repo must stay identical to the map
-	// entry so scaffolded vaults and the repository ship the same command.
+	// The command file tracked in this repo must stay identical to the
+	// constructed payload so scaffolded vaults and the repository ship the
+	// same command.
 	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-publish.md"))
 	if err != nil {
 		t.Fatalf("read tracked dewey-publish.md: %v", err)
 	}
-	if string(tracked) != want {
-		t.Errorf("tracked .opencode/commands/dewey-publish.md differs from deweySlashCommands map entry")
+	if string(tracked) != wantPayload {
+		t.Errorf("tracked .opencode/commands/dewey-publish.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 }
 
 // TestInitCmd_ScaffoldsDeweyCompileFromMap verifies the dewey-compile command
-// file scaffolds byte-identical to its deweySlashCommands map entry and to the
-// command file tracked in this repository — the pair drifted once when an
-// embed regeneration synced to an unprotected tracked file, dropping the
-// <protect> wrapper the spec mandates.
+// file scaffolds byte-identical to the payload constructed from its
+// deweySlashCommands map entry — canonical body plus the trailing ownership
+// marker (design D6) — and to the command file tracked in this repository —
+// the pair drifted once when an embed regeneration synced to an unprotected
+// tracked file, dropping the <protect> wrapper the spec mandates.
 func TestInitCmd_ScaffoldsDeweyCompileFromMap(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -4941,18 +4956,22 @@ func TestInitCmd_ScaffoldsDeweyCompileFromMap(t *testing.T) {
 	if !ok {
 		t.Fatal("deweySlashCommands missing dewey-compile.md entry")
 	}
-	if string(scaffolded) != want {
-		t.Errorf("scaffolded dewey-compile.md differs from deweySlashCommands map entry")
+	// Compare through the payload constructor the writer uses (design D6):
+	// the scaffolded form is the canonical body plus the trailing marker.
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldMarkdown))
+	if string(scaffolded) != wantPayload {
+		t.Errorf("scaffolded dewey-compile.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 
-	// The command file tracked in this repo must stay identical to the map
-	// entry so scaffolded vaults and the repository ship the same command.
+	// The command file tracked in this repo must stay identical to the
+	// constructed payload so scaffolded vaults and the repository ship the
+	// same command.
 	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-compile.md"))
 	if err != nil {
 		t.Fatalf("read tracked dewey-compile.md: %v", err)
 	}
-	if string(tracked) != want {
-		t.Errorf("tracked .opencode/commands/dewey-compile.md differs from deweySlashCommands map entry")
+	if string(tracked) != wantPayload {
+		t.Errorf("tracked .opencode/commands/dewey-compile.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 }
 
@@ -5159,8 +5178,9 @@ func TestResolveArtifactsContext_BadYaml(t *testing.T) {
 }
 
 // TestInitCmd_ScaffoldsDeweyDistillFromMap verifies the dewey-distill command
-// file scaffolds byte-identical to its deweySlashCommands map entry and to the
-// command file tracked in this repository.
+// file scaffolds byte-identical to the payload constructed from its
+// deweySlashCommands map entry — canonical body plus the trailing ownership
+// marker (design D6) — and to the command file tracked in this repository.
 func TestInitCmd_ScaffoldsDeweyDistillFromMap(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -5186,22 +5206,27 @@ func TestInitCmd_ScaffoldsDeweyDistillFromMap(t *testing.T) {
 	if !ok {
 		t.Fatal("deweySlashCommands missing dewey-distill.md entry")
 	}
-	if string(scaffolded) != want {
-		t.Errorf("scaffolded dewey-distill.md differs from deweySlashCommands map entry")
+	// Compare through the payload constructor the writer uses (design D6):
+	// the scaffolded form is the canonical body plus the trailing marker.
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldMarkdown))
+	if string(scaffolded) != wantPayload {
+		t.Errorf("scaffolded dewey-distill.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 
 	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill.md"))
 	if err != nil {
 		t.Fatalf("read tracked dewey-distill.md: %v", err)
 	}
-	if string(tracked) != want {
-		t.Errorf("tracked .opencode/commands/dewey-distill.md differs from deweySlashCommands map entry")
+	if string(tracked) != wantPayload {
+		t.Errorf("tracked .opencode/commands/dewey-distill.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 }
 
 // TestInitCmd_ScaffoldsCuratorAgentFromMap verifies the curator agent
-// definition scaffolds byte-identical to its deweyAgentDefinitions map
-// entry and to the agent file tracked in this repository.
+// definition scaffolds byte-identical to the payload constructed from its
+// deweyAgentDefinitions map entry — canonical body plus the trailing
+// ownership marker (design D6) — and to the agent file tracked in this
+// repository.
 func TestInitCmd_ScaffoldsCuratorAgentFromMap(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -5227,16 +5252,19 @@ func TestInitCmd_ScaffoldsCuratorAgentFromMap(t *testing.T) {
 	if !ok {
 		t.Fatal("deweyAgentDefinitions missing curator.md entry")
 	}
-	if string(scaffolded) != want {
-		t.Errorf("scaffolded curator.md differs from deweyAgentDefinitions map entry")
+	// Compare through the payload constructor the writer uses (design D6):
+	// the scaffolded form is the canonical body plus the trailing marker.
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldMarkdown))
+	if string(scaffolded) != wantPayload {
+		t.Errorf("scaffolded curator.md differs from deweyAgentDefinitions map entry payload (canonical body + marker)")
 	}
 
 	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "curator.md"))
 	if err != nil {
 		t.Fatalf("read tracked curator.md: %v", err)
 	}
-	if string(tracked) != want {
-		t.Errorf("tracked .opencode/agents/curator.md differs from deweyAgentDefinitions map entry")
+	if string(tracked) != wantPayload {
+		t.Errorf("tracked .opencode/agents/curator.md differs from deweyAgentDefinitions map entry payload (canonical body + marker)")
 	}
 }
 
@@ -6357,10 +6385,11 @@ func distillerBodyToolNames(body string) []string {
 
 // TestInitCmd_ScaffoldsDistillAutoCommand verifies the unattended distill
 // entry point ships to adopting repositories: `dewey init` scaffolds
-// .opencode/commands/dewey-distill-auto.md byte-identical to its
-// deweySlashCommands map entry and to the tracked command file — without
-// it, the gh-hud dispatch contract (/dewey-distill-auto #N) would invoke
-// a command the adopting repo never received.
+// .opencode/commands/dewey-distill-auto.md byte-identical to the payload
+// constructed from its deweySlashCommands map entry — canonical body plus
+// the trailing ownership marker (design D6) — and to the tracked command
+// file — without it, the gh-hud dispatch contract (/dewey-distill-auto #N)
+// would invoke a command the adopting repo never received.
 func TestInitCmd_ScaffoldsDistillAutoCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -6385,15 +6414,18 @@ func TestInitCmd_ScaffoldsDistillAutoCommand(t *testing.T) {
 	if !ok {
 		t.Fatal("deweySlashCommands missing dewey-distill-auto.md entry")
 	}
-	if string(scaffolded) != want {
-		t.Errorf("scaffolded dewey-distill-auto.md differs from deweySlashCommands map entry")
+	// Compare through the payload constructor the writer uses (design D6):
+	// the scaffolded form is the canonical body plus the trailing marker.
+	wantPayload := string(scaffoldPayload([]byte(want), scaffoldMarkdown))
+	if string(scaffolded) != wantPayload {
+		t.Errorf("scaffolded dewey-distill-auto.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 	tracked, err := os.ReadFile(filepath.Join(".opencode", "commands", "dewey-distill-auto.md"))
 	if err != nil {
 		t.Fatalf("read tracked dewey-distill-auto.md: %v", err)
 	}
-	if string(scaffolded) != string(tracked) {
-		t.Error("scaffolded dewey-distill-auto.md differs from tracked .opencode/commands/dewey-distill-auto.md")
+	if string(tracked) != wantPayload {
+		t.Error("tracked .opencode/commands/dewey-distill-auto.md differs from deweySlashCommands map entry payload (canonical body + marker)")
 	}
 }
 

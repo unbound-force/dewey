@@ -83,3 +83,4 @@ jobs:
               --title "Weekly dewey-distill" \
               --body "Dispatch: /dewey-distill-auto"
           fi
+# dewey:scaffold dev sha256:4bbee1466dad4633c7ea910cb459d37e65f50d2fd6c4ee6fc1773e218aa5e222

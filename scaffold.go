@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -187,4 +192,196 @@ func classifyScaffold(existing []byte, exists bool, embeddedBody []byte) scaffol
 		return scaffoldUpdate
 	}
 	return scaffoldSkip
+}
+
+// scaffoldToolOwnedFiles drives one embedded scaffold map through the shared
+// tool-owned write discipline of design D4 (DI-FR-001, DIO-FR-004,
+// DIO-FR-006): for every name-to-body entry in files it manages dir/name —
+// creating it with the kind's marker plus canonical payload when missing,
+// refreshing it when verifiably untouched but drifted, and preserving it
+// when customized. Entries are visited in sorted key order so outcome
+// events, and any failure the run reports, are deterministic across runs.
+// dir is created (0o755) when absent; a creation failure fails the run
+// naming the directory.
+//
+// Per path, classification inputs are acquired per design D3's
+// input-acquisition rules (classifyScaffoldPath): os.Lstat first — a
+// symlinked path is skipped as customized without reading or writing
+// through it — then os.ReadFile, whose failure fails the run naming the
+// path rather than masquerading as a customization. The selected decision
+// maps to its filesystem action and observability event:
+//
+//   - scaffoldCreate: exclusive create via createScaffoldFile (logs
+//     `scaffolded <label>`, or `skip (concurrent)` when a concurrent init
+//     wins the create race);
+//   - scaffoldUpdate: atomic temp-and-rename replace via updateScaffoldFile
+//     (logs `updated <label>`);
+//   - scaffoldSkip: no filesystem mutation, `skip (customized)` logged;
+//   - scaffoldCurrent: no write, no event (idempotent silence).
+//
+// label carries the kind context for outcome events ("slash command",
+// "agent", "workflow template example"), keeping the log lines the init
+// command already emits for each kind.
+func scaffoldToolOwnedFiles(dir string, files map[string]string, kind scaffoldKind, label string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create directory %s: %w", dir, err)
+	}
+	// Iterate in sorted name order: outcomes and any failure the run
+	// reports stay deterministic — map order would randomize which path a
+	// write failure names.
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		body := []byte(files[name])
+		decision, err := classifyScaffoldPath(path, body)
+		if err != nil {
+			return err
+		}
+		switch decision {
+		case scaffoldCreate:
+			if err := createScaffoldFile(path, scaffoldPayload(body, kind), label); err != nil {
+				return err
+			}
+		case scaffoldUpdate:
+			if err := updateScaffoldFile(dir, path, scaffoldPayload(body, kind), label); err != nil {
+				return err
+			}
+		case scaffoldSkip:
+			logger.Info("skip (customized)", "path", path)
+		case scaffoldCurrent:
+			// Idempotent silence (D4): a verifiably current scaffold
+			// is neither written nor logged.
+		}
+	}
+	return nil
+}
+
+// classifyScaffoldPath acquires the classification inputs for one
+// tool-owned path from the filesystem, wrapping the pure classifyScaffold
+// decision table with the input-acquisition rules of design D3 that the
+// table does not enumerate (DIO-FR-004's symlink and unreadable rows). The
+// decision value is meaningful only when the returned error is nil; a
+// non-nil error fails the run naming the path.
+//
+// os.Lstat is deliberate — never os.Stat — so a symlinked tool-owned path
+// is classified as customized without reading content and without writing
+// through the link: the symlink is never replaced by a regular file and
+// its referent is never touched, matching the TOCTOU posture of promote's
+// symlink guard (PW-FR-004). A path that becomes a symlink between this
+// check and a later write is likewise not followed — no write ever reaches
+// the referent.
+//
+// A missing path (Lstat reports not-exist) classifies as scaffoldCreate.
+// Any other Lstat failure, or a ReadFile failure on an existing path — a
+// permission error, a directory sitting at the path, a transient I/O error
+// — fails the run naming the path: an environment failure must never be
+// mislabeled as the customized outcome, which would mask it from the
+// operator.
+func classifyScaffoldPath(path string, embeddedBody []byte) (scaffoldDecision, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return scaffoldCreate, nil
+		}
+		return scaffoldSkip, fmt.Errorf("stat scaffold %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// A symlink is a user statement about the path: treat it as
+		// customized without touching the link or its referent.
+		return scaffoldSkip, nil
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return scaffoldSkip, fmt.Errorf("read scaffold %s: %w", path, err)
+	}
+	return classifyScaffold(existing, true, embeddedBody), nil
+}
+
+// createScaffoldFile performs the create arm of the shared scaffold
+// discipline (design D4, DI-FR-001). It creates path exclusively
+// (O_CREATE|O_EXCL, 0o644) holding payload, preserving the existing agent
+// write discipline verbatim: a failed or partial write is rolled back — the
+// partial file is removed so a later run does not mistake the residue for a
+// user-owned file — and the failure fails the run naming the path.
+//
+// One exception is specified for the benign concurrency race: an EEXIST
+// from the exclusive open means a concurrent `dewey init` created the path
+// between classification and the open. The run does not fail and does not
+// replace the concurrent writer's file; it logs `skip (concurrent)` at info
+// naming the path and continues (the concurrent run's own `scaffolded`
+// event covers observability for that path). On success it logs
+// `scaffolded <label>` naming the path.
+//
+// The EEXIST branch is why this arm is factored out of
+// scaffoldToolOwnedFiles: invoking the function against an already-present
+// path makes the concurrent-create behavior directly testable without
+// reproducing the race itself.
+func createScaffoldFile(path string, payload []byte, label string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			logger.Info("skip (concurrent)", "path", path)
+			return nil
+		}
+		return fmt.Errorf("scaffold %s: %w", path, err)
+	}
+	if _, writeErr := f.Write(payload); writeErr != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("scaffold %s: %w", path, writeErr)
+	}
+	if closeErr := f.Close(); closeErr != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("scaffold %s: %w", path, closeErr)
+	}
+	logger.Info("scaffolded "+label, "path", path)
+	return nil
+}
+
+// updateScaffoldFile performs the update arm of the shared scaffold
+// discipline (design D4, DI-FR-001). It replaces path with payload through
+// a temp file created in the target directory followed by an atomic
+// os.Rename, so a failed update leaves the original file intact and no
+// partial residue: either the rename completes or the original stands.
+// Creating the temp in dir keeps the rename off any filesystem boundary
+// where rename would degrade to copy-and-unlink. The temp uses a hidden
+// `.dewey-scaffold-*` name — crash residue is never mistaken for user
+// content — and is chmod'd to 0o644 to match the create arm (CreateTemp
+// defaults to 0o600). Any failure — temp creation, write, chmod, close, or
+// rename — removes the temp file and fails the run naming the path, so the
+// original file is never lost. On success it logs `updated <label>` naming
+// the path. The rename never executes against a path classified as a
+// symlink: the Lstat gate in classifyScaffoldPath precedes it.
+func updateScaffoldFile(dir, path string, payload []byte, label string) error {
+	tmp, err := os.CreateTemp(dir, ".dewey-scaffold-*")
+	if err != nil {
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	// Atomic on the supported platforms: path ends up fully the new
+	// payload or fully the original file.
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("update %s: %w", path, err)
+	}
+	logger.Info("updated "+label, "path", path)
+	return nil
 }

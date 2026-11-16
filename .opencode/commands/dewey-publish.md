@@ -96,3 +96,4 @@ the PR merges, the published artifacts are committed on the default
 branch — pull locally and the working-tree copies reconcile; restart the
 Dewey MCP server afterward (learnings are re-ingested at serve startup).
 </protect>
+<!-- dewey:scaffold dev sha256:1745c8b91c34ac2af86ac633abea92e34aeef0f715d5e1e4b9edd5ea33713952 -->

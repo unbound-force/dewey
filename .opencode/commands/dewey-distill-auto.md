@@ -157,3 +157,4 @@ via merge of `human-gate` PR enables #203 trust derivation (`dewey doctor` shows
 - Never call `promote` or validate without human merge.
 - Keep API keys out of logs.
 </protect>
+<!-- dewey:scaffold dev sha256:db7f12b8e835f6a8df19a15ef11903b37a8966551f19d3ad3874abeb79b4f45a -->

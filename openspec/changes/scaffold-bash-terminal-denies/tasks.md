@@ -30,14 +30,14 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Confirm the change artifacts under
+- [x] 0.1 Confirm the change artifacts under
   `openspec/changes/scaffold-bash-terminal-denies/` are committed and
   pushed on `opsx/scaffold-bash-terminal-denies` (Spec Commit Gate),
   and that the working tree is clean before implementation starts.
 
 ## 1. Embedded Agent Templates (agents.go)
 
-- [ ] 1.1 In `deweyAgentDefinitions["curator.md"]`, insert the exact
+- [x] 1.1 In `deweyAgentDefinitions["curator.md"]`, insert the exact
   10-line terminal-deny block from design D1 after the
   `"dewey gate auto-answer": allow` line (agents.go:47) and before the
   closing `---`: the 3-line comment ("Terminal catch-all denies,
@@ -49,12 +49,12 @@
   close the raw string literal after `"*`, concatenate the
   interpreted string `"`"``, resume the raw literal with `*": deny`
   (the established `+ "`" +` technique from slash_commands.go).
-- [ ] 1.2 In `deweyAgentDefinitions["distiller.md"]`, insert the same
+- [x] 1.2 In `deweyAgentDefinitions["distiller.md"]`, insert the same
   10-line block (design D1, same splice for `` *`* ``) after the
   `"gh issue comment": allow` line (agents.go:148) and before the
   closing `---`, so the map reads: `"*": deny`, the three allows,
   then the seven terminal denies as the final entries.
-- [ ] 1.3 Update the `deweyAgentDefinitions` doc comment
+- [x] 1.3 Update the `deweyAgentDefinitions` doc comment
   (agents.go:11-12) with the exact replacement text from design D2,
   documenting the `` "*`*" `` terminal-deny key as the single
   backtick exception spliced via Go string concatenation. Keep the
@@ -69,7 +69,7 @@ here — mid-sequence failures are coupling, not regressions.
 
 ## 2. Tracked Mirrors and Shape Guards (mirrors, cli_test.go)
 
-- [ ] 2.1 Regenerate the tracked mirrors per design D3: build the
+- [x] 2.1 Regenerate the tracked mirrors per design D3: build the
   binary (`go build`), run `dewey init --vault .` at the repository
   root, and verify `git status` / `git diff` shows exactly two changed
   files — `.opencode/agents/curator.md` and
@@ -78,7 +78,7 @@ here — mid-sequence failures are coupling, not regressions.
   digest line — while the slash commands, workflow example, `.uf/dewey/`
   config files, `.opencode/dcp.jsonc`, and `.gitignore` are unchanged.
   The run must log `updated agent` for exactly the two agent paths.
-- [ ] 2.2 Extend `assertCuratorFrontmatterShape` in cli_test.go
+- [x] 2.2 Extend `assertCuratorFrontmatterShape` in cli_test.go
   (design D4): grow the ordered, length-exact `wantBash` list
   (cli_test.go:5891-5897) from two entries to the nine-entry sequence
   — `{"*", "deny"}`, `{"dewey gate auto-answer", "allow"}`, then the
@@ -86,13 +86,13 @@ here — mid-sequence failures are coupling, not regressions.
   the length-mismatch error message to name the new shape. YAML
   comment lines are invisible to the `yaml.Node` walk, so `bashPairs`
   counts exactly the nine mapping entries.
-- [ ] 2.3 Extend `assertDistillerFrontmatterShape` in cli_test.go
+- [x] 2.3 Extend `assertDistillerFrontmatterShape` in cli_test.go
   (design D5): add the ordered last-7 assertion — the mapping's final
   seven `bashPairs` entries are exactly the seven terminal deny keys
   in canonical order, each `deny` — and add `gh issue comment` to the
   allow-preservation loop beside the two startup gates (DI-FR-004).
   Keep the existing `"*": deny` check.
-- [ ] 2.4 Doctored-fixture cases executing the new rejection arms
+- [x] 2.4 Doctored-fixture cases executing the new rejection arms
   (design D4/D5): add two rows to
   `TestCuratorAgent_GuardsRejectDoctoredDocuments` — a terminal deny
   deleted (expects the `permission.bash has 8 entries` length

@@ -10,6 +10,11 @@ package main
 //
 // The contents are raw string literals, so an agent definition MUST
 // NOT contain a backtick; use quotes for inline identifiers instead.
+// The single exception is the "*`*" terminal-deny key that every
+// permission.bash map ends with (scaffold-bash-terminal-denies,
+// DI-FR-003): a backtick cannot appear in a raw string literal, so
+// the templates splice it in through Go string concatenation — the
+// `+ "`" +` technique slash_commands.go established.
 var deweyAgentDefinitions = map[string]string{
 	"curator.md": `---
 description: >
@@ -45,6 +50,16 @@ permission:
   bash:
     "*": deny
     "dewey gate auto-answer": allow
+    # Terminal catch-all denies, placed last so they win over every
+    # allow on any prefix: each shell metacharacter is a chaining,
+    # redirection, or substitution vector.
+    "*>*": deny
+    "*<*": deny
+    "*|*": deny
+    "*;*": deny
+    "*&*": deny
+    "*$(*": deny
+    "*` + "`" + `*": deny
 ---
 
 # Curator Agent
@@ -146,6 +161,16 @@ permission:
     "dewey gate auto-answer": allow
     "dewey gate distill-unattended": allow
     "gh issue comment": allow
+    # Terminal catch-all denies, placed last so they win over every
+    # allow on any prefix: each shell metacharacter is a chaining,
+    # redirection, or substitution vector.
+    "*>*": deny
+    "*<*": deny
+    "*|*": deny
+    "*;*": deny
+    "*&*": deny
+    "*$(*": deny
+    "*` + "`" + `*": deny
 ---
 
 # Distiller Agent

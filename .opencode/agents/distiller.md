@@ -35,6 +35,16 @@ permission:
     "dewey gate auto-answer": allow
     "dewey gate distill-unattended": allow
     "gh issue comment": allow
+    # Terminal catch-all denies, placed last so they win over every
+    # allow on any prefix: each shell metacharacter is a chaining,
+    # redirection, or substitution vector.
+    "*>*": deny
+    "*<*": deny
+    "*|*": deny
+    "*;*": deny
+    "*&*": deny
+    "*$(*": deny
+    "*`*": deny
 ---
 
 # Distiller Agent
@@ -115,4 +125,4 @@ Only the global "opencode-supervisor" "command: dewey-distill-auto" profile may
 narrow or widen this allowlist; repo-local ".opencode/supervisor.yaml" additions
 for distiller are ignored. Verified by config-precedence test where repo-local
 "question" add remains denied.
-<!-- dewey:scaffold dev sha256:9e1c30544781f16ff994c12b91a15e19e6ff6d1757121953081416bee728f074 -->
+<!-- dewey:scaffold dev sha256:983be56212db65230b355cfc3e10e3f73914a6e96721aa890258172896475a53 -->

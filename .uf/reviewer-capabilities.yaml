@@ -1,6 +1,5 @@
 # Canonical eligibility policy for Divisor personas.
 version: 1
-
 reviewers:
   - agent: divisor-adversary
     capability: review
@@ -44,4 +43,8 @@ reviewers:
   - agent: divisor-scribe
     capability: content
     scopes: []
+  - agent: divisor-gaze-testing
+    capability: review
+    scopes:
+      - test-quality
 # scaffolded by uf vdev

@@ -129,7 +129,7 @@
 
 ## 3. Acceptance and Parity Tests (cli_test.go, tracked copies)
 
-- [ ] 3.1 Acceptance tests in `cli_test.go` driving `newInitCmd()` with
+- [x] 3.1 Acceptance tests in `cli_test.go` driving `newInitCmd()` with
   `--vault` per the delta specs: (a) re-init refreshes an untouched
   drifted command (fixture = valid marker over a fake older body),
   rewriting it to the embedded payload with a fresh marker; (b) an
@@ -177,7 +177,7 @@
   config files, `.opencode/dcp.jsonc`, and `.gitignore` are unchanged.
   This exercises the marker-bootstrap path on the repo's own
   byte-identical copies.
-- [ ] 3.4 Audit every remaining `TestInitCmd_*` test
+- [x] 3.4 Audit every remaining `TestInitCmd_*` test
   (`TestInitCmd_Idempotent`, `TestInitCmd_ReInitScaffoldsNewCommands`,
   `TestInitCmd_MigratesOldCommandDir`,
   `TestInitCmd_MigrationSkipsExistingInNewDir`,

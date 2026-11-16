@@ -7257,3 +7257,928 @@ func TestEmbeddingDegradationFields(t *testing.T) {
 		}
 	})
 }
+
+// --- Tool-owned scaffold refresh acceptance tests (task 3.1,
+// openspec/changes/tool-owned-scaffold-updates) ---
+//
+// These tests drive newInitCmd() with --vault over t.TempDir() trees to
+// enforce the dewey-init delta (DI-FR-001/DI-FR-002) and the
+// dewey-init-ownership delta (DIO-FR-001 .. DIO-FR-006) end to end:
+// refresh of untouched drifted scaffolds per kind, preservation of
+// customized files, marker bootstrap of byte-identical marker-less files,
+// first-init marker parity, the composability guard, migration-then-
+// classification ordering, outcome observability, deterministic iteration
+// order, and non-map preservation. Fixtures are built with the same
+// marker-plus-payload constructors the writer uses (scaffoldPayload,
+// markdownMarkerLine, withFinalLine from scaffold_test.go) so each fixture
+// is by construction the on-disk form of the scaffold state it simulates.
+
+// olderScaffoldBody derives a fake older-release body from an embedded
+// scaffold map value: it differs from the current payload everywhere
+// classification can see while remaining a realistic file of its kind.
+// Markdown bodies append an HTML comment (their frontmatter must stay
+// first); YAML bodies prepend a `#` comment (their block scalars must stay
+// last).
+func olderScaffoldBody(embedded string, kind scaffoldKind) string {
+	if kind == scaffoldYAML {
+		return "# scaffolded by an older dewey release\n" + embedded
+	}
+	return embedded + "\n<!-- scaffolded by an older dewey release -->\n"
+}
+
+// driftedScaffoldFixture builds what an untouched scaffold of an older Dewey
+// version looks like on disk (the DIO-FR-004 "Untouched, drifted" row): a
+// marker whose digest still matches the body it was written over, where
+// that body differs from the current embedded payload.
+func driftedScaffoldFixture(t *testing.T, embedded string, kind scaffoldKind) []byte {
+	t.Helper()
+	fixture := scaffoldPayload([]byte(olderScaffoldBody(embedded, kind)), kind)
+	digest, payload, ok := parseScaffoldMarker(fixture)
+	if !ok || digest != sha256Hex(payload) {
+		t.Fatalf("fixture precondition: marker must be valid for the older body")
+	}
+	return fixture
+}
+
+// customizedScaffoldFixture builds the DIO-FR-004 customized scenario: a
+// file that was scaffolded with a valid marker and whose body was then
+// edited, so the marker's digest no longer matches the bytes preceding it.
+func customizedScaffoldFixture(t *testing.T, embedded string, kind scaffoldKind) []byte {
+	t.Helper()
+	scaffolded := scaffoldPayload([]byte(embedded), kind)
+	_, payload, ok := parseScaffoldMarker(scaffolded)
+	if !ok {
+		t.Fatal("fixture precondition: scaffoldPayload output must end in a parseable marker")
+	}
+	// Keep the original marker line verbatim (with its now-stale digest) and
+	// edit only the payload bytes preceding it.
+	marker := strings.TrimSuffix(string(scaffolded[len(payload):]), "\n")
+	edited := append(bytes.Clone(payload), []byte("a user edit made after scaffolding\n")...)
+	return withFinalLine(edited, marker)
+}
+
+// scaffoldOutcomeEvents extracts the tool-owned scaffold outcome events
+// (DIO-FR-006) from captured init log output, in order. Each line is
+// normalized to start at its event text so the logger's prefix and
+// timestamp never participate in comparisons, and carries the path= value
+// naming the target through the end of the line.
+func scaffoldOutcomeEvents(logs string) []string {
+	markers := []string{
+		"scaffolded slash command",
+		"scaffolded agent",
+		"scaffolded workflow template example",
+		"updated slash command",
+		"updated agent",
+		"updated workflow template example",
+		"skip (customized)",
+		"skip (concurrent)",
+	}
+	var events []string
+	for _, line := range strings.Split(logs, "\n") {
+		for _, marker := range markers {
+			if idx := strings.Index(line, marker); idx >= 0 {
+				events = append(events, line[idx:])
+				break
+			}
+		}
+	}
+	return events
+}
+
+// hasOutcomeEvent reports whether events contains a line matching event
+// that also names path.
+func hasOutcomeEvent(events []string, event, path string) bool {
+	for _, e := range events {
+		if strings.Contains(e, event) && strings.Contains(e, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// prepareMixedOutcomeVault builds a vault whose single init run produces
+// outcome events across all three tool-owned kinds: every slash command
+// missing (scaffolded), curator.md an untouched drifted scaffold (updated),
+// distiller.md missing (scaffolded), and a customized workflow template
+// example (skip). The determinism test materializes this same vault state
+// twice — as two identically-prepared vaults — so neither run's writes feed
+// the other's inputs.
+func prepareMixedOutcomeVault(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+	curator, ok := deweyAgentDefinitions["curator.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing curator.md entry")
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "curator.md"), driftedScaffoldFixture(t, curator, scaffoldMarkdown), 0o644); err != nil {
+		t.Fatalf("write drifted curator.md: %v", err)
+	}
+
+	workflowsDir := filepath.Join(tmpDir, ".github", "workflows")
+	if err := os.MkdirAll(workflowsDir, 0o755); err != nil {
+		t.Fatalf("create workflows dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowsDir, "dewey-distill.yml.example"), []byte("# user-customized example\n"), 0o644); err != nil {
+		t.Fatalf("write customized workflow example: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	return tmpDir
+}
+
+// TestInitCmd_ReInitRefreshesUntouchedDriftedCommand enforces the DI-FR-002
+// scenario "Re-init after upgrade refreshes untouched commands": a command
+// scaffolded by an older Dewey — its marker digest still valid for its
+// body, but that body differs from the current embedded payload — is
+// rewritten to the embedded payload with a fresh marker, while missing
+// commands are still created and the refresh logs `updated` naming the path.
+func TestInitCmd_ReInitRefreshesUntouchedDriftedCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// The vault was initialized by an older Dewey release: .uf/dewey exists
+	// and dewey-compile.md is an untouched scaffold of that older version.
+	deweyDir := filepath.Join(tmpDir, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("create .uf/dewey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte("# existing config\n"), 0o644); err != nil {
+		t.Fatalf("write existing config.yaml: %v", err)
+	}
+
+	embedded, ok := deweySlashCommands["dewey-compile.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-compile.md entry")
+	}
+	driftedPath := filepath.Join(cmdDir, "dewey-compile.md")
+	drifted := driftedScaffoldFixture(t, embedded, scaffoldMarkdown)
+	oldDigest, _, ok := parseScaffoldMarker(drifted)
+	if !ok {
+		t.Fatal("fixture precondition: drifted command must carry a parseable marker")
+	}
+	if err := os.WriteFile(driftedPath, drifted, 0o644); err != nil {
+		t.Fatalf("write drifted command: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("re-init failed: %v", err)
+	}
+
+	got, err := os.ReadFile(driftedPath)
+	if err != nil {
+		t.Fatalf("read refreshed command: %v", err)
+	}
+	if want := scaffoldPayload([]byte(embedded), scaffoldMarkdown); !bytes.Equal(got, want) {
+		t.Errorf("refreshed dewey-compile.md = %q, want the current embedded scaffoldPayload %q", got, want)
+	}
+
+	// DIO-FR-002 "Rewritten file carries a fresh marker": the new marker
+	// verifies against the new payload and no longer records the older
+	// body's digest.
+	newDigest, payload, ok := parseScaffoldMarker(got)
+	if !ok {
+		t.Fatalf("refreshed command does not end in a parseable marker:\n%s", got)
+	}
+	if want := sha256Hex(canonicalBody(embedded)); newDigest != want {
+		t.Errorf("refreshed marker digest = %q, want the current payload's digest %q", newDigest, want)
+	}
+	if newDigest == oldDigest {
+		t.Error("refreshed marker kept the older body's digest; the rewrite must carry a fresh marker")
+	}
+	if !bytes.Equal(payload, canonicalBody(embedded)) {
+		t.Errorf("refreshed marker payload = %q, want the current canonical body %q", payload, canonicalBody(embedded))
+	}
+
+	// Missing commands are still created alongside the refresh (DI-FR-002).
+	if _, err := os.Stat(filepath.Join(cmdDir, "dewey-store.md")); err != nil {
+		t.Errorf("missing command dewey-store.md was not created on re-init: %v", err)
+	}
+
+	events := scaffoldOutcomeEvents(logBuf.String())
+	if !hasOutcomeEvent(events, "updated slash command", driftedPath) {
+		t.Errorf("the refresh must log `updated slash command` naming %s; events:\n%s", driftedPath, strings.Join(events, "\n"))
+	}
+}
+
+// TestInitCmd_UntouchedCurrentScaffoldNotRewritten enforces the DIO-FR-004
+// scenario "Untouched current scaffold is left alone": a scaffold already
+// equal to the embedded payload is not rewritten — bytes and mtime are
+// preserved — and no outcome event is logged for it (idempotent silence).
+func TestInitCmd_UntouchedCurrentScaffoldNotRewritten(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	entry, ok := deweySlashCommands["dewey-store.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-store.md entry")
+	}
+	path := filepath.Join(cmdDir, "dewey-store.md")
+	current := scaffoldPayload([]byte(entry), scaffoldMarkdown)
+	if err := os.WriteFile(path, current, 0o644); err != nil {
+		t.Fatalf("write current scaffold: %v", err)
+	}
+
+	// Pin a recognizable old mtime, then re-stat it: the filesystem may
+	// round the stored timestamp, so the comparison baseline is what it
+	// actually kept. Any rewrite — create or temp-and-rename — would set a
+	// fresh mtime hours away.
+	forced := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(path, forced, forced); err != nil {
+		t.Fatalf("pin mtime: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat before init: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after init: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("current scaffold was rewritten: mtime changed from %v to %v", before.ModTime(), after.ModTime())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read current scaffold: %v", err)
+	}
+	if !bytes.Equal(got, current) {
+		t.Errorf("current scaffold bytes changed: got %q, want %q", got, current)
+	}
+
+	// Idempotent silence: no outcome event names this path.
+	for _, e := range scaffoldOutcomeEvents(logBuf.String()) {
+		if strings.Contains(e, path) {
+			t.Errorf("current scaffold must log no outcome event; got %q", e)
+		}
+	}
+}
+
+// TestInitCmd_CustomizedScaffoldPreservedByteForByte enforces the DIO-FR-004
+// scenario "Customized scaffold is preserved": a scaffold whose marker digest
+// no longer matches its body (the body was edited after scaffolding) is left
+// untouched — not modified, moved, renamed, or deleted — and
+// `skip (customized)` is logged naming the path.
+func TestInitCmd_CustomizedScaffoldPreservedByteForByte(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	entry, ok := deweySlashCommands["dewey-curate.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-curate.md entry")
+	}
+	path := filepath.Join(cmdDir, "dewey-curate.md")
+	customized := customizedScaffoldFixture(t, entry, scaffoldMarkdown)
+	if err := os.WriteFile(path, customized, 0o644); err != nil {
+		t.Fatalf("write customized scaffold: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read customized scaffold: %v", err)
+	}
+	if !bytes.Equal(got, customized) {
+		t.Errorf("customized scaffold was modified: got %q, want byte-identical %q", got, customized)
+	}
+	events := scaffoldOutcomeEvents(logBuf.String())
+	if !hasOutcomeEvent(events, "skip (customized)", path) {
+		t.Errorf("customized scaffold must log `skip (customized)` naming %s; events:\n%s", path, strings.Join(events, "\n"))
+	}
+}
+
+// TestInitCmd_MarkerlessIdenticalGainsMarker enforces the DIO-FR-004
+// scenario "Pre-marker legacy scaffold that is byte-identical gains the
+// marker": a file with no marker whose content is byte-identical to the
+// current embedded payload is rewritten with the marker plus the same
+// payload, and `updated` is logged naming the path.
+func TestInitCmd_MarkerlessIdenticalGainsMarker(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	entry, ok := deweySlashCommands["dewey-publish.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-publish.md entry")
+	}
+	path := filepath.Join(cmdDir, "dewey-publish.md")
+	// The pre-marker form: exactly the embedded payload, no marker line.
+	if err := os.WriteFile(path, canonicalBody(entry), 0o644); err != nil {
+		t.Fatalf("write marker-less command: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read marker-bootstrapped command: %v", err)
+	}
+	want := scaffoldPayload([]byte(entry), scaffoldMarkdown)
+	if !bytes.Equal(got, want) {
+		t.Errorf("marker-bootstrapped command = %q, want the exact scaffoldPayload %q", got, want)
+	}
+	events := scaffoldOutcomeEvents(logBuf.String())
+	if !hasOutcomeEvent(events, "updated slash command", path) {
+		t.Errorf("marker bootstrap must log `updated slash command` naming %s; events:\n%s", path, strings.Join(events, "\n"))
+	}
+}
+
+// TestInitCmd_MarkerlessDifferingPreserved enforces the DIO-FR-004 scenario
+// "Pre-marker legacy scaffold that differs is preserved": a marker-less file
+// whose content differs from the current embedded payload is treated as
+// customized — unchanged, with `skip (customized)` logged (the legacy safe
+// default).
+func TestInitCmd_MarkerlessDifferingPreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	path := filepath.Join(cmdDir, "dewey-index.md")
+	legacy := []byte("# legacy command scaffolded by a pre-marker dewey\n\nwith local edits\n")
+	if err := os.WriteFile(path, legacy, 0o644); err != nil {
+		t.Fatalf("write legacy command: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read legacy command: %v", err)
+	}
+	if !bytes.Equal(got, legacy) {
+		t.Errorf("legacy marker-less command was modified: got %q, want byte-identical %q", got, legacy)
+	}
+	events := scaffoldOutcomeEvents(logBuf.String())
+	if !hasOutcomeEvent(events, "skip (customized)", path) {
+		t.Errorf("legacy marker-less command must log `skip (customized)` naming %s; events:\n%s", path, strings.Join(events, "\n"))
+	}
+}
+
+// TestInitCmd_MalformedMarkerPreserved enforces the DIO-FR-004 scenario
+// "Malformed marker is treated as customized": a tool-owned path whose final
+// line contains dewey:scaffold but whose digest field is not 64 lowercase
+// hex characters is unchanged, with `skip (customized)` logged.
+func TestInitCmd_MalformedMarkerPreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	entry, ok := deweySlashCommands["dewey-reindex.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-reindex.md entry")
+	}
+	path := filepath.Join(cmdDir, "dewey-reindex.md")
+	// The final line carries the dewey:scaffold token, but "deadbeef" is
+	// not 64 lowercase hex characters — a malformed digest field.
+	malformed := withFinalLine(canonicalBody(entry), markdownMarkerLine("dev", "deadbeef"))
+	if err := os.WriteFile(path, malformed, 0o644); err != nil {
+		t.Fatalf("write malformed-marker command: %v", err)
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read malformed-marker command: %v", err)
+	}
+	if !bytes.Equal(got, malformed) {
+		t.Errorf("malformed-marker command was modified: got %q, want byte-identical %q", got, malformed)
+	}
+	events := scaffoldOutcomeEvents(logBuf.String())
+	if !hasOutcomeEvent(events, "skip (customized)", path) {
+		t.Errorf("malformed-marker command must log `skip (customized)` naming %s; events:\n%s", path, strings.Join(events, "\n"))
+	}
+}
+
+// TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample enforces the
+// DI-FR-002 scenario "Re-init refreshes untouched agents and workflow
+// example": an untouched drifted curator.md and an untouched drifted
+// dewey-distill.yml.example are both rewritten with the current embedded
+// content plus fresh markers (DIO-FR-002).
+func TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+	workflowsDir := filepath.Join(tmpDir, ".github", "workflows")
+	if err := os.MkdirAll(workflowsDir, 0o755); err != nil {
+		t.Fatalf("create workflows dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	curator, ok := deweyAgentDefinitions["curator.md"]
+	if !ok {
+		t.Fatal("deweyAgentDefinitions missing curator.md entry")
+	}
+	workflow, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
+	if !ok {
+		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
+	}
+
+	type refreshTarget struct {
+		label     string
+		path      string
+		embedded  string
+		kind      scaffoldKind
+		oldDigest string
+	}
+	targets := []refreshTarget{
+		{
+			label:    "agent",
+			path:     filepath.Join(agentsDir, "curator.md"),
+			embedded: curator,
+			kind:     scaffoldMarkdown,
+		},
+		{
+			label:    "workflow template example",
+			path:     filepath.Join(workflowsDir, "dewey-distill.yml.example"),
+			embedded: workflow,
+			kind:     scaffoldYAML,
+		},
+	}
+	for i := range targets {
+		target := &targets[i]
+		drifted := driftedScaffoldFixture(t, target.embedded, target.kind)
+		digest, _, ok := parseScaffoldMarker(drifted)
+		if !ok {
+			t.Fatalf("%s fixture precondition: drifted scaffold must carry a parseable marker", target.label)
+		}
+		target.oldDigest = digest
+		if err := os.WriteFile(target.path, drifted, 0o644); err != nil {
+			t.Fatalf("write drifted %s: %v", target.label, err)
+		}
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	for _, target := range targets {
+		got, err := os.ReadFile(target.path)
+		if err != nil {
+			t.Fatalf("read refreshed %s: %v", target.label, err)
+		}
+		if want := scaffoldPayload([]byte(target.embedded), target.kind); !bytes.Equal(got, want) {
+			t.Errorf("refreshed %s = %q, want the current embedded scaffoldPayload %q", target.label, got, want)
+			continue
+		}
+		newDigest, payload, ok := parseScaffoldMarker(got)
+		if !ok {
+			t.Errorf("refreshed %s does not end in a parseable marker:\n%s", target.label, got)
+			continue
+		}
+		if want := sha256Hex(canonicalBody(target.embedded)); newDigest != want {
+			t.Errorf("refreshed %s marker digest = %q, want the current payload's digest %q", target.label, newDigest, want)
+		}
+		if newDigest == target.oldDigest {
+			t.Errorf("refreshed %s kept the older body's digest; the rewrite must carry a fresh marker", target.label)
+		}
+		if !bytes.Equal(payload, canonicalBody(target.embedded)) {
+			t.Errorf("refreshed %s marker payload differs from the current canonical body", target.label)
+		}
+	}
+}
+
+// TestInitCmd_FirstInitWritesVerifiableMarkers enforces the DI-FR-002
+// scenario "First init is unchanged apart from markers" together with
+// DIO-FR-002: on a first init over a vault with .opencode/ present, every
+// tool-owned file — every slash command, agent definition, and workflow
+// template example — is created in the exact marker-plus-payload form, and
+// each marker verifies against an independently computed SHA-256 of the
+// payload preceding it.
+func TestInitCmd_FirstInitWritesVerifiableMarkers(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode"), 0o755); err != nil {
+		t.Fatalf("create .opencode: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	kinds := []struct {
+		name  string
+		dir   string
+		files map[string]string
+		kind  scaffoldKind
+	}{
+		{"slash commands", filepath.Join(".opencode", "commands"), deweySlashCommands, scaffoldMarkdown},
+		{"agent definitions", filepath.Join(".opencode", "agents"), deweyAgentDefinitions, scaffoldMarkdown},
+		{"workflow template examples", filepath.Join(".github", "workflows"), deweyWorkflowTemplates, scaffoldYAML},
+	}
+	for _, k := range kinds {
+		t.Run(k.name, func(t *testing.T) {
+			names := make([]string, 0, len(k.files))
+			for name := range k.files {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				body := k.files[name]
+				path := filepath.Join(tmpDir, k.dir, name)
+
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Errorf("init did not scaffold %s: %v", path, err)
+					continue
+				}
+				// The exact write shape: canonical body plus the kind's
+				// marker as the final line.
+				if want := scaffoldPayload([]byte(body), k.kind); !bytes.Equal(got, want) {
+					t.Errorf("%s = %q, want the exact scaffoldPayload %q", path, got, want)
+					continue
+				}
+				// The marker is verifiable (DIO-FR-002): it parses, its
+				// payload is the canonical map value, and its digest
+				// matches an independently computed SHA-256 of that payload.
+				digest, payload, ok := parseScaffoldMarker(got)
+				if !ok {
+					t.Errorf("%s does not end in a parseable marker:\n%s", path, got)
+					continue
+				}
+				if want := canonicalBody(body); !bytes.Equal(payload, want) {
+					t.Errorf("%s marker payload = %q, want the canonical map value %q", path, payload, want)
+				}
+				if want := sha256Hex(payload); digest != want {
+					t.Errorf("%s marker digest = %q, want independently computed %q", path, digest, want)
+				}
+			}
+		})
+	}
+}
+
+// TestInitCmd_NoOpenCodeDirScaffoldsWorkflowExampleOnly enforces the
+// DI-FR-002 composability guard: when .opencode/ is absent, no command or
+// agent scaffolding runs and .opencode/ itself is not created, while the
+// workflow template example is still scaffolded into .github/workflows/.
+func TestInitCmd_NoOpenCodeDirScaffoldsWorkflowExampleOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// .opencode/ must not be created — so neither commands nor agents can
+	// appear under it.
+	for _, dir := range []string{
+		filepath.Join(tmpDir, ".opencode"),
+		filepath.Join(tmpDir, ".opencode", "commands"),
+		filepath.Join(tmpDir, ".opencode", "agents"),
+	} {
+		if _, err := os.Stat(dir); err == nil {
+			t.Errorf("%s must not be created when .opencode/ was absent", dir)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("stat %s: %v", dir, err)
+		}
+	}
+
+	// The workflow template example is still scaffolded.
+	entry, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
+	if !ok {
+		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
+	}
+	got, err := os.ReadFile(filepath.Join(tmpDir, ".github", "workflows", "dewey-distill.yml.example"))
+	if err != nil {
+		t.Fatalf("workflow template example was not scaffolded without .opencode/: %v", err)
+	}
+	if want := scaffoldPayload([]byte(entry), scaffoldYAML); !bytes.Equal(got, want) {
+		t.Errorf("scaffolded workflow example = %q, want the exact scaffoldPayload %q", got, want)
+	}
+}
+
+// TestInitCmd_MigratesThenClassifiesCustomizedCommand enforces the DI-FR-002
+// scenario "Old command-directory migration still precedes classification":
+// a Dewey-owned file in .opencode/command/ (singular) migrates to
+// .opencode/commands/ first and is then classified by the refresh decision
+// like any other existing file — here a customized fixture, preserved
+// byte-for-byte rather than refreshed.
+func TestInitCmd_MigratesThenClassifiesCustomizedCommand(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldDir := filepath.Join(tmpDir, ".opencode", "command")
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatalf("create old command dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	legacy := []byte("# my customized legacy dewey-store command\n\nedited before markers existed\n")
+	if err := os.WriteFile(filepath.Join(oldDir, "dewey-store.md"), legacy, 0o644); err != nil {
+		t.Fatalf("write legacy command: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	// The file migrated, and classification preserved the customized bytes:
+	// marker-less content differing from the embedded payload is skipped,
+	// never refreshed.
+	migratedPath := filepath.Join(tmpDir, ".opencode", "commands", "dewey-store.md")
+	got, err := os.ReadFile(migratedPath)
+	if err != nil {
+		t.Fatalf("migrated command missing from .opencode/commands/: %v", err)
+	}
+	if !bytes.Equal(got, legacy) {
+		t.Errorf("migrated command was rewritten by classification: got %q, want byte-identical %q", got, legacy)
+	}
+
+	// The old directory held only the Dewey file, so migration removed it.
+	if _, err := os.Stat(oldDir); err == nil {
+		t.Error("old .opencode/command/ should be removed when empty after migration")
+	} else if !os.IsNotExist(err) {
+		t.Errorf("stat old command dir: %v", err)
+	}
+
+	// Scaffolding proceeded after the migration.
+	if _, err := os.Stat(filepath.Join(tmpDir, ".opencode", "commands", "dewey-index.md")); err != nil {
+		t.Errorf("scaffolding did not proceed after migration: %v", err)
+	}
+}
+
+// TestInitCmd_OutcomeEventsObservable enforces the DIO-FR-006 scenario
+// "Outcomes are logged with paths": over a vault holding one missing, one
+// untouched-drifted, and one customized command — with every other
+// tool-owned scaffold already current — init logs exactly one `scaffolded`,
+// one `updated`, and one `skip (customized)` event, each naming its path.
+func TestInitCmd_OutcomeEventsObservable(t *testing.T) {
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+	workflowsDir := filepath.Join(tmpDir, ".github", "workflows")
+	if err := os.MkdirAll(workflowsDir, 0o755); err != nil {
+		t.Fatalf("create workflows dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	const missingName = "dewey-store.md"
+	const driftedName = "dewey-compile.md"
+	const customizedName = "dewey-lint.md"
+	for _, name := range []string{missingName, driftedName, customizedName} {
+		if _, ok := deweySlashCommands[name]; !ok {
+			t.Fatalf("deweySlashCommands missing %s entry", name)
+		}
+	}
+
+	// Every command except the three under test starts current; the three
+	// carry the missing / untouched-drifted / customized states.
+	for name, body := range deweySlashCommands {
+		var content []byte
+		switch name {
+		case missingName:
+			continue // left absent — the missing one
+		case driftedName:
+			content = driftedScaffoldFixture(t, body, scaffoldMarkdown)
+		case customizedName:
+			content = customizedScaffoldFixture(t, body, scaffoldMarkdown)
+		default:
+			content = scaffoldPayload([]byte(body), scaffoldMarkdown)
+		}
+		if err := os.WriteFile(filepath.Join(cmdDir, name), content, 0o644); err != nil {
+			t.Fatalf("write command fixture %s: %v", name, err)
+		}
+	}
+	for name, body := range deweyAgentDefinitions {
+		if err := os.WriteFile(filepath.Join(agentsDir, name), scaffoldPayload([]byte(body), scaffoldMarkdown), 0o644); err != nil {
+			t.Fatalf("write agent fixture %s: %v", name, err)
+		}
+	}
+	for name, body := range deweyWorkflowTemplates {
+		if err := os.WriteFile(filepath.Join(workflowsDir, name), scaffoldPayload([]byte(body), scaffoldYAML), 0o644); err != nil {
+			t.Fatalf("write workflow fixture %s: %v", name, err)
+		}
+	}
+
+	logBuf := captureLoggerOutput(t)
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	events := scaffoldOutcomeEvents(logBuf.String())
+	if len(events) != 3 {
+		t.Fatalf("got %d outcome events, want exactly 3 (one scaffolded, one updated, one skip); events:\n%s", len(events), strings.Join(events, "\n"))
+	}
+	if !hasOutcomeEvent(events, "scaffolded slash command", filepath.Join(cmdDir, missingName)) {
+		t.Errorf("the missing command must log `scaffolded slash command` naming %s; events:\n%s", filepath.Join(cmdDir, missingName), strings.Join(events, "\n"))
+	}
+	if !hasOutcomeEvent(events, "updated slash command", filepath.Join(cmdDir, driftedName)) {
+		t.Errorf("the drifted command must log `updated slash command` naming %s; events:\n%s", filepath.Join(cmdDir, driftedName), strings.Join(events, "\n"))
+	}
+	if !hasOutcomeEvent(events, "skip (customized)", filepath.Join(cmdDir, customizedName)) {
+		t.Errorf("the customized command must log `skip (customized)` naming %s; events:\n%s", filepath.Join(cmdDir, customizedName), strings.Join(events, "\n"))
+	}
+}
+
+// TestInitCmd_DeterministicIterationOrder enforces the DIO-FR-006 scenario
+// "Deterministic iteration order": the same vault state — materialized as
+// two identically-prepared vaults so neither run's writes feed the other —
+// produces its outcome events in the same order, with the slash commands
+// scaffolded in sorted name order.
+func TestInitCmd_DeterministicIterationOrder(t *testing.T) {
+	runOnce := func() []string {
+		vault := prepareMixedOutcomeVault(t)
+		logBuf := captureLoggerOutput(t)
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{"--vault", vault})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("init failed: %v", err)
+		}
+		return scaffoldOutcomeEvents(logBuf.String())
+	}
+	first := runOnce()
+	second := runOnce()
+
+	wantTotal := len(deweySlashCommands) + len(deweyAgentDefinitions) + len(deweyWorkflowTemplates)
+	if len(first) != wantTotal {
+		t.Fatalf("got %d outcome events, want %d (every command missing, one agent drifted, one agent missing, workflow customized); events:\n%s", len(first), wantTotal, strings.Join(first, "\n"))
+	}
+
+	// The fixture must exercise mixed outcomes, or the ordering comparison
+	// would be vacuous.
+	for _, event := range []string{"scaffolded slash command", "updated agent", "scaffolded agent", "skip (customized)"} {
+		found := false
+		for _, e := range first {
+			if strings.HasPrefix(e, event) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("outcome sequence missing %q events; the fixture must exercise mixed outcomes:\n%s", event, strings.Join(first, "\n"))
+		}
+	}
+
+	// Normalize the vault directory out of each event so two runs over
+	// identically-prepared vaults compare by event and filename.
+	normalize := func(events []string) []string {
+		out := make([]string, len(events))
+		for i, e := range events {
+			if idx := strings.Index(e, "path="); idx >= 0 {
+				out[i] = e[:idx+len("path=")] + filepath.Base(e[idx+len("path="):])
+			} else {
+				out[i] = e
+			}
+		}
+		return out
+	}
+	if !slices.Equal(normalize(first), normalize(second)) {
+		t.Errorf("outcome events differ across runs over the same vault state:\nrun 1:\n%s\nrun 2:\n%s", strings.Join(first, "\n"), strings.Join(second, "\n"))
+	}
+
+	// Sorted-key iteration (DIO-FR-006): the scaffolded commands appear in
+	// sorted name order.
+	var commandNames []string
+	for _, e := range first {
+		if strings.HasPrefix(e, "scaffolded slash command") {
+			if idx := strings.Index(e, "path="); idx >= 0 {
+				commandNames = append(commandNames, filepath.Base(e[idx+len("path="):]))
+			}
+		}
+	}
+	if len(commandNames) != len(deweySlashCommands) {
+		t.Fatalf("got %d scaffolded command events, want %d", len(commandNames), len(deweySlashCommands))
+	}
+	if !slices.IsSorted(commandNames) {
+		t.Errorf("scaffolded command events are not in sorted name order: %v", commandNames)
+	}
+}
+
+// TestInitCmd_PreservesNonMapDeweyLikeCommand enforces the DIO-FR-001
+// scenario "Non-map file with a Dewey-like name is never touched": a
+// user-authored .opencode/commands/dewey-notes.md — not a deweySlashCommands
+// entry — is neither written, rewritten, nor removed. Real vaults hold many
+// such files from multiple toolchains alongside the dewey-* commands, so
+// map membership, not the filename, must decide ownership.
+func TestInitCmd_PreservesNonMapDeweyLikeCommand(t *testing.T) {
+	const notesName = "dewey-notes.md"
+	if _, isMapEntry := deweySlashCommands[notesName]; isMapEntry {
+		t.Fatalf("fixture precondition: %s must not be a deweySlashCommands entry", notesName)
+	}
+
+	tmpDir := t.TempDir()
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	notes := []byte("# my own dewey-notes command\n\nauthored by the user; not owned by any dewey scaffold map\n")
+	path := filepath.Join(cmdDir, notesName)
+	if err := os.WriteFile(path, notes, 0o644); err != nil {
+		t.Fatalf("write user-authored command: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--vault", tmpDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init failed: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("user-authored command was removed: %v", err)
+	}
+	if !bytes.Equal(got, notes) {
+		t.Errorf("user-authored command was modified: got %q, want byte-identical %q", got, notes)
+	}
+}

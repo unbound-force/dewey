@@ -1342,7 +1342,7 @@ func (e *gitEnv) createPR(ctx context.Context, theme Theme, branch string, artic
 	if err != nil {
 		return 0, err
 	}
-	defer os.Remove(bodyPath)
+	defer func() { _ = os.Remove(bodyPath) }()
 	args := []string{
 		"pr", "create",
 		"--title", "dewey-distill: " + theme.Name,
@@ -1367,7 +1367,7 @@ func (e *gitEnv) editPRBody(ctx context.Context, number int, article ReviewQueue
 	if err != nil {
 		return err
 	}
-	defer os.Remove(bodyPath)
+	defer func() { _ = os.Remove(bodyPath) }()
 	args := []string{"pr", "edit", strconv.Itoa(number), "--body-file", bodyPath}
 	if needsHuman {
 		args = append(args, "--add-label", LabelNeedsHumanResolution)

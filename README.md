@@ -312,7 +312,7 @@ This creates:
 - `.uf/dewey/sources.yaml` — content source configuration (empty by default)
 - `.uf/dewey/graph.db` — created automatically on first `dewey serve` or `dewey index`
 - `.uf/dewey/dewey.log` — created automatically by `dewey serve` for MCP server diagnostics (truncated at 10 MB on startup)
-- `.opencode/agents/curator.md` — the least-privilege curator agent for `/dewey-distill` (created only when `.opencode/` already exists; an existing file is never overwritten)
+- `.opencode/agents/curator.md` — the least-privilege curator agent for `/dewey-distill` (created only when `.opencode/` already exists; a tool-owned scaffold — untouched copies are refreshed on re-init, customized copies preserved — see [dewey init](#dewey-init))
 
 Ignore runtime state, not knowledge. The machine-local runtime state — `.uf/dewey/graph.db` (with its `-shm` and `-wal` sidecars), `dewey.log`, `dewey.lock`, and `cache/` — is rebuilt from source files and belongs in your `.gitignore`; the private configuration files (`config.yaml`, `sources.yaml`, `knowledge-stores.yaml`) should stay out of git too. The knowledge artifact directories (`.uf/dewey/learnings/`, `compiled/`, `knowledge/`) are **not** rebuildable: do not ignore them. Publish them with `/dewey-publish` or `dewey artifacts` instead.
 
@@ -353,7 +353,11 @@ Initialize a Dewey configuration in the current directory. Creates `.uf/dewey/` 
 dewey init [--vault PATH]
 ```
 
-When `.opencode/` already exists, `dewey init` also scaffolds `.opencode/agents/curator.md` (the `/dewey-distill` agent) and the Dewey slash commands. Scaffolding is idempotent: an existing file is never overwritten, so a stale scaffolded agent must be updated deliberately.
+When `.opencode/` already exists, `dewey init` also scaffolds the Dewey slash commands (`.opencode/commands/dewey-*.md`) and the `curator` and `distiller` agents (`.opencode/agents/`); it always scaffolds the inert `.github/workflows/dewey-distill.yml.example`. These are **tool-owned** scaffolds, managed by ownership-aware refresh rather than write-once: every write ends with a final-line marker — `<!-- dewey:scaffold <version> sha256:<hex> -->` for markdown, `# dewey:scaffold <version> sha256:<hex>` for YAML — whose digest covers the embedded payload. On re-init, a file whose marker digest still matches its own payload has not been edited since it was scaffolded: it is refreshed to the current embedded content (logged `updated`), or left alone when already current. Missing files are created (logged `scaffolded`). Customized files — a digest mismatch, a malformed marker, marker-less content that differs from the embedded payload, or a symlinked path — are preserved byte-for-byte (logged `skip (customized)`); a concurrent init creating the same path logs `skip (concurrent)`. The user-owned files — the `.uf/dewey/` config files, `.opencode/dcp.jsonc`, `.gitignore` (append-if-missing only) — stay write-once.
+
+Scaffolded files written before markers existed are not auto-refreshed: a pre-marker file that has drifted from the current embedded payload is indistinguishable from a user edit, so it is preserved like a customization. To bring such a file current, delete it and re-run `dewey init`; from then on it is marker-managed.
+
+Scaffold write failures now fail init: slash-command and workflow-template writes that previously succeeded silently — an unwritable `.opencode/commands/` or `.github/workflows/` in a read-only checkout or CI, an existing scaffold path that cannot be read — abort `dewey init` with an error naming the path. A failed update leaves the original file intact (updates replace atomically).
 
 ### dewey index
 
@@ -783,7 +787,7 @@ Learning markdown files are treated as untrusted backups during startup re-inges
 
 Use `/dewey-distill` to run lint → compile → curate → verify → promote through the running MCP server. The verify step runs `verify_candidates` over the run's candidate queue and presents each candidate's evidence locators and anchor-verification result (`anchors_ok`, `drifted`, `missing`, `no_anchors`, `skipped` with reasons) at the review gate, so the human approves a pre-verified queue; a skipped or failed pass is stated plainly and never presented as verified clean. It gates the synthesis scope, the supersession confirmations, and the promotion list on human approval — the review gate asks which proposed supersessions to confirm alongside the promotion list, applies confirmed pairs via `supersede_learning` before promoting, and aborts promotion when a confirmed apply errors or warns. It falls back to agent-side synthesis for compiled articles when server-side synthesis is unavailable. The command binds to the `curator` agent (`agent:` frontmatter) and runs `dewey gate auto-answer` at startup, refusing before any stage when the curator is configured for automatic question answering or the configuration cannot be verified; both mandatory gate questions carry the `HUMAN_GATE:` marker, which auto-answer plugins honoring the external contract leave for a human.
 
-The `curator` agent is a least-privilege identity for knowledge work: `read` is enabled, `write`/`edit`/`webfetch` are denied, subagent spawning is denied, and the only shell command it may run is `dewey gate auto-answer`. Its Dewey MCP surface is limited to `lint`, `list_pages`, `compile`, `curate`, `store_compiled`, `verify_candidates`, `supersede_learning`, and `promote`; every other Dewey MCP tool is denied. Any supervisor guard relaxation for the curator belongs in the user's global supervisor configuration, never in a repository's committed config. Dewey ships the agent definition; `dewey init` scaffolds it into `.opencode/agents/` when `.opencode/` exists and never overwrites an existing file.
+The `curator` agent is a least-privilege identity for knowledge work: `read` is enabled, `write`/`edit`/`webfetch` are denied, subagent spawning is denied, and the only shell command it may run is `dewey gate auto-answer`. Its Dewey MCP surface is limited to `lint`, `list_pages`, `compile`, `curate`, `store_compiled`, `verify_candidates`, `supersede_learning`, and `promote`; every other Dewey MCP tool is denied. Any supervisor guard relaxation for the curator belongs in the user's global supervisor configuration, never in a repository's committed config. Dewey ships the agent definition; `dewey init` scaffolds it into `.opencode/agents/` when `.opencode/` exists and refreshes it on re-init when untouched (customized copies are preserved — see [dewey init](#dewey-init)).
 
 That boundary is enforced by the agent's frontmatter `tools:` map, not prompt-only policy: `"dewey_*": false` denies every Dewey MCP tool, the eight `true` entries that follow (`dewey_lint`, `dewey_list_pages`, `dewey_compile`, `dewey_curate`, `dewey_store_compiled`, `dewey_promote`, `dewey_verify_candidates`, `dewey_supersede_learning`) re-enable exactly the allowlisted tools, and `"replicator_*": false` denies tools from the other MCP servers configured in the repository-root `opencode.json`. The embedded `deweyAgentDefinitions["curator.md"]` copy in `agents.go` — the content `dewey init` scaffolds — ships byte-identical to the tracked file, and tests in `cli_test.go` assert the frontmatter shape and the parity between the frontmatter allow set and the prompt-text allowlist so the two lists cannot drift apart. The tool glob keys carry the MCP server key (`dewey`) from `opencode.json`; a repository configuring the Dewey MCP server under a different key must adjust the glob entries in the agent frontmatter.
 
@@ -905,10 +909,10 @@ Dewey ships an opt-in GitHub Actions template that automates the *demotion* side
 
 ### Enable
 
-Run `dewey init` in the repository — it scaffolds the inert `.github/workflows/dewey-distill.yml.example` (an existing file is never overwritten) — then copy it into place; the copy is the opt-in:
+Run `dewey init` in the repository — it scaffolds the inert `.github/workflows/dewey-distill.yml.example` (a tool-owned scaffold: untouched copies are refreshed on re-init, customized copies preserved) — then copy it into place; the copy is the opt-in:
 
 ```bash
-dewey init   # scaffolds .github/workflows/dewey-distill.yml.example if absent
+dewey init   # writes .github/workflows/dewey-distill.yml.example (refreshed on re-init when untouched)
 cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml
 gh label create dewey-distill --color 0E8A16 --description "Unattended weekly distill" 2>/dev/null || true
 gh label create human-gate --color D93F0B --description "Requires code-owner review" 2>/dev/null || true

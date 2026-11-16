@@ -22,14 +22,14 @@
 
 ## 0. Preconditions
 
-- [ ] 0.1 Confirm the change artifacts under
+- [x] 0.1 Confirm the change artifacts under
   `openspec/changes/tool-owned-scaffold-updates/` are committed and
   pushed on `opsx/tool-owned-scaffold-updates` (Spec Commit Gate), and
   that the working tree is clean before implementation starts.
 
 ## 1. Scaffold Classification Core (scaffold.go, scaffold_test.go)
 
-- [ ] 1.1 Create `scaffold.go` (package main, design D1/D2/D7) with the
+- [x] 1.1 Create `scaffold.go` (package main, design D1/D2/D7) with the
   marker primitives: `scaffoldKind` (markdown, yaml);
   `canonicalBody(v string) []byte` normalizing the map value to exactly
   one trailing newline; `scaffoldMarker(body []byte, kind scaffoldKind)
@@ -43,7 +43,7 @@
   comment form on the final line per the D1 grammar and returning the
   digest with the exact payload bytes preceding the marker. Add GoDoc
   to every function.
-- [ ] 1.2 Add `classifyScaffold(existing []byte, exists bool,
+- [x] 1.2 Add `classifyScaffold(existing []byte, exists bool,
   embeddedBody []byte) scaffoldDecision` per design D3 — pure decision
   function with `scaffoldCreate | scaffoldUpdate | scaffoldCurrent |
   scaffoldSkip`: missing file → create; marker digest matches payload
@@ -52,7 +52,7 @@
   canonical embedded body → update (marker bootstrap); marker absent
   with differing content, malformed digest, or digest mismatch → skip.
   Classification MUST NOT read the version field (D8).
-- [ ] 1.3 Create `scaffold_test.go` with table-driven unit tests: every
+- [x] 1.3 Create `scaffold_test.go` with table-driven unit tests: every
   decision-table row (missing; untouched-current; untouched-drifted;
   marker-less byte-identical; marker-less differing; malformed digest;
   digest mismatch); marker round-trip (`scaffoldPayload` output parses

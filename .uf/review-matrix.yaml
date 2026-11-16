@@ -4,23 +4,19 @@
 # profiles.*.model and profiles.*.variant paths are
 # permitted in the override file.
 version: 3
-
 profiles:
   lightweight: {}
   standard: {}
   heavy: {}
-
 defaults:
   code: standard
   spec: standard
   triage: standard
   feedback: standard
-
 # These overrides apply only when the advisor generates a run.
 always:
   divisor-adversary: heavy
   divisor-sre: lightweight
-
 # Membership permits generated runs; reviewer capabilities still
 # determine
 # whether an agent is relevant to a particular review.
@@ -31,40 +27,37 @@ advisor:
     - divisor-curator
     - divisor-guard
     - divisor-sre
-    - divisor-testing
+    - divisor-gaze-testing
   spec:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
     - divisor-guard
     - divisor-sre
-    - divisor-testing
+    - divisor-gaze-testing
   triage:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
     - divisor-guard
     - divisor-sre
-    - divisor-testing
+    - divisor-gaze-testing
   feedback:
     - divisor-adversary
     - divisor-architect
     - divisor-curator
     - divisor-guard
     - divisor-sre
-    - divisor-testing
-
+    - divisor-gaze-testing
 # Explicit mode/agent arrays are authoritative and preserve
 # declaration order.
 # The canonical policy starts without explicit replacements.
 runs: {}
-
 risk_augmentation:
   enabled: true
   agents:
     - divisor-adversary
     - divisor-architect
-
 limits:
   max_personas: 16
   max_runs_per_persona: 3

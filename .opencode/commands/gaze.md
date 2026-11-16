@@ -1,11 +1,12 @@
 ---
 description: >
-  Run Gaze quality analysis on a Go package. Supports three modes:
-  full (default), crap (CRAP scores only), and quality (test quality
-  metrics only). Delegates to the gaze-reporter agent.
+  Run Gaze quality analysis on a Go or external-analyzer project.
+  Supports three modes: full (default), crap (CRAP scores only), and
+  quality (test quality metrics only). Delegates to the gaze-reporter
+  agent.
 agent: gaze-reporter
 ---
-<!-- scaffolded by gaze v1.8.0 -->
+<!-- scaffolded by gaze dev -->
 
 <protect>
 # Command: /gaze
@@ -14,7 +15,7 @@ agent: gaze-reporter
 
 Run Gaze quality analysis and produce a human-readable report.
 Delegates to the `gaze-reporter` agent which runs the appropriate
-`gaze` CLI commands and interprets the JSON output.
+`gaze` CLI commands, shows the Gaze-rendered report, and adds judgment.
 
 ## Usage
 
@@ -43,8 +44,8 @@ Delegates to the `gaze-reporter` agent which runs the appropriate
 ## Instructions
 
 Pass `$ARGUMENTS` to the `gaze-reporter` agent. The agent handles
-mode parsing, binary resolution, command execution, and report
-formatting.
+mode parsing, binary resolution, analyzer/language detection (`.gaze.yaml`
+then heuristic), command execution, and report formatting.
 
 If no arguments are provided, the agent defaults to full mode with
 the package pattern `./...`.

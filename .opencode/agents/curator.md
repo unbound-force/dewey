@@ -32,6 +32,16 @@ permission:
   bash:
     "*": deny
     "dewey gate auto-answer": allow
+    # Terminal catch-all denies, placed last so they win over every
+    # allow on any prefix: each shell metacharacter is a chaining,
+    # redirection, or substitution vector.
+    "*>*": deny
+    "*<*": deny
+    "*|*": deny
+    "*;*": deny
+    "*&*": deny
+    "*$(*": deny
+    "*`*": deny
 ---
 
 # Curator Agent
@@ -95,4 +105,4 @@ pre-answer, or bypass a gate on the human's behalf.
 Any supervisor guard relaxation for this agent belongs in the user's
 global supervisor configuration, keyed to curator — never in this
 repository's committed configuration.
-<!-- dewey:scaffold dev sha256:81a87a8e657f3231599f4cd01a19c43813b9178d3de1f532ae890a5bb0626152 -->
+<!-- dewey:scaffold dev sha256:9443de8d67cb4d57bc4a2b979ff1617c302d0564bae369c0e3a14a5010fc13b5 -->

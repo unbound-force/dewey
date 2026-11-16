@@ -5884,9 +5884,14 @@ func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKe
 		}
 	}
 
-	// The nested bash map keeps its deny-all-then-allow-one carve-out:
-	// "*": deny must precede the single "dewey gate auto-answer" allow —
-	// the same last-matching-rule-wins ordering the tools block relies on.
+	// The nested bash map keeps its deny-all-then-allow-one carve-out and
+	// ends with the terminal-deny suffix: "*": deny must precede the
+	// single "dewey gate auto-answer" allow, and the seven terminal
+	// metacharacter denies must be the final entries in the canonical
+	// order (scaffold-bash-terminal-denies, DI-FR-003). Under the same
+	// last-matching-rule-wins ordering the tools block relies on, a deny
+	// after every allow wins, so the terminal denies override injection
+	// payloads on the allowed prefix.
 	bashPairs := yamlMappingPairs(t, label, "permission.bash", yamlPairValue(permPairs, "bash"))
 	wantBash := []struct {
 		key   string
@@ -5894,9 +5899,16 @@ func assertCuratorFrontmatterShape(t testing.TB, label, content string, serverKe
 	}{
 		{"*", "deny"},
 		{"dewey gate auto-answer", "allow"},
+		{"*>*", "deny"},
+		{"*<*", "deny"},
+		{"*|*", "deny"},
+		{"*;*", "deny"},
+		{"*&*", "deny"},
+		{"*$(*", "deny"},
+		{"*`*", "deny"},
 	}
 	if len(bashPairs) != len(wantBash) {
-		t.Errorf("%s: permission.bash has %d entries, want exactly %d (the \"*\" deny and the single gate allow)", label, len(bashPairs), len(wantBash))
+		t.Errorf("%s: permission.bash has %d entries, want exactly %d (the \"*\" deny-all, the gate allow, and the seven terminal denies)", label, len(bashPairs), len(wantBash))
 	} else {
 		for i, want := range wantBash {
 			var got string
@@ -5991,13 +6003,13 @@ func assertCuratorAllowlistParity(t testing.TB, label, content string) {
 	}
 }
 
-// problemRecorder executes the curator guard helpers without failing the
-// test: Errorf and Fatalf calls are recorded as problems instead, and
+// problemRecorder executes the frontmatter shape guards without failing
+// the test: Errorf and Fatalf calls are recorded as problems instead, and
 // every other method delegates to the wrapped testing.TB. Negative-path
-// tests use it to run the guards against doctored curator documents and
-// assert the guards reject them. Fatalf degrades to record-and-continue,
-// so fixtures must keep the frontmatter structurally parseable — the
-// guards' structural fatal paths assume FailNow semantics.
+// tests use it to run the guards against doctored curator and distiller
+// documents and assert the guards reject them. Fatalf degrades to
+// record-and-continue, so fixtures must keep the frontmatter structurally
+// parseable — the guards' structural fatal paths assume FailNow semantics.
 type problemRecorder struct {
 	testing.TB
 	problems []string
@@ -6095,6 +6107,21 @@ func TestCuratorAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
 			},
 			expect: `permission entry "question"`,
 		},
+		{
+			name: "terminal deny deleted (design D4)",
+			doctor: func(s string) string {
+				return strings.Replace(s, "    \"*>*\": deny\n", "", 1)
+			},
+			expect: `permission.bash has 8 entries, want exactly 9`,
+		},
+		{
+			name: "gate allow moved after the terminal denies (design D4)",
+			doctor: func(s string) string {
+				s = strings.Replace(s, "    \"dewey gate auto-answer\": allow\n", "", 1)
+				return strings.Replace(s, "    \"*`*\": deny\n", "    \"*`*\": deny\n    \"dewey gate auto-answer\": allow\n", 1)
+			},
+			expect: `permission.bash entry 1 = "*>*": "deny", want "dewey gate auto-answer": "allow"`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -6163,10 +6190,12 @@ func TestDistillerAgent_QuestionDenied(t *testing.T) {
 // allowlisted tools carry true, every allow is anchored against the
 // tools registered in server.go, every non-dewey configured MCP server
 // is denied wholesale, and the permission block denies question — the
-// unattended run must never ask (FR-006) — with both startup gates
-// allowed in the bash submap. The same shape assertions run against the
-// deweyAgentDefinitions map entry so both shipped copies carry the
-// boundary.
+// unattended run must never ask (FR-006) — with the bash submap
+// allowing both startup gates and the dispatch-issue comment
+// (DI-FR-004) and ending with the seven terminal metacharacter denies
+// (scaffold-bash-terminal-denies, DI-FR-003). The same shape
+// assertions run against the deweyAgentDefinitions map entry so both
+// shipped copies carry the boundary.
 func TestDistillerAgent_FrontmatterToolAllowlist(t *testing.T) {
 	serverKeys := configuredMCPServerKeys(t)
 
@@ -6315,8 +6344,15 @@ func assertDistillerFrontmatterShape(t testing.TB, label, content string, server
 		}
 	}
 
-	// The bash permission submap denies everything by default and allows
-	// the documented commands; both startup gates are among the allows.
+	// The bash permission submap denies everything by default, allows the
+	// documented commands — both startup gates and the dispatch-issue
+	// comment path (DI-FR-004) — and ends with the terminal-deny suffix:
+	// the seven metacharacter denies are the final entries in the
+	// canonical order (scaffold-bash-terminal-denies, DI-FR-003). Under
+	// the same last-matching-rule-wins ordering the tools block relies
+	// on, a deny after every allow wins, so the terminal denies override
+	// injection payloads on the allowed prefixes while the bare allowed
+	// commands stay runnable (design D6).
 	bashPairs := yamlMappingPairs(t, label, "permission.bash", yamlPairValue(permPairs, "bash"))
 	bashByKey := make(map[string]string, len(bashPairs))
 	for _, pair := range bashPairs {
@@ -6329,11 +6365,70 @@ func assertDistillerFrontmatterShape(t testing.TB, label, content string, server
 	if bashByKey["*"] != "deny" {
 		t.Errorf("%s: permission.bash \"*\" = %q, want deny", label, bashByKey["*"])
 	}
-	for _, cmd := range []string{"dewey gate auto-answer", "dewey gate distill-unattended"} {
+	for _, cmd := range []string{"dewey gate auto-answer", "dewey gate distill-unattended", "gh issue comment"} {
 		if bashByKey[cmd] != "allow" {
-			t.Errorf("%s: permission.bash %q = %q, want allow — the startup gates must stay runnable", label, cmd, bashByKey[cmd])
+			t.Errorf("%s: permission.bash %q = %q, want allow — the startup gates and the dispatch-issue comment path must stay runnable", label, cmd, bashByKey[cmd])
 		}
 	}
+
+	// Last-7 assertion mirroring the consumer lint's contract (design
+	// D5): whatever the allows before it, the mapping's final seven
+	// entries are exactly the seven terminal deny keys in the canonical
+	// order, each deny. Unlike the curator guard's length-exact list, the
+	// distiller guard pins only the suffix — a deleted deny or an allow
+	// moved after the denies shifts the seven-entry window and fails the
+	// ordered comparison.
+	wantTerminalDenies := []struct {
+		key   string
+		value string
+	}{
+		{"*>*", "deny"},
+		{"*<*", "deny"},
+		{"*|*", "deny"},
+		{"*;*", "deny"},
+		{"*&*", "deny"},
+		{"*$(*", "deny"},
+		{"*`*", "deny"},
+	}
+	if len(bashPairs) < len(wantTerminalDenies) {
+		t.Errorf("%s: permission.bash has %d entries, want at least %d (the seven terminal denies)", label, len(bashPairs), len(wantTerminalDenies))
+	} else {
+		for i, want := range wantTerminalDenies {
+			got := bashPairs[len(bashPairs)-len(wantTerminalDenies)+i]
+			if got.key != want.key || bashByKey[got.key] != want.value {
+				t.Errorf("%s: permission.bash terminal-deny suffix entry %d = %q: %q, want %q: %q", label, i, got.key, bashByKey[got.key], want.key, want.value)
+			}
+		}
+	}
+}
+
+// TestDistillerAgent_GuardsRejectDoctoredDocuments executes the distiller
+// frontmatter shape guard against a doctored distiller document, so the
+// guard's rejection behavior is verified by execution rather than code
+// inspection — the curator doctored-fixture rationale (design D4) applied
+// to the distiller guard, which had no negative-path coverage of its own
+// (design D5). The fixture drops one terminal deny from the tracked
+// distiller.md, shifting the seven-entry suffix window so the "gh issue
+// comment" allow lands inside it; the last-7 arm must report the mismatch.
+func TestDistillerAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
+	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "distiller.md"))
+	if err != nil {
+		t.Fatalf("read tracked distiller.md: %v", err)
+	}
+	serverKeys := configuredMCPServerKeys(t)
+
+	t.Run("terminal deny deleted (design D5)", func(t *testing.T) {
+		doctored := strings.Replace(string(tracked), "    \"*>*\": deny\n", "", 1)
+		rec := &problemRecorder{TB: t}
+		assertDistillerFrontmatterShape(rec, "doctored distiller.md", doctored, serverKeys)
+		if len(rec.problems) == 0 {
+			t.Fatalf("shape guard accepted a doctored distiller document; expected a terminal-deny suffix mismatch")
+		}
+		const expect = `permission.bash terminal-deny suffix entry 0 = "gh issue comment": "allow", want "*>*": "deny"`
+		if !strings.Contains(strings.Join(rec.problems, "\n"), expect) {
+			t.Errorf("shape guard problems = %v, want the terminal-deny suffix mismatch problem", rec.problems)
+		}
+	})
 }
 
 // TestDistillerAgent_AllowlistParity asserts, on both shipped copies of

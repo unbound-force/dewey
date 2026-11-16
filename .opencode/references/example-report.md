@@ -1,73 +1,146 @@
 ## Example Output
 
-Below is a concrete example of the expected report format. Use
-this as the definitive formatting reference. Adapt the data to the
-actual project — do not copy these specific numbers or function
-names. The recommendations and function names below are fictional.
+The fenced block below is the report `gaze report --format=markdown`
+renders for the analysis payload used to generate it: byte-identical to
+the renderer golden output. Show that output unchanged, then add an
+`## Assessment` section shaped like the example that follows the block.
 
 ```markdown
-🔍 Gaze Full Quality Report
+# 🔍 Gaze Full Quality Report
+
 Project: github.com/example/project · Branch: main
-Gaze Version: v1.0.0 · Go: 1.24.6 · Date: 2026-02-28
+Gaze Version: v2.4.0 · Date: 2026-11-01
+
 ---
-📊 CRAP Summary
+
+## 📊 CRAP Summary
+
 | Metric | Value |
-|--------|-------|
-| Total functions analyzed | 216 |
-| Average complexity | 6.2 |
-| Average line coverage | 79.0% |
-| Average CRAP score | 7.7 |
-| CRAPload | 24 (functions ≥ threshold 15) | <!-- T from summary.crap_threshold -->
+|--------|------:|
+| Total functions analyzed | 12 |
+| Average complexity | 7.3 |
+| Average line coverage | 47.1% |
+| Average CRAP score | 52.6 |
+| CRAPload | 7 (functions ≥ threshold 15) |
+| GazeCRAPload | 6 (functions ≥ threshold 15) |
 
-Top 5 Worst CRAP Scores
-| Function | CRAP | Complexity | Coverage | File |
-|----------|------|-----------|----------|------|
-| (*Handler).ServeHTTP | 42.0 | 6 | 0.0% | internal/api/handler.go:163 |
-| processQueue | 38.5 | 8 | 12.0% | internal/worker/queue.go:89 |
-| parseConfig | 31.2 | 5 | 0.0% | cmd/app/config.go:42 |
-| (*Store).Migrate | 28.0 | 7 | 15.0% | internal/db/store.go:201 |
-| validateInput | 22.4 | 4 | 0.0% | internal/api/validate.go:55 |
+### Top 5 Worst CRAP Scores
 
-Three of the five have 0% test coverage; the other two have minimal coverage with high complexity.
+| Function | CRAP | Complexity | Coverage | Fix Strategy | Location |
+|----------|-----:|-----------:|---------:|--------------|----------|
+| `(*队列处理器).处理消息` | 342.0 | 18 | 0.0% | decompose_and_test | internal/队列/处理器.go:42 |
+| `processGeneratedProtocolBufferMessageForTheExtremelyLongServiceNameprocessGeneratedProtocolBufferMessageForTheExtremelyLongServiceNameprocessGeneratedProtocolBufferMessageForTheExtremelyLongServiceNam` | 90.0 | 9 | 0.0% | add_tests | internal/codegen/generated.go:310 |
+| ``parse`raw`Literal`` | 72.0 | 8 | 0.0% | add_tests | internal/lexer/literal.go:77 |
+| `(*Parser).parse\|Pipe` | 48.0 | 16 | 50.0% | decompose | internal/parser/pipe.go:55 |
+| `validateInput` | 22.5 | 10 | 50.0% | add_assertions | internal/api/validate.go:21 |
 
-GazeCRAP Quadrant Distribution
+### GazeCRAP Quadrant Distribution
+
 | Quadrant | Count | Meaning |
-|----------|-------|---------|
-| 🟢 Q1 — Safe | 29 | Low complexity, high contract coverage |
-| 🟡 Q2 — Complex But Tested | 1 | High complexity, contracts verified |
-| 🔴 Q4 — Dangerous | 4 | Complex AND contracts not adequately verified |
-| ⚪ Q3 — Needs Tests | 0 | Simple but underspecified |
+|----------|------:|---------|
+| 🟢 Q1 — Safe | 4 | Low complexity, high contract coverage |
+| 🟡 Q2 — Complex But Tested | 2 | High complexity, contracts verified |
+| ⚪ Q3 — Needs Tests | 2 | Simple but underspecified |
+| 🔴 Q4 — Dangerous | 4 | Complex and contracts not adequately verified |
 
-GazeCRAPload: 4 — All 4 Q4 functions have adequate line coverage but high cyclomatic complexity (15–18), meaning they need decomposition, not more tests.
+### Remediation Breakdown
+
+| Fix Strategy | Functions |
+|--------------|----------:|
+| decompose | 1 |
+| add_tests | 4 |
+| add_assertions | 1 |
+| decompose_and_test | 1 |
+
 ---
-🧪 Quality Summary
-> ⚠️ Module-level quality analysis returned 0 tests — run per-package analysis for detailed results.
+
+## 🧪 Quality Summary
+
+| Metric | Value |
+|--------|------:|
+| Tests analyzed | 8 |
+| Average contract coverage | 43.1% |
+| Over-specifications | 1 |
+| Assertion detection confidence | 92% |
+| Skipped tests | 2 |
+
+### Worst Tests by Contract Coverage
+
+| Test | Target | Contract Coverage | Gaps |
+|------|--------|------------------:|-----:|
+| `TestProcessMessage` | `(*队列处理器).处理消息` | 0.0% | 12 |
+| `TestLoadConfig` | `loadConfig` | 0.0% | 2 |
+| `TestValidateInput` | `validateInput` | 0.0% | 3 |
+| `TestParser_parse\|Pipe` | `(*Parser).parse\|Pipe` | 40.0% | 3 |
+| `TestServe` | `(*Handler).ServeHTTP` | 50.0% | 1 |
+
+### Coverage Gaps in Worst Tests
+
+| Target | Effect | Description | Location |
+|--------|--------|-------------|----------|
+| `(*队列处理器).处理消息` | ReturnValue | returns int at position 0 | internal/队列/处理器.go:50:2 |
+| `(*队列处理器).处理消息` | ErrorReturn | returns error at position 1 | internal/队列/处理器.go:55:2 |
+| `(*队列处理器).处理消息` | ReceiverMutation | mutates receiver field 已处理 | internal/队列/处理器.go:60:2 |
+| `(*队列处理器).处理消息` | ReceiverMutation | mutates receiver field 失败 | internal/队列/处理器.go:65:2 |
+| `(*队列处理器).处理消息` | ReceiverMutation | mutates receiver field 重试 | internal/队列/处理器.go:70:2 |
+| `(*队列处理器).处理消息` | PointerArgMutation | mutates pointer argument 消息 | internal/队列/处理器.go:75:2 |
+| `(*队列处理器).处理消息` | SliceMutation | appends to slice 队列 | internal/队列/处理器.go:80:2 |
+| `(*队列处理器).处理消息` | MapMutation | writes map 索引 | internal/队列/处理器.go:85:2 |
+| `(*队列处理器).处理消息` | ChannelSend | sends on channel 完成 | internal/队列/处理器.go:90:2 |
+| `(*队列处理器).处理消息` | ChannelClose | closes channel 停止 | internal/队列/处理器.go:95:2 |
+
+> ⚠️ SSA analysis degraded for 1 package(s): github.com/example/project/internal/legacy
+
 ---
-🏷️ Classification Summary
+
+## 🏷️ Classification Summary
+
 | Classification | Count | % |
-|---------------|-------|---|
-| Contractual | 73 | 31.3% |
-| Ambiguous | 155 | 66.5% |
-| Incidental | 8 | 3.4% |
+|----------------|------:|--:|
+| Contractual | 4 | 26.7% |
+| Ambiguous | 9 | 60.0% |
+| Incidental | 2 | 13.3% |
 
-The 66.5% ambiguous rate is typical for projects without extensive documentation; document-enhanced scoring in full mode can reduce this.
 ---
-🏥 Overall Health Assessment
 
-Summary Scorecard
+## 🏥 Overall Health Assessment
+
+### Summary Scorecard
+
 | Dimension | Grade | Details |
 |-----------|-------|---------|
-| CRAPload | 🟡 C+ | 24/216 functions (11%) above threshold |
-| GazeCRAPload | 🟢 A | Only 4 functions above threshold |
-| Avg Line Coverage | 🟢 B+ | 79.0% — solid foundation |
-| Contract Coverage | 🟡 C | 31.3% contractual, 66.5% ambiguous |
-| Complexity | 🟡 B- | Average 6.2, but 24 functions exceed threshold |
+| CRAPload | 🔴 F | 7/12 functions (58.3%) at or above threshold 15 |
+| GazeCRAPload | 🔴 F | 6/12 functions (50.0%) at or above threshold 15 |
+| Avg Line Coverage | 🔴 D | 47.1% average line coverage |
+| Contract Coverage | 🟡 B- | 43% average contract coverage across 8 tests |
+| Complexity | 🟡 C+ | 7.3 average cyclomatic complexity |
 
-Top 5 Prioritized Recommendations
-1. 🔴 Add tests for zero-coverage functions — ServeHTTP, parseConfig, and validateInput have 0% coverage with moderate-to-high complexity.
-2. 🔴 Increase coverage for processQueue — 12% coverage on complexity-8 function handling critical work queue logic.
-3. 🟡 Decompose high-complexity functions — 4 Q4 functions have complexity 15–18 and need to be broken into smaller units.
-4. 🟡 Resolve ambiguous classifications — 66.5% ambiguous rate can be reduced with project documentation providing stronger signal evidence.
-5. 🟢 Run per-package quality analysis — module-level returned 0 tests; per-package analysis provides granular contract coverage data.
+Documentation: 2 files scanned.
+
+### Recommendations
+
+1. 🔴 Add tests for `processGeneratedProtocolBufferMessageForTheExtremelyLongServiceNameprocessGeneratedProtocolBufferMessageForTheExtremelyLongServiceNameprocessGeneratedProtocolBufferMessageForTheExtremelyLongServiceNam` — 0.0% line coverage, complexity 9, CRAP 90.0 (internal/codegen/generated.go:310).
+2. 🔴 Add tests for ``parse`raw`Literal`` — 0.0% line coverage, complexity 8, CRAP 72.0 (internal/lexer/literal.go:77).
+3. 🔴 Add tests for `loadConfig` — 0.0% line coverage, complexity 4, CRAP 20.0 (internal/config/load.go:30).
+4. 🟡 Add tests for `(*Handler).ServeHTTP` — 20.0% line coverage, complexity 5, CRAP 17.8 (internal/api/handler.go:163).
+5. 🟡 Strengthen assertions for `validateInput` — tests execute it without verifying its contracts; GazeCRAP 110.0 (internal/api/validate.go:21).
+6. 🟡 Resolve SSA degradation in 1 package(s) — quality and contract data are partial there.
+7. 🟢 Map 2 skipped test(s) to targets with `gaze quality --target` — no target function could be inferred.
+8. 🟢 Document contracts for ambiguous side effects — 9 of 15 effects (60.0%) are ambiguous.
 ```
-<!-- scaffolded by gaze v1.8.0 -->
+
+## Assessment
+
+The project is in fair shape overall: contract coverage (43%) carries the
+score while line coverage (47.1%) and complexity (7.3 average) hold it back.
+The queue message handler dominates the risk: complexity 18 with no line
+coverage produces a CRAP score of 342 and lands it in Q4 Dangerous.
+
+1. Decompose `(*队列处理器).处理消息` first; at complexity 18 no amount of
+   testing brings its CRAP score below the threshold.
+2. Add tests for `parse`raw`Literal`` and `loadConfig`, which have zero line
+   coverage despite low complexity, so tests alone close their gap.
+3. Treat the 9 ambiguous effects as documentation work: Gaze cannot credit
+   tests for contracts it cannot classify, so the 43% contract coverage
+   understates what the suite actually verifies.
+<!-- scaffolded by gaze dev -->

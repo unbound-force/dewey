@@ -720,6 +720,18 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 			} else if count > 0 {
 				logger.Info("learnings re-ingested from files", "count", count)
 			}
+
+			// Re-index configured knowledge stores from their files. Like
+			// learnings, knowledge-store pages are file-backed but are not
+			// reached by the vault scan (hidden .uf/ directory) or any
+			// source, so without this pass they are lost on reindex or
+			// graph.db deletion until the next curation writes new files.
+			total, err := reIndexKnowledgeStores(persistentStore, embedder, vp, embCfg.MaxChunkChars)
+			if err != nil {
+				logger.Warn("knowledge store re-indexing failed", "err", err)
+			} else if total > 0 {
+				logger.Info("knowledge stores re-indexed from files", "count", total)
+			}
 		}
 
 		// Index the vault — persistent (incremental) or in-memory.
@@ -1167,6 +1179,35 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 	}
 
 	return reIngested, nil
+}
+
+// reIndexKnowledgeStores indexes every knowledge store configured in
+// .uf/dewey/knowledge-stores.yaml from its files on disk, delegating to the
+// shared tools.IndexKnowledgeStore implementation. It recovers curated
+// knowledge pages after `dewey reindex` or graph.db deletion — the store
+// files are the durable record, mirroring reIngestLearnings for learnings.
+//
+// Unchanged pages are cheap: IndexKnowledgeStore skips block and embedding
+// work when the content hash matches and only refreshes the cached tier
+// and properties. Returns the number of pages (re)indexed across all
+// stores. A missing config file is not an error; an unreadable or invalid
+// one is returned so the caller can log it.
+func reIndexKnowledgeStores(s *store.Store, embedder embed.Embedder, vaultPath string, maxChunkChars int) (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+
+	configPath := filepath.Join(vaultPath, deweyWorkspaceDir, "knowledge-stores.yaml")
+	stores, err := curate.LoadKnowledgeStoresConfig(configPath)
+	if err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for _, cfg := range stores {
+		total += tools.IndexKnowledgeStore(s, embedder, cfg, vaultPath, maxChunkChars, logger)
+	}
+	return total, nil
 }
 
 // parseLearningFrontmatter extracts YAML frontmatter and body from a

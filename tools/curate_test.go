@@ -623,3 +623,85 @@ func TestAutoIndex_UnchangedContentRecomputesTier(t *testing.T) {
 		t.Errorf("tier after unchanged re-index = %q, want curated (recomputed)", after.Tier)
 	}
 }
+
+// TestAutoIndex_PersistsFrontmatterProperties verifies that knowledge-store
+// pages carry their frontmatter as page properties, so validity-aware
+// semantic search sees a curated page's validity and as_of.
+func TestAutoIndex_PersistsFrontmatterProperties(t *testing.T) {
+	s := newTestStore(t)
+
+	vaultDir := t.TempDir()
+	storePath := filepath.Join(vaultDir, ".uf", "dewey", "knowledge", "test-store")
+	writeRawKnowledgeFile(t, storePath, "claim-1",
+		"tier: curated\nvalidity: stale-unverified\nas_of: org/repo@abc123\n")
+
+	cfg := curate.StoreConfig{Name: "test-store", Path: storePath}
+	if indexed := IndexKnowledgeStore(s, nil, cfg, vaultDir, 0, curateLogger); indexed != 1 {
+		t.Fatalf("indexed = %d, want 1", indexed)
+	}
+
+	page, err := s.GetPage("knowledge/test-store/claim-1")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage: page=%v err=%v", page, err)
+	}
+	validity, asOf := pageValidity(page)
+	if validity != "stale-unverified" {
+		t.Errorf("validity = %q, want stale-unverified (properties %q)", validity, page.Properties)
+	}
+	if asOf != "org/repo@abc123" {
+		t.Errorf("as_of = %q, want org/repo@abc123", asOf)
+	}
+	if page.Tier != "curated" {
+		t.Errorf("tier = %q, want curated", page.Tier)
+	}
+}
+
+// TestAutoIndex_UnchangedContentBackfillsProperties verifies that a page
+// indexed before properties were persisted (empty Properties, same content
+// hash) gets its properties backfilled without re-indexing its blocks.
+func TestAutoIndex_UnchangedContentBackfillsProperties(t *testing.T) {
+	s := newTestStore(t)
+
+	vaultDir := t.TempDir()
+	storePath := filepath.Join(vaultDir, ".uf", "dewey", "knowledge", "test-store")
+	writeRawKnowledgeFile(t, storePath, "claim-1", "tier: curated\nvalidity: superseded\n")
+
+	cfg := curate.StoreConfig{Name: "test-store", Path: storePath}
+	if indexed := IndexKnowledgeStore(s, nil, cfg, vaultDir, 0, curateLogger); indexed != 1 {
+		t.Fatalf("first indexing = %d, want 1", indexed)
+	}
+
+	// Simulate a row written by an older binary that dropped properties.
+	old, err := s.GetPage("knowledge/test-store/claim-1")
+	if err != nil || old == nil {
+		t.Fatalf("GetPage: page=%v err=%v", old, err)
+	}
+	old.Properties = ""
+	if err := s.UpdatePage(old); err != nil {
+		t.Fatalf("UpdatePage: %v", err)
+	}
+	blocksBefore, err := s.GetBlocksByPage("knowledge/test-store/claim-1")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+
+	if indexed := IndexKnowledgeStore(s, nil, cfg, vaultDir, 0, curateLogger); indexed != 0 {
+		t.Errorf("second indexing = %d, want 0 (content unchanged)", indexed)
+	}
+
+	after, err := s.GetPage("knowledge/test-store/claim-1")
+	if err != nil || after == nil {
+		t.Fatalf("GetPage after: page=%v err=%v", after, err)
+	}
+	if validity, _ := pageValidity(after); validity != "superseded" {
+		t.Errorf("validity after backfill = %q, want superseded (properties %q)", validity, after.Properties)
+	}
+	blocksAfter, err := s.GetBlocksByPage("knowledge/test-store/claim-1")
+	if err != nil {
+		t.Fatalf("GetBlocksByPage after: %v", err)
+	}
+	if len(blocksAfter) != len(blocksBefore) || len(blocksAfter) == 0 ||
+		blocksAfter[0].UUID != blocksBefore[0].UUID {
+		t.Errorf("blocks changed on unchanged-content backfill: before %d, after %d", len(blocksBefore), len(blocksAfter))
+	}
+}

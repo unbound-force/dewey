@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -268,7 +269,10 @@ func (c *Curate) loadStoreDocCount(cfg curate.StoreConfig) (int, error) {
 // its blocks and embeddings are replaced. Trust tiers are derived from the
 // file's frontmatter per the git-is-the-source-of-record change (IP-FR-001)
 // and overwrite any stale cached tier — including a human-promoted validated
-// row — so the DB never outlives the file rule (GTS-FR-005).
+// row — so the DB never outlives the file rule (GTS-FR-005). The file's
+// frontmatter is persisted as the page's properties so property-driven
+// readers (semantic_search validity ranking and filtering) see it; rows
+// written without properties are backfilled even when content is unchanged.
 func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int, logger *log.Logger) int {
 	storePath := curate.ResolveStorePath(cfg, vaultPath)
 	sourceID := knowledgeSourceID(cfg.Name)
@@ -342,6 +346,17 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 		}
 		pageTier := vault.DeriveTierFromProps(props, fileSHA, refSHA)
 
+		// Persist the frontmatter as the page's properties, the same JSON
+		// encoding the vault and source indexers use, so property-driven
+		// readers (semantic_search validity weighting and filtering,
+		// property queries) see curated pages' frontmatter.
+		propsJSON := ""
+		if len(props) > 0 {
+			if data, err := json.Marshal(props); err == nil {
+				propsJSON = string(data)
+			}
+		}
+
 		// Check if page already exists and content hasn't changed.
 		existing, err := s.GetPage(pageName)
 		if err != nil {
@@ -354,11 +369,13 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 			if existing.ContentHash == contentHash {
 				// Content unchanged — skip re-indexing blocks, but still
 				// recompute the cached tier so the DB never outlives the
-				// file rule (GTS-FR-005).
-				if existing.Tier != pageTier {
+				// file rule (GTS-FR-005), and backfill properties on rows
+				// written before properties were persisted.
+				if existing.Tier != pageTier || existing.Properties != propsJSON {
 					existing.Tier = pageTier
+					existing.Properties = propsJSON
 					if err := s.UpdatePage(existing); err != nil {
-						logger.Warn("failed to refresh knowledge page tier",
+						logger.Warn("failed to refresh knowledge page metadata",
 							"page", pageName, "err", err)
 					}
 				}
@@ -372,6 +389,7 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 			// Update existing page. The tier is recomputed from the file
 			// (GTS-FR-005) and overwrites any stale cached value.
 			existing.ContentHash = contentHash
+			existing.Properties = propsJSON
 			existing.Tier = pageTier
 			existing.SourceID = sourceID
 			if err := s.UpdatePage(existing); err != nil {
@@ -386,6 +404,7 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 				OriginalName: baseName,
 				SourceID:     sourceID,
 				SourceDocID:  entry.Name(),
+				Properties:   propsJSON,
 				ContentHash:  contentHash,
 				Tier:         pageTier,
 			}

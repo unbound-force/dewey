@@ -2730,3 +2730,117 @@ func TestReIngestLearnings_RoundTripFromSupersedeLearning(t *testing.T) {
 		t.Errorf("target validity = %v, want superseded", targetProps["validity"])
 	}
 }
+
+// writeKnowledgeStoreFixture writes a knowledge-stores.yaml registering one
+// source-less store and the given store files under the default store path.
+func writeKnowledgeStoreFixture(t *testing.T, vaultPath, storeName string, files map[string]string) {
+	t.Helper()
+	deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
+	storeDir := filepath.Join(deweyDir, "knowledge", storeName)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	config := "stores:\n  - name: " + storeName + "\n    sources: []\n"
+	if err := os.WriteFile(filepath.Join(deweyDir, "knowledge-stores.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(storeDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+}
+
+// TestReIndexKnowledgeStores_RecoversPages verifies that knowledge-store
+// pages are rebuilt from their files into a fresh graph.db, with frontmatter
+// properties, and that _index.md is not indexed.
+func TestReIndexKnowledgeStores_RecoversPages(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeKnowledgeStoreFixture(t, vaultPath, "team-kb", map[string]string{
+		"claim-a.md": "---\ntag: auth\ntier: curated\nvalidity: current\nas_of: org/repo@abc\n---\n\nTokens rotate daily.\n",
+		"claim-b.md": "---\ntag: deploy\ntier: curated\nvalidity: stale-unverified\n---\n\nBlue-green deploys.\n",
+		"_index.md":  "# Index\n",
+	})
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIndexKnowledgeStores(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIndexKnowledgeStores error: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+
+	page, err := s.GetPage("knowledge/team-kb/claim-b")
+	if err != nil || page == nil {
+		t.Fatalf("GetPage(claim-b): page=%v err=%v", page, err)
+	}
+	if page.SourceID != "knowledge-team-kb" {
+		t.Errorf("source_id = %q, want knowledge-team-kb", page.SourceID)
+	}
+	if !strings.Contains(page.Properties, `"validity":"stale-unverified"`) {
+		t.Errorf("properties should carry validity, got %q", page.Properties)
+	}
+	if idx, _ := s.GetPage("knowledge/team-kb/_index"); idx != nil {
+		t.Error("_index.md must not be indexed")
+	}
+
+	// A second pass over unchanged files does no block work.
+	again, err := reIndexKnowledgeStores(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIndexKnowledgeStores error: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("second pass count = %d, want 0 (unchanged)", again)
+	}
+}
+
+// TestReIndexKnowledgeStores_NoConfig verifies a vault without
+// knowledge-stores.yaml is a no-op, not an error.
+func TestReIndexKnowledgeStores_NoConfig(t *testing.T) {
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIndexKnowledgeStores(s, nil, t.TempDir(), 0)
+	if err != nil || count != 0 {
+		t.Errorf("got (%d, %v), want (0, nil)", count, err)
+	}
+}
+
+// TestReIndexKnowledgeStores_InvalidConfig verifies a malformed config is
+// reported to the caller rather than silently ignored.
+func TestReIndexKnowledgeStores_InvalidConfig(t *testing.T) {
+	vaultPath := t.TempDir()
+	deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deweyDir, "knowledge-stores.yaml"), []byte("stores:\n  - sources: []\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if _, err := reIndexKnowledgeStores(s, nil, vaultPath, 0); err == nil {
+		t.Error("expected an error for a store with no name")
+	}
+}
+
+// TestReIndexKnowledgeStores_NilStore verifies the no-persistent-store path.
+func TestReIndexKnowledgeStores_NilStore(t *testing.T) {
+	count, err := reIndexKnowledgeStores(nil, nil, t.TempDir(), 0)
+	if err != nil || count != 0 {
+		t.Errorf("got (%d, %v), want (0, nil)", count, err)
+	}
+}

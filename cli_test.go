@@ -1136,6 +1136,264 @@ func TestStatusCmd_HasFlags(t *testing.T) {
 	}
 }
 
+// scaffoldedStatusConfigYAML mirrors the config.yaml template `dewey init`
+// writes (newInitCmd): the model line carries the trailing comment that the
+// old line-based status parser leaked into embeddingModel (issue #225).
+const scaffoldedStatusConfigYAML = `# Dewey configuration
+# See: https://github.com/unbound-force/dewey
+
+embedding:
+  model: granite-embedding:30m  # Override with DEWEY_EMBEDDING_MODEL env var
+  # endpoint: http://localhost:11434  # Uncomment to override OLLAMA_HOST
+  # max_chunk_chars: 12288  # Override with DEWEY_CHUNK_MAX_CHARS env var
+`
+
+// newStatusTestVault creates a temp vault whose .uf/dewey directory holds
+// configYAML and pins the embedding environment the way newGatewayDoctorVault
+// does, so ambient state cannot leak into status model resolution. An empty
+// configYAML leaves config.yaml absent (the no-config scenarios).
+// XDG_CONFIG_HOME points at an empty temp dir whose dewey/ subdirectory is
+// returned as globalConfigDir — writing a config.yaml there simulates the
+// global config ReadEmbeddingConfig falls back to.
+func newStatusTestVault(t *testing.T, configYAML string) (vaultDir, globalConfigDir string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir .uf/dewey: %v", err)
+	}
+	if configYAML != "" {
+		if err := os.WriteFile(filepath.Join(deweyDir, "config.yaml"), []byte(configYAML), 0o644); err != nil {
+			t.Fatalf("write config.yaml: %v", err)
+		}
+	}
+	xdgDir := t.TempDir()
+	globalDir := filepath.Join(xdgDir, "dewey")
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatalf("mkdir global config dir: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdgDir)
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", "")
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "")
+	t.Setenv("OLLAMA_HOST", "")
+	return tmpDir, globalDir
+}
+
+// runStatusJSON runs `dewey status --json` against vaultDir and returns the
+// parsed output object. A command error fails the test, so every caller also
+// asserts STA-FR-002's exit-0 guarantee for unreachable providers and
+// unconstructible configs.
+func runStatusJSON(t *testing.T, vaultDir string) map[string]any {
+	t.Helper()
+	cmd := newStatusCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--json", "--vault", vaultDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status --json failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\noutput: %s", err, buf.String())
+	}
+	return result
+}
+
+// assertStatusEmbeddingModel asserts the reported embeddingModel is exactly
+// want (STA-FR-001, TC-009). The availability probe runs with its result
+// ignored: model resolution is pure configuration and must not depend on any
+// provider.
+func assertStatusEmbeddingModel(t *testing.T, vaultDir, want string) {
+	t.Helper()
+	result := runStatusJSON(t, vaultDir)
+	got, _ := result["embeddingModel"].(string)
+	if got != want {
+		t.Errorf("embeddingModel = %q, want exactly %q", got, want)
+	}
+}
+
+// assertStatusEmbeddingAvailable asserts the reported embeddingAvailable is
+// exactly want (STA-FR-002, TC-009), failing loudly when the key is missing
+// or not a boolean so a key-set regression cannot pass silently.
+func assertStatusEmbeddingAvailable(t *testing.T, vaultDir string, want bool) {
+	t.Helper()
+	result := runStatusJSON(t, vaultDir)
+	got, ok := result["embeddingAvailable"].(bool)
+	if !ok {
+		t.Fatalf("embeddingAvailable missing or not a boolean: %#v", result["embeddingAvailable"])
+	}
+	if got != want {
+		t.Errorf("embeddingAvailable = %v, want %v", got, want)
+	}
+}
+
+// TestStatusCmd_EmbeddingModelScaffoldedCommentStripped verifies the trailing
+// comment on the scaffolded model line is stripped: YAML parsing resolves the
+// model to granite-embedding:30m (STA-FR-001).
+func TestStatusCmd_EmbeddingModelScaffoldedCommentStripped(t *testing.T) {
+	vaultDir, _ := newStatusTestVault(t, scaffoldedStatusConfigYAML)
+	assertStatusEmbeddingModel(t, vaultDir, "granite-embedding:30m")
+}
+
+// TestStatusCmd_EmbeddingModelEnvOverride verifies DEWEY_EMBEDDING_MODEL wins
+// over the per-vault config.yaml model, the same precedence serve applies
+// (STA-FR-001).
+func TestStatusCmd_EmbeddingModelEnvOverride(t *testing.T) {
+	vaultDir, _ := newStatusTestVault(t, "embedding:\n  model: config-model\n")
+	// Set after newStatusTestVault cleared it, so only this override is in play.
+	t.Setenv("DEWEY_EMBEDDING_MODEL", "env-model")
+	assertStatusEmbeddingModel(t, vaultDir, "env-model")
+}
+
+// TestStatusCmd_EmbeddingModelNoConfigDefault verifies a vault with .uf/dewey/
+// but no config file anywhere reports the serve default, not the empty string
+// (STA-FR-001).
+func TestStatusCmd_EmbeddingModelNoConfigDefault(t *testing.T) {
+	vaultDir, _ := newStatusTestVault(t, "")
+	assertStatusEmbeddingModel(t, vaultDir, "granite-embedding:30m")
+}
+
+// TestStatusCmd_EmbeddingModelGlobalConfigFallback verifies a per-vault config
+// that sets neither embedding.provider nor embedding.model falls through to the
+// global config's model (STA-FR-001).
+func TestStatusCmd_EmbeddingModelGlobalConfigFallback(t *testing.T) {
+	vaultDir, globalConfigDir := newStatusTestVault(t, "synthesis:\n  provider: ollama\n")
+	globalYAML := "embedding:\n  model: global-model\n"
+	if err := os.WriteFile(filepath.Join(globalConfigDir, "config.yaml"), []byte(globalYAML), 0o644); err != nil {
+		t.Fatalf("write global config.yaml: %v", err)
+	}
+	assertStatusEmbeddingModel(t, vaultDir, "global-model")
+}
+
+// TestStatusCmd_EmbeddingAvailableModelServed verifies embeddingAvailable is
+// true when the configured endpoint lists the configured model (STA-FR-002,
+// provider-serving scenario). The endpoint is pinned to an httptest server
+// through the vault config, so no host Ollama is consulted (constitution IV).
+func TestStatusCmd_EmbeddingAvailableModelServed(t *testing.T) {
+	srv := newMockOllamaServer(`{"name":"llama3:latest"},{"name":"granite-embedding:30m"}`)
+	defer srv.Close()
+
+	vaultDir, _ := newStatusTestVault(t,
+		"embedding:\n  model: granite-embedding:30m\n  endpoint: "+srv.URL+"\n")
+	assertStatusEmbeddingAvailable(t, vaultDir, true)
+}
+
+// TestStatusCmd_EmbeddingAvailableEndpointUnreachable verifies a closed
+// endpoint reports unavailable without failing the command (STA-FR-002,
+// provider-unreachable scenario): runStatusJSON fails the test on any command
+// error, which is the exit-0 half of the guarantee. The endpoint is pinned
+// through DEWEY_EMBEDDING_ENDPOINT — the env var overrides config.yaml — so
+// the probe targets the dead port rather than any host Ollama (constitution
+// IV).
+func TestStatusCmd_EmbeddingAvailableEndpointUnreachable(t *testing.T) {
+	// Closed immediately: the server's URL now names a port nothing listens
+	// on, a deterministic connection-refused target for the bounded probe.
+	srv := newMockOllamaServer(`{"name":"granite-embedding:30m"}`)
+	srv.Close()
+
+	vaultDir, _ := newStatusTestVault(t, "embedding:\n  model: granite-embedding:30m\n")
+	// Set after newStatusTestVault cleared it, so only this pin is in play.
+	t.Setenv("DEWEY_EMBEDDING_ENDPOINT", srv.URL)
+
+	assertStatusEmbeddingAvailable(t, vaultDir, false)
+}
+
+// TestStatusCmd_EmbeddingAvailableModelNotServed verifies embeddingAvailable
+// is false when the endpoint responds but its tags list does not include the
+// configured model (STA-FR-002, model-not-served scenario). The list is
+// non-empty so the false comes from name matching, not an empty response.
+func TestStatusCmd_EmbeddingAvailableModelNotServed(t *testing.T) {
+	srv := newMockOllamaServer(`{"name":"llama3:latest"}`)
+	defer srv.Close()
+
+	vaultDir, _ := newStatusTestVault(t,
+		"embedding:\n  model: granite-embedding:30m\n  endpoint: "+srv.URL+"\n")
+	assertStatusEmbeddingAvailable(t, vaultDir, false)
+}
+
+// TestStatusCmd_EmbeddingAvailableVertexMissingProject verifies a vertex
+// config without a project reports unavailable without failing the command
+// (STA-FR-002, misconfigured-provider scenario): construction fails inside
+// NewEmbedderFromConfig before any credential or network access, and
+// queryEmbeddingStatus maps that to false while the model still reports from
+// config (design D2).
+func TestStatusCmd_EmbeddingAvailableVertexMissingProject(t *testing.T) {
+	vaultDir, _ := newStatusTestVault(t,
+		"embedding:\n  provider: vertex\n  model: text-embedding-005\n  region: us-central1\n")
+
+	assertStatusEmbeddingAvailable(t, vaultDir, false)
+	assertStatusEmbeddingModel(t, vaultDir, "text-embedding-005")
+}
+
+// TestStatusCmd_JSONKeySetUnchanged verifies the STA-FR-003 contract: the
+// --json object keeps exactly the key set it had before the embedding fix —
+// every pre-existing key still present, no key added. Set equality is
+// asserted in both directions so a rename fails as one missing plus one
+// unexpected key. The trust key is always present because queryTrustStatus
+// never returns nil; sources stays present (null) on a store-less vault.
+func TestStatusCmd_JSONKeySetUnchanged(t *testing.T) {
+	vaultDir, _ := newStatusTestVault(t, scaffoldedStatusConfigYAML)
+	result := runStatusJSON(t, vaultDir)
+
+	// The pre-change formatStatusJSON key set (git HEAD before this change):
+	// only the embeddingModel and embeddingAvailable values were corrected.
+	want := []string{
+		"path", "pages", "blocks", "embeddings",
+		"embeddingModel", "embeddingAvailable", "embeddingCoverage",
+		"sources", "trust",
+	}
+	slices.Sort(want)
+
+	got := make([]string, 0, len(result))
+	for k := range result {
+		got = append(got, k)
+	}
+	slices.Sort(got)
+
+	if !slices.Equal(want, got) {
+		t.Errorf("status --json key set changed (STA-FR-003):\n  want: %v\n  got:  %v", want, got)
+	}
+
+	// The keys outside the corrected pair keep their meaning (STA-FR-003's
+	// second clause): path is still the vault's .uf/dewey directory, and a
+	// vault without graph.db still reports zero pages.
+	wantPath := filepath.Join(vaultDir, deweyWorkspaceDir)
+	if gotPath, _ := result["path"].(string); gotPath != wantPath {
+		t.Errorf("path = %q, want %q", gotPath, wantPath)
+	}
+	if gotPages, _ := result["pages"].(float64); gotPages != 0 {
+		t.Errorf("pages = %v, want 0 for a vault without graph.db", gotPages)
+	}
+}
+
+// TestStatusCmd_TextOutputModelLineClean verifies the STA-FR-001 text-output
+// scenario on the scaffolded-config vault: the Model: line shows exactly the
+// YAML-resolved model, so the trailing config comment the old line parser
+// leaked (issue #225) cannot reach the text report either. The exact line
+// (with its trailing newline) pins both halves — the clean model and the
+// absence of comment text — because a polluted line would not match.
+func TestStatusCmd_TextOutputModelLineClean(t *testing.T) {
+	vaultDir, _ := newStatusTestVault(t, scaffoldedStatusConfigYAML)
+
+	cmd := newStatusCmd()
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"--vault", vaultDir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status failed: %v", err)
+	}
+
+	output := buf.String()
+	wantLine := "  Model:      granite-embedding:30m\n"
+	if !strings.Contains(output, wantLine) {
+		t.Errorf("text output missing clean Model: line %q\noutput:\n%s", wantLine, output)
+	}
+	if strings.Contains(output, "# Override with DEWEY_EMBEDDING_MODEL") {
+		t.Errorf("text output carries config comment text on the Model: line:\n%s", output)
+	}
+}
+
 // TestRootCmd_Help_IncludesNewSubcommands verifies init and status appear in help.
 func TestRootCmd_Help_IncludesNewSubcommands(t *testing.T) {
 	cmd := newRootCmd()

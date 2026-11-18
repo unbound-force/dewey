@@ -590,6 +590,11 @@ func newStatusCmd() *cobra.Command {
 			// comparison behind every pages.tier in the index.
 			data.Trust = queryTrustStatus(vp)
 
+			// Embedding layer: the model resolved the way serve resolves
+			// it, plus a diagnostic-only availability probe. Model and
+			// availability come from one config resolution (design D3).
+			data.EmbeddingModel, data.EmbeddingAvailable = queryEmbeddingStatus(deweyDir)
+
 			w := cmd.OutOrStdout()
 			if jsonOutput {
 				return formatStatusJSON(data, w)
@@ -604,31 +609,13 @@ func newStatusCmd() *cobra.Command {
 	return cmd
 }
 
-// readEmbeddingModel extracts the embedding model name from config.yaml
-// using simple line parsing to avoid a YAML dependency for status display.
-func readEmbeddingModel(deweyDir string) string {
-	configPath := filepath.Join(deweyDir, "config.yaml")
-	configData, err := os.ReadFile(configPath)
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(configData), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "model:") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "model:"))
-		}
-	}
-	return ""
-}
-
 // queryStoreStatus opens the store at deweyDir, queries all counts and source
 // records, and returns a populated statusData. The store is closed before
 // returning. Returns a zero-value statusData (with IndexPath set) if the
 // database does not yet exist.
 func queryStoreStatus(deweyDir string) (statusData, error) {
 	data := statusData{
-		IndexPath:      deweyDir,
-		EmbeddingModel: readEmbeddingModel(deweyDir),
+		IndexPath: deweyDir,
 	}
 
 	dbPath := filepath.Join(deweyDir, "graph.db")
@@ -674,6 +661,26 @@ func queryStoreStatus(deweyDir string) (statusData, error) {
 	}
 
 	return data, nil
+}
+
+// queryEmbeddingStatus resolves the embedding model the way serve does
+// (embed.ReadEmbeddingConfig: DEWEY_EMBEDDING_MODEL over per-vault over
+// global config) and probes availability through the configured embedder's
+// Available() method — the same probe the MCP health tool uses.
+// Diagnostic-only: never auto-starts Ollama or spawns subprocesses (the
+// doctor autoStart=false stance); a provider that cannot be constructed
+// (e.g. vertex without project) reports unavailable while the model still
+// comes from config. Relies on the embedders' built-in bounded probes so an
+// unreachable provider cannot hang the command.
+func queryEmbeddingStatus(deweyDir string) (model string, available bool) {
+	cfg := embed.ReadEmbeddingConfig(deweyDir)
+	embedder, err := embed.NewEmbedderFromConfig(cfg)
+	if err != nil {
+		// Construction failure is unavailable, not a command error, so a
+		// misconfigured provider cannot fail `dewey status` (design D2).
+		return cfg.Model, false
+	}
+	return cfg.Model, embedder.Available()
 }
 
 // formatStatusText writes human-readable status output to w.

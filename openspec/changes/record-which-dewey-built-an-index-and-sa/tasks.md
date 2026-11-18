@@ -12,7 +12,7 @@
   indexing stores MUST bump it and is expected to make the incremental
   passes converge existing stores when feasible (IBP-FR-004, design
   D1).
-- [ ] 1.2 `main.go`: add `resolveVersionFrom(ldflagsVersion string, bi
+- [x] 1.2 `main.go`: add `resolveVersionFrom(ldflagsVersion string, bi
   *debug.BuildInfo) string` (ldflags non-`dev`/non-empty → build-info
   `Main.Version` non-`(devel)`/non-empty → `dev`) and the
   `resolveVersion()` wrapper; `dewey version` (`newVersionCmd`) and

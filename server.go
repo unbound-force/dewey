@@ -129,7 +129,15 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 		learning := tools.NewLearning(cfg.embedder, cfg.store, cfg.vaultPath, cfg.maxChunkChars)
 		toolCount += registerLearningTools(srv, learning)
 
-		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars)
+		// Index-build provenance (IBP-FR-001, design D4): the index and
+		// reindex tools stamp the resolved binary version and index format
+		// into the store's metadata after each completed pass. Both values
+		// live in package main (tools/ cannot import it), so they are
+		// injected here as data.
+		indexing := tools.NewIndexing(cfg.store, cfg.embedder, cfg.vaultPath, cfg.indexMutex, cfg.maxChunkChars, tools.IndexBuildInfo{
+			DeweyVersion: resolveVersion(),
+			IndexFormat:  IndexFormat,
+		})
 		toolCount += registerIndexingTools(srv, indexing)
 
 		// Knowledge compilation tools (013-knowledge-compile, T032/T033).

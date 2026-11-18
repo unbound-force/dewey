@@ -1082,7 +1082,7 @@ func TestBackgroundIndex_MutexBlocksIndexDuringStartup(t *testing.T) {
 	indexMu.Lock()
 
 	// Create an Indexing tool handler with the shared mutex and a valid store.
-	ix := tools.NewIndexing(s, nil, tmpDir, indexMu, 0)
+	ix := tools.NewIndexing(s, nil, tmpDir, indexMu, 0, tools.IndexBuildInfo{})
 
 	// Attempt to call Index — should be rejected because the mutex is held.
 	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})

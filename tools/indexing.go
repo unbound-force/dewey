@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -39,6 +40,27 @@ var indexingLogger = log.NewWithOptions(os.Stderr, log.Options{
 	TimeFormat:      "2006-01-02T15:04:05.000Z07:00",
 })
 
+// IndexBuildInfo carries the build provenance that the index and reindex
+// MCP tools stamp into the store's metadata table after a completed
+// indexing pass: the resolved version of the binary that ran the pass and
+// that binary's index format number (IBP-FR-001, design D4). The values
+// are constructor-injected from package main — resolveVersion() and
+// IndexFormat live there, and tools/ cannot import package main — as
+// data, not a behavior seam, so handler logic stays unchanged. The zero
+// value is a safe no-op: handlers skip stamping entirely, so constructions
+// that predate this field (including existing tests) behave identically.
+type IndexBuildInfo struct {
+	// DeweyVersion is the resolved version of the binary that ran the
+	// indexing pass, recorded verbatim (never parsed) under the
+	// `dewey_version` metadata key.
+	DeweyVersion string
+	// IndexFormat is the index format number of the binary that ran the
+	// pass (package main's IndexFormat), recorded as a decimal string
+	// under the `index_format` metadata key — the comparison signal for
+	// the reindex recommendation.
+	IndexFormat int
+}
+
 // Indexing provides MCP tools for triggering source indexing while
 // the server is running. It shares a mutex between Index and Reindex
 // to ensure mutual exclusion — only one indexing operation can run at
@@ -53,16 +75,17 @@ type Indexing struct {
 	store         *store.Store
 	embedder      embed.Embedder
 	vaultPath     string
-	maxChunkChars int // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	maxChunkChars int            // max chars per embedding chunk; 0 uses embed.DefaultMaxChunkChars
+	buildInfo     IndexBuildInfo // build provenance stamped after each completed pass; zero value disables stamping
 }
 
 // NewIndexing creates a new Indexing tool handler with the given store,
-// embedder, vault path, optional shared mutex, and max chunk chars for
-// embedding generation. The embedder may be nil — indexing proceeds
-// without embedding generation when unavailable (graceful degradation).
-// The store must be non-nil for the tools to function; a clear error is
-// returned at call time if it is nil. The vaultPath is the vault root
-// directory (not the .uf/dewey/ workspace).
+// embedder, vault path, optional shared mutex, max chunk chars for
+// embedding generation, and index build provenance. The embedder may be
+// nil — indexing proceeds without embedding generation when unavailable
+// (graceful degradation). The store must be non-nil for the tools to
+// function; a clear error is returned at call time if it is nil. The
+// vaultPath is the vault root directory (not the .uf/dewey/ workspace).
 //
 // The mu parameter enables shared mutual exclusion with background startup
 // indexing (per D1, spec 012). When mu is non-nil, it replaces the internal
@@ -70,11 +93,39 @@ type Indexing struct {
 //
 // The maxChunkChars parameter controls the maximum character length per
 // embedding chunk. Pass 0 to use embed.DefaultMaxChunkChars.
-func NewIndexing(s *store.Store, e embed.Embedder, vaultPath string, mu *sync.Mutex, maxChunkChars int) *Indexing {
+//
+// The buildInfo parameter carries the build provenance (IBP-FR-001,
+// design D4) stamped into the store's metadata after each completed
+// indexing pass. It is supplied by package main — resolveVersion() and
+// IndexFormat live there — because tools/ cannot import package main.
+// Pass the zero value IndexBuildInfo{} to disable stamping.
+func NewIndexing(s *store.Store, e embed.Embedder, vaultPath string, mu *sync.Mutex, maxChunkChars int, buildInfo IndexBuildInfo) *Indexing {
 	if mu == nil {
 		mu = &sync.Mutex{}
 	}
-	return &Indexing{store: s, embedder: e, vaultPath: vaultPath, mu: mu, maxChunkChars: maxChunkChars}
+	return &Indexing{store: s, embedder: e, vaultPath: vaultPath, mu: mu, maxChunkChars: maxChunkChars, buildInfo: buildInfo}
+}
+
+// stampIndexBuild writes the build provenance of a completed indexing
+// pass into the store's metadata table — `dewey_version` (stored
+// verbatim) and `index_format` (decimal string) — mirroring package
+// main's recordIndexBuild (IBP-FR-001, design D3). A nil store or a
+// zero-valued buildInfo is a no-op, so in-memory mode and constructions
+// that predate stamping are unaffected. Like recordIndexBuild, the two
+// upserts are deliberately untransacted: a crash between them leaves
+// `index_format` missing, which counts as 0 and over-recommends a
+// reindex (the fail-safe direction).
+func (ix *Indexing) stampIndexBuild() error {
+	if ix.store == nil || ix.buildInfo == (IndexBuildInfo{}) {
+		return nil
+	}
+	if err := ix.store.SetMeta("dewey_version", ix.buildInfo.DeweyVersion); err != nil {
+		return fmt.Errorf("stamp dewey_version: %w", err)
+	}
+	if err := ix.store.SetMeta("index_format", strconv.Itoa(ix.buildInfo.IndexFormat)); err != nil {
+		return fmt.Errorf("stamp index_format: %w", err)
+	}
+	return nil
 }
 
 // indexSummary is the structured JSON response returned by both Index
@@ -159,6 +210,20 @@ func (ix *Indexing) Index(ctx context.Context, req *mcp.CallToolRequest, input t
 	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars, tierBlobs)
 	if indexErr != nil {
 		indexingLogger.Warn("index had errors", "err", indexErr)
+	}
+
+	// Stamp the build provenance now that the index pass has completed
+	// (IBP-FR-001, design D4): the stamp asserts this binary's code
+	// finished the pass, so a pass with errors must not stamp. A stamp
+	// failure is reported in the error result — the completed index work
+	// stands in the store.
+	if indexErr == nil {
+		if err := ix.stampIndexBuild(); err != nil {
+			indexingLogger.Warn("index completed but recording build metadata failed", "err", err)
+			return errorResult(fmt.Sprintf(
+				"index completed (%d pages indexed) but recording index build metadata failed: %v. The indexed content is preserved; rerun index to retry.",
+				indexResult.TotalIndexed, err)), nil, nil
+		}
 	}
 
 	// Report source errors to the store.
@@ -291,6 +356,19 @@ func (ix *Indexing) Reindex(ctx context.Context, req *mcp.CallToolRequest, input
 	indexResult, indexErr := vault.IndexDocuments(ix.store, allDocs, configs, ix.embedder, ix.maxChunkChars, tierBlobs)
 	if indexErr != nil {
 		indexingLogger.Warn("reindex had errors", "err", indexErr)
+	}
+
+	// Stamp the build provenance now that the rebuild has completed
+	// (IBP-FR-001, design D4) — same semantics as Index: a pass with
+	// errors must not stamp, and a stamp failure is reported in the
+	// error result while the rebuilt content stands in the store.
+	if indexErr == nil {
+		if err := ix.stampIndexBuild(); err != nil {
+			indexingLogger.Warn("reindex completed but recording build metadata failed", "err", err)
+			return errorResult(fmt.Sprintf(
+				"reindex completed (%d pages indexed, %d deleted) but recording index build metadata failed: %v. The reindexed content is preserved; rerun reindex to retry.",
+				indexResult.TotalIndexed, totalDeleted, err)), nil, nil
+		}
 	}
 
 	// Report source errors.

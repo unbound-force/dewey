@@ -70,7 +70,7 @@ func buildDocs(sourceID, docID, title, content string) map[string][]source.Docum
 // in the stored page.
 func TestIndexDocuments_ScanCalledForWebSource(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{
@@ -141,7 +141,7 @@ func TestIndexDocuments_ScanCalledForWebSource(t *testing.T) {
 // patterns should NOT produce sanitize_findings in the stored page.
 func TestIndexDocuments_ScanSkippedForDiskSource(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{
@@ -190,7 +190,7 @@ func TestIndexDocuments_ScanSkippedForDiskSource(t *testing.T) {
 // appear in the store after indexing.
 func TestIndexDocuments_StrictModeSkipsDocument(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{
@@ -226,7 +226,7 @@ func TestIndexDocuments_StrictModeSkipsDocument(t *testing.T) {
 // merge into properties → store → retrieve → parse.
 func TestIndexDocuments_FindingsSurvivePersistence(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{
@@ -313,7 +313,7 @@ func TestIndexDocuments_FindingsSurvivePersistence(t *testing.T) {
 // JSON. Neither should overwrite the other.
 func TestIndexDocuments_FindingsMergedWithFrontmatter(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{
@@ -395,7 +395,7 @@ func TestIndexDocuments_FindingsMergedWithFrontmatter(t *testing.T) {
 // Clean documents should be indexed normally even under strict sanitization.
 func TestIndexDocuments_StrictModeAllowsCleanDocument(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{
@@ -429,7 +429,7 @@ func TestIndexDocuments_StrictModeAllowsCleanDocument(t *testing.T) {
 // source config is propagated to the stored page's Tier field.
 func TestIndexDocuments_TrustTierFromConfig(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	configs := []source.SourceConfig{
 		{

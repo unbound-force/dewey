@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,6 +83,29 @@ func resolveVersion() string {
 // on the unchanged-content path), or rely on the reindex recommendation as
 // the remediation (IBP-FR-004, design D1).
 const IndexFormat = 1
+
+// recordIndexBuild stamps the store's metadata table with the build
+// provenance of a completed indexing pass: `dewey_version` (the resolved
+// version of the binary that ran the pass, stored verbatim) and
+// `index_format` (the decimal value of that binary's IndexFormat)
+// (IBP-FR-001, design D3). A nil store is a no-op so in-memory mode is
+// unaffected (epic rule). The stamp is metadata-only — no pages, blocks,
+// or embeddings are written, so unchanged files stay cheap — and the two
+// upserts are deliberately untransacted: a crash between them leaves
+// `index_format` missing, which counts as 0 and over-recommends a reindex
+// (the fail-safe direction).
+func recordIndexBuild(s *store.Store, deweyVersion string, indexFormat int) error {
+	if s == nil {
+		return nil
+	}
+	if err := s.SetMeta("dewey_version", deweyVersion); err != nil {
+		return fmt.Errorf("stamp dewey_version: %w", err)
+	}
+	if err := s.SetMeta("index_format", strconv.Itoa(indexFormat)); err != nil {
+		return fmt.Errorf("stamp index_format: %w", err)
+	}
+	return nil
+}
 
 // deweyWorkspaceDir is the workspace directory name relative to the vault root.
 // All Dewey runtime artifacts (graph.db, dewey.log, dewey.lock) live here.

@@ -42,7 +42,7 @@
 
 ## 3. Status reporting
 
-- [ ] 3.1 `cli.go`: add pure helpers `parseIndexFormat(s string) int`
+- [x] 3.1 `cli.go`: add pure helpers `parseIndexFormat(s string) int`
   (missing or non-decimal counts as 0) and
   `reindexDecision(storedFormat, currentFormat int) (bool, []string)`
   (recommended iff stored < current; reason `index format <stored>,

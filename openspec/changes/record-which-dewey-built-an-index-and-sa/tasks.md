@@ -7,7 +7,7 @@
 
 ## 1. Version resolution and IndexFormat constant
 
-- [ ] 1.1 `main.go`: add the `IndexFormat` constant with value `1`
+- [x] 1.1 `main.go`: add the `IndexFormat` constant with value `1`
   and a doc comment stating the bump rule — any PR that changes what
   indexing stores MUST bump it and is expected to make the incremental
   passes converge existing stores when feasible (IBP-FR-004, design

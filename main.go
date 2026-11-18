@@ -39,6 +39,15 @@ import (
 
 var version = "dev"
 
+// IndexFormat is the format version of what this binary's indexing passes
+// store in the persistent index; completed passes stamp it into the store's
+// metadata as `index_format`. Any PR that changes what indexing stores MUST
+// bump this constant, and is expected to make the incremental passes
+// converge existing stores when feasible (the issue #220 pattern: backfill
+// on the unchanged-content path), or rely on the reindex recommendation as
+// the remediation (IBP-FR-004, design D1).
+const IndexFormat = 1
+
 // deweyWorkspaceDir is the workspace directory name relative to the vault root.
 // All Dewey runtime artifacts (graph.db, dewey.log, dewey.lock) live here.
 // Uses the .uf/<tool>/ namespace per ecosystem convention (D1).

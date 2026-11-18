@@ -53,7 +53,7 @@
   `ReindexReasons`); the no-graph.db path returns empty version,
   format 0, and no recommendation; status never writes either key
   (IBP-FR-003, design D5).
-- [ ] 3.3 `cli.go`: `formatStatusJSON` emits top-level `deweyVersion`,
+- [x] 3.3 `cli.go`: `formatStatusJSON` emits top-level `deweyVersion`,
   `indexFormat`, `reindexRecommended`, and `reindexReasons` (always
   present; empty array, not null, when not recommended) (IBP-FR-003,
   design D5); `formatStatusText` gains an `Indexed by:` line and, when

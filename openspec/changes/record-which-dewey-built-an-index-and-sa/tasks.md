@@ -66,7 +66,7 @@
   (ldflags release value, build-info module version, `(devel)`,
   empty/nil inputs) and `TestRecordIndexBuild` (both keys written,
   nil store no-op, values verbatim).
-- [ ] 4.2 `cli_test.go`: `TestParseIndexFormat` and
+- [x] 4.2 `cli_test.go`: `TestParseIndexFormat` and
   `TestReindexDecision` table tests (lower, missing → 0, equal,
   higher, unparseable); extend the status command tests to assert the
   four JSON fields across scenarios (older format with the exact

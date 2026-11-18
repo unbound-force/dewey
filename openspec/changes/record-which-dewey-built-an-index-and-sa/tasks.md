@@ -47,7 +47,7 @@
   `reindexDecision(storedFormat, currentFormat int) (bool, []string)`
   (recommended iff stored < current; reason `index format <stored>,
   this Dewey writes <current>`) (IBP-FR-003, design D5).
-- [ ] 3.2 `cli.go`: `queryStoreStatus` reads `dewey_version` and
+- [x] 3.2 `cli.go`: `queryStoreStatus` reads `dewey_version` and
   `index_format` via `GetMeta` and populates new `statusData` fields
   (`DeweyVersion`, `IndexFormat`, `ReindexRecommended`,
   `ReindexReasons`); the no-graph.db path returns empty version,

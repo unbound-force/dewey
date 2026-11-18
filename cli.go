@@ -548,6 +548,22 @@ type statusData struct {
 	Sources            []sourceStatus
 	IndexPath          string
 	Trust              *trustStatus
+	// DeweyVersion is the stored `dewey_version` metadata key: the
+	// resolved version of the binary that last completed an indexing
+	// pass over this store, recorded verbatim. Empty when the key is
+	// absent or there is no store (IBP-FR-003, design D5).
+	DeweyVersion string
+	// IndexFormat is the stored `index_format` metadata key; a missing
+	// or non-decimal value counts as 0 (parseIndexFormat).
+	IndexFormat int
+	// ReindexRecommended is true iff IndexFormat is strictly lower than
+	// this binary's IndexFormat (reindexDecision). False without a
+	// store — there is nothing to rebuild.
+	ReindexRecommended bool
+	// ReindexReasons carries the reindex recommendation reasons; empty
+	// and non-nil when not recommended so status JSON renders an array,
+	// never null.
+	ReindexReasons []string
 }
 
 // embeddingCoverage computes the percentage of blocks with embeddings.
@@ -610,18 +626,26 @@ func newStatusCmd() *cobra.Command {
 	return cmd
 }
 
-// queryStoreStatus opens the store at deweyDir, queries all counts and source
-// records, and returns a populated statusData. The store is closed before
-// returning. Returns a zero-value statusData (with IndexPath set) if the
-// database does not yet exist.
+// queryStoreStatus opens the store at deweyDir, queries all counts, source
+// records, and index-build provenance, and returns a populated statusData.
+// The store is closed before returning. Returns a zero-value statusData
+// (with IndexPath set) if the database does not yet exist — empty version,
+// format 0, and no reindex recommendation: nothing has been built, so there
+// is nothing to rebuild. The embedding model and availability are resolved
+// separately by the caller via queryEmbeddingStatus.
 func queryStoreStatus(deweyDir string) (statusData, error) {
 	data := statusData{
 		IndexPath: deweyDir,
+		// Non-nil from the start so every return path carries reasons
+		// as an array, never null — the same non-nil contract
+		// reindexDecision guarantees for its own results.
+		ReindexReasons: []string{},
 	}
 
 	dbPath := filepath.Join(deweyDir, "graph.db")
 	if _, err := os.Stat(dbPath); err != nil {
-		// Database does not exist yet — return zero counts.
+		// Database does not exist yet — return zero counts and no
+		// index provenance (no recommendation: nothing to rebuild).
 		return data, nil
 	}
 
@@ -660,6 +684,20 @@ func queryStoreStatus(deweyDir string) (statusData, error) {
 		}
 		data.Sources = append(data.Sources, ss)
 	}
+
+	// Index-build provenance (IBP-FR-003, design D5): read-only — status
+	// never stamps either key. GetMeta reads a missing key as "" with no
+	// error, so an absent stamp flows through parseIndexFormat's
+	// counts-as-zero rule; a genuine read failure degrades the same way
+	// (over-recommending, the fail-safe direction) instead of failing the
+	// command, matching the auxiliary counts above.
+	if v, err := s.GetMeta("dewey_version"); err == nil {
+		data.DeweyVersion = v
+	}
+	if f, err := s.GetMeta("index_format"); err == nil {
+		data.IndexFormat = parseIndexFormat(f)
+	}
+	data.ReindexRecommended, data.ReindexReasons = reindexDecision(data.IndexFormat, IndexFormat)
 
 	return data, nil
 }

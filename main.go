@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,6 +39,40 @@ import (
 )
 
 var version = "dev"
+
+// resolveVersionFrom returns the version identifying the binary: the
+// ldflags version when set, else the build-info module version, else "dev"
+// (IBP-FR-002, design D2). The ldflags value counts as set only when it is
+// neither empty nor "dev" (the package-level default), and the build-info
+// module version only when it is neither empty nor "(devel)" —
+// `go install <module>@<tag>` builds (mise `go:` installs) stamp their tag
+// into Main.Version while leaving ldflags unset, so without this fallback
+// they report "dev". A nil bi is treated as absent build info. The resolved
+// value is returned verbatim — never normalized, never parsed — so "3.9.0"
+// (ldflags), "v3.8.1" (build info), and "dev" (local builds) are all
+// expected, intentional outputs.
+func resolveVersionFrom(ldflagsVersion string, bi *debug.BuildInfo) string {
+	if ldflagsVersion != "" && ldflagsVersion != "dev" {
+		return ldflagsVersion
+	}
+	if bi != nil && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
+
+// resolveVersion returns the version identifying this binary by resolving
+// the package-level ldflags var against the runtime build info. Every
+// version report — the `dewey version` subcommand, the serve startup log,
+// and index-build stamping — goes through this wrapper so all sites agree
+// on one value (design D2).
+func resolveVersion() string {
+	// ReadBuildInfo's ok is discarded: when the binary carries no module
+	// information, resolveVersionFrom's nil and empty-version guards
+	// already fall through to "dev".
+	bi, _ := debug.ReadBuildInfo()
+	return resolveVersionFrom(version, bi)
+}
 
 // IndexFormat is the format version of what this binary's indexing passes
 // store in the persistent index; completed passes stamp it into the store's
@@ -260,7 +295,7 @@ func executeServe(readOnly bool, backendType, vaultPath, dailyFolder, httpAddr s
 			}
 		}
 	}
-	logger.Info("serve starting", "version", version, "backend", bt, "pid", os.Getpid())
+	logger.Info("serve starting", "version", resolveVersion(), "backend", bt, "pid", os.Getpid())
 
 	var b backend.Backend
 	var srvOpts []serverOption
@@ -1318,7 +1353,10 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print version",
 		Run: func(cmd *cobra.Command, args []string) {
-			cmd.Println(version)
+			// Resolved rather than the raw ldflags var so `go install`-built
+			// binaries (mise `go:` installs) report their real module tag
+			// instead of "dev" (IBP-FR-002, design D2).
+			cmd.Println(resolveVersion())
 		},
 	}
 }

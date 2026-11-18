@@ -828,6 +828,20 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 			// Non-fatal: the server works without file watching (D5).
 		}
 
+		// Stamp the build provenance now that every startup pass has
+		// completed (IBP-FR-001, design D4). The stamp belongs after the
+		// passes, never before: a failed pass returns early above and must
+		// leave the previous stamp untouched. The nil guard is pinned at the
+		// call site by design D4 even though recordIndexBuild already no-ops
+		// on a nil store — in-memory mode skips the write entirely. A stamp
+		// failure is warn-only: the passes succeeded, so serve keeps serving
+		// exactly as before (epic rule).
+		if persistentStore != nil {
+			if err := recordIndexBuild(persistentStore, resolveVersion(), IndexFormat); err != nil {
+				logger.Warn("failed to stamp index build metadata", "err", err)
+			}
+		}
+
 		return nil
 	}
 

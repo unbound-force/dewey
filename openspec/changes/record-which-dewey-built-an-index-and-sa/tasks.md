@@ -25,15 +25,15 @@
   deweyVersion string, indexFormat int) error` — two `SetMeta`
   upserts, nil store is a no-op, no page/block/embedding writes
   (IBP-FR-001, design D3).
-- [ ] 2.2 [P] `cli.go`: call `recordIndexBuild(s, resolveVersion(),
+- [x] 2.2 [P] `cli.go`: call `recordIndexBuild(s, resolveVersion(),
   IndexFormat)` in `newIndexCmd` and `newReindexCmd` after the
   `indexErr` check; a stamp failure fails the command with a wrapped
   error (IBP-FR-001, design D4).
-- [ ] 2.3 [P] `main.go`: call `recordIndexBuild` at the end of
+- [x] 2.3 [P] `main.go`: call `recordIndexBuild` at the end of
   `deferredIndex` (guarded by `persistentStore != nil`), warn-only on
   failure so serve startup behavior is otherwise unchanged
   (IBP-FR-001, design D4).
-- [ ] 2.4 [P] `tools/indexing.go` + `server.go`: add the
+- [x] 2.4 [P] `tools/indexing.go` + `server.go`: add the
   `IndexBuildInfo` value struct (`DeweyVersion`, `IndexFormat`), pass
   it to `NewIndexing` as a final parameter from `server.go`
   (`resolveVersion()`, `IndexFormat`), and stamp in the `Index` and

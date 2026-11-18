@@ -17,7 +17,7 @@ import (
 // TestIndexing_Index_NilStore verifies that calling Index with a nil store
 // returns an error result mentioning persistent storage (FR-008).
 func TestIndexing_Index_NilStore(t *testing.T) {
-	ix := NewIndexing(nil, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(nil, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
 	if err != nil {
@@ -39,7 +39,7 @@ func TestIndexing_Index_NilStore(t *testing.T) {
 // TestIndexing_Reindex_NilStore verifies that calling Reindex with a nil store
 // returns an error result mentioning persistent storage (FR-008).
 func TestIndexing_Reindex_NilStore(t *testing.T) {
-	ix := NewIndexing(nil, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(nil, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	result, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
 	if err != nil {
@@ -72,7 +72,7 @@ func TestIndexing_Index_NoSources(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	ix := NewIndexing(s, nil, tmpDir, nil, 0)
+	ix := NewIndexing(s, nil, tmpDir, nil, 0, IndexBuildInfo{})
 
 	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestIndexing_Index_NoSources(t *testing.T) {
 // operation.
 func TestIndexing_Index_ConcurrentCallRejected(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	// Simulate an in-progress operation by locking the mutex.
 	ix.mu.Lock()
@@ -125,7 +125,7 @@ func TestIndexing_Index_ConcurrentCallRejected(t *testing.T) {
 // error result (FR-005). The mutex is shared between Index and Reindex.
 func TestIndexing_Reindex_ConcurrentCallRejected(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	// Simulate an in-progress operation by locking the mutex.
 	ix.mu.Lock()
@@ -221,7 +221,7 @@ func TestIndexing_Reindex_PreservesProtectedSources(t *testing.T) {
 		t.Fatalf("InsertSource(github-org): %v", err)
 	}
 
-	ix := NewIndexing(s, nil, tmpDir, nil, 0)
+	ix := NewIndexing(s, nil, tmpDir, nil, 0, IndexBuildInfo{})
 
 	result, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
 	if err != nil {
@@ -281,7 +281,7 @@ func TestIndexing_Reindex_PreservesProtectedSources(t *testing.T) {
 // between Index and Reindex — locking via one blocks the other (FR-005).
 func TestIndexing_Index_CrossMutexRejection(t *testing.T) {
 	s := newTestStore(t)
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	// Lock the mutex as if Reindex is running.
 	ix.mu.Lock()
@@ -326,7 +326,7 @@ func TestIndexing_ExternalMutex_SharedLock(t *testing.T) {
 	mu.Lock()
 
 	// Pass the locked external mutex to NewIndexing.
-	ix := NewIndexing(s, nil, tmpDir, mu, 0)
+	ix := NewIndexing(s, nil, tmpDir, mu, 0, IndexBuildInfo{})
 
 	// Call Index() — should return "already in progress" because the
 	// external mutex is locked.
@@ -374,7 +374,7 @@ func TestIndexing_ExternalMutex_NilFallback(t *testing.T) {
 	s := newTestStore(t)
 
 	// Pass nil mutex — NewIndexing should create an internal one.
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 
 	// Verify the internal mutex works by locking it and checking rejection.
 	// PARALLEL SAFETY: We access ix.mu directly because this is a package-
@@ -426,7 +426,7 @@ func TestIndexing_ReportSourceErrors(t *testing.T) {
 		t.Fatalf("InsertSource failed: %v", err)
 	}
 
-	ix := NewIndexing(s, nil, t.TempDir(), nil, 0)
+	ix := NewIndexing(s, nil, t.TempDir(), nil, 0, IndexBuildInfo{})
 	ix.reportSourceErrors(&source.FetchResult{Summaries: []source.FetchSummary{
 		{SourceID: "clean-src", SourceType: "disk", Documents: 3},
 		{SourceID: "missing-src", SourceType: "disk", Error: "fetch failed"},

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -681,6 +682,35 @@ func queryEmbeddingStatus(deweyDir string) (model string, available bool) {
 		return cfg.Model, false
 	}
 	return cfg.Model, embedder.Available()
+}
+
+// parseIndexFormat returns the stored index format; missing or
+// non-decimal values count as 0 (IBP-FR-003, design D5). It is the
+// read-side inverse of recordIndexBuild's strconv.Itoa write, so a
+// stamp written by this codebase round-trips exactly. Pure function
+// over its input: no store access, no I/O, no side effects.
+func parseIndexFormat(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// reindexDecision returns whether a reindex is recommended and why.
+// Recommended iff stored < current. The reason is exactly
+// "index format <stored>, this Dewey writes <current>" (IBP-FR-003,
+// design D5); equal or newer stored formats are not flagged. When
+// not recommended, the reason slice is empty and non-nil so status
+// JSON renders an array, never null. Pure function over its inputs:
+// no store access, no I/O, no side effects.
+func reindexDecision(storedFormat, currentFormat int) (bool, []string) {
+	if storedFormat >= currentFormat {
+		return false, []string{}
+	}
+	return true, []string{
+		fmt.Sprintf("index format %d, this Dewey writes %d", storedFormat, currentFormat),
+	}
 }
 
 // formatStatusText writes human-readable status output to w.

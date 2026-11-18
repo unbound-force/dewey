@@ -924,6 +924,14 @@ Fetches content from all configured sources and indexes it.`,
 				return fmt.Errorf("index failed: %w", indexErr)
 			}
 
+			// Stamp the store with this binary's build provenance now that
+			// the pass completed (IBP-FR-001, design D4). A failed pass above
+			// returns early and never stamps; recording the stamp is part of
+			// the command's job, so a stamp failure fails the command.
+			if err := recordIndexBuild(s, resolveVersion(), IndexFormat); err != nil {
+				return fmt.Errorf("record index build: %w", err)
+			}
+
 			logger.Info("index complete",
 				"documents", indexResult.TotalIndexed,
 				"errors", result.TotalErrs,
@@ -1065,6 +1073,14 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
 
 			if indexErr != nil {
 				return fmt.Errorf("reindex failed: %w", indexErr)
+			}
+
+			// Stamp the freshly rebuilt store with this binary's build
+			// provenance (IBP-FR-001, design D4), mirroring `dewey index`:
+			// only a completed rebuild stamps, and a stamp failure fails the
+			// command.
+			if err := recordIndexBuild(s, resolveVersion(), IndexFormat); err != nil {
+				return fmt.Errorf("record index build: %w", err)
 			}
 
 			// Verify final state.

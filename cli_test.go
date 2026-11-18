@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1417,6 +1418,377 @@ func TestRootCmd_Help_IncludesNewSubcommands(t *testing.T) {
 	}
 }
 
+// --- Index-build provenance tests (IBP-FR-001..005) ---
+
+// TestParseIndexFormat verifies the counts-as-zero rule for the stored index
+// format (IBP-FR-003): a missing or non-decimal value parses as 0, and valid
+// decimals parse as their integer values.
+func TestParseIndexFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want int
+	}{
+		{"missing counts as zero", "", 0},
+		{"non-decimal counts as zero", "banana", 0},
+		{"fraction counts as zero", "1.5", 0},
+		{"zero", "0", 0},
+		{"one", "1", 1},
+		{"two", "2", 2},
+		{"ten", "10", 10},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseIndexFormat(tt.in); got != tt.want {
+				t.Errorf("parseIndexFormat(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestReindexDecision verifies the recommendation rule (IBP-FR-003): a
+// reindex is recommended iff the stored format is strictly lower than the
+// current one, with the exact settled reason wording, and the reasons slice
+// is always non-nil so status JSON renders an array, never null.
+func TestReindexDecision(t *testing.T) {
+	tests := []struct {
+		name            string
+		stored          int
+		current         int
+		wantRecommended bool
+		wantReasons     []string
+	}{
+		{
+			name:            "stored lower than current is recommended",
+			stored:          1,
+			current:         2,
+			wantRecommended: true,
+			wantReasons:     []string{"index format 1, this Dewey writes 2"},
+		},
+		{
+			name:            "missing stored format counts as zero and is recommended",
+			stored:          0,
+			current:         1,
+			wantRecommended: true,
+			wantReasons:     []string{"index format 0, this Dewey writes 1"},
+		},
+		{
+			name:            "equal format is not recommended",
+			stored:          1,
+			current:         1,
+			wantRecommended: false,
+			wantReasons:     []string{},
+		},
+		{
+			name:            "higher stored format is not recommended",
+			stored:          3,
+			current:         2,
+			wantRecommended: false,
+			wantReasons:     []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, reasons := reindexDecision(tt.stored, tt.current)
+			if got != tt.wantRecommended {
+				t.Errorf("reindexDecision(%d, %d) recommended = %v, want %v",
+					tt.stored, tt.current, got, tt.wantRecommended)
+			}
+			if reasons == nil {
+				t.Fatalf("reindexDecision(%d, %d) reasons = nil, want non-nil slice",
+					tt.stored, tt.current)
+			}
+			if !slices.Equal(reasons, tt.wantReasons) {
+				t.Errorf("reindexDecision(%d, %d) reasons = %q, want %q",
+					tt.stored, tt.current, reasons, tt.wantReasons)
+			}
+		})
+	}
+}
+
+// seedStatusStore creates graph.db under deweyDir and seeds its metadata
+// table with the given key-value pairs, closing the store before returning
+// so the status command can open it. A nil map still creates the store: the
+// pre-tracking scenario of a store built before provenance stamping existed.
+func seedStatusStore(t *testing.T, deweyDir string, meta map[string]string) {
+	t.Helper()
+	s, err := store.New(filepath.Join(deweyDir, "graph.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	for key, value := range meta {
+		if err := s.SetMeta(key, value); err != nil {
+			t.Fatalf("SetMeta(%q, %q): %v", key, value, err)
+		}
+	}
+}
+
+// TestStatusCmd_IndexProvenanceJSON verifies `dewey status --json` reports
+// the four index-provenance fields (IBP-FR-003) — deweyVersion, indexFormat,
+// reindexRecommended, and reindexReasons (always an array, never null) —
+// across the settled scenarios: older format, missing key, current, newer,
+// unparseable, and no database.
+func TestStatusCmd_IndexProvenanceJSON(t *testing.T) {
+	// The reason wording is settled (IBP-FR-003); the current format comes
+	// from this binary's IndexFormat constant.
+	olderReason := fmt.Sprintf("index format 0, this Dewey writes %d", IndexFormat)
+
+	tests := []struct {
+		name             string
+		meta             map[string]string
+		hasDB            bool
+		wantDeweyVersion string
+		wantIndexFormat  int
+		wantRecommended  bool
+		wantReasons      []string
+	}{
+		{
+			name:             "older stored format is recommended with the exact reason",
+			meta:             map[string]string{"dewey_version": "v3.8.0", "index_format": "0"},
+			hasDB:            true,
+			wantDeweyVersion: "v3.8.0",
+			wantIndexFormat:  0,
+			wantRecommended:  true,
+			wantReasons:      []string{olderReason},
+		},
+		{
+			name:             "missing index_format key counts as format 0 and is recommended",
+			meta:             nil,
+			hasDB:            true,
+			wantDeweyVersion: "",
+			wantIndexFormat:  0,
+			wantRecommended:  true,
+			wantReasons:      []string{olderReason},
+		},
+		{
+			name:             "current stored format is not recommended",
+			meta:             map[string]string{"dewey_version": "v3.9.0", "index_format": strconv.Itoa(IndexFormat)},
+			hasDB:            true,
+			wantDeweyVersion: "v3.9.0",
+			wantIndexFormat:  IndexFormat,
+			wantRecommended:  false,
+			wantReasons:      []string{},
+		},
+		{
+			name:             "newer stored format is not recommended",
+			meta:             map[string]string{"index_format": strconv.Itoa(IndexFormat + 1)},
+			hasDB:            true,
+			wantDeweyVersion: "",
+			wantIndexFormat:  IndexFormat + 1,
+			wantRecommended:  false,
+			wantReasons:      []string{},
+		},
+		{
+			name:             "unparseable stored format counts as 0 and is recommended",
+			meta:             map[string]string{"index_format": "banana"},
+			hasDB:            true,
+			wantDeweyVersion: "",
+			wantIndexFormat:  0,
+			wantRecommended:  true,
+			wantReasons:      []string{olderReason},
+		},
+		{
+			name:             "no graph.db yields empty provenance and no recommendation",
+			meta:             nil,
+			hasDB:            false,
+			wantDeweyVersion: "",
+			wantIndexFormat:  0,
+			wantRecommended:  false,
+			wantReasons:      []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+			if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if tt.hasDB {
+				seedStatusStore(t, deweyDir, tt.meta)
+			}
+
+			cmd := newStatusCmd()
+			buf := new(bytes.Buffer)
+			cmd.SetOut(buf)
+			cmd.SetArgs([]string{"--json", "--vault", tmpDir})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("status --json failed: %v", err)
+			}
+
+			var result map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+				t.Fatalf("invalid JSON output: %v\noutput: %s", err, buf.String())
+			}
+
+			if got, _ := result["deweyVersion"].(string); got != tt.wantDeweyVersion {
+				t.Errorf("deweyVersion = %q, want %q", got, tt.wantDeweyVersion)
+			}
+			if got, ok := result["indexFormat"].(float64); !ok || got != float64(tt.wantIndexFormat) {
+				t.Errorf("indexFormat = %v, want %d", result["indexFormat"], tt.wantIndexFormat)
+			}
+			if got, _ := result["reindexRecommended"].(bool); got != tt.wantRecommended {
+				t.Errorf("reindexRecommended = %v, want %v", got, tt.wantRecommended)
+			}
+			reasons, ok := result["reindexReasons"].([]any)
+			if !ok {
+				t.Fatalf("reindexReasons must render as a JSON array, never null; got %v", result["reindexReasons"])
+			}
+			if len(reasons) != len(tt.wantReasons) {
+				t.Fatalf("reindexReasons = %v, want %v", reasons, tt.wantReasons)
+			}
+			for i, want := range tt.wantReasons {
+				if got, _ := reasons[i].(string); got != want {
+					t.Errorf("reindexReasons[%d] = %q, want %q", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestStatusCmd_StatusNeverStamps verifies `dewey status` is read-only for
+// index-build provenance (IBP-FR-003): after both output formats run over a
+// store with no stamp, neither index_format nor dewey_version exists in the
+// metadata table. The count is asserted directly against the table because
+// GetMeta cannot distinguish a missing key from an empty value.
+func TestStatusCmd_StatusNeverStamps(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seedStatusStore(t, deweyDir, nil)
+
+	for _, args := range [][]string{{"--json", "--vault", tmpDir}, {"--vault", tmpDir}} {
+		cmd := newStatusCmd()
+		buf := new(bytes.Buffer)
+		cmd.SetOut(buf)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("status %v failed: %v", args, err)
+		}
+	}
+
+	s, err := store.New(filepath.Join(deweyDir, "graph.db"))
+	if err != nil {
+		t.Fatalf("open store after status: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	var stamped int
+	if err := s.DB().QueryRow(
+		`SELECT COUNT(*) FROM metadata WHERE key IN ('index_format', 'dewey_version')`,
+	).Scan(&stamped); err != nil {
+		t.Fatalf("count metadata keys: %v", err)
+	}
+	if stamped != 0 {
+		t.Errorf("status must not write index-build metadata; found %d of the 2 keys stamped", stamped)
+	}
+}
+
+// TestStatusCmd_IndexProvenanceText verifies the human-readable status
+// output shows the recorded builder and, when a reindex is recommended, the
+// reason (IBP-FR-005) — and omits the Reindex line when none is.
+func TestStatusCmd_IndexProvenanceText(t *testing.T) {
+	reason := fmt.Sprintf("index format 0, this Dewey writes %d", IndexFormat)
+	tests := []struct {
+		name          string
+		meta          map[string]string
+		hasDB         bool
+		wantIndexedBy string
+		wantReindex   string // empty means no Reindex: line is expected
+	}{
+		{
+			name:          "recommended store shows version and reason",
+			meta:          map[string]string{"dewey_version": "v3.8.0", "index_format": "0"},
+			hasDB:         true,
+			wantIndexedBy: "  Indexed by: v3.8.0 (index format 0)",
+			wantReindex:   "  Reindex:    " + reason,
+		},
+		{
+			name:          "current store shows version without recommendation",
+			meta:          map[string]string{"dewey_version": "v3.9.0", "index_format": strconv.Itoa(IndexFormat)},
+			hasDB:         true,
+			wantIndexedBy: "  Indexed by: v3.9.0 (index format " + strconv.Itoa(IndexFormat) + ")",
+		},
+		{
+			name:          "no graph.db reports not recorded without recommendation",
+			hasDB:         false,
+			wantIndexedBy: "  Indexed by: not recorded (index format 0)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+			if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			if tt.hasDB {
+				seedStatusStore(t, deweyDir, tt.meta)
+			}
+
+			cmd := newStatusCmd()
+			buf := new(bytes.Buffer)
+			cmd.SetOut(buf)
+			cmd.SetArgs([]string{"--vault", tmpDir})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("status failed: %v", err)
+			}
+
+			output := buf.String()
+			if !strings.Contains(output, tt.wantIndexedBy) {
+				t.Errorf("status output missing indexed-by line %q:\n%s", tt.wantIndexedBy, output)
+			}
+			if tt.wantReindex == "" {
+				if strings.Contains(output, "Reindex:") {
+					t.Errorf("status output should not recommend a reindex:\n%s", output)
+				}
+				return
+			}
+			if !strings.Contains(output, tt.wantReindex) {
+				t.Errorf("status output missing reindex line %q:\n%s", tt.wantReindex, output)
+			}
+		})
+	}
+}
+
+// assertIndexBuildStamp opens the store at dbPath and verifies the
+// index-build stamp of a completed `dewey index`/`dewey reindex` pass
+// (IBP-FR-001): dewey_version equal to this binary's resolved version and
+// index_format equal to its IndexFormat.
+func assertIndexBuildStamp(t *testing.T, dbPath string) {
+	t.Helper()
+	s, err := store.New(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	stampedVersion, err := s.GetMeta("dewey_version")
+	if err != nil {
+		t.Fatalf("get dewey_version: %v", err)
+	}
+	if stampedVersion == "" {
+		t.Error("dewey_version should be stamped with a non-empty version, got empty")
+	}
+	if want := resolveVersion(); stampedVersion != want {
+		t.Errorf("dewey_version = %q, want %q", stampedVersion, want)
+	}
+
+	stampedFormat, err := s.GetMeta("index_format")
+	if err != nil {
+		t.Fatalf("get index_format: %v", err)
+	}
+	if want := strconv.Itoa(IndexFormat); stampedFormat != want {
+		t.Errorf("index_format = %q, want %q", stampedFormat, want)
+	}
+}
+
 // --- Index command tests (T058B) ---
 
 // TestIndexCmd_Uninitialized verifies index fails when .uf/dewey/ doesn't exist.
@@ -1488,6 +1860,45 @@ func TestIndexCmd_WithDiskSource(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("index failed: %v", err)
 	}
+}
+
+// TestIndexCmd_StampsIndexBuildMetadata verifies `dewey index` records its
+// build provenance in the store's metadata after a successful pass
+// (IBP-FR-001).
+func TestIndexCmd_StampsIndexBuildMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	sourcesContent := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "` + tmpDir + `"`
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesContent), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.md"), []byte("# Test\nContent"), 0o644); err != nil {
+		t.Fatalf("write test.md: %v", err)
+	}
+
+	oldDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(oldDir) }()
+
+	cmd := newIndexCmd()
+	// Ollama is not running in the test environment.
+	cmd.SetArgs([]string{"--no-embeddings"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("index failed: %v", err)
+	}
+
+	assertIndexBuildStamp(t, filepath.Join(deweyDir, "graph.db"))
 }
 
 // --- Source add command tests (T058B) ---
@@ -3325,6 +3736,44 @@ func TestReindexCmd_CleanReindex(t *testing.T) {
 	if len(pages) == 0 {
 		t.Error("expected at least 1 page after reindex, got 0")
 	}
+}
+
+// TestReindexCmd_StampsIndexBuildMetadata verifies `dewey reindex` records
+// its build provenance in the store's metadata after a clean rebuild
+// (IBP-FR-001).
+func TestReindexCmd_StampsIndexBuildMetadata(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	sourcesYAML := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "."`
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesYAML), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.md"), []byte("# Test\n\nHello reindex."), 0o644); err != nil {
+		t.Fatalf("write test.md: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	cmd := newReindexCmd()
+	cmd.SetArgs([]string{"--no-embeddings"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("reindex failed: %v", err)
+	}
+
+	assertIndexBuildStamp(t, filepath.Join(deweyDir, "graph.db"))
 }
 
 // TestReindexCmd_NotInitialized verifies that reindex fails with a clear

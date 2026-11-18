@@ -763,6 +763,20 @@ func formatStatusText(data statusData, w io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(w, "  Coverage:   %.1f%%\n", data.embeddingCoverage())
 
+	// Index-build provenance (IBP-FR-005, design D5): the recorded
+	// builder, verbatim, and when the stored format is older than this
+	// binary's, the reindex recommendation. An absent stamp reads
+	// "not recorded" rather than printing an empty value, so the line
+	// stays meaningful for a fresh or pre-tracking index.
+	indexedBy := data.DeweyVersion
+	if indexedBy == "" {
+		indexedBy = "not recorded"
+	}
+	_, _ = fmt.Fprintf(w, "  Indexed by: %s (index format %d)\n", indexedBy, data.IndexFormat)
+	if data.ReindexRecommended {
+		_, _ = fmt.Fprintf(w, "  Reindex:    %s\n", strings.Join(data.ReindexReasons, "; "))
+	}
+
 	if data.Trust != nil {
 		_, _ = fmt.Fprintln(w, "\nTrust Tiers")
 		switch {
@@ -800,6 +814,15 @@ func formatStatusText(data statusData, w io.Writer) error {
 
 // formatStatusJSON writes JSON-formatted status output to w.
 func formatStatusJSON(data statusData, w io.Writer) error {
+	// reindexReasons must always render as an array, never null
+	// (IBP-FR-003): json.Marshal renders a nil slice as null, and a
+	// statusData that never went through queryStoreStatus (a zero
+	// value, a test fixture) carries nil reasons even though every
+	// store-backed path seeds non-nil.
+	reindexReasons := data.ReindexReasons
+	if reindexReasons == nil {
+		reindexReasons = []string{}
+	}
 	status := map[string]any{
 		"path":               data.IndexPath,
 		"pages":              data.PageCount,
@@ -808,6 +831,10 @@ func formatStatusJSON(data statusData, w io.Writer) error {
 		"embeddingModel":     data.EmbeddingModel,
 		"embeddingAvailable": data.EmbeddingAvailable,
 		"embeddingCoverage":  data.embeddingCoverage(),
+		"deweyVersion":       data.DeweyVersion,
+		"indexFormat":        data.IndexFormat,
+		"reindexRecommended": data.ReindexRecommended,
+		"reindexReasons":     reindexReasons,
 		"sources":            data.Sources,
 	}
 	if data.Trust != nil {

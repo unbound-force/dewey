@@ -1327,20 +1327,23 @@ func TestStatusCmd_EmbeddingAvailableVertexMissingProject(t *testing.T) {
 }
 
 // TestStatusCmd_JSONKeySetUnchanged verifies the STA-FR-003 contract: the
-// --json object keeps exactly the key set it had before the embedding fix —
-// every pre-existing key still present, no key added. Set equality is
-// asserted in both directions so a rename fails as one missing plus one
-// unexpected key. The trust key is always present because queryTrustStatus
-// never returns nil; sources stays present (null) on a store-less vault.
+// --json object keeps every key it had before the embedding fix — no
+// pre-existing key dropped, none renamed. Set equality is asserted in both
+// directions so a rename fails as one missing plus one unexpected key.
+// This change adds the four index-provenance keys on top of that set
+// (IBP-FR-003), so the want set is the union of both. The trust key is
+// always present because queryTrustStatus never returns nil; sources stays
+// present (null) on a store-less vault.
 func TestStatusCmd_JSONKeySetUnchanged(t *testing.T) {
 	vaultDir, _ := newStatusTestVault(t, scaffoldedStatusConfigYAML)
 	result := runStatusJSON(t, vaultDir)
 
-	// The pre-change formatStatusJSON key set (git HEAD before this change):
-	// only the embeddingModel and embeddingAvailable values were corrected.
+	// The pre-embedding-fix formatStatusJSON key set, plus the four
+	// index-provenance keys this change adds (IBP-FR-003).
 	want := []string{
 		"path", "pages", "blocks", "embeddings",
 		"embeddingModel", "embeddingAvailable", "embeddingCoverage",
+		"deweyVersion", "indexFormat", "reindexRecommended", "reindexReasons",
 		"sources", "trust",
 	}
 	slices.Sort(want)

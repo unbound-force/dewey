@@ -21,7 +21,7 @@
 
 ## 2. Index-build stamping
 
-- [ ] 2.1 `main.go`: add `recordIndexBuild(s *store.Store,
+- [x] 2.1 `main.go`: add `recordIndexBuild(s *store.Store,
   deweyVersion string, indexFormat int) error` — two `SetMeta`
   upserts, nil store is a no-op, no page/block/embedding writes
   (IBP-FR-001, design D3).

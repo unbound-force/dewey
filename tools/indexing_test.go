@@ -446,3 +446,162 @@ func TestIndexing_ReportSourceErrors(t *testing.T) {
 		t.Errorf("reportSourceErrors must not create missing sources, got %+v", missing)
 	}
 }
+
+// --- Index build provenance stamping tests (IBP-FR-001, design D4) ---
+
+// writeIndexableVault prepares a minimal vault root that a successful
+// Index/Reindex pass can run over: a .uf/dewey/sources.yaml configuring
+// one disk source rooted at the vault itself, plus one markdown note for
+// the pass to index. The .uf directory is hidden, so the disk source's
+// ignore matcher skips it and the walk finds only the note.
+func writeIndexableVault(t *testing.T, tmpDir string) {
+	t.Helper()
+	deweyDir := filepath.Join(tmpDir, ".uf", "dewey")
+	if err := os.MkdirAll(deweyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	sourcesYAML := "sources:\n  - id: test-disk\n    type: disk\n    name: Test Disk\n    config:\n      path: \".\"\n"
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile sources.yaml: %v", err)
+	}
+	note := "# Note\n\nContent for the indexing pass to index.\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "note.md"), []byte(note), 0o644); err != nil {
+		t.Fatalf("WriteFile note.md: %v", err)
+	}
+}
+
+// assertBuildStamp reads the two IBP-FR-001 metadata keys back from the
+// store and asserts their exact values. An empty want value asserts the
+// key is absent — GetMeta returns "" when the key was never written.
+func assertBuildStamp(t *testing.T, s *store.Store, wantVersion, wantFormat string) {
+	t.Helper()
+	version, err := s.GetMeta("dewey_version")
+	if err != nil {
+		t.Fatalf("GetMeta(dewey_version): %v", err)
+	}
+	if version != wantVersion {
+		t.Errorf("dewey_version = %q, want %q", version, wantVersion)
+	}
+	format, err := s.GetMeta("index_format")
+	if err != nil {
+		t.Fatalf("GetMeta(index_format): %v", err)
+	}
+	if format != wantFormat {
+		t.Errorf("index_format = %q, want %q", format, wantFormat)
+	}
+}
+
+// assertSummaryPagesIndexed unmarshals an Index/Reindex result summary and
+// asserts the pass indexed exactly want pages, proving the handler ran a
+// real indexing pass — the precondition for stamping (design D4).
+func assertSummaryPagesIndexed(t *testing.T, text string, want float64) {
+	t.Helper()
+	var summary map[string]any
+	if err := json.Unmarshal([]byte(text), &summary); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if pages, ok := summary["pages_indexed"].(float64); !ok || pages != want {
+		t.Errorf("pages_indexed = %v, want %v", summary["pages_indexed"], want)
+	}
+}
+
+// TestIndexing_Index_StampBuildInfo verifies that a successful Index pass
+// stamps the injected IndexBuildInfo into the store's metadata (IBP-FR-001,
+// design D4): dewey_version recorded verbatim and index_format as a decimal
+// string.
+func TestIndexing_Index_StampBuildInfo(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	writeIndexableVault(t, tmpDir)
+
+	ix := NewIndexing(s, nil, tmpDir, nil, 0, IndexBuildInfo{DeweyVersion: "test-version", IndexFormat: 42})
+
+	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
+	if err != nil {
+		t.Fatalf("Index returned Go error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.IsError {
+		t.Fatalf("Index returned error result: %s", resultText(result))
+	}
+
+	assertSummaryPagesIndexed(t, resultText(result), 1)
+	assertBuildStamp(t, s, "test-version", "42")
+}
+
+// TestIndexing_Reindex_StampBuildInfo verifies that a successful Reindex
+// rebuild stamps the injected IndexBuildInfo into the store's metadata
+// (IBP-FR-001, design D4) with the same semantics as Index.
+func TestIndexing_Reindex_StampBuildInfo(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	writeIndexableVault(t, tmpDir)
+
+	ix := NewIndexing(s, nil, tmpDir, nil, 0, IndexBuildInfo{DeweyVersion: "test-version", IndexFormat: 42})
+
+	result, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
+	if err != nil {
+		t.Fatalf("Reindex returned Go error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.IsError {
+		t.Fatalf("Reindex returned error result: %s", resultText(result))
+	}
+
+	assertSummaryPagesIndexed(t, resultText(result), 1)
+	assertBuildStamp(t, s, "test-version", "42")
+}
+
+// TestIndexing_Index_ZeroBuildInfoSkipsStamp verifies the zero-value no-op:
+// a handler constructed with IndexBuildInfo{} completes a successful pass
+// but leaves both metadata keys unwritten, preserving pre-stamping behavior.
+func TestIndexing_Index_ZeroBuildInfoSkipsStamp(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	writeIndexableVault(t, tmpDir)
+
+	ix := NewIndexing(s, nil, tmpDir, nil, 0, IndexBuildInfo{})
+
+	result, _, err := ix.Index(context.Background(), nil, types.IndexInput{})
+	if err != nil {
+		t.Fatalf("Index returned Go error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.IsError {
+		t.Fatalf("Index returned error result: %s", resultText(result))
+	}
+
+	assertSummaryPagesIndexed(t, resultText(result), 1)
+	assertBuildStamp(t, s, "", "")
+}
+
+// TestIndexing_Reindex_ZeroBuildInfoSkipsStamp verifies the zero-value
+// no-op for Reindex: a handler constructed with IndexBuildInfo{} completes
+// a successful rebuild without writing either metadata key.
+func TestIndexing_Reindex_ZeroBuildInfoSkipsStamp(t *testing.T) {
+	s := newTestStore(t)
+	tmpDir := t.TempDir()
+	writeIndexableVault(t, tmpDir)
+
+	ix := NewIndexing(s, nil, tmpDir, nil, 0, IndexBuildInfo{})
+
+	result, _, err := ix.Reindex(context.Background(), nil, types.ReindexInput{})
+	if err != nil {
+		t.Fatalf("Reindex returned Go error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.IsError {
+		t.Fatalf("Reindex returned error result: %s", resultText(result))
+	}
+
+	assertSummaryPagesIndexed(t, resultText(result), 1)
+	assertBuildStamp(t, s, "", "")
+}

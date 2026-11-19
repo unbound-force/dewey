@@ -92,11 +92,11 @@
 
 ## 6. Verification
 
-- [ ] 6.1 CI parity: derive the exact commands from
+- [x] 6.1 CI parity: derive the exact commands from
   `.github/workflows/ci.yml` and run them locally — build, vet,
   `go test -race -count=1 -coverprofile=coverage.out ./...`, and the
   Gaze threshold gate. All must pass before the PR.
-- [ ] 6.2 Constitution alignment verification: confirm each principle
+- [x] 6.2 Constitution alignment verification: confirm each principle
   — Autonomous Collaboration (gh-hud reads one JSON field, no runtime
   coupling), Composability First (stdlib-only, standalone, in-memory
   mode unaffected), Observable Quality (index carries its own build

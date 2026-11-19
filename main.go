@@ -782,24 +782,7 @@ func initObsidianBackend(vaultPath, dailyFolder string, noEmbeddings bool) (back
 		// deleted or is missing entries. Must run before indexVault so
 		// re-ingested learnings participate in backlink and search construction.
 		if persistentStore != nil {
-			count, err := reIngestLearnings(persistentStore, embedder, vp, embCfg.MaxChunkChars)
-			if err != nil {
-				logger.Warn("learning re-ingestion failed", "err", err)
-			} else if count > 0 {
-				logger.Info("learnings re-ingested from files", "count", count)
-			}
-
-			// Re-index configured knowledge stores from their files. Like
-			// learnings, knowledge-store pages are file-backed but are not
-			// reached by the vault scan (hidden .uf/ directory) or any
-			// source, so without this pass they are lost on reindex or
-			// graph.db deletion until the next curation writes new files.
-			total, err := reIndexKnowledgeStores(persistentStore, embedder, vp, embCfg.MaxChunkChars)
-			if err != nil {
-				logger.Warn("knowledge store re-indexing failed", "err", err)
-			} else if total > 0 {
-				logger.Info("knowledge stores re-indexed from files", "count", total)
-			}
+			restoreFileBackedPages(persistentStore, embedder, vp, embCfg.MaxChunkChars)
 		}
 
 		// Index the vault — persistent (incremental) or in-memory.
@@ -1122,6 +1105,30 @@ func (fm learningFrontmatter) properties() map[string]any {
 		props["evidence"] = fm.Evidence
 	}
 	return props
+}
+
+// restoreFileBackedPages rebuilds the store pages whose durable record is
+// a file under .uf/dewey/ rather than a configured source: learnings
+// (reIngestLearnings) and configured knowledge stores
+// (reIndexKnowledgeStores). Neither is reached by the vault scan (hidden
+// .uf/ directory) or by any source, so every path that rebuilds the index
+// — `dewey serve` startup and `dewey reindex` (#223) — runs this pass.
+// Failures are logged as warnings and never stop the caller: the rest of
+// the index is still usable.
+func restoreFileBackedPages(s *store.Store, embedder embed.Embedder, vaultPath string, maxChunkChars int) {
+	count, err := reIngestLearnings(s, embedder, vaultPath, maxChunkChars)
+	if err != nil {
+		logger.Warn("learning re-ingestion failed", "err", err)
+	} else if count > 0 {
+		logger.Info("learnings re-ingested from files", "count", count)
+	}
+
+	total, err := reIndexKnowledgeStores(s, embedder, vaultPath, maxChunkChars)
+	if err != nil {
+		logger.Warn("knowledge store re-indexing failed", "err", err)
+	} else if total > 0 {
+		logger.Info("knowledge stores re-indexed from files", "count", total)
+	}
 }
 
 // reIngestLearnings scans the learnings directory for markdown files and

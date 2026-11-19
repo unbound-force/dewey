@@ -322,7 +322,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey serve` | Start the MCP server (default when no subcommand) |
 | `dewey init` | Initialize `.uf/dewey/` directory with config and sources; when `.opencode/` exists, also scaffolds `.opencode/agents/{curator,distiller}.md` and the `dewey-*` slash commands, plus the `dewey-distill.yml.example` workflow template — tool-owned scaffolds carrying a final-line `dewey:scaffold` marker, refreshed on re-init when untouched and preserved when customized; user-owned config stays write-once |
 | `dewey index` | Build or update the knowledge graph index from configured sources |
-| `dewey reindex` | Delete and rebuild the index from scratch |
+| `dewey reindex` | Delete and rebuild the index from scratch, including learnings and knowledge-store pages from their files |
 | `dewey status` | Show index status (page/block/link counts, source info, trust-tier derivation state, which Dewey built the index and whether a reindex is recommended) |
 | `dewey search` | Full-text search across the knowledge graph |
 | `dewey source` | Manage content sources (add, list, remove) |
@@ -547,7 +547,7 @@ Curated files are automatically indexed as a `knowledge-{store-name}` source wit
 
 ### File-Backed Learnings
 
-Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{YYYYMMDDTHHMMSS}-{author}.md`. This ensures learnings survive `graph.db` deletion — on startup, orphaned markdown files are re-ingested automatically. Re-ingestion converges the index to the files: a learning whose stored content hash no longer matches its file (an in-place edit from a `git pull`, or an empty stored hash) is fully re-ingested — blocks re-persisted, embeddings regenerated — while an unchanged file costs only a metadata refresh, with no block or embedding work.
+Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{YYYYMMDDTHHMMSS}-{author}.md`. This ensures learnings survive `graph.db` deletion — on startup and at the end of `dewey reindex` (`restoreFileBackedPages`, which also re-indexes knowledge stores), orphaned markdown files are re-ingested automatically. Re-ingestion converges the index to the files: a learning whose stored content hash no longer matches its file (an in-place edit from a `git pull`, or an empty stored hash) is fully re-ingested — blocks re-persisted, embeddings regenerated — while an unchanged file costs only a metadata refresh, with no block or embedding work.
 
 ### Background Curation
 

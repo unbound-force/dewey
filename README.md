@@ -380,6 +380,8 @@ dewey reindex [--vault PATH] [--no-embeddings]
 
 This removes `graph.db`, WAL/SHM files, and the lock file before rebuilding. Requires stopping `dewey serve` first (the lock file prevents concurrent access).
 
+After indexing the configured sources, `reindex` re-ingests learnings from `.uf/dewey/learnings/` and re-indexes configured knowledge stores from their files — the same pass `dewey serve` runs at startup — so the rebuilt index is complete before any server starts (`dewey status`, `dewey search` and CI jobs see every learning and curated page).
+
 ### dewey status
 
 Report index health: page count, block count, embedding coverage, source status, and trust-tier derivation (the default-branch comparison ref and how many compiled/knowledge files match it — see [Trust Tiers](#trust-tiers)).

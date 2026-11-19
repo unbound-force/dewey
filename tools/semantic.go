@@ -64,8 +64,9 @@ func (s *Semantic) SemanticSearch(ctx context.Context, req *mcp.CallToolRequest,
 	}
 
 	// Search for similar blocks, over-fetching when validity ranking may
-	// reorder them (issue #148).
-	results, err := s.store.SearchSimilar(s.embedder.ModelID(), queryVec, semanticFetchLimit(limit, !input.IgnoreValidity), threshold)
+	// reorder them (issue #148). Optional source_id / has_tag scope the
+	// search exactly like semantic_search_filtered.
+	results, err := s.searchSimilarScoped(queryVec, scopeFilters(input.SourceID, input.HasTag), semanticFetchLimit(limit, !input.IgnoreValidity), threshold)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Search failed: %v", err)), nil, nil
 	}
@@ -104,7 +105,7 @@ func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input 
 		return errResult, nil, nil
 	}
 
-	results, err := s.store.SearchSimilar(modelID, queryVec, limit+1, 0.0)
+	results, err := s.searchSimilarScoped(queryVec, scopeFilters(input.SourceID, input.HasTag), limit+1, 0.0)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Search failed: %v", err)), nil, nil
 	}
@@ -114,6 +115,23 @@ func (s *Semantic) Similar(ctx context.Context, req *mcp.CallToolRequest, input 
 
 	res, err := jsonTextResult(output)
 	return res, nil, err
+}
+
+// scopeFilters builds the store filters for the optional source_id and
+// has_tag scope accepted by semantic_search and similar.
+func scopeFilters(sourceID, hasTag string) store.SearchFilters {
+	return store.SearchFilters{SourceID: sourceID, HasTag: hasTag}
+}
+
+// searchSimilarScoped runs an unfiltered similarity search when filters
+// is empty, and the same filtered search semantic_search_filtered uses
+// otherwise, so a scoped call on any semantic tool matches the filtered
+// tool's results.
+func (s *Semantic) searchSimilarScoped(queryVec []float32, filters store.SearchFilters, limit int, threshold float64) ([]store.SimilarityResult, error) {
+	if filters == (store.SearchFilters{}) {
+		return s.store.SearchSimilar(s.embedder.ModelID(), queryVec, limit, threshold)
+	}
+	return s.store.SearchSimilarFiltered(s.embedder.ModelID(), queryVec, filters, limit, threshold)
 }
 
 // validateSimilarInput checks that the input has at least one identifier

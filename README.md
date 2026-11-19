@@ -45,10 +45,10 @@ Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) retu
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `search` | Both | Full-text search with parent chain + sibling context; on the vault in-memory index, hyphenated and snake_case terms also match by component (`KB-REVIEW-ADJUD`, `KB REVIEW ADJUD 01`), after exact matches |
+| `search` | Both | Full-text search with parent chain + sibling context; on the vault in-memory index, hyphenated and snake_case terms also match by component (`KB-REVIEW-ADJUD`, `KB REVIEW ADJUD 01`), after exact matches. Optional `source_id` / `has_tag` scope results like `semantic_search_filtered` (needs the persistent store) |
 | `query_properties` | Both | Find by property values with operators (eq, contains, gt, lt) |
 | `query_datalog` | Logseq | Raw DataScript/Datalog queries against the Logseq database |
-| `find_by_tag` | Both | Tag search with child tag hierarchy support |
+| `find_by_tag` | Both | Tag search with child tag hierarchy support. Optional `source_id` keeps one source's pages (needs the persistent store) |
 
 ### Analyze
 
@@ -112,8 +112,8 @@ Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) retu
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `semantic_search` | Both | Find documents semantically similar to a natural language query. Results carry `validity` / `as_of`; superseded (×0.6) and stale-unverified (×0.85) results rank lower unless `ignore_validity: true` (reported similarity stays raw) |
-| `similar` | Both | Find the most similar documents to a given page or block. Results carry `validity` / `as_of` when the page has them (enrichment only — no validity ranking, filtering, or over-fetch) |
+| `semantic_search` | Both | Find documents semantically similar to a natural language query. Results carry `validity` / `as_of`; superseded (×0.6) and stale-unverified (×0.85) results rank lower unless `ignore_validity: true` (reported similarity stays raw). Optional `source_id` / `has_tag` filter exactly like `semantic_search_filtered` |
+| `similar` | Both | Find the most similar documents to a given page or block. Results carry `validity` / `as_of` when the page has them (enrichment only — no validity ranking, filtering, or over-fetch). Optional `source_id` / `has_tag` scope the results; the query page may be in any source |
 | `semantic_search_filtered` | Both | Semantic search with metadata filters (source, properties, tier, validity), with the same validity ranking as `semantic_search` |
 
 ### Compile

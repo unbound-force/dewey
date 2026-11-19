@@ -96,7 +96,7 @@ func newServer(b backend.Backend, readOnly bool, opts ...serverOption) (*mcp.Ser
 	_, hasDataScript := b.(backend.HasDataScript)
 
 	nav := tools.NewNavigate(b)
-	search := tools.NewSearch(b)
+	search := tools.NewSearch(b).WithStore(cfg.store)
 	analyze := tools.NewAnalyze(b)
 	journal := tools.NewJournal(b)
 
@@ -250,7 +250,7 @@ func registerSearchTools(srv *mcp.Server, search *tools.Search, hasDataScript bo
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "search",
-		Description: "Full-text search across all blocks in the knowledge graph. Returns matching blocks with surrounding context (parent chain and sibling blocks) so you understand where each match sits.",
+		Description: "Full-text search across all blocks in the knowledge graph. Returns matching blocks with surrounding context (parent chain and sibling blocks) so you understand where each match sits. Optional source_id and has_tag narrow results like semantic_search_filtered.",
 	}, search.Search)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -260,7 +260,7 @@ func registerSearchTools(srv *mcp.Server, search *tools.Search, hasDataScript bo
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "find_by_tag",
-		Description: "Find all blocks and pages with a specific tag, including child tags in the tag hierarchy. Returns content grouped by page.",
+		Description: "Find all blocks and pages with a specific tag, including child tags in the tag hierarchy. Returns content grouped by page. Optional source_id keeps only pages of that source.",
 	}, search.FindByTag)
 
 	if hasDataScript {
@@ -457,12 +457,12 @@ func registerWhiteboardTools(srv *mcp.Server, whiteboard *tools.Whiteboard) int 
 func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "semantic_search",
-		Description: "Find documents semantically similar to a natural language query, ranked by cosine similarity. Returns results with provenance metadata.",
+		Description: "Find documents semantically similar to a natural language query, ranked by cosine similarity. Returns results with provenance metadata. Optional source_id and has_tag narrow results like semantic_search_filtered.",
 	}, semantic.SemanticSearch)
 
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "similar",
-		Description: "Given a document (by page name or block UUID), find the most similar documents in the index.",
+		Description: "Given a document (by page name or block UUID), find the most similar documents in the index. Optional source_id and has_tag narrow the results like semantic_search_filtered.",
 	}, semantic.Similar)
 
 	mcp.AddTool(srv, &mcp.Tool{

@@ -84,7 +84,7 @@
   checklist (Technical Guardrails section) and update the `dewey
   status` row to mention the recorded version and reindex
   recommendation (IBP-FR-004, documentation validation gate).
-- [ ] 5.2 [P] File the website sync issue per the AGENTS.md
+- [x] 5.2 [P] File the website sync issue per the AGENTS.md
   documentation gate: `gh issue create --repo unbound-force/website
   --label docs` titled `docs: sync dewey index-version documentation`,
   covering the new `dewey status --json` fields, the reindex

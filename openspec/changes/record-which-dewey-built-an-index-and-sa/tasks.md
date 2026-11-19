@@ -62,7 +62,7 @@
 
 ## 4. Tests
 
-- [ ] 4.1 [P] `main_test.go`: `TestResolveVersionFrom` table tests
+- [x] 4.1 [P] `main_test.go`: `TestResolveVersionFrom` table tests
   (ldflags release value, build-info module version, `(devel)`,
   empty/nil inputs) and `TestRecordIndexBuild` (both keys written,
   nil store no-op, values verbatim).
@@ -74,7 +74,7 @@
   graph.db, status leaves metadata unwritten) and the new text-output
   lines; assert `dewey index` and `dewey reindex` stamp a temp-dir
   vault (disk source, `--no-embeddings`) (IBP-FR-001..005).
-- [ ] 4.3 [P] `tools/indexing_test.go`: assert the `Index` and
+- [x] 4.3 [P] `tools/indexing_test.go`: assert the `Index` and
   `Reindex` MCP handlers stamp an injected `IndexBuildInfo` on
   success (IBP-FR-001).
 

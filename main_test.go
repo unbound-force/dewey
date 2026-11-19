@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -23,6 +24,7 @@ import (
 	"github.com/charmbracelet/log"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/curate"
+	"github.com/unbound-force/dewey/v3/embed"
 	"github.com/unbound-force/dewey/v3/llm"
 	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/tools"
@@ -1248,12 +1250,25 @@ Existing learning content.
 	}
 	defer func() { _ = s.Close() }()
 
+	// The page must carry the content hash reIngestLearnings derives from the
+	// file — the frontmatter-stripped, whitespace-trimmed body (the same
+	// parseLearningFrontmatter call the production path makes) through sha256,
+	// first 8 bytes hex — so the existing page models an unchanged file and
+	// takes the cheap path (LR-FR-002).
+	_, body, err := parseLearningFrontmatter(fileContent)
+	if err != nil {
+		t.Fatalf("parseLearningFrontmatter: %v", err)
+	}
+	bodyHash := sha256.Sum256([]byte(body))
+	contentHash := fmt.Sprintf("%x", bodyHash[:8])
+
 	// Insert the page so it already exists.
 	if err := s.InsertPage(&store.Page{
 		Name:         "learning/auth-1",
 		OriginalName: "learning/auth-1",
 		SourceID:     "learning",
 		SourceDocID:  "learning-auth-1",
+		ContentHash:  contentHash,
 		Tier:         "draft",
 		Category:     "decision",
 	}); err != nil {
@@ -2554,12 +2569,20 @@ func TestInitObsidianBackend_GatewayUnreachableDegradesToKeywordMode(t *testing.
 	}
 }
 
-// TestReIngestLearnings_ExistingPageNotOverwritten verifies that a learning
-// whose page name already exists in the store is skipped entirely: human
-// edits to the page's metadata and content win over the file (delta-spec
-// scenario "Human edits take precedence for content and metadata"; council
-// round-3 G10).
-func TestReIngestLearnings_ExistingPageNotOverwritten(t *testing.T) {
+// TestReIngestLearnings_ExistingPageConvergesToFile pins the changed-file
+// convergence of LR-FR-001: a store row with an empty content hash models a
+// changed file, so re-ingestion converges the row to the file — count 1,
+// tier draft (the forged `tier: validated` file claim is ignored with a
+// warning; the drifted store tier converges), file-derived properties
+// replacing the hand-edited store properties, the row's stale source
+// identifiers rewritten to the learning ingestion values (a stale SourceID
+// would silently drop the page from ListPagesBySource("learning") listings),
+// and blocks re-persisted from the file body. Supersedes the insert-only
+// guarantee from the dewey-distill delta spec: the file is the authority
+// (design risk note "Test updates for superseded pins"); unchanged files
+// stay cheap under LR-FR-002, which this empty-hash fixture deliberately
+// does not model.
+func TestReIngestLearnings_ExistingPageConvergesToFile(t *testing.T) {
 	vaultPath := t.TempDir()
 	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
 	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
@@ -2572,13 +2595,18 @@ func TestReIngestLearnings_ExistingPageNotOverwritten(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	// A human-edited store page already owns the learning's page name.
+	// A hand-edited store row already owns the learning's page name: empty
+	// content hash (a row written before hashing), hand-edited properties,
+	// a tier no tool can produce for a learning page, and stale source
+	// identifiers — the row models a page last written under another
+	// source, so convergence must rewrite SourceID/SourceDocID or the page
+	// silently drops out of ListPagesBySource("learning") listings.
 	pageName := "learning/authentication-20260421T103000-alice"
 	preexisting := &store.Page{
 		Name:         pageName,
 		OriginalName: pageName,
-		SourceID:     "learning",
-		SourceDocID:  "learning-authentication-20260421T103000-alice",
+		SourceID:     "disk",
+		SourceDocID:  "disk-migrated-note",
 		Properties:   `{"note": "human-edited"}`,
 		Tier:         "validated",
 		Category:     "decision",
@@ -2589,13 +2617,16 @@ func TestReIngestLearnings_ExistingPageNotOverwritten(t *testing.T) {
 		t.Fatalf("InsertPage failed: %v", err)
 	}
 
+	// The file keeps its body and claims tier: validated — a forged claim
+	// re-ingestion must ignore with a warning. With no stored hash to match,
+	// the row models a changed file and converges to this file.
 	content := `---
 tag: authentication
 author: alice
 category: decision
 created_at: 2026-04-21T10:30:00Z
 identity: authentication-20260421T103000-alice
-tier: draft
+tier: validated
 ---
 
 machine-written body that must not overwrite the human edit
@@ -2604,12 +2635,19 @@ machine-written body that must not overwrite the human edit
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
+	// Capture the package logger so the forged-tier warning is assertable
+	// (LR-FR-001's "the ignored claim is logged as a warning" clause) — the
+	// buffer pattern this file's log-assertion tests use.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
 	count, err := reIngestLearnings(s, nil, vaultPath, 0)
 	if err != nil {
 		t.Fatalf("reIngestLearnings failed: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("reIngestLearnings count = %d, want 0 for a pre-existing page", count)
+	if count != 1 {
+		t.Errorf("reIngestLearnings count = %d, want 1 (empty stored hash models a changed file)", count)
 	}
 
 	page, err := s.GetPage(pageName)
@@ -2617,20 +2655,48 @@ machine-written body that must not overwrite the human edit
 		t.Fatalf("GetPage failed: %v", err)
 	}
 	if page == nil {
-		t.Fatalf("pre-existing page vanished after re-ingestion")
+		t.Fatalf("page vanished after re-ingestion")
 	}
-	if page.Tier != "validated" {
-		t.Errorf("stored tier = %q, want validated (human edit preserved)", page.Tier)
+	if page.Tier != "draft" {
+		t.Errorf("stored tier = %q, want draft (converges from validated; the file's forged tier claim is ignored)", page.Tier)
 	}
-	if !strings.Contains(page.Properties, "human-edited") {
-		t.Errorf("stored properties = %q, want the human-edited properties preserved", page.Properties)
+	if !strings.Contains(logBuf.String(), "ignoring non-draft tier from learning file") {
+		t.Errorf("log must record the ignored forged tier claim, got: %q", logBuf.String())
 	}
+	// The file is the authority: its frontmatter-derived properties replace
+	// the hand-edited store properties.
+	if strings.Contains(page.Properties, "human-edited") {
+		t.Errorf("stored properties = %q, want the hand-edited properties overwritten by the file's", page.Properties)
+	}
+	for _, want := range []string{
+		`"tag":"authentication"`,
+		`"author":"alice"`,
+		`"category":"decision"`,
+		`"created_at":"2026-04-21T10:30:00Z"`,
+	} {
+		if !strings.Contains(page.Properties, want) {
+			t.Errorf("stored properties = %q, want file-derived %s", page.Properties, want)
+		}
+	}
+
+	// LR-FR-001 names the source identifiers in the row-update MUST: the
+	// stale values converge to the learning ingestion identifiers derived
+	// from the file, keeping the page in ListPagesBySource("learning").
+	if page.SourceID != "learning" {
+		t.Errorf("source ID = %q, want learning (stale identifiers must converge)", page.SourceID)
+	}
+	if page.SourceDocID != "learning-authentication-20260421T103000-alice" {
+		t.Errorf("source doc ID = %q, want learning-authentication-20260421T103000-alice (the file-derived doc ID)", page.SourceDocID)
+	}
+
 	blocks, err := s.GetBlocksByPage(pageName)
 	if err != nil {
 		t.Fatalf("GetBlocksByPage failed: %v", err)
 	}
-	if len(blocks) != 0 {
-		t.Errorf("re-ingestion inserted %d blocks for a pre-existing page, want 0", len(blocks))
+	if len(blocks) != 1 {
+		t.Errorf("re-ingestion persisted %d blocks, want 1 from the file body", len(blocks))
+	} else if blocks[0].Content != "machine-written body that must not overwrite the human edit" {
+		t.Errorf("block content = %q, want the file body's single line", blocks[0].Content)
 	}
 }
 
@@ -2728,6 +2794,945 @@ func TestReIngestLearnings_RoundTripFromSupersedeLearning(t *testing.T) {
 	}
 	if targetProps["validity"] != "superseded" {
 		t.Errorf("target validity = %v, want superseded", targetProps["validity"])
+	}
+}
+
+// --- Learning re-ingestion change-detection tests (learning-reingest-on-file-change, 2.1) ---
+
+// countingEmbedder implements embed.Embedder for the re-ingestion tests
+// below, mirroring the testEmbedder pattern from vault/parse_export_test.go:
+// atomic counters on Embed and EmbedBatch let tests assert that the cheap
+// path (hash match) does no embedding work (LR-FR-002) while the full
+// re-ingest path regenerates embeddings (LR-FR-001).
+type countingEmbedder struct {
+	embedCalls      atomic.Int64
+	embedBatchCalls atomic.Int64
+}
+
+// Embed records a single-text embedding call and returns a fixed vector.
+func (e *countingEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
+	e.embedCalls.Add(1)
+	return []float32{0.1, 0.2, 0.3}, nil
+}
+
+// EmbedBatch records a batch embedding call and returns one vector per text.
+func (e *countingEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	e.embedBatchCalls.Add(1)
+	result := make([][]float32, len(texts))
+	for i := range texts {
+		result[i] = []float32{0.1, 0.2, 0.3}
+	}
+	return result, nil
+}
+
+// Available reports the embedder as ready so reIngestLearnings reaches
+// GenerateEmbeddings.
+func (e *countingEmbedder) Available() bool { return true }
+
+// ModelID identifies the fake in persisted embedding rows.
+func (e *countingEmbedder) ModelID() string { return "counting-test-model" }
+
+// calls returns the total embedding invocations recorded so far (single-text
+// plus batch) — the number the zero-work assertions snapshot between passes.
+func (e *countingEmbedder) calls() int64 {
+	return e.embedCalls.Load() + e.embedBatchCalls.Load()
+}
+
+var _ embed.Embedder = (*countingEmbedder)(nil)
+
+// learningBodyHash computes the content hash exactly as reIngestLearnings
+// does — the frontmatter-stripped, whitespace-trimmed body through sha256,
+// first 8 bytes hex — so tests derive the hash the production comparison
+// uses (the fixture-with-hash pattern TestReIngestLearnings_SkipsExisting
+// established).
+func learningBodyHash(t *testing.T, fileContent string) string {
+	t.Helper()
+	_, body, err := parseLearningFrontmatter(fileContent)
+	if err != nil {
+		t.Fatalf("parseLearningFrontmatter: %v", err)
+	}
+	hash := sha256.Sum256([]byte(body))
+	return fmt.Sprintf("%x", hash[:8])
+}
+
+// TestReIngestLearnings_ReingestsChangedFile pins LR-FR-001's core scenario:
+// a learning file whose body was edited on disk (for example by a git pull)
+// converges on the next startup — the stored content hash moves to the new
+// body's hash, the page's blocks reflect the new body with the old blocks
+// gone, and embeddings are regenerated when the embedder is available.
+func TestReIngestLearnings_ReingestsChangedFile(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Body V1 carries two blocks (a pre-heading line and a heading section)
+	// so the edit is visible in block count as well as content.
+	v1 := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+---
+
+Original body line.
+
+## Original Heading
+
+Text under the original heading.
+`
+	filePath := filepath.Join(learningsDir, "auth-20260421T103000-alice.md")
+	if err := os.WriteFile(filePath, []byte(v1), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	embedder := &countingEmbedder{}
+	pageName := "learning/auth-20260421T103000-alice"
+
+	// First pass ingests the missing learning — the baseline the changed-file
+	// pass is measured against.
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("first pass count = %d, want 1", count)
+	}
+	callsAfterFirst := embedder.calls()
+	if callsAfterFirst == 0 {
+		t.Fatal("first pass should have embedded the inserted learning")
+	}
+	blocksBefore, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage (before): %v", err)
+	}
+	if len(blocksBefore) != 2 {
+		t.Fatalf("got %d blocks from body V1, want 2 (pre-heading line plus heading section)", len(blocksBefore))
+	}
+	page, err := s.GetPage(pageName)
+	if err != nil || page == nil {
+		t.Fatalf("GetPage after first pass: %v, %v", page, err)
+	}
+	v1Hash := learningBodyHash(t, v1)
+	if page.ContentHash != v1Hash {
+		t.Fatalf("stored hash after first pass = %q, want hash of body V1 %q", page.ContentHash, v1Hash)
+	}
+
+	// created_at parsed from the file's frontmatter by the insert path — the
+	// value the changed-file pass must preserve (design D4: UpdatePage's SQL
+	// does not touch created_at).
+	createdAtAfterFirst := page.CreatedAt
+	if createdAtAfterFirst == 0 {
+		t.Fatal("first pass should have parsed created_at from the file frontmatter")
+	}
+
+	// One embedding row per block from the first pass — the baseline the
+	// replacement assertion after the edit measures against. The store holds
+	// only this learning's page, so the model-scoped rows are the page's rows.
+	embeddingsBefore, err := s.GetAllEmbeddings(embedder.ModelID())
+	if err != nil {
+		t.Fatalf("GetAllEmbeddings (before): %v", err)
+	}
+	if len(embeddingsBefore) != len(blocksBefore) {
+		t.Fatalf("got %d embedding rows from body V1, want %d (one per block)", len(embeddingsBefore), len(blocksBefore))
+	}
+
+	// Edit the body to V2 — same frontmatter, one line replacing V1's blocks.
+	v2 := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+---
+
+Edited body replacing the original.
+`
+	if err := os.WriteFile(filePath, []byte(v2), 0o644); err != nil {
+		t.Fatalf("WriteFile (edit): %v", err)
+	}
+
+	count, err = reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (changed body must re-ingest)", count)
+	}
+
+	page, err = s.GetPage(pageName)
+	if err != nil {
+		t.Fatalf("GetPage after edit: %v", err)
+	}
+	if page == nil {
+		t.Fatal("page vanished after re-ingestion")
+	}
+	wantHash := learningBodyHash(t, v2)
+	if page.ContentHash != wantHash {
+		t.Errorf("stored content hash = %q, want hash of body V2 %q", page.ContentHash, wantHash)
+	}
+	if page.ContentHash == v1Hash {
+		t.Errorf("stored content hash still matches body V1; the edit must move it")
+	}
+
+	// The page's blocks reflect V2's body — one block holding the edited
+	// line, V1's blocks gone.
+	blocks, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage after edit: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("got %d blocks after the edit, want 1 from body V2", len(blocks))
+	}
+	if blocks[0].Content != "Edited body replacing the original." {
+		t.Errorf("block content = %q, want body V2's line", blocks[0].Content)
+	}
+	for _, b := range blocks {
+		if strings.Contains(b.Content, "Original") {
+			t.Errorf("block %q still carries V1 content; old blocks must be gone", b.Content)
+		}
+	}
+
+	// Embeddings were regenerated for the page during the changed-file pass.
+	if got := embedder.calls(); got <= callsAfterFirst {
+		t.Errorf("embedder calls = %d after the changed-file pass, want more than the %d recorded before it", got, callsAfterFirst)
+	}
+
+	// created_at survives the changed-file re-ingest: the update path mutates
+	// the row without touching created_at (design D4).
+	if page.CreatedAt != createdAtAfterFirst {
+		t.Errorf("created_at = %d after the changed-file pass, want the first-pass %d (UpdatePage must not touch created_at)",
+			page.CreatedAt, createdAtAfterFirst)
+	}
+
+	// Embedding rows are replaced, not accumulated: DeleteBlocksByPage
+	// cascades to embeddings through the schema's foreign key, so after the
+	// re-ingest the page holds exactly one row per current block and none for
+	// body V1's blocks.
+	embeddingsAfter, err := s.GetAllEmbeddings(embedder.ModelID())
+	if err != nil {
+		t.Fatalf("GetAllEmbeddings (after): %v", err)
+	}
+	if len(embeddingsAfter) != len(blocks) {
+		t.Errorf("got %d embedding rows after the changed-file pass, want %d (replaced, not accumulated)",
+			len(embeddingsAfter), len(blocks))
+	}
+	currentUUIDs := make(map[string]bool, len(blocks))
+	for _, b := range blocks {
+		currentUUIDs[b.UUID] = true
+	}
+	for _, e := range embeddingsAfter {
+		if !currentUUIDs[e.BlockUUID] {
+			t.Errorf("embedding row for stale block %q lingers after the re-ingest", e.BlockUUID)
+		}
+	}
+}
+
+// TestReIngestLearnings_UnchangedFileStaysCheap pins LR-FR-002's scenario
+// "an unchanged file does no block or embedding work": a second startup pass
+// over a file whose stored content hash matches does not re-persist blocks
+// (UUIDs and contents stay identical), does not regenerate embeddings (the
+// counting embedder records zero calls), and does not count the learning.
+func TestReIngestLearnings_UnchangedFileStaysCheap(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	file := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+---
+
+Unchanged learning body.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "auth-20260421T103000-alice.md"), []byte(file), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	embedder := &countingEmbedder{}
+	pageName := "learning/auth-20260421T103000-alice"
+
+	// First pass ingests the missing learning — it counts and embeds.
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("first pass count = %d, want 1", count)
+	}
+	callsAfterFirst := embedder.calls()
+	if callsAfterFirst == 0 {
+		t.Fatal("first pass should have embedded the inserted learning")
+	}
+	blocksBefore, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage (before): %v", err)
+	}
+	if len(blocksBefore) == 0 {
+		t.Fatal("expected blocks after the first pass")
+	}
+
+	// Second pass over the unchanged file.
+	count, err = reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("second pass count = %d, want 0 (unchanged file must stay cheap)", count)
+	}
+
+	// Zero embedding work during the second pass.
+	if got := embedder.calls(); got != callsAfterFirst {
+		t.Errorf("embedder calls = %d after the second pass, want %d (unchanged file must not re-embed)", got, callsAfterFirst)
+	}
+
+	// No block churn: identical UUIDs and contents, in the same order.
+	blocksAfter, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage (after): %v", err)
+	}
+	if len(blocksAfter) != len(blocksBefore) {
+		t.Fatalf("block count = %d after the second pass, want %d (no churn)", len(blocksAfter), len(blocksBefore))
+	}
+	for i, b := range blocksBefore {
+		if blocksAfter[i].UUID != b.UUID || blocksAfter[i].Content != b.Content {
+			t.Errorf("block %d changed across the second pass: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, blocksAfter[i].UUID, blocksAfter[i].Content)
+		}
+	}
+}
+
+// TestReIngestLearnings_FrontmatterOnlyChange pins LR-FR-002's scenario "a
+// frontmatter-only change refreshes properties without block work": editing
+// only the file's frontmatter (here: validity arriving via a pull) keeps the
+// body hash stable, so the cheap path refreshes the changed property in
+// place while block UUIDs and embeddings stay untouched.
+func TestReIngestLearnings_FrontmatterOnlyChange(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// Frontmatter and body are composed separately so the edit rewrites only
+	// the frontmatter block and leaves the body bytes identical.
+	frontmatterV1 := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+---
+`
+	frontmatterV2 := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+validity: "current"
+---
+`
+	body := `
+Body untouched by the frontmatter edit.
+`
+	filePath := filepath.Join(learningsDir, "auth-20260421T103000-alice.md")
+	if err := os.WriteFile(filePath, []byte(frontmatterV1+body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	embedder := &countingEmbedder{}
+	pageName := "learning/auth-20260421T103000-alice"
+
+	// First pass ingests the learning without the validity key.
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("first pass count = %d, want 1", count)
+	}
+	callsAfterFirst := embedder.calls()
+	if callsAfterFirst == 0 {
+		t.Fatal("first pass should have embedded the inserted learning")
+	}
+	blocksBefore, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage (before): %v", err)
+	}
+	if len(blocksBefore) == 0 {
+		t.Fatal("expected blocks after the first pass")
+	}
+	pageBefore, err := s.GetPage(pageName)
+	if err != nil || pageBefore == nil {
+		t.Fatalf("GetPage (before): %v, %v", pageBefore, err)
+	}
+	if strings.Contains(pageBefore.Properties, `"validity"`) {
+		t.Fatalf("fixture properties already carry validity: %q", pageBefore.Properties)
+	}
+
+	// Frontmatter-only edit: validity arrives, the body bytes are untouched.
+	if err := os.WriteFile(filePath, []byte(frontmatterV2+body), 0o644); err != nil {
+		t.Fatalf("WriteFile (edit): %v", err)
+	}
+
+	count, err = reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (frontmatter-only edit must stay cheap)", count)
+	}
+
+	// The changed property is refreshed from the new frontmatter.
+	page, err := s.GetPage(pageName)
+	if err != nil {
+		t.Fatalf("GetPage (after): %v", err)
+	}
+	if page == nil {
+		t.Fatal("page vanished after the frontmatter-only edit")
+	}
+	if !strings.Contains(page.Properties, `"validity":"current"`) {
+		t.Errorf("stored properties = %q, want the refreshed validity=current from the file's frontmatter", page.Properties)
+	}
+	if page.ContentHash != pageBefore.ContentHash {
+		t.Errorf("content hash = %q after the edit, want the pre-edit %q (body is unchanged)", page.ContentHash, pageBefore.ContentHash)
+	}
+
+	// Blocks untouched: identical UUIDs and contents, in the same order.
+	blocksAfter, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage (after): %v", err)
+	}
+	if len(blocksAfter) != len(blocksBefore) {
+		t.Fatalf("block count = %d after the edit, want %d (no churn)", len(blocksAfter), len(blocksBefore))
+	}
+	for i, b := range blocksBefore {
+		if blocksAfter[i].UUID != b.UUID || blocksAfter[i].Content != b.Content {
+			t.Errorf("block %d changed across the frontmatter-only edit: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, blocksAfter[i].UUID, blocksAfter[i].Content)
+		}
+	}
+
+	// Zero embedding work during the frontmatter-only pass.
+	if got := embedder.calls(); got != callsAfterFirst {
+		t.Errorf("embedder calls = %d after the frontmatter-only pass, want %d (no embedding work)", got, callsAfterFirst)
+	}
+}
+
+// TestReIngestLearnings_DivergentHashConvergesOnce pins LR-FR-002's scenario
+// "a divergent stored hash converges exactly once": a page stored with an
+// empty content hash (a row written before re-ingestion compared hashes, or
+// by an earlier version over different bytes) disagrees with its unchanged
+// file, so the first pass fully re-ingests it once and stores the
+// file-derived hash; every later pass over the same file does no block or
+// embedding work.
+func TestReIngestLearnings_DivergentHashConvergesOnce(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// The pre-change row: an existing page with an empty content hash and a
+	// created_at sentinel the converging update must preserve.
+	pageName := "learning/auth-20260421T103000-alice"
+	if err := s.InsertPage(&store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "learning",
+		SourceDocID:  "learning-auth-20260421T103000-alice",
+		Tier:         "draft",
+		Category:     "decision",
+		CreatedAt:    1700000000000,
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	file := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+---
+
+Body whose hash the empty stored hash disagrees with.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "auth-20260421T103000-alice.md"), []byte(file), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	embedder := &countingEmbedder{}
+	wantHash := learningBodyHash(t, file)
+
+	// First pass: the empty stored hash disagrees with the file, so the
+	// learning is fully re-ingested once — counted, blocks re-persisted,
+	// hash converged.
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("first pass count = %d, want 1 (empty stored hash must re-ingest)", count)
+	}
+	callsAfterFirst := embedder.calls()
+	if callsAfterFirst == 0 {
+		t.Fatal("first pass should have embedded the re-ingested learning")
+	}
+
+	page, err := s.GetPage(pageName)
+	if err != nil {
+		t.Fatalf("GetPage: %v", err)
+	}
+	if page == nil {
+		t.Fatal("page vanished after re-ingestion")
+	}
+	if page.ContentHash != wantHash {
+		t.Errorf("stored content hash = %q after the first pass, want the file-derived %q", page.ContentHash, wantHash)
+	}
+	// The pre-change row's created_at survives the converging UpdatePage
+	// (design D4: the changed path rewrites the row without touching
+	// created_at).
+	if page.CreatedAt != 1700000000000 {
+		t.Errorf("created_at = %d after convergence, want the fixture's 1700000000000 (UpdatePage must not touch created_at)",
+			page.CreatedAt)
+	}
+	blocks, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Errorf("got %d blocks after convergence, want 1 from the file body", len(blocks))
+	} else if blocks[0].Content != "Body whose hash the empty stored hash disagrees with." {
+		t.Errorf("block content = %q, want the file body's line", blocks[0].Content)
+	}
+
+	// Second pass over the unchanged file: converged, so it stays cheap.
+	count, err = reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("second pass count = %d, want 0 (converged hash must stay cheap)", count)
+	}
+	if got := embedder.calls(); got != callsAfterFirst {
+		t.Errorf("embedder calls = %d after the second pass, want %d (no embedding work once converged)", got, callsAfterFirst)
+	}
+
+	// The cheap pass must not accumulate embedding rows: still exactly one
+	// per block (the store holds only this learning's page).
+	embeddingsAfter, err := s.GetAllEmbeddings(embedder.ModelID())
+	if err != nil {
+		t.Fatalf("GetAllEmbeddings: %v", err)
+	}
+	if len(embeddingsAfter) != len(blocks) {
+		t.Errorf("got %d embedding rows after the second pass, want %d (no accumulation on the cheap path)",
+			len(embeddingsAfter), len(blocks))
+	}
+}
+
+// TestReIngestLearnings_DriftedTierConvergesOnCheapPath pins LR-FR-001's
+// scenario "a drifted store tier converges to draft": a page whose stored
+// tier is not draft (a state no tool can produce — learning pages are never
+// promotable) but whose stored content hash matches its unchanged file takes
+// the cheap path, and the tier arm of the refresh guard clamps the row back
+// to draft in place — no block or embedding work, no count. The fixture's
+// properties and category already equal the file-derived values, so the
+// refresh fires solely through the tier arm: removing that arm of the guard
+// condition leaves the drifted tier unclamped and fails this test
+// (learning-reingest-on-file-change task 2.4).
+func TestReIngestLearnings_DriftedTierConvergesOnCheapPath(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	file := `---
+tag: auth
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: auth-20260421T103000-alice
+tier: draft
+---
+
+Unchanged body over a drifted store tier.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "auth-20260421T103000-alice.md"), []byte(file), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// The fixture row's properties and category are exactly the file-derived
+	// values (the same derivation reIngestLearnings applies), so only the
+	// tier differs and the cheap-path refresh fires solely through the tier
+	// arm.
+	fm, _, err := parseLearningFrontmatter(file)
+	if err != nil {
+		t.Fatalf("parseLearningFrontmatter: %v", err)
+	}
+	propsJSON, err := json.Marshal(fm.properties())
+	if err != nil {
+		t.Fatalf("marshal properties: %v", err)
+	}
+
+	// The drifted row: tier validated (unreachable through any tool —
+	// learning pages are never promotable) over a matching content hash, so
+	// the body comparison routes to the cheap path.
+	pageName := "learning/auth-20260421T103000-alice"
+	if err := s.InsertPage(&store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "learning",
+		SourceDocID:  "learning-auth-20260421T103000-alice",
+		Properties:   string(propsJSON),
+		ContentHash:  learningBodyHash(t, file),
+		Tier:         "validated",
+		Category:     fm.Category,
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Fixture blocks carry hand-set UUIDs: any block work would delete and
+	// re-persist them with production-derived UUIDs, so identical UUIDs
+	// prove no block work happened.
+	blocksBefore := []*store.Block{
+		{UUID: "drifted-tier-block-0", PageName: pageName, Content: "Unchanged body over a drifted store tier.", Position: 0},
+	}
+	for _, b := range blocksBefore {
+		if err := s.InsertBlock(b); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", b.UUID, err)
+		}
+	}
+
+	embedder := &countingEmbedder{}
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (the cheap-path tier refresh is not counted)", count)
+	}
+
+	// The tier converged to draft; nothing else on the row moved.
+	page, err := s.GetPage(pageName)
+	if err != nil || page == nil {
+		t.Fatalf("GetPage: %v, %v", page, err)
+	}
+	if page.Tier != "draft" {
+		t.Errorf("stored tier = %q, want draft (the cheap path must clamp a drifted tier)", page.Tier)
+	}
+	if page.ContentHash != learningBodyHash(t, file) {
+		t.Errorf("content hash = %q, want the unchanged file-derived hash", page.ContentHash)
+	}
+	if page.Properties != string(propsJSON) {
+		t.Errorf("properties = %q, want the unchanged file-derived %q", page.Properties, string(propsJSON))
+	}
+
+	// No block work: identical UUIDs and contents.
+	blocksAfter, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+	if len(blocksAfter) != len(blocksBefore) {
+		t.Fatalf("block count = %d, want %d (no block work)", len(blocksAfter), len(blocksBefore))
+	}
+	for i, b := range blocksBefore {
+		if blocksAfter[i].UUID != b.UUID || blocksAfter[i].Content != b.Content {
+			t.Errorf("block %d changed: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, blocksAfter[i].UUID, blocksAfter[i].Content)
+		}
+	}
+
+	// No embedding work.
+	if got := embedder.calls(); got != 0 {
+		t.Errorf("embedder calls = %d, want 0 (the cheap path must not embed)", got)
+	}
+}
+
+// TestReIngestLearnings_CategoryDriftConvergesOnCheapPath pins the category
+// arm of LR-FR-002's in-place refresh ("the page row's properties, category
+// and tier MUST be refreshed in place from the file when they differ"): a
+// page whose stored category disagrees with its unchanged file — a drift no
+// tool writes, modeling a hand-edited or migrated row — takes the cheap
+// path, and the category comparison of the refresh guard converges the
+// category in place — no block or embedding work, no count. The fixture's
+// properties and tier already equal the file-derived values (properties via
+// the same parseLearningFrontmatter → properties → json.Marshal derivation
+// production applies, tier draft), so the refresh fires solely through the
+// category arm: removing `existing.Category != fm.Category` from the guard
+// skips the refresh and fails this test (learning-reingest-on-file-change
+// task 2.5, LOW finding from review dispatch ba50f507).
+func TestReIngestLearnings_CategoryDriftConvergesOnCheapPath(t *testing.T) {
+	vaultPath := t.TempDir()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	file := `---
+tag: catdrift
+author: alice
+category: decision
+created_at: 2026-04-21T10:30:00Z
+identity: catdrift-20260421T103000-alice
+tier: draft
+---
+
+Unchanged body over a drifted store category.
+`
+	if err := os.WriteFile(filepath.Join(learningsDir, "catdrift-20260421T103000-alice.md"), []byte(file), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// The fixture row's properties and tier are exactly the file-derived
+	// values (the same derivation reIngestLearnings applies), so only the
+	// category differs and the cheap-path refresh fires solely through the
+	// category arm.
+	fm, _, err := parseLearningFrontmatter(file)
+	if err != nil {
+		t.Fatalf("parseLearningFrontmatter: %v", err)
+	}
+	propsJSON, err := json.Marshal(fm.properties())
+	if err != nil {
+		t.Fatalf("marshal properties: %v", err)
+	}
+
+	// The drifted row: category stale-category (a value no tool writes for
+	// this learning) over a matching content hash, so the body comparison
+	// routes to the cheap path.
+	pageName := "learning/catdrift-20260421T103000-alice"
+	if err := s.InsertPage(&store.Page{
+		Name:         pageName,
+		OriginalName: pageName,
+		SourceID:     "learning",
+		SourceDocID:  "learning-catdrift-20260421T103000-alice",
+		Properties:   string(propsJSON),
+		ContentHash:  learningBodyHash(t, file),
+		Tier:         "draft",
+		Category:     "stale-category",
+	}); err != nil {
+		t.Fatalf("InsertPage: %v", err)
+	}
+
+	// Fixture blocks carry hand-set UUIDs: any block work would delete and
+	// re-persist them with production-derived UUIDs, so identical UUIDs
+	// prove no block work happened.
+	blocksBefore := []*store.Block{
+		{UUID: "category-drift-block-0", PageName: pageName, Content: "Unchanged body over a drifted store category.", Position: 0},
+	}
+	for _, b := range blocksBefore {
+		if err := s.InsertBlock(b); err != nil {
+			t.Fatalf("InsertBlock(%s): %v", b.UUID, err)
+		}
+	}
+
+	embedder := &countingEmbedder{}
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (the cheap-path category refresh is not counted)", count)
+	}
+
+	// The category converged to the file-derived value; nothing else on the
+	// row moved.
+	page, err := s.GetPage(pageName)
+	if err != nil || page == nil {
+		t.Fatalf("GetPage: %v, %v", page, err)
+	}
+	if page.Category != fm.Category {
+		t.Errorf("stored category = %q, want the file-derived %q (the cheap path must converge a drifted category)", page.Category, fm.Category)
+	}
+	if page.Tier != "draft" {
+		t.Errorf("stored tier = %q, want draft (the category refresh leaves the matched tier alone)", page.Tier)
+	}
+	if page.ContentHash != learningBodyHash(t, file) {
+		t.Errorf("content hash = %q, want the unchanged file-derived hash", page.ContentHash)
+	}
+	if page.Properties != string(propsJSON) {
+		t.Errorf("properties = %q, want the unchanged file-derived %q", page.Properties, string(propsJSON))
+	}
+
+	// No block work: identical UUIDs and contents.
+	blocksAfter, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+	if len(blocksAfter) != len(blocksBefore) {
+		t.Fatalf("block count = %d, want %d (no block work)", len(blocksAfter), len(blocksBefore))
+	}
+	for i, b := range blocksBefore {
+		if blocksAfter[i].UUID != b.UUID || blocksAfter[i].Content != b.Content {
+			t.Errorf("block %d changed: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, blocksAfter[i].UUID, blocksAfter[i].Content)
+		}
+	}
+
+	// No embedding work.
+	if got := embedder.calls(); got != 0 {
+		t.Errorf("embedder calls = %d, want 0 (the cheap path must not embed)", got)
+	}
+}
+
+// TestReIngestLearnings_ToolStoredLearningStaysCheap pins the joined
+// write/read hash contract (LR-FR-002: "store_learning MUST compute its
+// content hash over the same bytes" the re-ingestion comparison uses,
+// design D3): a learning stored through the tools path — with leading and
+// trailing whitespace on its information — writes a page hash over the
+// trimmed text and a file body that trims to the same bytes, so startup
+// re-ingestion over the unchanged file matches hashes and does no work.
+// tools' own tests cannot close this gap (reIngestLearnings lives unexported
+// in package main, which tools cannot import); running the real writer
+// against the real reader here means a divergence between them — for example
+// main's body extraction dropping its trim — fails this test instead of
+// silently re-embedding every tool-stored learning once at the next startup
+// (learning-reingest-on-file-change task 2.4).
+func TestReIngestLearnings_ToolStoredLearningStaysCheap(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
+	vaultPath := t.TempDir()
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// The production writer, constructed the way tools/learning_test.go
+	// constructs it. The nil embedder models the tool's graceful-degradation
+	// path (no embeddings at store time); re-ingestion supplies the counting
+	// embedder, which must stay at zero calls.
+	l := tools.NewLearning(nil, s, vaultPath, 0)
+	res, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: "\n\n  Joined contract learning.  \n\n",
+		Tag:         "joined",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning: %v", err)
+	}
+	tc, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("StoreLearning result content[0] is %T, want *mcp.TextContent", res.Content[0])
+	}
+	if res.IsError {
+		t.Fatalf("StoreLearning returned error result: %s", tc.Text)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &payload); err != nil {
+		t.Fatalf("unmarshal StoreLearning result %q: %v", tc.Text, err)
+	}
+	pageName, _ := payload["page"].(string)
+	identity, _ := payload["identity"].(string)
+	if pageName == "" || identity == "" {
+		t.Fatalf("StoreLearning result lacks page/identity: %q", tc.Text)
+	}
+
+	// Premise: the tool wrote the page (with its hash) and persisted blocks.
+	page, err := s.GetPage(pageName)
+	if err != nil || page == nil {
+		t.Fatalf("GetPage(%q): %v, %v", pageName, page, err)
+	}
+	blocksBefore, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage: %v", err)
+	}
+	if len(blocksBefore) == 0 {
+		t.Fatal("expected the tool to persist blocks")
+	}
+
+	// The agreement that makes the pass cheap, made explicit: the page hash
+	// the tool stored equals the file-body hash main's parser computes.
+	fileBytes, err := os.ReadFile(filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", identity+".md"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if page.ContentHash != learningBodyHash(t, string(fileBytes)) {
+		t.Errorf("stored ContentHash = %q, want the file-body hash %q the tool wrote",
+			page.ContentHash, learningBodyHash(t, string(fileBytes)))
+	}
+
+	// The reader over the writer's unchanged vault: hash agreement means the
+	// cheap path — no count, no embedding work, no block churn.
+	embedder := &countingEmbedder{}
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (the tool-stored hash must match the file-derived hash)", count)
+	}
+	if got := embedder.calls(); got != 0 {
+		t.Errorf("embedder calls = %d, want 0 (an unchanged tool-stored learning must not re-embed)", got)
+	}
+	blocksAfter, err := s.GetBlocksByPage(pageName)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage (after): %v", err)
+	}
+	if len(blocksAfter) != len(blocksBefore) {
+		t.Fatalf("block count = %d after re-ingestion, want %d (no churn)", len(blocksAfter), len(blocksBefore))
+	}
+	for i, b := range blocksBefore {
+		if blocksAfter[i].UUID != b.UUID || blocksAfter[i].Content != b.Content {
+			t.Errorf("block %d changed across re-ingestion: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, blocksAfter[i].UUID, blocksAfter[i].Content)
+		}
+	}
+	if page, err = s.GetPage(pageName); err != nil || page == nil {
+		t.Fatalf("GetPage (after): %v, %v", page, err)
+	}
+	if page.Tier != "draft" {
+		t.Errorf("stored tier = %q after re-ingestion, want draft", page.Tier)
 	}
 }
 

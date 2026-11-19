@@ -1048,8 +1048,10 @@ Fetches content from all configured sources and indexes it.`,
 // newReindexCmd creates the `dewey reindex` subcommand.
 // Performs a clean re-index by removing the existing graph.db and all
 // associated SQLite files (WAL, SHM) and lock files, then running a
-// full index from scratch. This is the recommended way to rebuild the
-// index after upgrading Dewey or when the index is corrupted.
+// full index from scratch, then restoring learnings and knowledge-store
+// pages from their files (restoreFileBackedPages, #223). This is the
+// recommended way to rebuild the index after upgrading Dewey or when the
+// index is corrupted.
 func newReindexCmd() *cobra.Command {
 	var noEmbeddings bool
 	var vaultPath string
@@ -1065,7 +1067,12 @@ files, then running 'dewey index --force'. Use this when:
   - The index is corrupted (UUID collisions, foreign key errors)
   - You want a guaranteed clean slate
 
-The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
+The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock
+
+After indexing the configured sources it re-ingests learnings from
+.uf/dewey/learnings/ and re-indexes configured knowledge stores from
+their files, so the rebuilt index is complete without starting
+'dewey serve'.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reindexStart := time.Now()
@@ -1169,6 +1176,12 @@ The command removes: graph.db, graph.db-wal, graph.db-shm, dewey.lock`,
 			if indexErr != nil {
 				return fmt.Errorf("reindex failed: %w", indexErr)
 			}
+
+			// Restore file-backed pages — learnings and knowledge stores —
+			// that no source reaches, so the rebuilt index is complete
+			// without a `dewey serve` start (#223). Runs under the same
+			// exclusive use of graph.db as the rest of the rebuild.
+			restoreFileBackedPages(s, embedder, vp, embCfg.MaxChunkChars)
 
 			// Stamp the freshly rebuilt store with this binary's build
 			// provenance (IBP-FR-001, design D4), mirroring `dewey index`:

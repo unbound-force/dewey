@@ -3776,6 +3776,90 @@ func TestReindexCmd_StampsIndexBuildMetadata(t *testing.T) {
 	assertIndexBuildStamp(t, filepath.Join(deweyDir, "graph.db"))
 }
 
+// TestReindexCmd_RestoresFileBackedPages verifies that `dewey reindex`
+// re-ingests learnings and re-indexes knowledge stores from their files,
+// so the rebuilt graph.db is complete without a `dewey serve` start
+// (#223).
+func TestReindexCmd_RestoresFileBackedPages(t *testing.T) {
+	tmpDir := t.TempDir()
+	deweyDir := filepath.Join(tmpDir, deweyWorkspaceDir)
+	learningsDir := filepath.Join(deweyDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sourcesYAML := `sources:
+  - id: disk-local
+    type: disk
+    name: local
+    config:
+      path: "."`
+	if err := os.WriteFile(filepath.Join(deweyDir, "sources.yaml"), []byte(sourcesYAML), 0o644); err != nil {
+		t.Fatalf("write sources.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "test.md"), []byte("# Test\n\nHello reindex."), 0o644); err != nil {
+		t.Fatalf("write test.md: %v", err)
+	}
+	learning := "---\ntag: auth\nauthor: alice\ncreated_at: 2026-04-21T10:30:00Z\nidentity: auth-20260421T103000-alice\ntier: draft\nas_of: org/repo@abc1234\n---\n\nTokens rotate daily.\n"
+	if err := os.WriteFile(filepath.Join(learningsDir, "auth-20260421T103000-alice.md"), []byte(learning), 0o644); err != nil {
+		t.Fatalf("write learning: %v", err)
+	}
+	writeKnowledgeStoreFixture(t, tmpDir, "team-kb", map[string]string{
+		"claim-a.md": "---\ntag: deploy\ntier: curated\n---\n\nBlue-green deploys.\n",
+	})
+	// A stale graph.db that a reindex replaces.
+	if err := os.WriteFile(filepath.Join(deweyDir, "graph.db"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write graph.db: %v", err)
+	}
+
+	origDir, _ := os.Getwd()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() { _ = os.Chdir(origDir) }()
+
+	cmd := newReindexCmd()
+	cmd.SetArgs([]string{"--no-embeddings"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("reindex failed: %v", err)
+	}
+
+	s, err := store.New(filepath.Join(deweyDir, "graph.db"))
+	if err != nil {
+		t.Fatalf("open store after reindex: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	lp, err := s.GetPage(store.LearningPrefix + "auth-20260421T103000-alice")
+	if err != nil || lp == nil {
+		t.Fatalf("learning page missing after reindex: page=%v err=%v", lp, err)
+	}
+	if lp.SourceID != store.SourceLearning {
+		t.Errorf("learning source_id = %q, want %q", lp.SourceID, store.SourceLearning)
+	}
+	if !strings.Contains(lp.Properties, `"as_of":"org/repo@abc1234"`) {
+		t.Errorf("learning properties lost as_of: %s", lp.Properties)
+	}
+	blocks, err := s.GetBlocksByPage(lp.Name)
+	if err != nil || len(blocks) == 0 {
+		t.Errorf("learning blocks missing: %d, %v", len(blocks), err)
+	}
+
+	kp, err := s.GetPage("knowledge/team-kb/claim-a")
+	if err != nil || kp == nil {
+		t.Fatalf("knowledge-store page missing after reindex: page=%v err=%v", kp, err)
+	}
+	if kp.SourceID != "knowledge-team-kb" {
+		t.Errorf("knowledge source_id = %q, want knowledge-team-kb", kp.SourceID)
+	}
+
+	// The configured source is still indexed and the build still stamped.
+	if pages, _ := s.ListPagesBySource("disk-local"); len(pages) == 0 {
+		t.Error("disk-local pages missing after reindex")
+	}
+	_ = s.Close()
+	assertIndexBuildStamp(t, filepath.Join(deweyDir, "graph.db"))
+}
+
 // TestReindexCmd_NotInitialized verifies that reindex fails with a clear
 // error when .uf/dewey/ does not exist.
 func TestReindexCmd_NotInitialized(t *testing.T) {

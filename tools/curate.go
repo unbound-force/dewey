@@ -273,7 +273,19 @@ func (c *Curate) loadStoreDocCount(cfg curate.StoreConfig) (int, error) {
 // frontmatter is persisted as the page's properties so property-driven
 // readers (semantic_search validity ranking and filtering) see it; rows
 // written without properties are backfilled even when content is unchanged.
-func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int, logger *log.Logger) int {
+//
+// After the scan, the function prunes this store's pages whose backing
+// files no longer exist (CKS-FR-003, design D1: re-index first, prune
+// second) by delegating to pruneOrphanedKnowledgePages with the base names
+// collected during the scan. A store directory that does not exist counts
+// as an empty file set, so every page of the store is an orphan; any other
+// directory scan error fails closed and prunes nothing. The pruning path
+// performs no embedding work (design D3).
+//
+// Returns the number of pages (re)indexed and the number of this store's
+// pages deleted because their files no longer exist (successful deletions
+// only); logging the pruned count is the callers' job (design D4).
+func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.StoreConfig, vaultPath string, maxChunkChars int, logger *log.Logger) (indexed, pruned int) {
 	storePath := curate.ResolveStorePath(cfg, vaultPath)
 	sourceID := knowledgeSourceID(cfg.Name)
 
@@ -299,10 +311,23 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 	if err != nil {
 		logger.Warn("failed to read knowledge store for auto-indexing",
 			"store", cfg.Name, "path", storePath, "err", err)
-		return 0
+		if !os.IsNotExist(err) {
+			// Any other scan error fails closed (CKS-FR-003): the file set
+			// is unknown, so pruning is skipped for this store entirely.
+			return 0, 0
+		}
+		// A store directory that does not exist is an empty file set
+		// (CKS-FR-003): every page of this store's source is an orphan.
+		return 0, pruneOrphanedKnowledgePages(s, cfg, nil, logger)
 	}
 
-	indexed := 0
+	// Base names of the store files on disk, collected as the scan below
+	// processes each entry under the same filters the scan applies (design
+	// D2: the file set comes from the scan just performed, with no reads
+	// beyond it). The pruning tail at the end of this function deletes
+	// store pages whose base name is absent here.
+	fileNames := make(map[string]struct{})
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -311,6 +336,14 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 		if entry.Name() == "_index.md" || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
+
+		// The file exists and passed every scan filter, so its page is not
+		// an orphan (CKS-FR-003). The base name is recorded from the
+		// directory entry before the I/O and store operations below — a
+		// read or store failure must never prune a page whose file is on
+		// disk — and doubles as the page-name component below.
+		baseName := strings.TrimSuffix(entry.Name(), ".md")
+		fileNames[baseName] = struct{}{}
 
 		filePath := filepath.Join(storePath, entry.Name())
 		content, err := os.ReadFile(filePath)
@@ -325,7 +358,6 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 		contentHash := fmt.Sprintf("%x", hash[:8])
 
 		// Page name follows the pattern: knowledge/{store-name}/{filename-without-ext}
-		baseName := strings.TrimSuffix(entry.Name(), ".md")
 		pageName := fmt.Sprintf("knowledge/%s/%s", cfg.Name, baseName)
 
 		// Parse the document once for both the tier derivation and the
@@ -434,14 +466,73 @@ func IndexKnowledgeStore(s *store.Store, embedder embed.Embedder, cfg curate.Sto
 		indexed++
 	}
 
-	return indexed
+	// Pruning tail (CKS-FR-003, design D1): after the scan, delete this
+	// store's pages whose files no longer exist. Pruning runs last so it
+	// can never remove a page the loop above just created or refreshed
+	// from a file still on disk, and the pruning path itself performs no
+	// embedding work (design D3).
+	pruned = pruneOrphanedKnowledgePages(s, cfg, fileNames, logger)
+
+	return indexed, pruned
+}
+
+// pruneOrphanedKnowledgePages deletes a knowledge store's pages whose backing
+// files no longer exist (CKS-FR-003). The page set is every page listed for
+// the store's "knowledge-{store}" source; the file set is fileNames, the base
+// names the IndexKnowledgeStore scan just collected from the store directory
+// under the same filters the scan applies (design D2). A page is an orphan
+// when its name minus the "knowledge/{store}/" prefix is absent from the file
+// set; a nil map is an empty file set (the store directory does not exist),
+// making every page of the store an orphan.
+//
+// Pruning fails closed: when the page listing fails, nothing is deleted and
+// every page of the store stays in place, so a transient fault can never
+// mass-delete pages. Each deletion goes through DeletePage, which cascades to
+// the page's blocks and embeddings through the schema's foreign keys — no
+// embedding work happens here. A per-page delete failure warns and continues
+// (the failed page is retried on the next indexing pass), and the returned
+// count includes successful deletions only; logging the count is the callers'
+// job (design D4).
+func pruneOrphanedKnowledgePages(s *store.Store, cfg curate.StoreConfig, fileNames map[string]struct{}, logger *log.Logger) int {
+	pages, err := s.ListPagesBySource(knowledgeSourceID(cfg.Name))
+	if err != nil {
+		// Fail closed (CKS-FR-003): without the listing the orphan set is
+		// unknown, so prune nothing rather than risk deleting live pages.
+		logger.Warn("knowledge page pruning skipped; failed to list knowledge store pages",
+			"store", cfg.Name, "err", err)
+		return 0
+	}
+
+	prefix := fmt.Sprintf("knowledge/%s/", cfg.Name)
+	pruned := 0
+	for _, page := range pages {
+		if _, ok := fileNames[strings.TrimPrefix(page.Name, prefix)]; ok {
+			continue
+		}
+		if err := s.DeletePage(page.Name); err != nil {
+			// The failed page stays and is retried on the next indexing
+			// pass; only successful deletions are counted (CKS-FR-003).
+			logger.Warn("failed to prune knowledge page", "page", page.Name, "err", err)
+			continue
+		}
+		pruned++
+	}
+	return pruned
 }
 
 // autoIndexKnowledgeStore indexes a knowledge store's curated files into the
 // persistent store, delegating to the shared IndexKnowledgeStore
-// implementation that background curation (main.go) also uses.
+// implementation that background curation (main.go) also uses. The pruned
+// count is logged here rather than returned — pruning reports only when it
+// deleted something (CKS-FR-003, design D4) — so the indexed-count contract
+// this method's callers already log stays unchanged.
 func (c *Curate) autoIndexKnowledgeStore(cfg curate.StoreConfig) int {
-	return IndexKnowledgeStore(c.store, c.embedder, cfg, c.vaultPath, c.maxChunkChars, curateLogger)
+	indexed, pruned := IndexKnowledgeStore(c.store, c.embedder, cfg, c.vaultPath, c.maxChunkChars, curateLogger)
+	if pruned > 0 {
+		curateLogger.Info("pruned knowledge store pages (files no longer exist)",
+			"store", cfg.Name, "count", pruned)
+	}
+	return indexed
 }
 
 // knowledgeSourceID returns the source ID for a knowledge store.

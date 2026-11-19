@@ -3738,6 +3738,957 @@ func TestReIngestLearnings_ToolStoredLearningStaysCheap(t *testing.T) {
 	}
 }
 
+// --- Learning pruning tests (pages-for-deleted-learning-and-knowledge, 2.1) ---
+
+// writeLearningFiles creates the learnings directory under vaultPath and
+// writes the given learning markdown files into it (file name → content).
+func writeLearningFiles(t *testing.T, vaultPath string, files map[string]string) {
+	t.Helper()
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.MkdirAll(learningsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(learningsDir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+}
+
+// learningPruneFixtures returns the two-learning file set the LR-FR-003
+// pruning tests start from: the identities of the spec's "a pulled deletion
+// disappears after restart" scenario, frontmatter mirroring
+// TestReIngestLearnings_RecoversMissing, with a two-block body on the
+// learning that gets deleted so the cascade assertions cover more than one
+// block row. A fresh map per call keeps every test's fixture independent.
+func learningPruneFixtures() map[string]string {
+	return map[string]string{
+		"auth-20260101T000000-alice.md": `---
+tag: authentication
+author: alice
+category: decision
+created_at: 2026-01-01T00:00:00Z
+identity: auth-20260101T000000-alice
+tier: draft
+---
+
+OAuth tokens should be rotated every 24 hours.
+`,
+		"billing-20260102T000000-bob.md": `---
+tag: billing
+author: bob
+category: pattern
+created_at: 2026-01-02T00:00:00Z
+identity: billing-20260102T000000-bob
+tier: draft
+---
+
+Invoices are reconciled nightly.
+
+## Refunds
+
+Refunds post within five business days.
+`,
+	}
+}
+
+// TestReIngestLearnings_PrunesDeletedLearning pins LR-FR-003's "a pulled
+// deletion disappears after restart" scenario: after a learning file is
+// deleted, the next reIngestLearnings pass removes the learning's page and
+// cascades the deletion to its blocks and embeddings, while a learning whose
+// file remains stays in place unchanged. The returned count still counts
+// only missing pages plus content changes — a pruned page is not a
+// re-ingest.
+func TestReIngestLearnings_PrunesDeletedLearning(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// The counting embedder persists one embedding row per block, so the
+	// post-prune assertions can prove the cascade reached embeddings too.
+	embedder := &countingEmbedder{}
+	alicePage := "learning/auth-20260101T000000-alice"
+	billingPage := "learning/billing-20260102T000000-bob"
+
+	count, err := reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+	callsAfterFirst := embedder.calls()
+	if callsAfterFirst == 0 {
+		t.Fatal("first pass should have embedded the inserted learnings")
+	}
+
+	// Premises: the survivor holds one block, the doomed learning holds two,
+	// and both have embedding rows — the state a deletion converges from.
+	aliceBlocks, err := s.GetBlocksByPage(alicePage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(alice): %v", err)
+	}
+	if len(aliceBlocks) != 1 {
+		t.Fatalf("alice block count = %d, want 1", len(aliceBlocks))
+	}
+	billingBlocks, err := s.GetBlocksByPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(billing): %v", err)
+	}
+	if len(billingBlocks) != 2 {
+		t.Fatalf("billing block count = %d, want 2", len(billingBlocks))
+	}
+	embeddingsBefore, err := s.GetAllEmbeddings(embedder.ModelID())
+	if err != nil {
+		t.Fatalf("GetAllEmbeddings (before): %v", err)
+	}
+	if len(embeddingsBefore) != 3 {
+		t.Fatalf("embedding rows before = %d, want 3 (one per block)", len(embeddingsBefore))
+	}
+	aliceBefore, err := s.GetPage(alicePage)
+	if err != nil || aliceBefore == nil {
+		t.Fatalf("GetPage(alice): %v, %v", aliceBefore, err)
+	}
+
+	// The deletion — a pulled removal of one learning file.
+	if err := os.Remove(filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", "billing-20260102T000000-bob.md")); err != nil {
+		t.Fatalf("Remove billing file: %v", err)
+	}
+
+	// Capture the log so the prune line (design D4) can be asserted; only
+	// the second pass writes to this buffer. The capture mutates the
+	// package-global logger — the reason this file MUST NOT use
+	// t.Parallel() (header rule) and why every capture defers restore.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	count, err = reIngestLearnings(s, embedder, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	// Count semantics are unchanged by pruning (LR-FR-003): the return value
+	// still counts only missing pages plus content changes. The deleted file
+	// was never scanned and the survivor is unchanged, so a pass that pruned
+	// one page must still report zero.
+	if count != 0 {
+		t.Errorf("count = %d after the prune pass, want 0 (a pruned page is not a re-ingest)", count)
+	}
+
+	// The deleted learning's page is gone from the store.
+	billing, err := s.GetPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetPage(billing) after prune: %v", err)
+	}
+	if billing != nil {
+		t.Errorf("page %q still exists after its file was deleted", billingPage)
+	}
+
+	// The cascade reached blocks: zero block rows remain for the deleted page.
+	billingBlocksAfter, err := s.GetBlocksByPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(billing) after prune: %v", err)
+	}
+	if len(billingBlocksAfter) != 0 {
+		t.Errorf("blocks for %q = %d after prune, want 0 (DeletePage must cascade)", billingPage, len(billingBlocksAfter))
+	}
+
+	// The cascade reached embeddings: every remaining row belongs to the
+	// survivor's blocks.
+	embeddingsAfter, err := s.GetAllEmbeddings(embedder.ModelID())
+	if err != nil {
+		t.Fatalf("GetAllEmbeddings (after): %v", err)
+	}
+	if len(embeddingsAfter) != len(aliceBlocks) {
+		t.Errorf("embedding rows after = %d, want %d (the survivor's blocks only)", len(embeddingsAfter), len(aliceBlocks))
+	}
+	aliceUUIDs := make(map[string]bool, len(aliceBlocks))
+	for _, b := range aliceBlocks {
+		aliceUUIDs[b.UUID] = true
+	}
+	for _, e := range embeddingsAfter {
+		if !aliceUUIDs[e.BlockUUID] {
+			t.Errorf("embedding row for block %q lingers after its page was pruned", e.BlockUUID)
+		}
+	}
+
+	// Design D3: pruning never re-embeds. The survivor took the cheap path
+	// and the prune only deletes rows, so the embedder sees no new work.
+	if got := embedder.calls(); got != callsAfterFirst {
+		t.Errorf("embedder calls = %d after the prune pass, want the first-pass %d (pruning does no embedding work)", got, callsAfterFirst)
+	}
+
+	// The survivor remains and is unchanged: same page row, same block rows.
+	aliceAfter, err := s.GetPage(alicePage)
+	if err != nil || aliceAfter == nil {
+		t.Fatalf("GetPage(alice) after prune: %v, %v", aliceAfter, err)
+	}
+	if aliceAfter.ContentHash != aliceBefore.ContentHash {
+		t.Errorf("survivor content hash = %q after prune, want the pre-prune %q", aliceAfter.ContentHash, aliceBefore.ContentHash)
+	}
+	aliceBlocksAfter, err := s.GetBlocksByPage(alicePage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(alice) after prune: %v", err)
+	}
+	if len(aliceBlocksAfter) != len(aliceBlocks) {
+		t.Fatalf("survivor block count = %d after prune, want %d", len(aliceBlocksAfter), len(aliceBlocks))
+	}
+	for i, b := range aliceBlocks {
+		if aliceBlocksAfter[i].UUID != b.UUID || aliceBlocksAfter[i].Content != b.Content {
+			t.Errorf("survivor block %d changed across the prune pass: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, aliceBlocksAfter[i].UUID, aliceBlocksAfter[i].Content)
+		}
+	}
+
+	// Design D4: the pruned count is logged, mirroring the re-ingest count.
+	if !strings.Contains(logBuf.String(), "learnings pruned") {
+		t.Errorf("log should report the prune count, got: %q", logBuf.String())
+	}
+}
+
+// TestReIngestLearnings_NoFileNoPrune pins LR-FR-003's "nothing is deleted
+// when nothing was deleted" scenario: a pass over a learnings directory
+// whose files are all intact deletes no learning page, emits no pruning log
+// line, and reports zero re-ingested.
+func TestReIngestLearnings_NoFileNoPrune(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+
+	// Capture the log during the second pass only, so the no-prune-line
+	// assertion sees exactly what the intact-file pass emitted. The capture
+	// mutates the package-global logger — the reason this file MUST NOT use
+	// t.Parallel() (header rule) and why every capture defers restore.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (unchanged files are not re-ingested)", count)
+	}
+
+	// Every learning page survived the pass.
+	pages, err := s.ListPagesBySource("learning")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Errorf("learning pages = %d after the intact pass, want 2 (nothing pruned)", len(pages))
+	}
+	for _, name := range []string{"learning/auth-20260101T000000-alice", "learning/billing-20260102T000000-bob"} {
+		page, err := s.GetPage(name)
+		if err != nil {
+			t.Fatalf("GetPage(%q): %v", name, err)
+		}
+		if page == nil {
+			t.Errorf("page %q must survive a pass with no deletions", name)
+		}
+	}
+
+	// No pruning log line is emitted when nothing was deleted.
+	if strings.Contains(logBuf.String(), "learnings pruned") {
+		t.Errorf("no prune log line may be emitted when no file was deleted, got: %q", logBuf.String())
+	}
+}
+
+// TestReIngestLearnings_MissingDirPrunesAll pins LR-FR-003's treatment of a
+// learnings directory that no longer exists: not-exist counts as an empty
+// file set, so every learning page is an orphan and is pruned — and the
+// deletion stays scoped to the learning source, leaving other sources'
+// pages in place.
+func TestReIngestLearnings_MissingDirPrunesAll(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+
+	// A page from another source: the missing-dir prune must stay scoped to
+	// the learning family and leave it untouched.
+	otherPage := &store.Page{
+		Name:         "knowledge/team-kb/claim-a",
+		OriginalName: "knowledge/team-kb/claim-a",
+		SourceID:     "knowledge-team-kb",
+		SourceDocID:  "knowledge-team-kb-claim-a",
+		ContentHash:  "deadbeefdeadbeef",
+		Tier:         "curated",
+	}
+	if err := s.InsertPage(otherPage); err != nil {
+		t.Fatalf("InsertPage(other): %v", err)
+	}
+
+	// The learnings directory is gone entirely — every operator deletion at
+	// once, or a checkout that never had learnings.
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.RemoveAll(learningsDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 (an empty file set re-ingests nothing)", count)
+	}
+
+	// Every learning page and its blocks are pruned.
+	pages, err := s.ListPagesBySource("learning")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) != 0 {
+		t.Errorf("learning pages = %d after the directory vanished, want 0 (all pruned)", len(pages))
+	}
+	for _, name := range []string{"learning/auth-20260101T000000-alice", "learning/billing-20260102T000000-bob"} {
+		page, err := s.GetPage(name)
+		if err != nil {
+			t.Fatalf("GetPage(%q): %v", name, err)
+		}
+		if page != nil {
+			t.Errorf("page %q must be pruned when the learnings directory is gone", name)
+		}
+		blocks, err := s.GetBlocksByPage(name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q): %v", name, err)
+		}
+		if len(blocks) != 0 {
+			t.Errorf("blocks for %q = %d after prune, want 0", name, len(blocks))
+		}
+	}
+
+	// The other-source page survived the learning prune.
+	survivor, err := s.GetPage(otherPage.Name)
+	if err != nil {
+		t.Fatalf("GetPage(other): %v", err)
+	}
+	if survivor == nil {
+		t.Error("page from another source must survive the learning prune")
+	}
+}
+
+// TestReIngestLearnings_TransientScanErrorSkipsPrune pins LR-FR-003's
+// fail-closed guarantee: a learnings path that cannot be scanned for any
+// reason other than not-exist prunes nothing and returns the error, leaving
+// every learning page in place. The scan failure is simulated by replacing
+// the learnings directory with a regular file — os.ReadDir on a
+// non-directory fails with ENOTDIR, which is not IsNotExist, on every
+// supported platform (a chmod 000 directory is not a deterministic failure
+// on macOS, where the owning user can still read it).
+func TestReIngestLearnings_TransientScanErrorSkipsPrune(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+
+	// Replace the learnings directory with a regular file so ReadDir fails
+	// with a non-not-exist error (ENOTDIR) — the deterministic stand-in for
+	// a permissions or I/O failure.
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	if err := os.RemoveAll(learningsDir); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	if err := os.WriteFile(learningsDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile (learnings as file): %v", err)
+	}
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err == nil {
+		t.Fatal("expected an error when the learnings path cannot be scanned")
+	}
+	if count != 0 {
+		t.Errorf("count = %d alongside the scan error, want 0", count)
+	}
+
+	// Fail closed: every learning page and its blocks stay in place.
+	pages, err := s.ListPagesBySource("learning")
+	if err != nil {
+		t.Fatalf("ListPagesBySource: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Errorf("learning pages = %d after the failed scan, want 2 (a transient fault must not prune)", len(pages))
+	}
+	wantBlocks := map[string]int{
+		"learning/auth-20260101T000000-alice":  1,
+		"learning/billing-20260102T000000-bob": 2,
+	}
+	for name, want := range wantBlocks {
+		page, err := s.GetPage(name)
+		if err != nil {
+			t.Fatalf("GetPage(%q): %v", name, err)
+		}
+		if page == nil {
+			t.Errorf("page %q must survive a transient scan failure", name)
+			continue
+		}
+		blocks, err := s.GetBlocksByPage(name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q): %v", name, err)
+		}
+		if len(blocks) != want {
+			t.Errorf("blocks for %q = %d after the failed scan, want %d", name, len(blocks), want)
+		}
+	}
+}
+
+// TestReIngestLearnings_PerFileFailureSkipsPrune pins the finding-3 fail-closed
+// guard (design D2 review fix): a learning file that exists but cannot be read
+// or parsed leaves the scanned file set incomplete, so the pass skips the
+// pruning tail entirely — even when a true orphan is present. The crux:
+// billing's file is deleted from disk (a true orphan by any measure) while
+// alice's file is still present but fails per-file, so neither identity
+// reaches the file set — without the guard BOTH pages would be pruned. With
+// the guard both pages and their blocks survive, the pass returns no error,
+// and the skip is logged. Both scanFailures increment sites are covered: the
+// parse-failure leg writes malformed YAML inside a valid --- block (an
+// unclosed flow sequence, which yaml.Unmarshal rejects deterministically —
+// the shape a partial write during a pull can leave behind), and the
+// read-failure leg replaces the file with a dangling symlink, which
+// os.ReadDir lists as a non-directory .md entry and os.ReadFile fails on
+// with ENOENT on every supported platform (unlike a chmod 0000 file, which
+// the owning user can often still read on macOS — see
+// TestReIngestLearnings_TransientScanErrorSkipsPrune for the same caveat).
+func TestReIngestLearnings_PerFileFailureSkipsPrune(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	alicePage := "learning/auth-20260101T000000-alice"
+	billingPage := "learning/billing-20260102T000000-bob"
+	aliceFile := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", "auth-20260101T000000-alice.md")
+	billingFile := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", "billing-20260102T000000-bob.md")
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+
+	// Premise: both pages exist with the fixture's block structure — the
+	// snapshot the per-file failure legs must leave byte-identical.
+	pagesBefore := make(map[string]*store.Page)
+	blocksBefore := make(map[string][]*store.Block)
+	for _, name := range []string{alicePage, billingPage} {
+		page, err := s.GetPage(name)
+		if err != nil || page == nil {
+			t.Fatalf("GetPage(%q) after first pass: %v, %v", name, page, err)
+		}
+		blocks, err := s.GetBlocksByPage(name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q) after first pass: %v", name, err)
+		}
+		pagesBefore[name] = page
+		blocksBefore[name] = blocks
+	}
+	if len(blocksBefore[alicePage]) != 1 || len(blocksBefore[billingPage]) != 2 {
+		t.Fatalf("premise block counts = (%d, %d), want (1, 2)",
+			len(blocksBefore[alicePage]), len(blocksBefore[billingPage]))
+	}
+
+	// assertIntact pins the fail-closed outcome every leg must produce: both
+	// learning pages and their block rows byte-identical to the first-pass
+	// snapshot — the true orphan included, because the file set is incomplete.
+	assertIntact := func(stage string) {
+		t.Helper()
+		for _, name := range []string{alicePage, billingPage} {
+			page, err := s.GetPage(name)
+			if err != nil {
+				t.Fatalf("%s: GetPage(%q): %v", stage, name, err)
+			}
+			if page == nil {
+				t.Fatalf("%s: page %q must survive a pass with a per-file failure", stage, name)
+			}
+			if page.ContentHash != pagesBefore[name].ContentHash {
+				t.Errorf("%s: content hash for %q = %q, want the first-pass %q",
+					stage, name, page.ContentHash, pagesBefore[name].ContentHash)
+			}
+			blocks, err := s.GetBlocksByPage(name)
+			if err != nil {
+				t.Fatalf("%s: GetBlocksByPage(%q): %v", stage, name, err)
+			}
+			if len(blocks) != len(blocksBefore[name]) {
+				t.Fatalf("%s: blocks for %q = %d, want the first-pass %d",
+					stage, name, len(blocks), len(blocksBefore[name]))
+			}
+			for i, b := range blocksBefore[name] {
+				if blocks[i].UUID != b.UUID || blocks[i].Content != b.Content {
+					t.Errorf("%s: block %d for %q changed: (%q, %q) -> (%q, %q); want identical UUID and content",
+						stage, i, name, b.UUID, b.Content, blocks[i].UUID, blocks[i].Content)
+				}
+			}
+		}
+	}
+
+	// The capture mutates the package-global logger — the reason this file
+	// MUST NOT use t.Parallel() (header rule) and why every capture defers
+	// restore. Both failure legs below write their warnings here.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	// Parse-failure leg: alice's file stays on disk carrying frontmatter no
+	// YAML parser accepts, while billing's file is deleted — billing becomes
+	// a true orphan whose page the unparseable file must save.
+	brokenAlice := `---
+tag: authentication
+author: alice
+category: decision
+created_at: 2026-01-01T00:00:00Z
+identity: [auth-20260101T000000-alice
+tier: draft
+---
+
+OAuth tokens should be rotated every 24 hours.
+`
+	if err := os.WriteFile(aliceFile, []byte(brokenAlice), 0o644); err != nil {
+		t.Fatalf("WriteFile (broken alice): %v", err)
+	}
+	if err := os.Remove(billingFile); err != nil {
+		t.Fatalf("Remove billing file: %v", err)
+	}
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("parse-failure pass: %v", err)
+	}
+	// Count semantics hold for what was scanned: the unparseable file
+	// contributed no re-ingest and nothing else changed.
+	if count != 0 {
+		t.Errorf("count = %d after the parse-failure pass, want 0 (an unparseable file is not a re-ingest)", count)
+	}
+	if !strings.Contains(logBuf.String(), "failed to parse learning frontmatter") {
+		t.Errorf("log should name the per-file parse failure, got: %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "learning page pruning skipped") {
+		t.Errorf("log should report the skipped prune, got: %q", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "learnings pruned") {
+		t.Errorf("no prune may run when a learning file could not be parsed, got: %q", logBuf.String())
+	}
+	assertIntact("parse-failure pass")
+
+	// Read-failure leg: alice's file becomes a dangling symlink — ReadFile
+	// fails with ENOENT where the parse leg failed at yaml.Unmarshal — while
+	// billing stays a true orphan from the previous leg.
+	if err := os.Remove(aliceFile); err != nil {
+		t.Fatalf("Remove alice file: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(vaultPath, "never-created-target.md"), aliceFile); err != nil {
+		t.Fatalf("Symlink (dangling alice): %v", err)
+	}
+	logBuf.Reset()
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("read-failure pass: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d after the read-failure pass, want 0 (an unreadable file is not a re-ingest)", count)
+	}
+	if !strings.Contains(logBuf.String(), "failed to read learning file") {
+		t.Errorf("log should name the per-file read failure, got: %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "learning page pruning skipped") {
+		t.Errorf("log should report the skipped prune after a read failure, got: %q", logBuf.String())
+	}
+	if strings.Contains(logBuf.String(), "learnings pruned") {
+		t.Errorf("no prune may run when a learning file could not be read, got: %q", logBuf.String())
+	}
+	assertIntact("read-failure pass")
+}
+
+// TestReIngestLearnings_DeletedAndReAddedRestoresCleanly pins LR-FR-003's "a
+// deleted and re-added file restores cleanly" scenario: after a learning's
+// file is deleted and its page pruned, re-adding a file under the same
+// identity with different content restores it through the missing-page path —
+// the pass counts exactly the one re-ingest, the page returns with the new
+// body's content hash, and the blocks are rebuilt from the new body with no
+// stale rows lingering from the original — while the untouched learning stays
+// byte-identical throughout.
+func TestReIngestLearnings_DeletedAndReAddedRestoresCleanly(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// A is billing (two blocks, richer structure for the restore assertions);
+	// B is alice.
+	alicePage := "learning/auth-20260101T000000-alice"
+	billingPage := "learning/billing-20260102T000000-bob"
+	billingFile := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings", "billing-20260102T000000-bob.md")
+
+	// Pass 1: both learnings indexed.
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+
+	billingBefore, err := s.GetPage(billingPage)
+	if err != nil || billingBefore == nil {
+		t.Fatalf("GetPage(billing) after first pass: %v, %v", billingBefore, err)
+	}
+	aliceBefore, err := s.GetPage(alicePage)
+	if err != nil || aliceBefore == nil {
+		t.Fatalf("GetPage(alice) after first pass: %v, %v", aliceBefore, err)
+	}
+	aliceBlocksBefore, err := s.GetBlocksByPage(alicePage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(alice) after first pass: %v", err)
+	}
+	if len(aliceBlocksBefore) != 1 {
+		t.Fatalf("alice block count = %d after first pass, want 1", len(aliceBlocksBefore))
+	}
+
+	// assertAliceUntouched pins B's page row and block rows against the
+	// first-pass snapshot at every later checkpoint.
+	assertAliceUntouched := func(stage string) {
+		t.Helper()
+		page, err := s.GetPage(alicePage)
+		if err != nil || page == nil {
+			t.Fatalf("%s: GetPage(alice): %v, %v", stage, page, err)
+		}
+		if page.ContentHash != aliceBefore.ContentHash {
+			t.Errorf("%s: alice content hash = %q, want the first-pass %q",
+				stage, page.ContentHash, aliceBefore.ContentHash)
+		}
+		blocks, err := s.GetBlocksByPage(alicePage)
+		if err != nil {
+			t.Fatalf("%s: GetBlocksByPage(alice): %v", stage, err)
+		}
+		if len(blocks) != len(aliceBlocksBefore) {
+			t.Fatalf("%s: alice block count = %d, want the first-pass %d",
+				stage, len(blocks), len(aliceBlocksBefore))
+		}
+		for i, b := range aliceBlocksBefore {
+			if blocks[i].UUID != b.UUID || blocks[i].Content != b.Content {
+				t.Errorf("%s: alice block %d changed: (%q, %q) -> (%q, %q); want identical UUID and content",
+					stage, i, b.UUID, b.Content, blocks[i].UUID, blocks[i].Content)
+			}
+		}
+	}
+
+	// Pass 2: A's file is deleted; the pass prunes A's page and its blocks.
+	if err := os.Remove(billingFile); err != nil {
+		t.Fatalf("Remove billing file: %v", err)
+	}
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIngestLearnings: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d after the prune pass, want 0 (a pruned page is not a re-ingest)", count)
+	}
+	billingGone, err := s.GetPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetPage(billing) after prune: %v", err)
+	}
+	if billingGone != nil {
+		t.Errorf("page %q still exists after its file was deleted", billingPage)
+	}
+	billingBlocksAfterPrune, err := s.GetBlocksByPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(billing) after prune: %v", err)
+	}
+	if len(billingBlocksAfterPrune) != 0 {
+		t.Errorf("blocks for %q = %d after prune, want 0 (DeletePage must cascade)",
+			billingPage, len(billingBlocksAfterPrune))
+	}
+	assertAliceUntouched("prune pass")
+
+	// Pass 3: A's file returns under the same identity with a different body
+	// — three sections where the original had two, so a stale row cannot
+	// hide in a matching count.
+	readdedBilling := `---
+tag: billing
+author: bob
+category: pattern
+created_at: 2026-01-02T00:00:00Z
+identity: billing-20260102T000000-bob
+tier: draft
+---
+
+Invoices are reconciled hourly.
+
+## Refunds
+
+Refunds post within one business day.
+
+## Chargebacks
+
+Chargebacks open a dispute automatically.
+`
+	if err := os.WriteFile(billingFile, []byte(readdedBilling), 0o644); err != nil {
+		t.Fatalf("WriteFile (re-added billing): %v", err)
+	}
+
+	count, err = reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("third reIngestLearnings: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d after the re-add pass, want 1 (the missing page inserted; the survivor unchanged)", count)
+	}
+
+	// The page is back with the new body's hash — not the original's.
+	billingAfter, err := s.GetPage(billingPage)
+	if err != nil || billingAfter == nil {
+		t.Fatalf("GetPage(billing) after re-add: %v, %v", billingAfter, err)
+	}
+	wantHash := learningBodyHash(t, readdedBilling)
+	if billingAfter.ContentHash != wantHash {
+		t.Errorf("restored content hash = %q, want hash of the re-added body %q",
+			billingAfter.ContentHash, wantHash)
+	}
+	if billingAfter.ContentHash == billingBefore.ContentHash {
+		t.Error("restored content hash still matches the original body's hash; the different body must move it")
+	}
+
+	// A's blocks are exactly the new body's sections, rebuilt from scratch.
+	billingBlocks, err := s.GetBlocksByPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(billing) after re-add: %v", err)
+	}
+	wantContents := []string{
+		"Invoices are reconciled hourly.",
+		"## Refunds\n\nRefunds post within one business day.",
+		"## Chargebacks\n\nChargebacks open a dispute automatically.",
+	}
+	if len(billingBlocks) != len(wantContents) {
+		t.Fatalf("blocks for %q = %d after re-add, want %d (rebuilt from the new body; no stale rows)",
+			billingPage, len(billingBlocks), len(wantContents))
+	}
+	for i, want := range wantContents {
+		if billingBlocks[i].Content != want {
+			t.Errorf("block %d for %q = %q, want %q", i, billingPage, billingBlocks[i].Content, want)
+		}
+	}
+	for _, b := range billingBlocks {
+		if strings.Contains(b.Content, "nightly") || strings.Contains(b.Content, "five business days") {
+			t.Errorf("stale block from the original body lingers: %q", b.Content)
+		}
+	}
+
+	// B stayed untouched through the prune and the restore.
+	assertAliceUntouched("re-add pass")
+}
+
+// TestPruneOrphanedLearningPages_MidPruneDeleteFailureKeepsFailedPage pins
+// LR-FR-003's "a deletion failure mid-prune keeps the failed page" scenario:
+// when one orphan's DeletePage fails with a store error, the failed page
+// stays in place for the next startup to retry while the remaining orphan is
+// still deleted, the failure is logged as a warning naming the page, and the
+// logged pruned count includes successful deletions only. The failure is
+// injected at the database level — a scoped SQLite trigger that aborts the
+// delete of exactly one page — so the test exercises the production
+// warn-and-continue path rather than mocking the store.
+func TestPruneOrphanedLearningPages_MidPruneDeleteFailureKeepsFailedPage(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeLearningFiles(t, vaultPath, learningPruneFixtures())
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	alicePage := "learning/auth-20260101T000000-alice"
+	billingPage := "learning/billing-20260102T000000-bob"
+
+	count, err := reIngestLearnings(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("first reIngestLearnings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("first pass count = %d, want 2", count)
+	}
+
+	// Premise: alice holds one block, billing two — the state whose
+	// survival (alice) and cascade (billing) the pass below must produce.
+	// ListPagesBySource orders by name, so alice is pruned first: the
+	// trigger below fails the FIRST deletion, exactly the spec scenario's
+	// shape.
+	aliceBlocks, err := s.GetBlocksByPage(alicePage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(alice): %v", err)
+	}
+	if len(aliceBlocks) != 1 {
+		t.Fatalf("alice block count = %d, want 1", len(aliceBlocks))
+	}
+	billingBlocks, err := s.GetBlocksByPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(billing): %v", err)
+	}
+	if len(billingBlocks) != 2 {
+		t.Fatalf("billing block count = %d, want 2", len(billingBlocks))
+	}
+
+	// Both files leave the disk, so every learning page is an orphan.
+	learningsDir := filepath.Join(vaultPath, deweyWorkspaceDir, "learnings")
+	for _, name := range []string{"auth-20260101T000000-alice.md", "billing-20260102T000000-bob.md"} {
+		if err := os.Remove(filepath.Join(learningsDir, name)); err != nil {
+			t.Fatalf("Remove %s: %v", name, err)
+		}
+	}
+
+	// Fault injection: a BEFORE DELETE trigger makes exactly alice's page
+	// delete fail at the database level (store.Store exposes the raw handle
+	// through DB()), so DeletePage returns an error and the prune helper
+	// takes its warn-and-continue path. The abort fires before the row is
+	// removed, so the blocks cascade never runs either. The trigger is
+	// scoped to the one page and dropped afterward so the store stays
+	// usable for the assertions and the deferred close.
+	if _, err := s.DB().Exec(`CREATE TRIGGER fail_delete_alice BEFORE DELETE ON pages
+WHEN OLD.name = 'learning/auth-20260101T000000-alice'
+BEGIN
+	SELECT RAISE(ABORT, 'injected delete failure');
+END`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+	defer func() {
+		if _, err := s.DB().Exec(`DROP TRIGGER IF EXISTS fail_delete_alice`); err != nil {
+			t.Errorf("drop trigger: %v", err)
+		}
+	}()
+
+	// The capture mutates the package-global logger — the reason this file
+	// MUST NOT use t.Parallel() (header rule) and why every capture defers
+	// restore.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	// The prune helper runs directly with a nil file set (both files are
+	// gone): both pages are orphans, alice's delete fails, billing's
+	// succeeds.
+	pruneOrphanedLearningPages(s, nil)
+
+	// The failed page remains — it is retried on the next startup.
+	alice, err := s.GetPage(alicePage)
+	if err != nil {
+		t.Fatalf("GetPage(alice) after prune: %v", err)
+	}
+	if alice == nil {
+		t.Error("the failed page must remain in the store after its delete failed")
+	}
+
+	// Its blocks remain with it, byte-identical.
+	aliceBlocksAfter, err := s.GetBlocksByPage(alicePage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(alice) after prune: %v", err)
+	}
+	if len(aliceBlocksAfter) != len(aliceBlocks) {
+		t.Fatalf("failed page block count = %d after prune, want the pre-prune %d",
+			len(aliceBlocksAfter), len(aliceBlocks))
+	}
+	for i, b := range aliceBlocks {
+		if aliceBlocksAfter[i].UUID != b.UUID || aliceBlocksAfter[i].Content != b.Content {
+			t.Errorf("failed page block %d changed: (%q, %q) -> (%q, %q); want identical UUID and content",
+				i, b.UUID, b.Content, aliceBlocksAfter[i].UUID, aliceBlocksAfter[i].Content)
+		}
+	}
+
+	// The remaining orphan is still deleted — cascade included.
+	billing, err := s.GetPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetPage(billing) after prune: %v", err)
+	}
+	if billing != nil {
+		t.Errorf("page %q must still be pruned when the sibling delete failed", billingPage)
+	}
+	billingBlocksAfter, err := s.GetBlocksByPage(billingPage)
+	if err != nil {
+		t.Fatalf("GetBlocksByPage(billing) after prune: %v", err)
+	}
+	if len(billingBlocksAfter) != 0 {
+		t.Errorf("blocks for %q = %d after prune, want 0 (the remaining orphan's cascade is not blocked)",
+			billingPage, len(billingBlocksAfter))
+	}
+
+	// The failure is logged as a warning naming the failed page.
+	logged := logBuf.String()
+	if !strings.Contains(logged, "failed to prune learning page") {
+		t.Errorf("log should warn about the failed prune, got: %q", logged)
+	}
+	if !strings.Contains(logged, alicePage) {
+		t.Errorf("the prune warning should name the failed page %q, got: %q", alicePage, logged)
+	}
+
+	// The pruned-count line reports successes only: one.
+	pruneLines := 0
+	for _, line := range strings.Split(logged, "\n") {
+		if !strings.Contains(line, "learnings pruned") {
+			continue
+		}
+		pruneLines++
+		if !strings.Contains(line, "count=1") {
+			t.Errorf("the prune count line must carry successes only (count=1), got: %q", line)
+		}
+	}
+	if pruneLines != 1 {
+		t.Errorf("occurrences of the prune count line = %d, want 1, got: %q", pruneLines, logged)
+	}
+}
+
 // writeKnowledgeStoreFixture writes a knowledge-stores.yaml registering one
 // source-less store and the given store files under the default store path.
 func writeKnowledgeStoreFixture(t *testing.T, vaultPath, storeName string, files map[string]string) {
@@ -3804,6 +4755,218 @@ func TestReIndexKnowledgeStores_RecoversPages(t *testing.T) {
 	}
 	if again != 0 {
 		t.Errorf("second pass count = %d, want 0 (unchanged)", again)
+	}
+}
+
+// TestReIndexKnowledgeStores_PrunesAggregatedOrphans pins CKS-FR-003's
+// wrapper-level contract (design D4): when files vanish from more than one
+// configured store, reIndexKnowledgeStores — the path dewey serve runs at
+// startup — prunes every orphaned page and its blocks through the shared
+// tools.IndexKnowledgeStore, keeps each store's survivors intact, still
+// counts only indexed files in its return value, and aggregates the
+// per-store pruned counts into ONE log line carrying the sum. team-kb loses
+// one file and infra-kb two, so count=3 can only be right if both stores'
+// deletions were summed — and because IndexKnowledgeStore itself never logs
+// prunes (only this wrapper and autoIndexKnowledgeStore, which this path
+// does not touch, do), the line appearing exactly once proves it is the
+// wrapper's aggregate rather than a per-store echo.
+func TestReIndexKnowledgeStores_PrunesAggregatedOrphans(t *testing.T) {
+	vaultPath := t.TempDir()
+
+	// Two stores in one knowledge-stores.yaml, mirroring the
+	// writeKnowledgeStoreFixture shape — that helper registers exactly one
+	// store per call, so the two-store config is written directly here.
+	// team-kb holds two files (one doomed) and infra-kb three (two doomed),
+	// so each store keeps a survivor while contributing unequal pruned
+	// counts.
+	deweyDir := filepath.Join(vaultPath, deweyWorkspaceDir)
+	teamDir := filepath.Join(deweyDir, "knowledge", "team-kb")
+	infraDir := filepath.Join(deweyDir, "knowledge", "infra-kb")
+	for _, dir := range []string{teamDir, infraDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", dir, err)
+		}
+	}
+	config := "stores:\n  - name: team-kb\n    sources: []\n  - name: infra-kb\n    sources: []\n"
+	if err := os.WriteFile(filepath.Join(deweyDir, "knowledge-stores.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	files := map[string]map[string]string{
+		teamDir: {
+			"decision-keep.md": "---\ntag: auth\ntier: curated\n---\n\nTokens rotate daily.\n",
+			"decision-lose.md": "---\ntag: auth\ntier: curated\n---\n\nLegacy SSO retires.\n",
+		},
+		infraDir: {
+			"runbook-keep.md":   "---\ntag: deploy\ntier: curated\n---\n\nBlue-green deploys.\n",
+			"runbook-lose-1.md": "---\ntag: deploy\ntier: curated\n---\n\nLegacy staging cluster.\n",
+			"runbook-lose-2.md": "---\ntag: deploy\ntier: curated\n---\n\nLegacy drain script.\n",
+		},
+	}
+	for dir, dirFiles := range files {
+		for name, content := range dirFiles {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatalf("WriteFile %s: %v", name, err)
+			}
+		}
+	}
+
+	s, err := store.New(":memory:")
+	if err != nil {
+		t.Fatalf("store.New: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	// First pass: both stores fully indexed — five pages.
+	count, err := reIndexKnowledgeStores(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("reIndexKnowledgeStores error: %v", err)
+	}
+	if count != 5 {
+		t.Fatalf("first pass count = %d, want 5 (two stores, five files)", count)
+	}
+
+	orphans := []string{
+		"knowledge/team-kb/decision-lose",
+		"knowledge/infra-kb/runbook-lose-1",
+		"knowledge/infra-kb/runbook-lose-2",
+	}
+	survivors := []string{
+		"knowledge/team-kb/decision-keep",
+		"knowledge/infra-kb/runbook-keep",
+	}
+
+	// Premise: every page exists; the survivors are snapshotted (page hash
+	// plus block rows) so intactness is asserted against real values.
+	survivorHashes := make(map[string]string)
+	survivorBlocks := make(map[string][]*store.Block)
+	for _, name := range orphans {
+		page, err := s.GetPage(name)
+		if err != nil || page == nil {
+			t.Fatalf("GetPage(%q) after first pass: %v, %v", name, page, err)
+		}
+	}
+	for _, name := range survivors {
+		page, err := s.GetPage(name)
+		if err != nil || page == nil {
+			t.Fatalf("GetPage(%q) after first pass: %v, %v", name, page, err)
+		}
+		blocks, err := s.GetBlocksByPage(name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q) after first pass: %v", name, err)
+		}
+		if len(blocks) != 1 {
+			t.Fatalf("blocks for %q = %d after first pass, want 1 (one body paragraph)", name, len(blocks))
+		}
+		survivorHashes[name] = page.ContentHash
+		survivorBlocks[name] = blocks
+	}
+
+	// The deletion — a pull removes one team-kb file and two infra-kb
+	// files.
+	for _, path := range []string{
+		filepath.Join(teamDir, "decision-lose.md"),
+		filepath.Join(infraDir, "runbook-lose-1.md"),
+		filepath.Join(infraDir, "runbook-lose-2.md"),
+	} {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("Remove %s: %v", path, err)
+		}
+	}
+
+	// The capture mutates the package-global logger — the reason this file
+	// MUST NOT use t.Parallel() (header rule) and why every capture defers
+	// restore.
+	var logBuf bytes.Buffer
+	logger.SetOutput(&logBuf)
+	defer logger.SetOutput(os.Stderr)
+
+	count, err = reIndexKnowledgeStores(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("second reIndexKnowledgeStores error: %v", err)
+	}
+	// The return value counts only indexed files (CKS-FR-003): both
+	// survivors are unchanged and a pruned page is not an index, so a pass
+	// that pruned three pages still reports zero.
+	if count != 0 {
+		t.Errorf("second pass count = %d, want 0 (survivors unchanged; a pruned page is not an index)", count)
+	}
+
+	// The three orphaned pages are gone, blocks included.
+	for _, name := range orphans {
+		page, err := s.GetPage(name)
+		if err != nil {
+			t.Fatalf("GetPage(%q) after prune: %v", name, err)
+		}
+		if page != nil {
+			t.Errorf("page %q still exists after its file was deleted", name)
+		}
+		blocks, err := s.GetBlocksByPage(name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q) after prune: %v", name, err)
+		}
+		if len(blocks) != 0 {
+			t.Errorf("blocks for %q = %d after prune, want 0 (DeletePage must cascade)", name, len(blocks))
+		}
+	}
+
+	// Each store's survivor is intact: same page row and block rows.
+	for _, name := range survivors {
+		page, err := s.GetPage(name)
+		if err != nil || page == nil {
+			t.Fatalf("GetPage(%q) after prune: %v, %v", name, page, err)
+		}
+		if page.ContentHash != survivorHashes[name] {
+			t.Errorf("survivor %q content hash = %q after prune, want the pre-prune %q",
+				name, page.ContentHash, survivorHashes[name])
+		}
+		blocks, err := s.GetBlocksByPage(name)
+		if err != nil {
+			t.Fatalf("GetBlocksByPage(%q) after prune: %v", name, err)
+		}
+		if len(blocks) != len(survivorBlocks[name]) {
+			t.Fatalf("survivor %q block count = %d after prune, want %d",
+				name, len(blocks), len(survivorBlocks[name]))
+		}
+		for i, b := range survivorBlocks[name] {
+			if blocks[i].UUID != b.UUID || blocks[i].Content != b.Content {
+				t.Errorf("survivor %q block %d changed: (%q, %q) -> (%q, %q); want identical UUID and content",
+					name, i, b.UUID, b.Content, blocks[i].UUID, blocks[i].Content)
+			}
+		}
+	}
+
+	// The aggregate line fired exactly once, carrying the sum of both
+	// stores' deletions. IndexKnowledgeStore never logs prunes, so more
+	// than one occurrence would mean per-store echoes; a wrong count would
+	// mean the aggregation dropped or double-counted a store's deletions.
+	logged := logBuf.String()
+	pruneLines := 0
+	for _, line := range strings.Split(logged, "\n") {
+		if !strings.Contains(line, "knowledge store pages pruned") {
+			continue
+		}
+		pruneLines++
+		if !strings.Contains(line, "count=3") {
+			t.Errorf("the aggregate prune line must carry the summed count of both stores' deletions (count=3), got: %q", line)
+		}
+	}
+	if pruneLines != 1 {
+		t.Errorf("occurrences of the aggregate prune line = %d, want exactly 1 (per-store counts aggregated into one wrapper line), got: %q",
+			pruneLines, logged)
+	}
+
+	// A store with no deletions contributes no line: a further pass over
+	// the intact survivors emits no prune line at all.
+	logBuf.Reset()
+	count, err = reIndexKnowledgeStores(s, nil, vaultPath, 0)
+	if err != nil {
+		t.Fatalf("third reIndexKnowledgeStores error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("third pass count = %d, want 0 (survivors still unchanged)", count)
+	}
+	if strings.Contains(logBuf.String(), "knowledge store pages pruned") {
+		t.Errorf("no prune log line may be emitted when no store lost a file, got: %q", logBuf.String())
 	}
 }
 

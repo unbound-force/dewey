@@ -28,8 +28,8 @@
 ## 3. Documentation
 
 - [x] 3.1 README tool tables, AGENTS.md tool matrix, GoDoc.
-- [ ] 3.2 Website sync issue in `unbound-force/website` (MCP tool
-  parameters changed) — opened with the PR, after human go-ahead.
+- [x] 3.2 Website sync issue in `unbound-force/website` (MCP tool
+  parameters changed) — unbound-force/website#439.
 
 ## 4. Verification
 

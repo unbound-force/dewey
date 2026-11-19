@@ -24,8 +24,9 @@
 
 - [x] 3.1 README Temporal Validity and tool table, AGENTS.md Store
   Learning API, GoDoc.
-- [ ] 3.2 Website sync issue in `unbound-force/website` (new MCP tool
-  parameter) — opened with the PR, after human go-ahead.
+- [x] 3.2 Website sync issue in `unbound-force/website` (new MCP tool
+  parameter) — opened with the PR, after human go-ahead
+  (unbound-force/website#437).
 
 ## 4. Verification
 

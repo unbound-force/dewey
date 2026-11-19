@@ -72,7 +72,7 @@ func TestIndexKnowledgeStore_DerivesTierFromGitBlobs(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	cfg := curate.StoreConfig{Name: "store1"}
-	if indexed := IndexKnowledgeStore(s, nil, cfg, vaultDir, 0, curateLogger); indexed != 2 {
+	if indexed, _ := IndexKnowledgeStore(s, nil, cfg, vaultDir, 0, curateLogger); indexed != 2 {
 		t.Fatalf("IndexKnowledgeStore indexed %d files, want 2", indexed)
 	}
 

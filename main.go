@@ -1061,10 +1061,14 @@ func backgroundCurateStore(
 				// (FR-027, FR-028). Re-acquire mutex for indexing since we
 				// released it after curation.
 				if indexMu.TryLock() {
-					indexed := tools.IndexKnowledgeStore(s, embedder, storeCfg, vaultPath, maxChunkChars, logger)
+					indexed, pruned := tools.IndexKnowledgeStore(s, embedder, storeCfg, vaultPath, maxChunkChars, logger)
 					indexMu.Unlock()
 					logger.Info("background curation complete",
 						"store", storeCfg.Name, "files_created", filesCreated, "indexed", indexed)
+					if pruned > 0 {
+						logger.Info("pruned knowledge store pages (files no longer exist)",
+							"store", storeCfg.Name, "count", pruned)
+					}
 				} else {
 					logger.Info("background curation complete (auto-index skipped — mutex held)",
 						"store", storeCfg.Name, "files_created", filesCreated)
@@ -1129,6 +1133,20 @@ func (fm learningFrontmatter) properties() map[string]any {
 // refreshes only the page row's properties, category and tier, with no
 // block or embedding work.
 //
+// After the scan, the function prunes learning pages whose backing files no
+// longer exist (LR-FR-003, design D1: re-ingest first, prune second) by
+// delegating to pruneOrphanedLearningPages with the identities collected
+// during the scan. A learnings directory that does not exist counts as an
+// empty file set, so every learning page is an orphan; any other directory
+// scan error fails closed and prunes nothing. Per-file failures fail closed
+// the same way: a learning file that exists but cannot be read or parsed
+// (transient I/O error, partial write during a pull) leaves the file set
+// incomplete, so the pass skips pruning entirely — a transient fault can
+// never prune a page whose file is on disk, and pruning resumes on the next
+// startup once the files read cleanly. The pruned-page count is logged
+// inside the function when greater than zero (design D4), mirroring the
+// re-ingest count the caller logs.
+//
 // Returns the number of learnings fully re-ingested (missing pages plus
 // content changes) and any error encountered during scanning (individual
 // file errors are logged but don't stop processing). Properties-only
@@ -1147,11 +1165,32 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 	entries, err := os.ReadDir(learningsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// No learnings directory — nothing to re-ingest.
+			// No learnings directory — nothing to re-ingest, and the file set
+			// is empty: every learning page is an orphan (LR-FR-003).
+			pruneOrphanedLearningPages(s, nil)
 			return 0, nil
 		}
+		// Any other scan error fails closed (LR-FR-003): the file set is
+		// unknown, so pruning is skipped for this pass entirely.
 		return 0, fmt.Errorf("read learnings directory: %w", err)
 	}
+
+	// Identities of the learning files on disk, collected as the scan below
+	// processes each entry (design D2: the file set comes from the scan just
+	// performed, with no reads beyond it). The pruning tail at the end of
+	// this function deletes learning pages whose identity is absent here.
+	fileIdentities := make(map[string]struct{})
+
+	// Per-file failures that leave a learning file's identity undetermined:
+	// read errors and frontmatter parse errors on .md entries that passed
+	// the directory-entry filters. The file-set key is the frontmatter
+	// identity, which cannot be known before reading (design D2 review fix,
+	// finding 3), so such a file is absent from the set by necessity rather
+	// than by sanction — any occurrence makes the set incomplete and the
+	// pruning tail below must not run this pass. Sanctioned skips
+	// (directories, non-.md entries, missing or unsafe identities) are
+	// deliberate exclusions and are not counted.
+	scanFailures := 0
 
 	reIngested := 0
 	for _, entry := range entries {
@@ -1163,6 +1202,7 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 		content, err := os.ReadFile(filePath)
 		if err != nil {
 			logger.Warn("failed to read learning file", "path", filePath, "err", err)
+			scanFailures++
 			continue
 		}
 
@@ -1170,6 +1210,7 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 		fm, body, err := parseLearningFrontmatter(string(content))
 		if err != nil {
 			logger.Warn("failed to parse learning frontmatter", "path", filePath, "err", err)
+			scanFailures++
 			continue
 		}
 
@@ -1186,6 +1227,16 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 			logger.Warn("learning file has unsafe identity; skipping", "path", filePath, "identity", fm.Identity)
 			continue
 		}
+
+		// The file exists and passed every scan filter, so its page is not an
+		// orphan (LR-FR-003). Recorded before the store operations below — a
+		// store failure must never prune a page whose file is on disk. Files
+		// that never reach this point (unreadable, unparseable) are missing
+		// from the set by necessity, not sanction: their identities cannot be
+		// known before reading, so they count as scan failures above and
+		// suppress pruning for the whole pass rather than risk pruning their
+		// pages as orphans (design D2 review fix, finding 3).
+		fileIdentities[fm.Identity] = struct{}{}
 
 		// File-derived values shared by every branch below (design D1: the
 		// three-branch shape tools.IndexKnowledgeStore established for
@@ -1312,7 +1363,67 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 		reIngested++
 	}
 
+	// Pruning tail (LR-FR-003, design D1): after the scan, delete learning
+	// pages whose files no longer exist. Pruning runs last so it can never
+	// remove a page the loop above just created or refreshed from a file
+	// still on disk, and the pruning path itself does no embedding work
+	// (design D3).
+	if scanFailures > 0 {
+		// Fail closed at the pass level (design D2 review fix, finding 3):
+		// the file set is incomplete, so the orphan set is unknown. Skip
+		// pruning entirely — it resumes on the next startup once the files
+		// read cleanly — rather than delete a page whose file is on disk.
+		logger.Warn("learning page pruning skipped; some learning files could not be read or parsed",
+			"count", scanFailures)
+		return reIngested, nil
+	}
+	pruneOrphanedLearningPages(s, fileIdentities)
+
 	return reIngested, nil
+}
+
+// pruneOrphanedLearningPages deletes learning pages whose backing files no
+// longer exist (LR-FR-003). The page set is every page listed for the
+// "learning" source; the file set is fileIdentities, the frontmatter
+// identities the re-ingest scan just collected from the learnings directory
+// under the same filters the scan applies (design D2). A page is an orphan
+// when its identity — the page name minus the "learning/" prefix — is
+// absent from the file set; a nil map is an empty file set (the learnings
+// directory does not exist), making every learning page an orphan.
+//
+// Pruning fails closed: when the page listing fails, nothing is deleted and
+// every learning page stays in place, so a transient fault can never
+// mass-delete pages. Each deletion goes through DeletePage, which cascades
+// to the page's blocks and embeddings through the schema's foreign keys —
+// no embedding work happens here. A per-page delete failure warns and
+// continues (the failed page is retried on the next startup), and the
+// logged count includes successful deletions only (design D4: one log line
+// per startup, only when the count is greater than zero).
+func pruneOrphanedLearningPages(s *store.Store, fileIdentities map[string]struct{}) {
+	pages, err := s.ListPagesBySource("learning")
+	if err != nil {
+		// Fail closed (LR-FR-003): without the listing the orphan set is
+		// unknown, so prune nothing rather than risk deleting live pages.
+		logger.Warn("learning page pruning skipped; failed to list learning pages", "err", err)
+		return
+	}
+
+	pruned := 0
+	for _, page := range pages {
+		if _, ok := fileIdentities[strings.TrimPrefix(page.Name, "learning/")]; ok {
+			continue
+		}
+		if err := s.DeletePage(page.Name); err != nil {
+			// The failed page stays and is retried on the next startup;
+			// only successful deletions are counted (LR-FR-003).
+			logger.Warn("failed to prune learning page", "page", page.Name, "err", err)
+			continue
+		}
+		pruned++
+	}
+	if pruned > 0 {
+		logger.Info("learnings pruned (files no longer exist)", "count", pruned)
+	}
 }
 
 // reIndexKnowledgeStores indexes every knowledge store configured in
@@ -1323,9 +1434,12 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 //
 // Unchanged pages are cheap: IndexKnowledgeStore skips block and embedding
 // work when the content hash matches and only refreshes the cached tier
-// and properties. Returns the number of pages (re)indexed across all
-// stores. A missing config file is not an error; an unreadable or invalid
-// one is returned so the caller can log it.
+// and properties. Each delegated call also prunes that store's pages whose
+// backing files no longer exist (CKS-FR-003); the per-store pruned counts
+// are aggregated here and logged in one line when the total is greater
+// than zero (design D4). Returns the number of pages (re)indexed across
+// all stores. A missing config file is not an error; an unreadable or
+// invalid one is returned so the caller can log it.
 func reIndexKnowledgeStores(s *store.Store, embedder embed.Embedder, vaultPath string, maxChunkChars int) (int, error) {
 	if s == nil {
 		return 0, nil
@@ -1338,8 +1452,18 @@ func reIndexKnowledgeStores(s *store.Store, embedder embed.Embedder, vaultPath s
 	}
 
 	total := 0
+	totalPruned := 0
 	for _, cfg := range stores {
-		total += tools.IndexKnowledgeStore(s, embedder, cfg, vaultPath, maxChunkChars, logger)
+		// IndexKnowledgeStore prunes each store's orphans inside
+		// (CKS-FR-003); the per-store indexed and pruned counts are
+		// aggregated here, and the pruned total is logged once after
+		// the loop (design D4).
+		indexed, pruned := tools.IndexKnowledgeStore(s, embedder, cfg, vaultPath, maxChunkChars, logger)
+		total += indexed
+		totalPruned += pruned
+	}
+	if totalPruned > 0 {
+		logger.Info("knowledge store pages pruned (files no longer exist)", "count", totalPruned)
 	}
 	return total, nil
 }

@@ -80,7 +80,7 @@
 
 ## 5. Documentation
 
-- [ ] 5.1 `AGENTS.md`: add the `IndexFormat` bump rule to the PR
+- [x] 5.1 `AGENTS.md`: add the `IndexFormat` bump rule to the PR
   checklist (Technical Guardrails section) and update the `dewey
   status` row to mention the recorded version and reindex
   recommendation (IBP-FR-004, documentation validation gate).

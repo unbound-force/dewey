@@ -80,6 +80,7 @@ proceeding with out-of-phase changes.
 - **No CGO**: All dependencies MUST be pure Go. The constitution prohibits CGO unless no pure-Go alternative exists.
 - **Local-Only Processing**: No data leaves the developer's machine by default. Embedding generation uses Ollama locally. Cloud providers (Vertex AI) and OpenAI-compatible gateways (OpenRouter, ENMaas, LiteLLM, vLLM, self-hosted) are opt-in via `config.yaml`; gateway credentials are environment-only.
 - **Backward Compatibility**: All 37 inherited graphthulhu MCP tools MUST produce identical results after any change.
+- **Index Format Bump**: Any PR that changes what indexing stores MUST bump the `IndexFormat` constant in `main.go`, so `dewey status` flags older indexes for reindex — the constant is the contract behind the `reindexRecommended` report.
 
 ## Council Governance Protocol
 
@@ -322,7 +323,7 @@ Always run tests with `-race -count=1`. CI enforces this.
 | `dewey init` | Initialize `.uf/dewey/` directory with config and sources; when `.opencode/` exists, also scaffolds `.opencode/agents/{curator,distiller}.md` and the `dewey-*` slash commands, plus the `dewey-distill.yml.example` workflow template — tool-owned scaffolds carrying a final-line `dewey:scaffold` marker, refreshed on re-init when untouched and preserved when customized; user-owned config stays write-once |
 | `dewey index` | Build or update the knowledge graph index from configured sources |
 | `dewey reindex` | Delete and rebuild the index from scratch |
-| `dewey status` | Show index status (page/block/link counts, source info, trust-tier derivation state) |
+| `dewey status` | Show index status (page/block/link counts, source info, trust-tier derivation state, which Dewey built the index and whether a reindex is recommended) |
 | `dewey search` | Full-text search across the knowledge graph |
 | `dewey source` | Manage content sources (add, list, remove) |
 | `dewey doctor` | Run diagnostic checks on the index and environment |

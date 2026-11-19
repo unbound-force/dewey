@@ -280,7 +280,8 @@ type StoreLearningInput struct {
 	// tag from the comma-separated list is used for backward compatibility.
 	Tags string `json:"tags,omitempty" jsonschema:"DEPRECATED: Use 'tag' instead. If provided and 'tag' is empty, first tag is used."`
 	// Temporal validity (issue #146). All optional; as_of is stamped
-	// automatically from the vault's git HEAD.
+	// automatically from the vault's git HEAD unless AsOf is supplied.
+	AsOf       string   `json:"as_of,omitempty" jsonschema:"Optional pin to the source this learning was observed in, as owner/repo@<sha> (or repo@<sha>), 7-64 hex SHA. Default: the vault's git HEAD (<repo>@<sha>)."`
 	Evidence   []string `json:"evidence,omitempty" jsonschema:"Optional evidence locators backing the learning (max 50, each max 512 chars), e.g. 'dewey:tools/lint.go', 'dewey#147', 'learning/<identity>', 'session:<id>'"`
 	Validity   string   `json:"validity,omitempty" jsonschema:"Optional validity status: current, stale-unverified, superseded, historical. Omit when unknown."`
 	Supersedes string   `json:"supersedes,omitempty" jsonschema:"Optional identity (or learning/<identity> page name) of an existing learning this one replaces. The target gains superseded_by and validity: superseded; it is never deleted. Concurrent same-target supersessions are serialized; a losing claim yields supersedes_warning naming the winner."`

@@ -518,6 +518,7 @@ func TestStoreLearning_InvalidTemporalInputWritesNothing(t *testing.T) {
 		"unknown target":   {Information: "x", Tag: "x", Supersedes: "nope-20260101T000000-bob"},
 		"non-learning tgt": {Information: "x", Tag: "x", Supersedes: "learning/README"},
 		"traversal target": {Information: "x", Tag: "x", Supersedes: "../../etc/passwd"},
+		"bad as_of":        {Information: "x", Tag: "x", AsOf: "main"},
 	} {
 		if result, isErr := storeLearning(t, l, input); !isErr {
 			t.Errorf("%s: expected error result, got %v", name, result)
@@ -1512,5 +1513,91 @@ func TestMarkStaleUnverified_FileGuardRefusesSupersededBackup(t *testing.T) {
 				t.Errorf("backup = %q, %v; want byte-identical to the seeded content", after, readErr)
 			}
 		})
+	}
+}
+
+func TestValidateCallerAsOf(t *testing.T) {
+	sha40 := strings.Repeat("a1", 20)
+	for _, tc := range []struct {
+		in string
+		ok bool
+	}{
+		{"", true},
+		{"unbound-force/dewey@" + sha40, true},
+		{"unbound-force/dewey@abc1234", true},
+		{"dewey@" + sha40, true},
+		{"Org.Name/repo_name-2@ABCDEF0", true},
+		{"o/r@" + strings.Repeat("f", 64), true},
+		{"o/r@abc123", false},                     // 6 hex: too short
+		{"o/r@" + strings.Repeat("f", 65), false}, // too long
+		{"o/r@main", false},                       // branch, not a SHA
+		{"o/r@--output=x", false},                 // option injection
+		{"owner/repo", false},                     // no SHA
+		{"@abc1234", false},                       // no repo
+		{"a/b/c@abc1234", false},                  // too many segments
+		{"https://github.com/o/r@abc1234", false}, // URL
+		{"o/r@abc1234 ", false},                   // untrimmed (trimmed by caller)
+		{"o r/x@abc1234", false},                  // space in owner
+	} {
+		err := validateCallerAsOf(tc.in)
+		if (err == nil) != tc.ok {
+			t.Errorf("validateCallerAsOf(%q) err = %v, want ok=%v", tc.in, err, tc.ok)
+		}
+	}
+}
+
+func TestStoreLearning_CallerAsOfOverridesDefault(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "alice")
+	s := newTestStore(t)
+	vault := t.TempDir()
+	resolverCalls := 0
+	l := NewLearning(nil, s, vault, 0).WithAsOfResolver(func() (string, error) {
+		resolverCalls++
+		return "vault@1111111", nil
+	})
+
+	pin := "unbound-force/dewey@3776105abcdef"
+	result, isErr := storeLearning(t, l, types.StoreLearningInput{
+		Information: "Pinned to the observed source.",
+		Tag:         "pin",
+		AsOf:        "  " + pin + "\n",
+	})
+	if isErr {
+		t.Fatalf("unexpected error result: %v", result["error"])
+	}
+	if result["as_of"] != pin {
+		t.Errorf("result as_of = %v, want %q", result["as_of"], pin)
+	}
+	if resolverCalls != 0 {
+		t.Errorf("resolver called %d times; a caller as_of must not shell out to git", resolverCalls)
+	}
+	_, props := pageProps(t, s, resultString(t, result, "page"))
+	if props["as_of"] != pin {
+		t.Errorf("properties as_of = %v, want %q", props["as_of"], pin)
+	}
+	fm, _ := fileFrontmatter(t, filepath.Join(vault, resultString(t, result, "file_path")))
+	if fm["as_of"] != pin {
+		t.Errorf("frontmatter as_of = %v, want %q", fm["as_of"], pin)
+	}
+
+	// Without a caller as_of the git-HEAD stamp remains the default.
+	result, isErr = storeLearning(t, l, types.StoreLearningInput{Information: "Default pin.", Tag: "pin2"})
+	if isErr {
+		t.Fatalf("unexpected error result: %v", result["error"])
+	}
+	if result["as_of"] != "vault@1111111" || resolverCalls != 1 {
+		t.Errorf("default as_of = %v (resolver calls %d), want vault@1111111 from 1 call", result["as_of"], resolverCalls)
+	}
+}
+
+func TestStoreLearning_CallerAsOfWithoutResolver(t *testing.T) {
+	s := newTestStore(t)
+	l := NewLearning(nil, s, "", 0).WithAsOfResolver(nil)
+	result, isErr := storeLearning(t, l, types.StoreLearningInput{Information: "x", Tag: "x", AsOf: "dewey@abcdef1"})
+	if isErr {
+		t.Fatalf("unexpected error result: %v", result["error"])
+	}
+	if result["as_of"] != "dewey@abcdef1" {
+		t.Errorf("as_of = %v, want dewey@abcdef1", result["as_of"])
 	}
 }

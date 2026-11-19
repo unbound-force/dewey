@@ -9,12 +9,16 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/unbound-force/dewey/v3/backend"
 	"github.com/unbound-force/dewey/v3/parser"
+	"github.com/unbound-force/dewey/v3/store"
 	"github.com/unbound-force/dewey/v3/types"
 )
 
 // Search implements search and query MCP tools.
 type Search struct {
 	client backend.Backend
+	// store resolves page sources for the optional source_id / has_tag
+	// scope. Nil disables scoping: a scoped call returns an error result.
+	store *store.Store
 }
 
 // NewSearch creates a new Search tool handler.
@@ -22,29 +26,58 @@ func NewSearch(c backend.Backend) *Search {
 	return &Search{client: c}
 }
 
+// WithStore sets the persistent store used to resolve the optional
+// source_id / has_tag scope on search and find_by_tag, and returns the
+// handler. A nil store leaves scoping unavailable; unscoped calls are
+// unaffected either way.
+func (s *Search) WithStore(st *store.Store) *Search {
+	s.store = st
+	return s
+}
+
+// scopeMatcherFor returns the matcher for scope, or an error result when
+// the scope is active and no store is configured to resolve it.
+func (s *Search) scopeMatcherFor(scope pageScope) (*scopeMatcher, *mcp.CallToolResult) {
+	if scope.active() && s.store == nil {
+		return nil, errorResult(scopeUnavailableMessage)
+	}
+	return newScopeMatcher(scope, s.store), nil
+}
+
 // Search performs full-text search across all blocks with context.
 // Uses FullTextSearcher (indexed) when available, falls back to brute-force scan.
+// Optional source_id / has_tag narrow results with the same semantics as
+// semantic_search_filtered; they require a persistent store (WithStore).
 func (s *Search) Search(ctx context.Context, req *mcp.CallToolRequest, input types.SearchInput) (*mcp.CallToolResult, any, error) {
 	limit := input.Limit
 	if limit <= 0 {
 		limit = 20
 	}
 
+	scope := pageScope{SourceID: input.SourceID, HasTag: input.HasTag}
+	matcher, errResult := s.scopeMatcherFor(scope)
+	if errResult != nil {
+		return errResult, nil, nil
+	}
+
 	// Use indexed search if the backend supports it (Obsidian with SearchIndex).
 	if searcher, ok := s.client.(backend.FullTextSearcher); ok {
-		return s.searchIndexed(ctx, searcher, input, limit)
+		return s.searchIndexed(ctx, searcher, input, limit, matcher)
 	}
 
 	// Fall back to brute-force scan (Logseq or backends without index).
-	return s.searchBruteForce(ctx, input, limit)
+	return s.searchBruteForce(ctx, input, limit, matcher)
 }
 
-// searchIndexed uses the backend's inverted index for fast search.
-func (s *Search) searchIndexed(ctx context.Context, searcher backend.FullTextSearcher, input types.SearchInput, limit int) (*mcp.CallToolResult, any, error) {
-	hits, err := searcher.FullTextSearch(ctx, input.Query, limit)
+// searchIndexed uses the backend's inverted index for fast search. A
+// scoped search over-fetches (scopedFetchLimit), drops hits outside the
+// scope, then trims to limit.
+func (s *Search) searchIndexed(ctx context.Context, searcher backend.FullTextSearcher, input types.SearchInput, limit int, matcher *scopeMatcher) (*mcp.CallToolResult, any, error) {
+	hits, err := searcher.FullTextSearch(ctx, input.Query, scopedFetchLimit(limit, matcher.scope))
 	if err != nil {
 		return errorResult(fmt.Sprintf("search failed: %v", err)), nil, nil
 	}
+	hits = filterHitsByScope(hits, matcher, limit)
 
 	if len(hits) == 0 {
 		return textResult(fmt.Sprintf("No results found for '%s'.", input.Query)), nil, nil
@@ -77,8 +110,25 @@ func (s *Search) searchIndexed(ctx context.Context, searcher backend.FullTextSea
 	return res, nil, err
 }
 
+// filterHitsByScope keeps the hits matcher accepts, up to limit. With an
+// inactive scope it only enforces limit, which the backend already did.
+func filterHitsByScope(hits []backend.SearchHit, matcher *scopeMatcher, limit int) []backend.SearchHit {
+	kept := make([]backend.SearchHit, 0, min(len(hits), limit))
+	for _, hit := range hits {
+		if len(kept) >= limit {
+			break
+		}
+		if matcher.matches(hit.PageName, hit.Content) {
+			kept = append(kept, hit)
+		}
+	}
+	return kept
+}
+
 // searchBruteForce scans all pages sequentially (original implementation).
-func (s *Search) searchBruteForce(ctx context.Context, input types.SearchInput, limit int) (*mcp.CallToolResult, any, error) {
+// Matches outside the optional scope are skipped before they count toward
+// limit.
+func (s *Search) searchBruteForce(ctx context.Context, input types.SearchInput, limit int, matcher *scopeMatcher) (*mcp.CallToolResult, any, error) {
 	query := strings.ToLower(input.Query)
 
 	pages, err := s.client.GetAllPages(ctx)
@@ -104,6 +154,9 @@ func (s *Search) searchBruteForce(ctx context.Context, input types.SearchInput, 
 		for _, m := range matches {
 			if len(results) >= limit {
 				break
+			}
+			if content, _ := m["content"].(string); !matcher.matches(page.Name, content) {
+				continue
 			}
 			if input.Compact {
 				compact := map[string]any{
@@ -189,8 +242,15 @@ func (s *Search) QueryDatalog(ctx context.Context, req *mcp.CallToolRequest, inp
 	return res, nil, err
 }
 
-// FindByTag finds content by tag, including child tags.
+// FindByTag finds content by tag, including child tags. An optional
+// source_id keeps only pages of that source (requires a persistent store,
+// see WithStore).
 func (s *Search) FindByTag(ctx context.Context, req *mcp.CallToolRequest, input types.FindByTagInput) (*mcp.CallToolResult, any, error) {
+	matcher, errResult := s.scopeMatcherFor(pageScope{SourceID: input.SourceID})
+	if errResult != nil {
+		return errResult, nil, nil
+	}
+
 	// Use native tag search if the backend supports it (e.g. Obsidian).
 	if searcher, ok := s.client.(backend.TagSearcher); ok {
 		results, err := searcher.FindBlocksByTag(ctx, input.Tag, input.IncludeChildren)
@@ -200,6 +260,9 @@ func (s *Search) FindByTag(ctx context.Context, req *mcp.CallToolRequest, input 
 
 		var enriched []map[string]any
 		for _, r := range results {
+			if !matcher.matches(r.Page, "") {
+				continue
+			}
 			for _, block := range r.Blocks {
 				parsed := parser.Parse(block.Content)
 				enriched = append(enriched, map[string]any{
@@ -243,6 +306,13 @@ func (s *Search) FindByTag(ctx context.Context, req *mcp.CallToolRequest, input 
 		}
 		var block types.BlockEntity
 		if err := json.Unmarshal(r[0], &block); err != nil {
+			continue
+		}
+		pageName := ""
+		if block.Page != nil {
+			pageName = block.Page.Name
+		}
+		if !matcher.matches(pageName, block.Content) {
 			continue
 		}
 		parsed := parser.Parse(block.Content)

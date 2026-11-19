@@ -45,6 +45,9 @@ type SearchInput struct {
 	ContextLines int    `json:"contextLines,omitempty" jsonschema:"Number of parent/sibling blocks for context. Default: 2"`
 	Limit        int    `json:"limit,omitempty" jsonschema:"Max results. Default: 20"`
 	Compact      bool   `json:"compact,omitempty" jsonschema:"Return minimal results (uuid, content, page) without parsed metadata. Saves ~50%% tokens. Default: false"`
+	// Optional scope filters, same semantics as semantic_search_filtered.
+	SourceID string `json:"source_id,omitempty" jsonschema:"Only return results from pages of this source identifier (e.g., disk-local, github-gaze)"`
+	HasTag   string `json:"has_tag,omitempty" jsonschema:"Only return results whose page properties mention this tag or whose block content contains #tag"`
 }
 
 type QueryPropertiesInput struct {
@@ -61,6 +64,8 @@ type QueryDatalogInput struct {
 type FindByTagInput struct {
 	Tag             string `json:"tag" jsonschema:"Tag name to search for"`
 	IncludeChildren bool   `json:"includeChildren,omitempty" jsonschema:"Include child tags in hierarchy. Default: true"`
+	// Optional scope filter, same semantics as semantic_search_filtered.
+	SourceID string `json:"source_id,omitempty" jsonschema:"Only return results from pages of this source identifier (e.g., disk-local, github-gaze)"`
 }
 
 // --- Analyze tool inputs ---
@@ -212,6 +217,9 @@ type SemanticSearchInput struct {
 	Threshold float64 `json:"threshold,omitempty" jsonschema:"Minimum similarity score (0.0-1.0). Default: 0.3"`
 	// IgnoreValidity disables validity-weighted ranking (issue #148).
 	IgnoreValidity bool `json:"ignore_validity,omitempty" jsonschema:"Order by raw similarity only. By default superseded (x0.6) and stale-unverified (x0.85) results rank lower; reported similarity is always raw."`
+	// Optional scope filters, same semantics as semantic_search_filtered.
+	SourceID string `json:"source_id,omitempty" jsonschema:"Filter by specific source identifier (e.g., github-gaze)"`
+	HasTag   string `json:"has_tag,omitempty" jsonschema:"Filter to pages with this tag"`
 }
 
 // SimilarInput is the input for the dewey_similar MCP tool.
@@ -219,6 +227,11 @@ type SimilarInput struct {
 	Page  string `json:"page,omitempty" jsonschema:"Page name to find similar documents for"`
 	UUID  string `json:"uuid,omitempty" jsonschema:"Block UUID to find similar blocks for. Takes precedence over page."`
 	Limit int    `json:"limit,omitempty" jsonschema:"Maximum number of results. Default: 10"`
+	// Optional scope filters on the results, same semantics as
+	// semantic_search_filtered. The query page or block itself may be
+	// in any source.
+	SourceID string `json:"source_id,omitempty" jsonschema:"Only return results from this source identifier (e.g., github-gaze). The query page or block may be in any source."`
+	HasTag   string `json:"has_tag,omitempty" jsonschema:"Only return results from pages with this tag"`
 }
 
 // SemanticSearchFilteredInput is the input for the dewey_semantic_search_filtered MCP tool.

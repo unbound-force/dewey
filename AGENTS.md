@@ -585,7 +585,12 @@ metadata that grep cannot match.
 | Similar documents | `similar` | "Find specs like this one" |
 | Tag-based discovery | `find_by_tag` | "All pages tagged #decision" |
 | Property queries | `query_properties` | "All specs with status: draft" |
-| Filtered semantic | `semantic_search_filtered` | Semantic search within source type |
+| Filtered semantic | `semantic_search_filtered` | Semantic search within source type, tier, property or validity |
+
+`semantic_search`, `search`, `similar` and `find_by_tag` also take an
+optional `source_id` (and, except `find_by_tag`, `has_tag`) with the
+same semantics as `semantic_search_filtered`, so a caller can scope any
+read to one source.
 | Graph navigation | `traverse` | Dependency chain walking |
 
 ### When to Fall Back to grep/glob/read

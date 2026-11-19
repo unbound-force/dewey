@@ -837,7 +837,7 @@ Each curated knowledge item includes:
 - **Quality flags**: `missing_rationale`, `implied_assumption`, `incongruent`, `unsupported_claim`
 - **Source traceability**: Every fact traces back to its source document
 
-Learnings stored via `store_learning` are also dual-written to `.uf/dewey/learnings/` as markdown files, ensuring they survive database deletion.
+Learnings stored via `store_learning` are also dual-written to `.uf/dewey/learnings/` as markdown files, ensuring they survive database deletion. Startup re-ingestion converges the index to these files: an orphaned file or a file changed in place (for example by a `git pull`) is fully re-ingested, while an unchanged file costs only a metadata refresh — no block or embedding work.
 
 #### Temporal Validity
 

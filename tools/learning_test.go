@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1161,6 +1162,92 @@ func TestStoreLearning_MarkdownFormatNoCategory(t *testing.T) {
 	// Category should NOT appear in frontmatter when empty.
 	if strings.Contains(string(content), "category:") {
 		t.Error("frontmatter should not contain 'category:' when category is empty")
+	}
+}
+
+// TestStoreLearning_HashMatchesFileBody verifies that the ContentHash
+// store_learning writes agrees with the hash startup re-ingestion
+// (main.reIngestLearnings) derives from the markdown backup file: the
+// stored page's ContentHash, the hash over the whitespace-trimmed file
+// body, and the hash over strings.TrimSpace(input.Information) must all
+// be the same value, so a learning stored by the tool matches on the
+// next startup and is never re-ingested spuriously (LR-FR-002, design D3
+// of the learning-reingest-on-file-change change).
+func TestStoreLearning_HashMatchesFileBody(t *testing.T) {
+	t.Setenv("DEWEY_AUTHOR", "testuser")
+	s := newTestStore(t)
+	vaultPath := t.TempDir()
+	l := NewLearning(nil, s, vaultPath, 0)
+
+	// Padded information is the divergence case: hashing the raw text
+	// would disagree with the trimmed file body that re-ingestion
+	// compares against.
+	information := "\n\n  Learning text with padded whitespace.  \n\n"
+	if strings.TrimSpace(information) == information {
+		t.Fatal("test premise broken: information must carry leading/trailing whitespace")
+	}
+	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
+		Information: information,
+		Tag:         "authentication",
+	})
+	if err != nil {
+		t.Fatalf("StoreLearning error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("StoreLearning returned error result: %s", resultText(result))
+	}
+
+	parsed := parseLearningResult(t, resultText(result))
+	pageName, ok := parsed["page"].(string)
+	if !ok || pageName == "" {
+		t.Fatalf("expected non-empty page in response, got %v", parsed["page"])
+	}
+	identity, ok := parsed["identity"].(string)
+	if !ok || identity == "" {
+		t.Fatalf("expected non-empty identity in response, got %v", parsed["identity"])
+	}
+
+	// The stored page's ContentHash is the value under test.
+	storedPage, err := s.GetPage(pageName)
+	if err != nil {
+		t.Fatalf("GetPage(%q): %v", pageName, err)
+	}
+	if storedPage == nil {
+		t.Fatal("learning page not found in store")
+	}
+
+	// Derive the file-body hash exactly as re-ingestion does
+	// (main.splitFrontmatter): drop everything up to the second "---"
+	// delimiter, whitespace-trim the remainder, SHA-256 it, and hex-encode
+	// the first 8 bytes.
+	content, err := os.ReadFile(filepath.Join(vaultPath, ".uf", "dewey", "learnings", identity+".md"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	contentStr := strings.TrimPrefix(string(content), "\ufeff")
+	if !strings.HasPrefix(contentStr, "---") {
+		t.Fatalf("learning file %q does not open with a frontmatter delimiter", identity+".md")
+	}
+	parts := strings.SplitN(contentStr, "---", 3)
+	if len(parts) < 3 {
+		t.Fatalf("learning file %q has no body after frontmatter", identity+".md")
+	}
+	body := strings.TrimSpace(parts[2])
+	bodySum := sha256.Sum256([]byte(body))
+	bodyHash := fmt.Sprintf("%x", bodySum[:8])
+
+	if storedPage.ContentHash != bodyHash {
+		t.Errorf("stored ContentHash = %q, want file-body hash %q (trimmed body %q)",
+			storedPage.ContentHash, bodyHash, body)
+	}
+
+	// The write-time hash must be over exactly the trimmed information
+	// text, proving the file body and the stored hash agree byte for byte.
+	trimmedSum := sha256.Sum256([]byte(strings.TrimSpace(information)))
+	trimmedHash := fmt.Sprintf("%x", trimmedSum[:8])
+	if bodyHash != trimmedHash {
+		t.Errorf("file-body hash %q does not equal hash of strings.TrimSpace(input.Information) %q",
+			bodyHash, trimmedHash)
 	}
 }
 

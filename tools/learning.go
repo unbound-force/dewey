@@ -293,8 +293,12 @@ func (l *Learning) StoreLearning(ctx context.Context, req *mcp.CallToolRequest, 
 	}
 	properties := string(propsJSON)
 
-	// Compute a short content hash for deduplication support.
-	hash := sha256.Sum256([]byte(input.Information))
+	// Compute a short content hash for deduplication support. Hash the
+	// trimmed text: startup re-ingestion compares this hash against the
+	// whitespace-trimmed file body, so both must be computed over the same
+	// bytes for an unchanged learning to stay cheap at startup (design D3,
+	// LR-FR-002).
+	hash := sha256.Sum256([]byte(strings.TrimSpace(input.Information)))
 	contentHash := fmt.Sprintf("%x", hash[:8])
 
 	// Insert the page with source_id "learning" to distinguish from other

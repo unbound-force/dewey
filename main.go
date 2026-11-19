@@ -1039,12 +1039,18 @@ func (fm learningFrontmatter) properties() map[string]any {
 }
 
 // reIngestLearnings scans the learnings directory for markdown files and
-// re-ingests any that are missing from the store. This recovers learnings
-// after graph.db deletion — the markdown files serve as a durable backup.
+// re-ingests any that are missing from the store or whose stored content
+// hash is empty or no longer matches the file's body. This recovers
+// learnings after graph.db deletion — the markdown files serve as a durable
+// backup — and converges learnings edited in place (for example by a git
+// pull) without a full reindex. Unchanged files stay cheap: a matching hash
+// refreshes only the page row's properties, category and tier, with no
+// block or embedding work.
 //
-// Returns the number of learnings re-ingested and any error encountered
-// during scanning (individual file errors are logged but don't stop
-// processing).
+// Returns the number of learnings fully re-ingested (missing pages plus
+// content changes) and any error encountered during scanning (individual
+// file errors are logged but don't stop processing). Properties-only
+// refreshes are not counted.
 //
 // Design decision: Extracted as a standalone function for testability
 // (Dependency Inversion — accepts store and embedder as parameters rather
@@ -1099,19 +1105,11 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 			continue
 		}
 
-		// Check if this learning already exists in the store.
-		pageName := fmt.Sprintf("learning/%s", fm.Identity)
-		existing, err := s.GetPage(pageName)
-		if err != nil {
-			logger.Warn("failed to check existing page", "page", pageName, "err", err)
-			continue
-		}
-		if existing != nil {
-			// Already in the store — skip re-ingestion.
-			continue
-		}
-
-		// Re-ingest: insert page, persist blocks, generate embeddings.
+		// File-derived values shared by every branch below (design D1: the
+		// three-branch shape tools.IndexKnowledgeStore established for
+		// knowledge stores in #220, mirrored here at the pattern level — in
+		// place, not shared code; the learning path keeps its own frontmatter
+		// parsing, identity validation, tier clamp and properties derivation).
 		docID := fmt.Sprintf("learning-%s", fm.Identity)
 
 		// Build properties JSON preserving original metadata.
@@ -1120,41 +1118,95 @@ func reIngestLearnings(s *store.Store, embedder embed.Embedder, vaultPath string
 			logger.Warn("failed to marshal properties", "identity", fm.Identity, "err", err)
 			continue
 		}
+		properties := string(propsJSON)
 
-		// Parse created_at to set the page timestamp.
-		var createdAtMs int64
-		if fm.CreatedAt != "" {
-			if t, err := time.Parse(time.RFC3339, fm.CreatedAt); err == nil {
-				createdAtMs = t.UnixMilli()
-			}
-		}
-
-		// Compute content hash for deduplication.
+		// Compute the content hash over the file body — exactly what the
+		// insertion path hashes (design D2) — above the existence check so
+		// all three branches share it. A frontmatter-only edit keeps this
+		// hash stable and takes the cheap path below.
 		hash := sha256.Sum256([]byte(body))
 		contentHash := fmt.Sprintf("%x", hash[:8])
 
 		// A learning file is an untrusted artifact: never let it grant its own
-		// trust tier. Promotion happens only through the review gate.
+		// trust tier. Promotion happens only through the review gate. Derived
+		// once here because every branch clamps the row to draft (design D4).
 		tier := "draft"
 		if fm.Tier != "" && fm.Tier != "draft" {
 			logger.Warn("ignoring non-draft tier from learning file",
 				"identity", fm.Identity, "tier", fm.Tier)
 		}
 
-		page := &store.Page{
-			Name:         pageName,
-			OriginalName: pageName,
-			SourceID:     "learning",
-			SourceDocID:  docID,
-			Properties:   string(propsJSON),
-			ContentHash:  contentHash,
-			Tier:         tier,
-			Category:     fm.Category,
-			CreatedAt:    createdAtMs,
-		}
-		if err := s.InsertPage(page); err != nil {
-			logger.Warn("failed to re-ingest learning page", "identity", fm.Identity, "err", err)
+		// Check if this learning already exists in the store.
+		pageName := fmt.Sprintf("learning/%s", fm.Identity)
+		existing, err := s.GetPage(pageName)
+		if err != nil {
+			logger.Warn("failed to check existing page", "page", pageName, "err", err)
 			continue
+		}
+
+		if existing != nil {
+			if existing.ContentHash == contentHash {
+				// Body unchanged — no block or embedding work (LR-FR-002), but
+				// still refresh the file-derived row fields when any drifted
+				// (the backfill shape from #220's design D4). Not counted.
+				if existing.Properties != properties ||
+					existing.Category != fm.Category ||
+					existing.Tier != tier {
+					existing.Properties = properties
+					existing.Category = fm.Category
+					existing.Tier = tier
+					if err := s.UpdatePage(existing); err != nil {
+						logger.Warn("failed to refresh learning page metadata",
+							"identity", fm.Identity, "err", err)
+					}
+				}
+				continue
+			}
+			// Body changed, or the stored hash is empty (a row written before
+			// hashing, or by an earlier version over different bytes) —
+			// re-ingest from the file (LR-FR-001). DeleteBlocksByPage
+			// cascades to embeddings through the schema's foreign key, so
+			// stale embeddings cannot linger; UpdatePage's SQL does not touch
+			// created_at, so the original timestamp survives (design D4).
+			if err := s.DeleteBlocksByPage(pageName); err != nil {
+				logger.Warn("failed to delete old blocks", "identity", fm.Identity, "err", err)
+			}
+			existing.ContentHash = contentHash
+			existing.Properties = properties
+			existing.Tier = tier
+			existing.Category = fm.Category
+			existing.SourceID = "learning"
+			existing.SourceDocID = docID
+			if err := s.UpdatePage(existing); err != nil {
+				logger.Warn("failed to update changed learning page",
+					"identity", fm.Identity, "err", err)
+				continue
+			}
+		} else {
+			// Page missing — insert today's page row. Parse created_at to set
+			// the page timestamp.
+			var createdAtMs int64
+			if fm.CreatedAt != "" {
+				if t, err := time.Parse(time.RFC3339, fm.CreatedAt); err == nil {
+					createdAtMs = t.UnixMilli()
+				}
+			}
+
+			page := &store.Page{
+				Name:         pageName,
+				OriginalName: pageName,
+				SourceID:     "learning",
+				SourceDocID:  docID,
+				Properties:   properties,
+				ContentHash:  contentHash,
+				Tier:         tier,
+				Category:     fm.Category,
+				CreatedAt:    createdAtMs,
+			}
+			if err := s.InsertPage(page); err != nil {
+				logger.Warn("failed to re-ingest learning page", "identity", fm.Identity, "err", err)
+				continue
+			}
 		}
 
 		// Parse the learning body into blocks.

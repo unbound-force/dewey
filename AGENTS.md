@@ -546,7 +546,7 @@ Curated files are automatically indexed as a `knowledge-{store-name}` source wit
 
 ### File-Backed Learnings
 
-Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{YYYYMMDDTHHMMSS}-{author}.md`. This ensures learnings survive `graph.db` deletion — on startup, orphaned markdown files are re-ingested automatically.
+Learnings stored via `store_learning` are dual-written to both SQLite and markdown files at `.uf/dewey/learnings/{tag}-{YYYYMMDDTHHMMSS}-{author}.md`. This ensures learnings survive `graph.db` deletion — on startup, orphaned markdown files are re-ingested automatically. Re-ingestion converges the index to the files: a learning whose stored content hash no longer matches its file (an in-place edit from a `git pull`, or an empty stored hash) is fully re-ingested — blocks re-persisted, embeddings regenerated — while an unchanged file costs only a metadata refresh, with no block or embedding work.
 
 ### Background Curation
 

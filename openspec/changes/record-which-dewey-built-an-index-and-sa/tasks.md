@@ -103,5 +103,5 @@
   provenance with deterministic absent-value rules), Testability
   (pure seams over injected inputs; table-driven tests; no external
   services).
-- [ ] 6.3 Review council (`/uf.review-council`) — resolve all
+- [x] 6.3 Review council (`/uf.review-council`) — resolve all
   REQUEST CHANGES findings until all reviewers return APPROVE.

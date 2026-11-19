@@ -23,7 +23,7 @@
 
 - [x] 3.1 README `dewey reindex`, AGENTS.md CLI table and File-Backed
   Learnings.
-- [ ] 3.2 Website sync issue in `unbound-force/website` (`dewey
+- [x] 3.2 Website sync issue in `unbound-force/website` (`dewey
   reindex` behavior) — opened with the PR, after human go-ahead.
 
 ## 4. Verification

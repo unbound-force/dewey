@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2843,4 +2845,201 @@ func TestReIndexKnowledgeStores_NilStore(t *testing.T) {
 	if err != nil || count != 0 {
 		t.Errorf("got (%d, %v), want (0, nil)", count, err)
 	}
+}
+
+// --- index provenance tests (record-which-dewey-built-an-index, task 4.1) ---
+
+// TestResolveVersionFrom verifies the version resolution order (IBP-FR-002,
+// design D2) as a pure function over injected inputs: the ldflags release
+// value when set, else the build-info module version (mise `go:` installs),
+// else "dev" (local builds).
+func TestResolveVersionFrom(t *testing.T) {
+	tests := []struct {
+		name    string
+		ldflags string
+		bi      *debug.BuildInfo
+		want    string
+	}{
+		{
+			// Release build: GoReleaser sets the ldflags version, which wins
+			// even when build info carries a module version.
+			name:    "ldflags release value wins over build info",
+			ldflags: "3.9.0",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: "v3.8.1"}},
+			want:    "3.9.0",
+		},
+		{
+			name:    "ldflags release value with nil build info",
+			ldflags: "3.9.0",
+			bi:      nil,
+			want:    "3.9.0",
+		},
+		{
+			// mise `go:` install: `go install <module>@v3.8.1` stamps the tag
+			// into Main.Version while ldflags keeps its "dev" default.
+			name:    "dev ldflags falls through to build-info module version",
+			ldflags: "dev",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: "v3.8.1"}},
+			want:    "v3.8.1",
+		},
+		{
+			name:    "empty ldflags falls through to build-info module version",
+			ldflags: "",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: "v3.8.1"}},
+			want:    "v3.8.1",
+		},
+		{
+			// Local `go build`: ldflags default plus "(devel)" build info.
+			name:    "devel build info falls through to dev",
+			ldflags: "dev",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}},
+			want:    "dev",
+		},
+		{
+			name:    "empty build-info version falls through to dev",
+			ldflags: "dev",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: ""}},
+			want:    "dev",
+		},
+		{
+			name:    "nil build info falls through to dev",
+			ldflags: "dev",
+			bi:      nil,
+			want:    "dev",
+		},
+		{
+			name:    "empty ldflags and nil build info",
+			ldflags: "",
+			bi:      nil,
+			want:    "dev",
+		},
+		{
+			name:    "empty ldflags and empty build-info version",
+			ldflags: "",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: ""}},
+			want:    "dev",
+		},
+		{
+			name:    "empty ldflags and devel build info",
+			ldflags: "",
+			bi:      &debug.BuildInfo{Main: debug.Module{Version: "(devel)"}},
+			want:    "dev",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			biVersion := "nil"
+			if tc.bi != nil {
+				biVersion = tc.bi.Main.Version
+			}
+			if got := resolveVersionFrom(tc.ldflags, tc.bi); got != tc.want {
+				t.Errorf("resolveVersionFrom(%q, Main.Version=%q) = %q, want %q", tc.ldflags, biVersion, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecordIndexBuild verifies the index-build stamp (IBP-FR-001, design
+// D3): both metadata keys are written with the given values verbatim, the
+// stamp is metadata-only, re-stamping upserts, and a nil store is a no-op.
+func TestRecordIndexBuild(t *testing.T) {
+	t.Run("stamps both keys with values verbatim", func(t *testing.T) {
+		s, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// Values deliberately unlike this binary's own version and format:
+		// the helper records what it is given, verbatim — never normalized
+		// or re-derived (IBP-FR-002).
+		if err := recordIndexBuild(s, "v9.9.9-test", 7); err != nil {
+			t.Fatalf("recordIndexBuild: %v", err)
+		}
+
+		gotVersion, err := s.GetMeta("dewey_version")
+		if err != nil {
+			t.Fatalf("get dewey_version: %v", err)
+		}
+		if want := "v9.9.9-test"; gotVersion != want {
+			t.Errorf("dewey_version = %q, want %q", gotVersion, want)
+		}
+
+		gotFormat, err := s.GetMeta("index_format")
+		if err != nil {
+			t.Fatalf("get index_format: %v", err)
+		}
+		if want := strconv.Itoa(7); gotFormat != want {
+			t.Errorf("index_format = %q, want %q", gotFormat, want)
+		}
+	})
+
+	t.Run("stamp is metadata-only", func(t *testing.T) {
+		s, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		if err := recordIndexBuild(s, "3.9.0", 1); err != nil {
+			t.Fatalf("recordIndexBuild: %v", err)
+		}
+
+		counts := []struct {
+			name string
+			got  func() (int, error)
+		}{
+			{"pages", s.CountPages},
+			{"blocks", s.CountBlocks},
+			{"embeddings", s.CountEmbeddings},
+		}
+		for _, c := range counts {
+			got, err := c.got()
+			if err != nil {
+				t.Fatalf("count %s: %v", c.name, err)
+			}
+			if got != 0 {
+				t.Errorf("%s = %d, want 0 (the stamp must not write pages, blocks, or embeddings)", c.name, got)
+			}
+		}
+	})
+
+	t.Run("re-stamping overwrites both keys", func(t *testing.T) {
+		s, err := store.New(":memory:")
+		if err != nil {
+			t.Fatalf("store.New: %v", err)
+		}
+		defer func() { _ = s.Close() }()
+
+		// A bump PR's next pass stamps over the previous values (upsert).
+		if err := recordIndexBuild(s, "v1.0.0", 1); err != nil {
+			t.Fatalf("first recordIndexBuild: %v", err)
+		}
+		if err := recordIndexBuild(s, "v2.0.0", 2); err != nil {
+			t.Fatalf("second recordIndexBuild: %v", err)
+		}
+
+		gotVersion, err := s.GetMeta("dewey_version")
+		if err != nil {
+			t.Fatalf("get dewey_version: %v", err)
+		}
+		if want := "v2.0.0"; gotVersion != want {
+			t.Errorf("dewey_version = %q, want %q (latest stamp wins)", gotVersion, want)
+		}
+
+		gotFormat, err := s.GetMeta("index_format")
+		if err != nil {
+			t.Fatalf("get index_format: %v", err)
+		}
+		if want := strconv.Itoa(2); gotFormat != want {
+			t.Errorf("index_format = %q, want %q (latest stamp wins)", gotFormat, want)
+		}
+	})
+
+	t.Run("nil store is a no-op", func(t *testing.T) {
+		if err := recordIndexBuild(nil, "3.9.0", 1); err != nil {
+			t.Errorf("recordIndexBuild(nil, ...) = %v, want nil (in-memory mode no-op)", err)
+		}
+	})
 }

@@ -153,7 +153,7 @@ Read tools (`get_page`, `get_block`, `list_pages`, `search`, `find_by_tag`) retu
 
 | Tool | Backend | Description |
 |------|---------|-------------|
-| `store_learning` | Both | Store a learning with tag, category, and temporal identity; pins `as_of` and accepts `evidence`, `validity`, and `supersedes` ([Temporal Validity](#temporal-validity)) |
+| `store_learning` | Both | Store a learning with tag, category, and temporal identity; pins `as_of` (or takes a caller `as_of: owner/repo@<sha>`) and accepts `evidence`, `validity`, and `supersedes` ([Temporal Validity](#temporal-validity)) |
 | `supersede_learning` | Both | Record a confirmed supersession between two existing learnings — `successor` supersedes `target` — after full validation: distinct identities, existence, no recorded successor on the target, no conflicting `supersedes` claim, and a bounded cycle walk in both directions. Writes the two-way link in the store and markdown backups; partial failures surface as `supersedes_warning` ([Temporal Validity](#temporal-validity)) |
 
 ### Curate
@@ -847,7 +847,7 @@ Learnings carry metadata about the code state they were true against, in their p
 
 | Field | Set by | Meaning |
 |-------|--------|---------|
-| `as_of` | automatic | `<repo>@<sha>` — the vault's git repository and `HEAD` commit when the learning was stored. Omitted when the vault is not a git repository. Uncommitted changes are not represented. |
+| `as_of` | automatic, or caller-supplied | `<repo>@<sha>` — the vault's git repository and `HEAD` commit when the learning was stored. Omitted when the vault is not a git repository. Uncommitted changes are not represented. A caller may instead pass `as_of: owner/repo@<sha>` (or `repo@<sha>`, 7-64 hex SHA) to pin a learning to the source it was observed in; anchor checks only run for pins to the vault's own repository. |
 | `evidence` | `evidence` input | Locators backing the learning: `<repo>:<path>`, `<repo>#<n>`, `learning/<identity>`, `session:<id>` (max 50, each max 512 characters). |
 | `validity` | `validity` input | `current`, `stale-unverified`, `superseded`, or `historical`. Absent means unknown. |
 | `supersedes` / `superseded_by` | `supersedes` input, or `supersede_learning` | Two-way link. Storing a learning with `supersedes: <identity>` marks the target `superseded_by` the new learning and `validity: superseded`, in the store and in its markdown file. Two existing learnings can be linked after the fact with the `supersede_learning` tool. The target is never deleted and its tier is unchanged; a learning can be superseded once. |

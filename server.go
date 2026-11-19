@@ -479,7 +479,7 @@ func registerSemanticTools(srv *mcp.Server, semantic *tools.Semantic) int {
 func registerLearningTools(srv *mcp.Server, learning *tools.Learning) int {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "store_learning",
-		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via semantic_search. Use to build semantic memory across sessions. Pins as_of to the vault's git HEAD; optionally records evidence locators, a validity status, and the identity of a learning this one supersedes (the target is marked superseded_by, never deleted). Concurrent same-target supersessions are serialized; a losing call returns supersedes_warning naming the winner.",
+		Description: "Store a learning (insight, pattern, gotcha) with optional tags. The learning is persisted with embeddings and immediately searchable via semantic_search. Use to build semantic memory across sessions. Pins as_of to the vault's git HEAD unless the caller passes as_of (owner/repo@<sha>) for a learning observed elsewhere; optionally records evidence locators, a validity status, and the identity of a learning this one supersedes (the target is marked superseded_by, never deleted). Concurrent same-target supersessions are serialized; a losing call returns supersedes_warning naming the winner.",
 	}, learning.StoreLearning)
 
 	mcp.AddTool(srv, &mcp.Tool{

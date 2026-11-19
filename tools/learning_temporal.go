@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,22 @@ type temporalFields struct {
 	Evidence   []string
 	Validity   string
 	Supersedes string // identity of the superseded learning
+}
+
+// callerAsOfPattern is the accepted shape of a caller-supplied as_of
+// pin: `owner/repo@<sha>` for a source outside the vault, or `repo@<sha>`
+// (the shape productionAsOfResolver stamps) for the vault itself. The
+// SHA is 7-64 hex characters (abbreviated, SHA-1 or SHA-256 object
+// names). Name segments use GitHub's repository-name alphabet.
+var callerAsOfPattern = regexp.MustCompile(`^(?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+@[0-9a-fA-F]{7,64}$`)
+
+// validateCallerAsOf returns an error when v is non-empty and not an
+// `owner/repo@<sha>` or `repo@<sha>` pin.
+func validateCallerAsOf(v string) error {
+	if v != "" && !callerAsOfPattern.MatchString(v) {
+		return fmt.Errorf("invalid as_of %q. Expected owner/repo@<sha> (or repo@<sha>) with a 7-64 character hex commit SHA", v)
+	}
+	return nil
 }
 
 // validateValidity returns an error when v is non-empty and not one of
@@ -259,9 +276,14 @@ func (t temporalFields) frontmatter() string {
 // prepareTemporal validates the temporal inputs, resolves the supersession
 // target, and resolves the as_of pin — all before anything is written, so
 // an invalid call writes nothing. The returned page is nil when the input
-// supersedes nothing.
+// supersedes nothing. A caller-supplied as_of (trimmed, validated) wins
+// over the resolver's git-HEAD stamp, which remains the default.
 func (l *Learning) prepareTemporal(input types.StoreLearningInput) (temporalFields, *store.Page, error) {
 	if err := validateValidity(input.Validity); err != nil {
+		return temporalFields{}, nil, err
+	}
+	callerAsOf := strings.TrimSpace(input.AsOf)
+	if err := validateCallerAsOf(callerAsOf); err != nil {
 		return temporalFields{}, nil, err
 	}
 	evidence, err := normalizeEvidence(input.Evidence)
@@ -273,10 +295,13 @@ func (l *Learning) prepareTemporal(input types.StoreLearningInput) (temporalFiel
 		return temporalFields{}, nil, err
 	}
 	fields := temporalFields{
-		AsOf:       resolveAsOf(l.asOfResolver),
+		AsOf:       callerAsOf,
 		Evidence:   evidence,
 		Validity:   input.Validity,
 		Supersedes: supersedesIdentity(input.Supersedes),
+	}
+	if fields.AsOf == "" {
+		fields.AsOf = resolveAsOf(l.asOfResolver)
 	}
 	return fields, target, nil
 }

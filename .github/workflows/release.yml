@@ -61,6 +61,9 @@ jobs:
     with:
       tag: ${{ inputs.tag }}
       ci_checks: '["build-and-test", "MegaLinter"]'
+      # Ship's default too; explicit so rc tags (vX.Y.Z-rc.N) keep working
+      # if that default ever changes.
+      allow_prerelease: true
       skip_semver_check: ${{ inputs.skip_semver_check }}
       skip_ci_checks: ${{ inputs.skip_ci_checks }}
       skip_unreleased_check: ${{ inputs.skip_unreleased_check }}

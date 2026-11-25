@@ -10,18 +10,27 @@
   tasks run in parallel.
 -->
 
-## 1. Detection Workflow
+## 1. Detection
 
-- [x] 1.1 Add `.github/workflows/learnings-only.yml` (`workflow_call`) with a `changes` job and a `code` output: `true` for non-PR events, empty file lists and PRs over 3000 files; otherwise `true` only when some `filename` or `previous_filename` is outside `.uf/dewey/learnings/`.
+- [x] 1.1 Add `scripts/detect-learnings-only.sh`: reads `git diff --raw --no-renames`, prints `false` only for regular files under `.uf/dewey/learnings/` with no `.`/`..` segments; `true` for anything else, including empty input.
+- [x] 1.2 Add `scripts/detect-learnings-only_test.sh` covering learnings added/edited/deleted, empty input, code files, mixed, renames from code, look-alike paths, `.`/`..`, symlinks, submodules, quoted paths and malformed lines.
+- [x] 1.3 Add `.github/workflows/learnings-only.yml` (`workflow_call`): on PRs, check out the merge commit (`fetch-depth: 2`), run the test, verify `HEAD^2` is the PR head, run the detector on `HEAD^1..HEAD`; on other events output `code=true`.
 
 ## 2. Gate the Callers
 
-- [x] 2.1 [P] `ci.yml`: narrow `push` to `main`; add a `changes` job calling the reusable workflow with `pull-requests: read`; give `build-and-test` `needs: changes` and `if: needs.changes.outputs.code == 'true'`.
-- [x] 2.2 [P] `mega-linter.yml`: add the same `changes` job and gate the `megalinter` job on it.
+- [x] 2.1 `ci.yml`: narrow `push` to `main`; add the `changes` job; gate `build-and-test` on `code == 'true'`; add a `gitleaks` job (pinned 8.30.1, SHA-256 checked) for `code == 'false'`; add `CI OK` (`if: always()`) requiring `changes` success and the chosen job's success.
+- [x] 2.2 `mega-linter.yml`: add the `changes` job and gate `megalinter` on it.
 
 ## 3. Verification
 
-- [x] 3.1 Run `actionlint` on the three workflow files.
-- [x] 3.2 Exercise the detection script locally with a stubbed `gh`: push, learnings only, mixed, rename from code, empty list, over 3000 files, look-alike path (`.uf/dewey/learnings.md`).
-- [x] 3.3 Update the AGENTS.md CI/CD section.
-- [ ] 3.4 After merge, confirm on the next learnings PR that `build-and-test` reports as skipped/passing and the PR merges without a full CI run.
+- [x] 3.1 Run `actionlint` and `shellcheck`.
+- [x] 3.2 Run `bash scripts/detect-learnings-only_test.sh` (22 cases).
+- [x] 3.3 Simulate PR merge commits locally (learnings-only branch behind `main`, and mixed) and confirm the detector output.
+- [x] 3.4 Exercise the `CI OK` step with every combination of `changes`, `gitleaks` and `build-and-test` results.
+- [x] 3.5 Confirm the gitleaks command passes on a real learnings commit and fails on a planted token.
+- [x] 3.6 Update the AGENTS.md CI/CD section.
+
+## 4. Rollout
+
+- [ ] 4.1 After merge, switch the required status check on `main` from `build-and-test` to `CI OK`.
+- [ ] 4.2 On the next learnings PR, confirm `build-and-test` and `MegaLinter` are skipped, `gitleaks` and `CI OK` pass, and the PR merges without a full CI run.

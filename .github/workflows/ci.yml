@@ -24,12 +24,43 @@ jobs:
     uses: ./.github/workflows/learnings-only.yml
     permissions:
       contents: read
-      pull-requests: read
 
-  # Required check. A job skipped by its `if:` reports as passing under
-  # this name, so learnings-only PRs still satisfy branch protection.
-  # Keep this a plain (non-matrix) job: a skipped matrix job would not
-  # report under this name.
+  # Learnings PRs skip MegaLinter, and with it gitleaks. Scan their
+  # commits for secrets here instead.
+  gitleaks:
+    needs: changes
+    if: needs.changes.outputs.code == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+
+      # HEAD is the PR merge commit: HEAD^1 is base, HEAD^2 is the PR head.
+      - name: Scan the pull request's commits
+        run: |
+          "$RUNNER_TEMP/gitleaks" git . \
+            --config .gitleaks.toml \
+            --log-opts='HEAD^1..HEAD^2' \
+            --redact --verbose --no-banner
+
+  # The job's `if:` skips it on learnings-only PRs. Keep it a plain
+  # (non-matrix) job in this workflow, so a skip still reports under this
+  # name; release preflight reads this check on main.
   build-and-test:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -82,3 +113,37 @@ jobs:
             --ai=opencode \
             --model=opencode/claude-sonnet-4-6 \
             --coverprofile=coverage.out
+
+  # Required check. Passes only when detection succeeded and the jobs it
+  # chose ran and passed: build-and-test for code PRs and pushes,
+  # gitleaks for learnings-only PRs. A failed `changes` job would
+  # otherwise skip build-and-test, and a skipped job counts as passing.
+  ci-ok:
+    name: CI OK
+    needs: [changes, gitleaks, build-and-test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check needed jobs
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          GITLEAKS: ${{ needs.gitleaks.result }}
+          BUILD: ${{ needs.build-and-test.result }}
+        run: |
+          echo "changes=$CHANGES code=$CODE gitleaks=$GITLEAKS build-and-test=$BUILD"
+          if [ "$CHANGES" != "success" ]; then
+            echo "::error::change detection did not succeed ($CHANGES)"
+            exit 1
+          fi
+          case "$CODE" in
+            true) want_build=success want_leaks=skipped ;;
+            false) want_build=skipped want_leaks=success ;;
+            *) echo "::error::unexpected code output '$CODE'"; exit 1 ;;
+          esac
+          if [ "$BUILD" != "$want_build" ] || [ "$GITLEAKS" != "$want_leaks" ]; then
+            echo "::error::expected build-and-test=$want_build gitleaks=$want_leaks"
+            exit 1
+          fi
+          echo "CI passed."

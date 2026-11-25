@@ -6,19 +6,22 @@ Reference: [unbound-force/dewey#251](https://github.com/unbound-force/dewey/issu
 
 ## What Changes
 
-- New reusable workflow `.github/workflows/learnings-only.yml` that outputs `code: 'true'` unless the run is a pull request whose changed files are all under `.uf/dewey/learnings/`.
-- `ci.yml`: `build-and-test` (the required check) gains `needs: changes` and `if: needs.changes.outputs.code == 'true'`. The `push` trigger narrows from `'**'` to `main`.
-- `mega-linter.yml`: the `megalinter` job gets the same gate.
+- New `scripts/detect-learnings-only.sh` (with `scripts/detect-learnings-only_test.sh`): reads `git diff --raw --no-renames` and prints `false` only when every change is a regular file under `.uf/dewey/learnings/`.
+- New reusable workflow `.github/workflows/learnings-only.yml`: runs the test and the script on the PR merge commit and outputs `code`.
+- `ci.yml`: `build-and-test` runs only when `code == 'true'`. A new `gitleaks` job scans learnings-only PRs, which no longer get MegaLinter's secret scan. A new `CI OK` job fails unless detection succeeded and the job it chose passed; it becomes the required check. The `push` trigger narrows from `'**'` to `main`.
+- `mega-linter.yml`: the `megalinter` job runs only when `code == 'true'`.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `learnings-only detection`: lists a PR's changed files (both sides of renames) and decides whether the expensive jobs must run.
+- `learnings-only detection`: classifies a PR's merge-commit diff, failing closed.
+- `gitleaks job`: secret scan of a learnings-only PR's commits.
+- `CI OK job`: aggregate required check.
 
 ### Modified Capabilities
 
-- `build-and-test job`: skipped, and reported as passing, on learnings-only PRs.
+- `build-and-test job`: skipped on learnings-only PRs.
 - `megalinter job`: skipped on learnings-only PRs.
 - `ci.yml push trigger`: runs on `main` only.
 
@@ -28,8 +31,8 @@ Reference: [unbound-force/dewey#251](https://github.com/unbound-force/dewey/issu
 
 ## Impact
 
-- CI configuration only: three workflow files plus the AGENTS.md CI/CD section. No Go code changes.
-- Branch protection is unchanged: `build-and-test` stays the only required check, and a job skipped by its `if:` satisfies it.
+- CI configuration and two shell scripts, plus the AGENTS.md CI/CD section. No Go code changes.
+- Branch protection: after merge, the required status check on `main` changes from `build-and-test` to `CI OK`. Until then `build-and-test` stays required and the skip still satisfies it.
 - `push` runs on `main` are unchanged, so the release preflight (which reads `build-and-test` and `MegaLinter` on `main`) is unaffected.
 
 ## Constitution Alignment
@@ -38,7 +41,7 @@ Assessed against the Dewey project constitution (v1.4.0).
 
 ### I. Composability First
 
-**Assessment**: PASS. No new dependencies for the binary; the detection step uses only `gh` and `grep`, preinstalled on the runner.
+**Assessment**: PASS. No new dependencies for the binary. The CI-only gitleaks download is pinned by version and SHA-256.
 
 ### II. Autonomous Collaboration
 
@@ -46,8 +49,8 @@ Assessed against the Dewey project constitution (v1.4.0).
 
 ### III. Observable Quality
 
-**Assessment**: PASS. Every PR that changes code, tests or configuration still runs the full gate. The detection step logs why it decided to run or skip.
+**Assessment**: PASS. Code PRs run the full gate as before. Learnings PRs still get a secret scan, and the detector logs why it chose a full or skipped run. `CI OK` makes a failed or missing detection a failed check instead of a silent skip.
 
 ### IV. Testability
 
-**Assessment**: PASS. The detection script was exercised locally with a stubbed `gh` (push, learnings only, mixed, renamed from code, empty, over the API limit, look-alike path), and the workflows pass `actionlint`. The first learnings PR after merge is the integration test.
+**Assessment**: PASS. The detector is a standalone script with a 22-case test that CI runs on every PR. The `CI OK` decision and the merge-commit detection were exercised locally; the workflows pass `actionlint`.

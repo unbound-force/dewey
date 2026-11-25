@@ -646,10 +646,12 @@ search only:
 
 ## CI/CD
 
-Three GitHub Actions workflows:
+Three GitHub Actions workflows, plus one reusable helper:
 
-1. **CI** (`.github/workflows/ci.yml`): Build + vet + test with `-race -count=1` + Gaze quality report with threshold enforcement on push/PR.
+1. **CI** (`.github/workflows/ci.yml`): Build + vet + test with `-race -count=1` + Gaze quality report with threshold enforcement on push to `main` and on PRs to `main`.
 2. **MegaLinter** (`.github/workflows/mega-linter.yml`): Runs golangci-lint, markdownlint, yamllint, and gitleaks on push/PR to `main`. Auto-commits lint fixes to PR branches.
+
+Both call the reusable `.github/workflows/learnings-only.yml`, whose `changes` job lets PRs that only touch `.uf/dewey/learnings/` skip `build-and-test` and `MegaLinter`. The skip is a job-level `if:`, so the required `build-and-test` check still reports as passing; don't switch it to `paths-ignore`, and keep `build-and-test` a plain, non-matrix job.
 3. **Release** (`.github/workflows/release.yml`): Triggered via `workflow_dispatch` with a `tag` input (e.g., `gh workflow run release.yml -f tag=v1.2.3`), from `main` only (the `validate-branch` job). The `release` job calls the shared pipeline `jflowers/ship/.github/workflows/go-release.yml`, pinned by commit SHA, which runs: `settings` (signing needs all six `MACOS_*` secrets or none; a partial set fails before anything is tagged), `preflight` (`complytime/org-infra`: semver format with pre-release suffixes allowed, tag uniqueness with re-run resilience, semver ordering, CI check status via `build-and-test` + `MegaLinter`, unreleased commits, then the annotated tag), `release` (`complytime/org-infra` GoReleaser: darwin/linux x amd64/arm64 binaries and RPM packages, GitHub Release, cosign signatures, SBOMs), `sign-macos` (Apple Developer ID signing and notarization of the darwin archives, re-uploaded with `checksums.txt` rewritten), and the cask job (sha256s from the final `checksums.txt`, `brew audit`, push to `unbound-force/homebrew-tap`). Secrets are mapped by name because `secrets: inherit` does not reach another owner's workflow. Ship lives in a personal account by decision: the SHA pin keeps the code immutable, and availability depends on that account. Optional skip inputs (`skip_semver_check`, `skip_ci_checks`, `skip_unreleased_check`) allow bypassing individual preflight checks for emergency releases.
 
 ## Sibling Repositories

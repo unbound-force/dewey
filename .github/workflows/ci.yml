@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Push runs only on main. Branches get CI from their pull request;
+  # running both doubled every PR's CI.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -16,7 +18,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides whether build-and-test must run. Pull requests that only
+  # touch .uf/dewey/learnings/ skip it; everything else runs it.
+  changes:
+    uses: ./.github/workflows/learnings-only.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  # Required check. A job skipped by its `if:` reports as passing under
+  # this name, so learnings-only PRs still satisfy branch protection.
+  # Keep this a plain (non-matrix) job: a skipped matrix job would not
+  # report under this name.
   build-and-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

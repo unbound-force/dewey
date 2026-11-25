@@ -19,8 +19,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Pull requests that only touch .uf/dewey/learnings/ skip MegaLinter.
+  changes:
+    uses: ./.github/workflows/learnings-only.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   megalinter:
     name: MegaLinter
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

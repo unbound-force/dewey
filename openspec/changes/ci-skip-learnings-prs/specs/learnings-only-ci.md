@@ -2,11 +2,11 @@
 
 ### Requirement: Learnings-only pull requests skip expensive CI
 
-A pull request whose changes are all regular files under `.uf/dewey/learnings/` MUST skip the `build-and-test` and `MegaLinter` jobs, MUST be scanned for secrets, and the `CI OK` check MUST pass.
+A pull request whose changes are all regular `.md` files under `.uf/dewey/learnings/` MUST skip the `build-and-test` and `MegaLinter` jobs, MUST be scanned for secrets, and the `CI OK` check MUST pass.
 
 #### Scenario: Learnings-only PR
 
-- **GIVEN** a pull request to `main` that only adds, edits or deletes regular files under `.uf/dewey/learnings/`
+- **GIVEN** a pull request to `main` that only adds, edits or deletes regular `.md` files under `.uf/dewey/learnings/`
 - **WHEN** CI and MegaLinter run
 - **THEN** `changes` SHALL output `code=false`, `build-and-test` and `MegaLinter` SHALL be skipped, `gitleaks` SHALL run, and `CI OK` SHALL pass if `gitleaks` passes
 

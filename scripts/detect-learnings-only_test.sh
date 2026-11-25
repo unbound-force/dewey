@@ -41,6 +41,14 @@ check "workflow file" true \
 	":100644 100644 $a $b M${tab}.github/workflows/ci.yml"$'\n'
 check "rename from code (delete side)" true \
 	":100644 000000 $a $z D${tab}store/store.go"$'\n'":000000 100644 $z $a A${tab}$L/store.go"$'\n'
+check "non-markdown file in learnings" true \
+	":000000 100644 $z $a A${tab}$L/notes.txt"$'\n'
+check "markdown look-alike suffix" true \
+	":000000 100644 $z $a A${tab}$L/a.md.go"$'\n'
+check "bare .md name" true \
+	":000000 100644 $z $a A${tab}$L/.md"$'\n'
+check "deleted non-markdown file in learnings" true \
+	":100644 000000 $a $z D${tab}$L/old.json"$'\n'
 check "look-alike file" true \
 	":000000 100644 $z $a A${tab}.uf/dewey/learnings.md"$'\n'
 check "look-alike directory" true \

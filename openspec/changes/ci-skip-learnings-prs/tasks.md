@@ -12,8 +12,8 @@
 
 ## 1. Detection
 
-- [x] 1.1 Add `scripts/detect-learnings-only.sh`: reads `git diff --raw --no-renames`, prints `false` only for regular files under `.uf/dewey/learnings/` with no `.`/`..` segments; `true` for anything else, including empty input.
-- [x] 1.2 Add `scripts/detect-learnings-only_test.sh` covering learnings added/edited/deleted, empty input, code files, mixed, renames from code, look-alike paths, `.`/`..`, symlinks, submodules, quoted paths and malformed lines.
+- [x] 1.1 Add `scripts/detect-learnings-only.sh`: reads `git diff --raw --no-renames`, prints `false` only for regular `.md` files under `.uf/dewey/learnings/` with no `.`/`..` segments; `true` for anything else, including empty input.
+- [x] 1.2 Add `scripts/detect-learnings-only_test.sh` covering learnings added/edited/deleted, non-`.md` files in the directory, empty input, code files, mixed, renames from code, look-alike paths, `.`/`..`, symlinks, submodules, quoted paths and malformed lines.
 - [x] 1.3 Add `.github/workflows/learnings-only.yml` (`workflow_call`): on PRs, check out the merge commit (`fetch-depth: 2`), run the test, verify `HEAD^2` is the PR head, run the detector on `HEAD^1..HEAD`; on other events output `code=true`.
 
 ## 2. Gate the Callers
@@ -24,7 +24,7 @@
 ## 3. Verification
 
 - [x] 3.1 Run `actionlint` and `shellcheck`.
-- [x] 3.2 Run `bash scripts/detect-learnings-only_test.sh` (22 cases).
+- [x] 3.2 Run `bash scripts/detect-learnings-only_test.sh` (26 cases).
 - [x] 3.3 Simulate PR merge commits locally (learnings-only branch behind `main`, and mixed) and confirm the detector output.
 - [x] 3.4 Exercise the `CI OK` step with every combination of `changes`, `gitleaks` and `build-and-test` results.
 - [x] 3.5 Confirm the gitleaks command passes on a real learnings commit and fails on a planted token.

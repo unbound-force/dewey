@@ -2,7 +2,8 @@
 # Decides whether a pull request needs the full CI jobs.
 #
 # Reads `git diff --raw --no-renames` output on stdin and prints one word:
-#   false  every changed path is a regular file under .uf/dewey/learnings/
+#   false  every changed path is a regular .md file under .uf/dewey/learnings/
+#          (added, edited or deleted)
 #   true   anything else, including no input at all
 #
 # It fails closed: any line it does not understand means "true". Reasons
@@ -48,7 +49,8 @@ while IFS= read -r line || [ -n "$line" ]; do
 	*/../* | */./*) full "relative segment in $path" ;;
 	esac
 	case "$path" in
-	"$prefix"?*) ;;
+	"$prefix"?*.md) ;;
+	"$prefix"*) full "not a .md file: $path" ;;
 	*) full "outside $prefix: $path" ;;
 	esac
 done

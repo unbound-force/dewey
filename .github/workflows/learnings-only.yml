@@ -2,7 +2,7 @@
 # Reusable workflow: decides whether a run needs the expensive CI jobs.
 #
 # Outputs code == 'false' only for a pull request whose changed files are
-# all regular files under .uf/dewey/learnings/ (Dewey learnings PRs); see
+# all regular .md files under .uf/dewey/learnings/ (Dewey learnings PRs); see
 # scripts/detect-learnings-only.sh. Callers gate their jobs on it with a
 # job-level `if:`, never with workflow-level `paths-ignore`, and the
 # `CI OK` job in ci.yml fails if this job did not succeed.

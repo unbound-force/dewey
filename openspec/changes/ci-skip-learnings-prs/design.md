@@ -35,7 +35,7 @@ On `pull_request`, checkout gives `refs/pull/N/merge`, the commit CI tests. With
 
 ### D4: Standalone, tested detector that fails closed
 
-`scripts/detect-learnings-only.sh` reads the raw diff and prints `false` only when every line is a regular file (mode 100644, 100755 or deletion) under `.uf/dewey/learnings/` with no `.` or `..` segments. Symlinks, submodules, quoted paths, unparsable lines and empty input all print `true`. `--no-renames` lists both sides of a rename. Its test runs in the `changes` job, so a broken detector fails CI rather than skipping it.
+`scripts/detect-learnings-only.sh` reads the raw diff and prints `false` only when every line is a regular `.md` file (mode 100644, 100755 or deletion) under `.uf/dewey/learnings/` with no `.` or `..` segments. Symlinks, submodules, quoted paths, unparsable lines and empty input all print `true`. `--no-renames` lists both sides of a rename. Its test runs in the `changes` job, so a broken detector fails CI rather than skipping it.
 
 ### D5: gitleaks job for learnings PRs
 

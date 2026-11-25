@@ -43,18 +43,23 @@ homebrew_casks:
     description: "Knowledge graph MCP server with persistence, semantic search, and pluggable content sources"
     homepage: "https://github.com/unbound-force/dewey"
     directory: Casks
-    # skip_upload: true — GoReleaser generates the cask to dist/ but does not
-    # push to the tap. The sign-macos job downloads it, patches darwin checksums
-    # with signed values, then pushes the complete cask to homebrew-tap.
+    # skip_upload: true: GoReleaser writes the cask to dist/ (a release
+    # asset); jflowers/ship's go-release.yml sets its darwin sha256s to the
+    # signed archives', audits it and pushes it to the tap.
     skip_upload: true
     dependencies:
       - cask: ollama-app
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/dewey"]
-          end
+    # custom_block, not hooks: GoReleaser renders hooks as a `postflight do`
+    # block, which Homebrew deprecates (a hard error after 2027-12-11);
+    # postflight_steps isn't in its DSL yet (goreleaser/goreleaser#6873).
+    # Homebrew 7's postflight_steps needs a literal {{staged_path}}; the
+    # backticks stop GoReleaser templating it.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ `{{staged_path}}` }}/dewey"]
+        end
+      end
     repository:
       owner: unbound-force
       name: homebrew-tap

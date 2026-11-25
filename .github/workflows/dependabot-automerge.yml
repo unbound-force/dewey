@@ -1,0 +1,17 @@
+# Dependabot PRs for our own orgs' packages merge themselves, by rebase,
+# once main's required checks pass: patch and minor only. That includes
+# the bumps to jflowers/ship's pins, so this repo picks up each ship
+# release by itself. Third-party updates wait for a person. See
+# jflowers/ship's README, "deps-automerge.yml".
+name: Dependabot auto-merge
+
+on: pull_request
+
+permissions: {}
+
+jobs:
+  automerge:
+    uses: jflowers/ship/.github/workflows/deps-automerge.yml@7c6c0e199099d732e0db93c8c9d86b0064c2759c # v0.9.0
+    permissions:
+      contents: write
+      pull-requests: write

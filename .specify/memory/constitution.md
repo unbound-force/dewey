@@ -1,37 +1,23 @@
 <!--
-  Sync Impact Report
+  SYNC IMPACT REPORT
   ==================
-  Version change: 1.3.0 → 1.4.0 (MINOR: Development Workflow expanded
-    with rules adopted from sibling constitutions)
-  Amendment date: 2026-04-11
+  Version change: 1.4.0 → 1.5.0 (MINOR: Spec-First Development
+    replaced by Tier-Routed Workflow)
+  Amendment date: 2026-11-25
 
   Modified sections:
-    - Development Workflow: Added CI Parity Gate, Task Completion
-      Bookkeeping, Documentation Gate, and Branch Naming conventions
-      (adopted from Replicator constitution v1.0.0). Updated Review
-      Council Gate to include all four reviewers (Adversary, Architect,
-      Guard, Tester) matching Gaze constitution v1.3.0.
-    - Governance: Added supremacy clause — org constitution prevails
-      on conflict (adopted from Replicator).
+    - Development Workflow: "Spec-First Development" (every
+      non-trivial change needs Speckit or OpenSpec) replaced by
+      "Tier-Routed Workflow" — Speckit, OpenSpec, or Quick chosen
+      per change, matching /uf.unleash tier routing. Risk floors
+      keep security, auth, data-loss, and API-breaking changes out
+      of Quick. Branch naming gains `quick/<name>`.
 
-  Unchanged principles:
-    - I. Composability First
-    - II. Autonomous Collaboration
-    - III. Observable Quality
-    - IV. Testability
-
-  Unchanged sections:
-    - Upstream Stewardship
-    - Development Standards
-
-  Templates requiring updates:
-    - .specify/templates/plan-template.md ✅ compatible
-    - .specify/templates/spec-template.md ✅ compatible
-    - .specify/templates/tasks-template.md ✅ compatible
-
-  Constitution check: ALIGNED (all 4 principles match org constitution)
+  Unchanged principles: all
 
   Previous version history:
+    - 1.4.0 (2026-04-11): Development Workflow expanded with rules
+      adopted from sibling constitutions
     - 1.3.0 (2026-04-06): Website Documentation Sync rule added
     - 1.2.0 (2026-03-23): Testability expanded (coverage ratchets,
       CRITICAL missing-coverage-strategy), CI updated (lint added),
@@ -166,28 +152,27 @@ avoided unless no pure-Go alternative exists for a critical feature.
 
 ## Development Workflow
 
-- **Spec-First Development**: All changes that modify production code,
-  test code, agent prompts, embedded assets, or CI configuration MUST
-  be preceded by a spec workflow (either the Speckit pipeline under
-  `specs/` or the OpenSpec pipeline under `openspec/changes/`). The
-  spec artifacts (proposal, design, tasks at minimum) MUST exist
-  before implementation begins. This ensures every change has a
-  planning record, a reviewable intent, and a traceable rationale.
-  Exempt from this requirement:
-    - Constitution amendments (governed by the Governance section below)
-    - Trivial fixes: typo corrections, comment-only changes, and
-      single-line formatting fixes that do not alter behavior
-    - Emergency hotfixes: critical production bugs where the fix is
-      a single well-understood correction (must be retroactively
-      documented)
-  When in doubt, use a spec. The cost of an unnecessary spec is
-  minutes; the cost of an unplanned change is rework, drift, and
-  broken CI.
+- **Tier-Routed Workflow**: Every change MUST follow a workflow
+  tier chosen for that change's scope and risk; no single tier is
+  mandatory. Speckit (`specs/NNN-<name>/`) for strategic work: 3+
+  user stories, cross-cutting or cross-repo. OpenSpec
+  (`openspec/changes/<name>/`) for tactical work: 1-2 stories,
+  bounded blast radius. Quick (no spec artifacts) for trivial
+  fixes, chores, and docs changes where ceremony exceeds value.
+  `/uf.unleash` routes a change with no spec through the
+  `tier-routing` rubric; manual work applies the same rubric.
+  Risk floors escalate only: security-sensitive code,
+  authentication or authorization flows, data-loss paths, or a
+  public API break MUST use OpenSpec at minimum, never Quick.
+  When signals conflict between adjacent tiers, choose the
+  heavier one. Every tier, Quick included, keeps the full
+  quality gates (CI, code review). Constitution amendments follow
+  the Governance section.
 - **Branch Naming**: All work MUST occur on feature branches. Direct
   commits to the main branch are prohibited except for trivial
   documentation fixes. Speckit branches: `NNN-<name>` (e.g.,
   `013-knowledge-compile`). OpenSpec branches: `opsx/<name>` (e.g.,
-  `opsx/fix-chunk-overflow`).
+  `opsx/fix-chunk-overflow`). Quick branches: `quick/<name>`.
 - **Code Review**: Every pull request MUST receive at least one
   approving review before merge.
 - **Review Council Gate**: Before submitting a pull request, agents
@@ -259,5 +244,5 @@ the Constitution Check gate MUST verify that the proposed work
 aligns with all active principles. Constitution violations are
 CRITICAL severity and non-negotiable.
 
-**Version**: 1.4.0 | **Ratified**: 2026-03-22 | **Last Amended**: 2026-04-11
+**Version**: 1.5.0 | **Ratified**: 2026-03-22 | **Last Amended**: 2026-11-25
 **Parent Constitution**: unbound-force org constitution v1.1.0

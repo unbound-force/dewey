@@ -53,4 +53,4 @@ Assessed against the Dewey project constitution (v1.4.0).
 
 ### IV. Testability
 
-**Assessment**: PASS. The detector is a standalone script with a 22-case test that CI runs on every PR. The `CI OK` decision and the merge-commit detection were exercised locally; the workflows pass `actionlint`.
+**Assessment**: PASS. The detector is a standalone script with a 26-case test that CI runs on every PR. The `CI OK` decision and the merge-commit detection were exercised locally; the workflows pass `actionlint`.

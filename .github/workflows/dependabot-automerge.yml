@@ -11,7 +11,7 @@ permissions: {}
 
 jobs:
   automerge:
-    uses: jflowers/ship/.github/workflows/deps-automerge.yml@cf5f4cc67fe86298e5b680bd550b657b073a4198 # v0.8.0
+    uses: jflowers/ship/.github/workflows/deps-automerge.yml@7c6c0e199099d732e0db93c8c9d86b0064c2759c # v0.9.0
     permissions:
       contents: write
       pull-requests: write

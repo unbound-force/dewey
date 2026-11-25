@@ -1,15 +1,11 @@
 ---
 # Reusable workflow: decides whether a run needs the expensive CI jobs.
 #
-# Outputs code == 'true' unless the run is a pull request whose changed
-# files are ALL under .uf/dewey/learnings/ (Dewey learnings PRs). Callers
-# gate their jobs on it with a job-level `if:`, never with workflow-level
-# `paths-ignore`: a job skipped by its `if:` still reports its check as
-# passing, while a workflow that never starts leaves a required check
-# "Expected — Waiting for status to be reported" forever.
-#
-# The caller's job must grant `pull-requests: read` so the file list can
-# be read from the API.
+# Outputs code == 'false' only for a pull request whose changed files are
+# all regular files under .uf/dewey/learnings/ (Dewey learnings PRs); see
+# scripts/detect-learnings-only.sh. Callers gate their jobs on it with a
+# job-level `if:`, never with workflow-level `paths-ignore`, and the
+# `CI OK` job in ci.yml fails if this job did not succeed.
 name: Learnings-only check
 
 on:
@@ -27,16 +23,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      code: ${{ steps.detect.outputs.code }}
     steps:
+      # Pull requests check out refs/pull/N/merge: the commit CI tests.
+      # Two commits of history give its base parent (HEAD^1).
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Test detector
+        if: github.event_name == 'pull_request'
+        run: bash scripts/detect-learnings-only_test.sh
+
       - name: Detect files outside .uf/dewey/learnings/
-        id: filter
+        id: detect
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
@@ -47,34 +52,22 @@ jobs:
             exit 0
           fi
 
-          # The files API lists at most 3000 files; past that the list is
-          # incomplete, so don't trust it.
-          if [ "${CHANGED_FILES:-0}" -gt 3000 ]; then
-            echo "$CHANGED_FILES changed files exceeds the API limit: full CI."
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            exit 0
+          # Fail closed unless HEAD is the merge of the PR head into base.
+          parent=$(git rev-parse --verify --quiet 'HEAD^2^{commit}') || {
+            echo "::error::HEAD is not the pull request merge commit"
+            exit 1
+          }
+          if [ "$parent" != "$HEAD_SHA" ]; then
+            echo "::error::merge commit parent $parent is not PR head $HEAD_SHA"
+            exit 1
           fi
 
-          # Both sides of a rename count: moving a source file into the
-          # learnings directory still deletes it from the code tree.
-          files=$(gh api --paginate \
-            "repos/${REPO}/pulls/${PR_NUMBER}/files?per_page=100" \
-            --jq '.[] | .filename, (.previous_filename // empty)')
-
-          if [ -z "$files" ]; then
-            echo "No changed files reported: full CI."
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          outside=$(printf '%s\n' "$files" \
-            | grep -v '^\.uf/dewey/learnings/' || true)
-
-          if [ -n "$outside" ]; then
-            echo "Files outside .uf/dewey/learnings/: full CI."
-            printf '%s\n' "$outside" | head -n 20
-            echo "code=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Every changed file is a Dewey learning: skipping CI jobs."
-            echo "code=false" >> "$GITHUB_OUTPUT"
-          fi
+          # --no-renames lists both sides of a rename, so moving a source
+          # file into the learnings directory still counts as code.
+          code=$(git diff --raw --no-renames 'HEAD^1' HEAD \
+            | bash scripts/detect-learnings-only.sh)
+          case "$code" in
+            true | false) ;;
+            *) echo "::error::unexpected detector output: $code"; exit 1 ;;
+          esac
+          echo "code=$code" >> "$GITHUB_OUTPUT"

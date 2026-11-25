@@ -20,11 +20,11 @@ concurrency:
 
 jobs:
   # Pull requests that only touch .uf/dewey/learnings/ skip MegaLinter.
+  # ci.yml's gitleaks job scans those PRs for secrets instead.
   changes:
     uses: ./.github/workflows/learnings-only.yml
     permissions:
       contents: read
-      pull-requests: read
 
   megalinter:
     name: MegaLinter

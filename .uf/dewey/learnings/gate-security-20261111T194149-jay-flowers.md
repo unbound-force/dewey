@@ -1,0 +1,10 @@
+---
+tag: gate-security
+author: jay-flowers
+category: pattern
+created_at: 2026-11-11T19:41:49Z
+identity: gate-security-20261111T194149-jay-flowers
+tier: draft
+---
+
+A deterministic gate that mirrors another component's configuration reads must evaluate the union of every path that component could read, not substitute its own canonical resolution rule: dewey #191's gate resolved the opencode-auto-question plugin config XDG-first while the plugin itself only ever reads join(homedir(), ".config", "opencode"), so a divergent XDG_CONFIG_HOME made the gate verify a file the plugin never reads while the plugin's real config went unchecked (fail-open, human gates silently auto-answered). The fix pattern that generalizes: (1) resolve the ordered candidate set the mirrored component could actually read, authoritative path first (verify the component's real load path from its source, e.g. src/config.ts, not from an ecosystem convention like XDG); (2) require every input needed to construct the authoritative path even when alternates are set — an unobservable fallback in the mirrored component (Node homedir()'s passwd fallback when HOME is unset) means the path cannot be verified, so refuse; (3) evaluate every candidate, then refuse on the first offending or unverifiable file in fixed order, so no clean file masks an offending one and the blame is deterministic; (4) source reported state (effective values) from the authoritative path alone, using later candidates only as refusal inputs; (5) make the checked-path set observable in the verdict output on pass and refusal alike, sanitized against control-character injection; (6) decide path coincidence lexically (constructed strings, never symlink evaluation) — lexical comparison can only over-check (same physical file read twice, harmless), never treat two different files as one, and avoids filesystem-dependent nondeterminism and retarget races. Reject relative env values outright: they resolve against the process CWD, which in an agent workspace is the vault and can let indexed untrusted content masquerade as user-global config.

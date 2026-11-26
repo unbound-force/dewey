@@ -97,3 +97,6 @@ Thumbs.db
 .dewey/
 .hive/
 .unbound-force/
+
+# MegaLinter output; its auto-fix commit must not pick it up.
+megalinter-reports/

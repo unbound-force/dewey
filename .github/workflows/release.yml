@@ -57,7 +57,7 @@ jobs:
   release:
     name: Release
     needs: validate-branch
-    uses: jflowers/ship/.github/workflows/go-release.yml@7c6c0e199099d732e0db93c8c9d86b0064c2759c # v0.9.0
+    uses: jflowers/ship/.github/workflows/go-release.yml@01e205c8897d54daac4d30b81710c695bfd1f31b # v0.10.0
     with:
       tag: ${{ inputs.tag }}
       ci_checks: '["build-and-test", "MegaLinter"]'
@@ -68,6 +68,11 @@ jobs:
       skip_ci_checks: ${{ inputs.skip_ci_checks }}
       skip_unreleased_check: ${{ inputs.skip_unreleased_check }}
       tap: unbound-force/homebrew-tap
+      # After each release: what go install and mise's go: backend users
+      # get, and the cask as installed from the published tap.
+      go_install: github.com/unbound-force/dewey/v3
+      go_install_check: '"$BIN" version'
+      tap_install_check: '"$HOMEBREW_PREFIX/bin/dewey" version'
     permissions:
       contents: write
       checks: read

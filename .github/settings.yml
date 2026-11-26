@@ -3,20 +3,11 @@ _extends: .github
 repository:
   has_wiki: true
 
+# main's required check ("CI OK", not strict) lives in unbound-force/.github's
+# safe-settings (repos/dewey.yml); the org code-repos ruleset requires the
+# code owner's approval. protection: null has the Settings app remove the
+# classic branch protection. The block that was here was stale: it said
+# build-and-test with strict: true, while main had been changed to CI OK.
 branches:
   - name: main
-    protection:
-      required_pull_request_reviews:
-        required_approving_review_count: 1
-        dismiss_stale_reviews: true
-        require_code_owner_reviews: true
-        dismissal_restrictions:
-          users: []
-          teams: []
-      required_status_checks:
-        strict: true
-        contexts:
-          - "build-and-test"
-      enforce_admins: false
-      required_linear_history: false
-      restrictions: null
+    protection: null

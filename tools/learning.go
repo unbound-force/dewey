@@ -417,13 +417,13 @@ func (l *Learning) writeLearningFile(opts learningFileOpts) (string, string, err
 	buildContent := func(finalIdentity string) []byte {
 		var buf strings.Builder
 		buf.WriteString("---\n")
-		buf.WriteString(fmt.Sprintf("tag: %s\n", opts.tag))
-		buf.WriteString(fmt.Sprintf("author: %s\n", opts.author))
+		fmt.Fprintf(&buf, "tag: %s\n", opts.tag)
+		fmt.Fprintf(&buf, "author: %s\n", opts.author)
 		if opts.category != "" {
-			buf.WriteString(fmt.Sprintf("category: %s\n", opts.category))
+			fmt.Fprintf(&buf, "category: %s\n", opts.category)
 		}
-		buf.WriteString(fmt.Sprintf("created_at: %s\n", opts.createdAt.UTC().Format(time.RFC3339)))
-		buf.WriteString(fmt.Sprintf("identity: %s\n", finalIdentity))
+		fmt.Fprintf(&buf, "created_at: %s\n", opts.createdAt.UTC().Format(time.RFC3339))
+		fmt.Fprintf(&buf, "identity: %s\n", finalIdentity)
 		buf.WriteString("tier: draft\n")
 		buf.WriteString(opts.temporalFrontmatter)
 		buf.WriteString("---\n\n")

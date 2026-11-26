@@ -408,7 +408,7 @@ func TestStoreLearning_BackwardCompat(t *testing.T) {
 
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning with old tags field",
-		Tags:        "gotcha, vault-walker, 006-unified-ignore",
+		Tags:        "gotcha, vault-walker, 006-unified-ignore", //nolint:staticcheck // SA1019: this test covers the deprecated field
 	})
 	if err != nil {
 		t.Fatalf("StoreLearning error: %v", err)
@@ -463,7 +463,7 @@ func TestStoreLearning_TagPriorityOverTags(t *testing.T) {
 	result, _, err := l.StoreLearning(context.Background(), nil, types.StoreLearningInput{
 		Information: "test learning with both fields",
 		Tag:         "deployment",
-		Tags:        "gotcha, vault-walker",
+		Tags:        "gotcha, vault-walker", //nolint:staticcheck // SA1019: this test covers the deprecated field
 	})
 	if err != nil {
 		t.Fatalf("StoreLearning error: %v", err)

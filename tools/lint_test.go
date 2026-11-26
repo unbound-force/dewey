@@ -724,9 +724,9 @@ func writeKnowledgeFile(t *testing.T, storePath, tag string, seq int, confidence
 
 	var buf strings.Builder
 	buf.WriteString("---\n")
-	buf.WriteString(fmt.Sprintf("tag: %s\n", tag))
+	fmt.Fprintf(&buf, "tag: %s\n", tag)
 	buf.WriteString("category: decision\n")
-	buf.WriteString(fmt.Sprintf("confidence: %s\n", confidence))
+	fmt.Fprintf(&buf, "confidence: %s\n", confidence)
 	buf.WriteString("tier: curated\n")
 	buf.WriteString("created_at: 2025-01-01T00:00:00Z\n")
 	buf.WriteString("store: test-store\n")
@@ -734,8 +734,8 @@ func writeKnowledgeFile(t *testing.T, storePath, tag string, seq int, confidence
 	if len(qualityFlags) > 0 {
 		buf.WriteString("quality_flags:\n")
 		for _, flag := range qualityFlags {
-			buf.WriteString(fmt.Sprintf("  - type: %s\n", flag))
-			buf.WriteString(fmt.Sprintf("    detail: \"Test %s flag\"\n", flag))
+			fmt.Fprintf(&buf, "  - type: %s\n", flag)
+			fmt.Fprintf(&buf, "    detail: \"Test %s flag\"\n", flag)
 		}
 	} else {
 		buf.WriteString("quality_flags: []\n")
@@ -757,15 +757,15 @@ func writeKnowledgeStoresConfig(t *testing.T, deweyDir string, stores []curate.S
 	var buf strings.Builder
 	buf.WriteString("stores:\n")
 	for _, cfg := range stores {
-		buf.WriteString(fmt.Sprintf("  - name: %s\n", cfg.Name))
+		fmt.Fprintf(&buf, "  - name: %s\n", cfg.Name)
 		if len(cfg.Sources) > 0 {
 			buf.WriteString("    sources:\n")
 			for _, src := range cfg.Sources {
-				buf.WriteString(fmt.Sprintf("      - %s\n", src))
+				fmt.Fprintf(&buf, "      - %s\n", src)
 			}
 		}
 		if cfg.Path != "" {
-			buf.WriteString(fmt.Sprintf("    path: %s\n", cfg.Path))
+			fmt.Fprintf(&buf, "    path: %s\n", cfg.Path)
 		}
 	}
 

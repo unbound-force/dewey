@@ -1046,8 +1046,8 @@ func supervisorProfileFix(path string) string {
 }
 
 // supervisorHasDistillProfile reports whether the supervisor config
-// carries a profile whose match.command, trimmed and with one leading
-// "/" stripped (the supervisor's own normalization), names
+// carries a profile whose match.command, trimmed and with its leading
+// "/"s stripped (the supervisor's own normalization), names
 // dewey-distill-auto. The file must be strict JSON with an object at
 // the top level; a "profiles" key that is present but not an array is
 // an error (fail-closed). An absent or null "profiles" is simply no
@@ -1082,7 +1082,7 @@ func supervisorHasDistillProfile(data []byte) (bool, error) {
 		if !ok {
 			continue
 		}
-		if strings.TrimPrefix(strings.TrimSpace(command), "/") == distillCommandProfile {
+		if strings.TrimLeft(strings.TrimSpace(command), "/") == distillCommandProfile {
 			return true, nil
 		}
 	}

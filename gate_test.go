@@ -1568,7 +1568,7 @@ func TestGateDistillUnattended_ProfileMatching(t *testing.T) {
 		{"malformed sibling skipped", `{"profiles": ["x", 3, {"match": "y"}, {"match": {"command": 7}}, {"match": {"command": "dewey-distill-auto"}}]}`, true},
 		{"profile for another command", `{"profiles": [{"name": "distill", "match": {"command": "dewey-distill"}}]}`, false},
 		{"agent-only profile", `{"profiles": [{"match": {"agent": "distiller"}}]}`, false},
-		{"double slash", `{"profiles": [{"match": {"command": "//dewey-distill-auto"}}]}`, false},
+		{"double slash", `{"profiles": [{"match": {"command": "//dewey-distill-auto"}}]}`, true}, // the supervisor strips every leading slash
 		{"empty profiles", `{"profiles": []}`, false},
 		{"profiles absent", `{"other": true}`, false},
 		{"profiles null", `{"profiles": null}`, false},

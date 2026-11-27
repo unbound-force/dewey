@@ -19,10 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Pull requests that only touch .uf/dewey/learnings/ skip MegaLinter.
-  # ci.yml's gitleaks job scans those PRs for secrets instead.
+  # Chore PRs (Dewey learnings or gh-hud toolkit rollouts) skip
+  # MegaLinter. ci.yml's gitleaks job scans those PRs for secrets instead.
   changes:
-    uses: ./.github/workflows/learnings-only.yml
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
     permissions:
       contents: read
 

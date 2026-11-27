@@ -18,14 +18,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Decides whether build-and-test must run. Pull requests that only
-  # touch .uf/dewey/learnings/ skip it; everything else runs it.
+  # Decides whether build-and-test must run. Pull requests whose files are
+  # all Dewey learnings (.uf/dewey/learnings/*.md), or gh-hud toolkit
+  # rollouts (chore/toolkit-* from jflowers, all under .opencode/), skip
+  # it; everything else runs it. See jflowers/ship's README, pr-scope.yml.
   changes:
-    uses: ./.github/workflows/learnings-only.yml
+    uses: jflowers/ship/.github/workflows/pr-scope.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # main, after v0.11.0
     permissions:
       contents: read
 
-  # Learnings PRs skip MegaLinter, and with it gitleaks. Scan their
+  # Chore PRs skip MegaLinter, and with it gitleaks. Scan their
   # commits for secrets here instead.
   gitleaks:
     needs: changes
@@ -58,7 +60,7 @@ jobs:
             --log-opts='HEAD^1..HEAD^2' \
             --redact --verbose --no-banner
 
-  # The job's `if:` skips it on learnings-only PRs. Keep it a plain
+  # The job's `if:` skips it on chore (learnings or toolkit) PRs. Keep it a plain
   # (non-matrix) job in this workflow, so a skip still reports under this
   # name; release preflight reads this check on main.
   build-and-test:
@@ -116,7 +118,7 @@ jobs:
 
   # Required check. Passes only when detection succeeded and the jobs it
   # chose ran and passed: build-and-test for code PRs and pushes,
-  # gitleaks for learnings-only PRs. A failed `changes` job would
+  # gitleaks for chore PRs. A failed `changes` job would
   # otherwise skip build-and-test, and a skipped job counts as passing.
   ci-ok:
     name: CI OK

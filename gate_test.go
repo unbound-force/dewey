@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -1497,20 +1498,43 @@ func TestGateAutoAnswer_NewSourceResolution(t *testing.T) {
 	})
 }
 
-// --- distill-unattended gate (018-weekly-distill-automation, T037/T039) ---
+// --- distill-unattended gate (018-weekly-distill-automation, distill-auto-runner-neutral) ---
 
-// writeSupervisorConfig writes a global supervisor config into configDir.
+// distillProfileConfig is a supervisor config carrying the
+// dewey-distill-auto command profile, in the shape opencode-supervisor
+// v2.9.1 reads.
+const distillProfileConfig = `{"profiles": [{"name": "distill", "match": {"command": "dewey-distill-auto"}, "traceCheck": {"exemptTools": ["dewey_*", "read", "grep", "glob"]}}]}`
+
+// writeSupervisorConfig writes a supervisor config.json into configDir,
+// creating the directory.
 func writeSupervisorConfig(t *testing.T, configDir, content string) {
 	t.Helper()
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir supervisor config dir: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(configDir, supervisorConfigFile), []byte(content), 0o644); err != nil {
 		t.Fatalf("write supervisor config: %v", err)
 	}
 }
 
+// TestGateDistillUnattended_ProfilePresentPasses pins the pass
+// condition: the supervisor config carries a profile whose
+// match.command is dewey-distill-auto.
+func TestGateDistillUnattended_ProfilePresentPasses(t *testing.T) {
+	configDir := t.TempDir()
+	writeSupervisorConfig(t, configDir, distillProfileConfig)
+	v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
+	if !v.Pass {
+		t.Fatalf("expected pass on present command profile, got refusal: %s", v.Reason)
+	}
+	if v.ConfigFile != filepath.Join(configDir, supervisorConfigFile) {
+		t.Errorf("config file = %q, want the injected directory's config.json", v.ConfigFile)
+	}
+}
+
 // TestGateDistillUnattended_AbsentConfigRefuses pins the fail-closed
-// default: with no global supervisor config — the expected state until
-// jflowers/opencode-supervisor#51 ships — the gate refuses with the
-// supervisor-unavailable reason (spec Assumptions).
+// default: with no supervisor config the gate refuses with the
+// supervisor-unavailable reason and a fix naming the file.
 func TestGateDistillUnattended_AbsentConfigRefuses(t *testing.T) {
 	configDir := t.TempDir()
 	v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
@@ -1520,84 +1544,107 @@ func TestGateDistillUnattended_AbsentConfigRefuses(t *testing.T) {
 	if v.Reason != tools.NoOpReasonSupervisorUnavailable {
 		t.Errorf("reason = %q, want %q", v.Reason, tools.NoOpReasonSupervisorUnavailable)
 	}
-	if len(v.Candidates) != 1 || v.Candidates[0] != filepath.Join(configDir, supervisorConfigFile) {
-		t.Errorf("candidates = %v, want exactly the injected config's file", v.Candidates)
+	want := filepath.Join(configDir, supervisorConfigFile)
+	if v.ConfigFile != want {
+		t.Errorf("config file = %q, want %q", v.ConfigFile, want)
+	}
+	if !strings.Contains(v.Fix, want) || !strings.Contains(v.Fix, `"command": "dewey-distill-auto"`) {
+		t.Errorf("fix = %q, want it to name the file and the profile to add", v.Fix)
 	}
 }
 
-// TestGateDistillUnattended_ProfilePresentPasses pins the pass
-// condition: a global config carrying commands.dewey-distill-auto.
-func TestGateDistillUnattended_ProfilePresentPasses(t *testing.T) {
-	configDir := t.TempDir()
-	writeSupervisorConfig(t, configDir, "commands:\n  dewey-distill-auto:\n    deny:\n      - question\n")
-	v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
-	if !v.Pass {
-		t.Fatalf("expected pass on present command profile, got refusal: %s", v.Reason)
+// TestGateDistillUnattended_ProfileMatching covers which profiles count:
+// the command name is normalized (trim, one leading "/"), a profile for
+// another command or an agent-only profile does not match, and
+// malformed elements are skipped rather than decisive.
+func TestGateDistillUnattended_ProfileMatching(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		pass   bool
+	}{
+		{"leading slash and whitespace", `{"profiles": [{"match": {"command": " /dewey-distill-auto "}}]}`, true},
+		{"match among other profiles", `{"profiles": [{"match": {"agent": "autonomy"}}, {"match": {"command": "dewey-distill-auto"}}]}`, true},
+		{"malformed sibling skipped", `{"profiles": ["x", 3, {"match": "y"}, {"match": {"command": 7}}, {"match": {"command": "dewey-distill-auto"}}]}`, true},
+		{"profile for another command", `{"profiles": [{"name": "distill", "match": {"command": "dewey-distill"}}]}`, false},
+		{"agent-only profile", `{"profiles": [{"match": {"agent": "distiller"}}]}`, false},
+		{"double slash", `{"profiles": [{"match": {"command": "//dewey-distill-auto"}}]}`, false},
+		{"empty profiles", `{"profiles": []}`, false},
+		{"profiles absent", `{"other": true}`, false},
+		{"profiles null", `{"profiles": null}`, false},
 	}
-	if v.ConfigFile != filepath.Join(configDir, supervisorConfigFile) {
-		t.Errorf("config file = %q, want the injected candidate", v.ConfigFile)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir := t.TempDir()
+			writeSupervisorConfig(t, configDir, tc.config)
+			v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
+			if v.Pass != tc.pass {
+				t.Fatalf("pass = %v, want %v (reason %q)", v.Pass, tc.pass, v.Reason)
+			}
+			if !tc.pass && v.Reason != tools.NoOpReasonSupervisorUnavailable {
+				t.Errorf("reason = %q, want %q", v.Reason, tools.NoOpReasonSupervisorUnavailable)
+			}
+		})
 	}
 }
 
-// TestGateDistillUnattended_ExistingConfigWithoutProfileRefuses pins
-// that an existing, parseable global config lacking the command profile
-// refuses — the profile's presence, not the file's, is the enablement.
-func TestGateDistillUnattended_ExistingConfigWithoutProfileRefuses(t *testing.T) {
-	configDir := t.TempDir()
-	writeSupervisorConfig(t, configDir, "commands:\n  some-other-command:\n    deny: []\n")
-	v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
-	if v.Pass {
-		t.Fatal("expected refusal when the config exists but lacks the dewey-distill-auto profile")
+// TestGateDistillUnattended_InvalidConfigRefuses pins the fail-closed
+// posture on a config the supervisor could not use: invalid JSON
+// (including JSONC comments — the supervisor uses JSON.parse), a
+// non-object top level, or a "profiles" value that is not an array.
+// Each refusal names the file in the fix.
+func TestGateDistillUnattended_InvalidConfigRefuses(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		reason string
+	}{
+		{"invalid JSON", `{"profiles": [`, "not valid JSON"},
+		{"JSONC comment", "// comment\n" + distillProfileConfig, "not valid JSON"},
+		{"top level not an object", `[` + distillProfileConfig + `]`, "not valid JSON"},
+		{"profiles not an array", `{"profiles": {"distill": {"match": {"command": "dewey-distill-auto"}}}}`, `"profiles" is not an array`},
 	}
-	if v.Reason != tools.NoOpReasonSupervisorUnavailable {
-		t.Errorf("reason = %q, want %q", v.Reason, tools.NoOpReasonSupervisorUnavailable)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configDir := t.TempDir()
+			writeSupervisorConfig(t, configDir, tc.config)
+			v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
+			if v.Pass {
+				t.Fatal("expected fail-closed refusal")
+			}
+			if !strings.Contains(v.Reason, tc.reason) {
+				t.Errorf("reason = %q, want it to contain %q", v.Reason, tc.reason)
+			}
+			if !strings.Contains(v.Fix, filepath.Join(configDir, supervisorConfigFile)) {
+				t.Errorf("fix = %q, want it to name the file", v.Fix)
+			}
+		})
 	}
 }
 
 // TestGateDistillUnattended_RepoLocalWideningIgnored is the FR-016
-// config-precedence test: a repo-local .opencode/supervisor.yaml
-// carrying the command profile cannot widen — the gate reads global
-// config only, and the refusal reason proves the repo-local file was
-// never even read (supervisor-unavailable, not a parse or read error
-// the repo-local file could have caused).
+// config-precedence test: a repo-local supervisor config carrying the
+// command profile cannot widen — the gate reads the global file only,
+// and the refusal reason proves the repo-local file was never read.
 func TestGateDistillUnattended_RepoLocalWideningIgnored(t *testing.T) {
 	workDir := t.TempDir()
-	localDir := filepath.Join(workDir, ".opencode")
-	if err := os.MkdirAll(localDir, 0o755); err != nil {
-		t.Fatalf("mkdir repo-local dir: %v", err)
-	}
-	// A repo-local supervisor.yaml that would pass the gate if read.
-	if err := os.WriteFile(filepath.Join(localDir, supervisorConfigFile), []byte("commands:\n  dewey-distill-auto:\n    allow:\n      - question\n"), 0o644); err != nil {
-		t.Fatalf("write repo-local supervisor.yaml: %v", err)
-	}
-	globalDir := t.TempDir() // no supervisor.yaml — the expected state
-	v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: globalDir})
+	t.Chdir(workDir)
+	writeSupervisorConfig(t, filepath.Join(workDir, ".opencode", "supervisor"), distillProfileConfig)
+	writeSupervisorConfig(t, filepath.Join(workDir, ".opencode"), distillProfileConfig)
+	home := t.TempDir() // no global config
+	v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"HOME": home})})
 	if v.Pass {
-		t.Fatal("expected refusal: repo-local supervisor.yaml must not widen the gate")
+		t.Fatal("expected refusal: repo-local supervisor config must not widen the gate")
 	}
 	if v.Reason != tools.NoOpReasonSupervisorUnavailable {
 		t.Errorf("reason = %q, want %q — the repo-local file must never be read", v.Reason, tools.NoOpReasonSupervisorUnavailable)
 	}
 }
 
-// TestGateDistillUnattended_UnparseableConfigRefuses pins the
-// fail-closed posture on a malformed global config.
-func TestGateDistillUnattended_UnparseableConfigRefuses(t *testing.T) {
-	configDir := t.TempDir()
-	writeSupervisorConfig(t, configDir, "commands: [not, a, map]\n")
-	v := evaluateDistillUnattendedGate(gateOptions{supervisorConfigDir: configDir})
-	if v.Pass {
-		t.Fatal("expected refusal on unparseable supervisor config")
-	}
-	if !strings.Contains(v.Reason, "not valid YAML") {
-		t.Errorf("reason = %q, want a YAML parse failure", v.Reason)
-	}
-}
-
 // TestGateDistillUnattended_UnreadableConfigRefuses pins the
 // fail-closed posture on an unreadable config path: a regular file
-// where the supervisor.yaml path should be fails with ENOTDIR, which is
-// not IsNotExist, so the gate refuses rather than skipping.
+// where the config directory should be fails with ENOTDIR, which is
+// not IsNotExist, so the gate refuses rather than treating it as absent.
 func TestGateDistillUnattended_UnreadableConfigRefuses(t *testing.T) {
 	notADir := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
@@ -1612,42 +1659,81 @@ func TestGateDistillUnattended_UnreadableConfigRefuses(t *testing.T) {
 	}
 }
 
-// TestGateDistillUnattended_HomeResolutionRefused pins the fail-closed
-// home/XDG resolution: a relative HOME is unverifiable.
-func TestGateDistillUnattended_HomeResolutionRefused(t *testing.T) {
-	v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"HOME": "relative/home"})})
-	if v.Pass {
-		t.Fatal("expected refusal on a relative HOME")
-	}
-	if !strings.Contains(v.Reason, "cannot resolve the supervisor config location") {
-		t.Errorf("reason = %q, want a resolution failure", v.Reason)
+// TestGateDistillUnattended_ConfigLocation pins the supervisor's own
+// resolution through the lookupEnv seam with real files: the home path
+// by default, an absolute XDG_CONFIG_HOME taking precedence (the home
+// file is then not read), and a blank or relative XDG_CONFIG_HOME
+// ignored like unset.
+func TestGateDistillUnattended_ConfigLocation(t *testing.T) {
+	home := t.TempDir()
+	homeDir := filepath.Join(home, ".config", "opencode", "supervisor")
+	homeFile := filepath.Join(homeDir, supervisorConfigFile)
+	writeSupervisorConfig(t, homeDir, distillProfileConfig)
+
+	t.Run("home path when XDG unset", func(t *testing.T) {
+		v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"HOME": home})})
+		if !v.Pass || v.ConfigFile != homeFile {
+			t.Fatalf("want pass naming %s, got %+v", homeFile, v)
+		}
+	})
+	t.Run("XDG takes precedence over home", func(t *testing.T) {
+		xdg := t.TempDir()
+		xdgDir := filepath.Join(xdg, "opencode", "supervisor")
+		writeSupervisorConfig(t, xdgDir, `{"profiles": []}`)
+		v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"HOME": home, "XDG_CONFIG_HOME": xdg})})
+		if v.Pass {
+			t.Fatal("expected refusal: the XDG file has no profile and the home file must not be read")
+		}
+		if want := filepath.Join(xdgDir, supervisorConfigFile); v.ConfigFile != want {
+			t.Errorf("config file = %q, want %q", v.ConfigFile, want)
+		}
+	})
+	t.Run("XDG absent file refuses even with a home profile", func(t *testing.T) {
+		xdg := t.TempDir()
+		v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"HOME": home, "XDG_CONFIG_HOME": xdg})})
+		if v.Pass || v.Reason != tools.NoOpReasonSupervisorUnavailable {
+			t.Fatalf("want supervisor-unavailable refusal, got %+v", v)
+		}
+	})
+	for _, xdg := range []string{"relative/dir", "", "   "} {
+		t.Run("ignored XDG "+strconv.Quote(xdg), func(t *testing.T) {
+			v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"HOME": home, "XDG_CONFIG_HOME": xdg})})
+			if !v.Pass || v.ConfigFile != homeFile {
+				t.Fatalf("want pass naming %s, got %+v", homeFile, v)
+			}
+		})
 	}
 }
 
-// TestGateDistillUnattended_XDGCandidateChecked pins the home-then-XDG
-// candidate set: both files are named in the verdict when XDG differs.
-func TestGateDistillUnattended_XDGCandidateChecked(t *testing.T) {
-	v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{
-		"HOME":            "/home/example",
-		"XDG_CONFIG_HOME": "/xdg/example",
-	})})
-	if v.Pass {
-		t.Fatal("expected refusal — neither candidate exists")
+// TestGateDistillUnattended_HomeResolutionRefused pins the fail-closed
+// home resolution when no usable XDG_CONFIG_HOME is set: a missing or
+// relative HOME is unverifiable.
+func TestGateDistillUnattended_HomeResolutionRefused(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"HOME": "relative/home"},
+		{},
+		{"HOME": "relative/home", "XDG_CONFIG_HOME": "relative/xdg"},
+	} {
+		v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(env)})
+		if v.Pass {
+			t.Fatalf("env %v: expected refusal", env)
+		}
+		if !strings.Contains(v.Reason, "cannot resolve the supervisor config location") {
+			t.Errorf("env %v: reason = %q, want a resolution failure", env, v.Reason)
+		}
 	}
-	want := []string{
-		filepath.Join("/home/example", ".config", supervisorConfigDirName, supervisorConfigFile),
-		filepath.Join("/xdg/example", supervisorConfigDirName, supervisorConfigFile),
-	}
-	if !slices.Equal(v.Candidates, want) {
-		t.Errorf("candidates = %v, want %v", v.Candidates, want)
+	// An absolute XDG_CONFIG_HOME needs no HOME.
+	v := evaluateDistillUnattendedGate(gateOptions{lookupEnv: mapEnv(map[string]string{"XDG_CONFIG_HOME": "/xdg/example"})})
+	if want := filepath.Join("/xdg/example", "opencode", "supervisor", supervisorConfigFile); v.ConfigFile != want {
+		t.Errorf("config file = %q, want %q", v.ConfigFile, want)
 	}
 }
 
 // TestGateDistillUnattended_RecordsNoOpArtifact pins the FR-021 audit
 // surface on the refused path: the run that never started still records
-// its artifact, and the verdict carries the notice comment text.
+// its artifact, and the verdict names it — with no notice-comment line.
 func TestGateDistillUnattended_RecordsNoOpArtifact(t *testing.T) {
-	globalDir := t.TempDir() // absent config — the expected state
+	globalDir := t.TempDir() // absent config
 	vault := t.TempDir()
 	cmd := &cobra.Command{}
 	var buf bytes.Buffer
@@ -1677,11 +1763,31 @@ func TestGateDistillUnattended_RecordsNoOpArtifact(t *testing.T) {
 	if record.ScopeSize != 0 || len(record.Themes) != 0 || len(record.PRsTouched) != 0 {
 		t.Errorf("record = %+v, want an empty no-op record", record)
 	}
-	if !strings.Contains(buf.String(), "Notice: "+supervisorUnavailableNotice) {
-		t.Errorf("verdict output lacks the notice line: %q", buf.String())
-	}
 	if !strings.Contains(buf.String(), "Artifact: ") {
 		t.Errorf("verdict output lacks the artifact line: %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "Notice:") {
+		t.Errorf("verdict output must not carry a notice line: %q", buf.String())
+	}
+}
+
+// TestGateDistillUnattended_PassRecordsNothing pins that a passing gate
+// exits cleanly and writes no artifact.
+func TestGateDistillUnattended_PassRecordsNothing(t *testing.T) {
+	globalDir := t.TempDir()
+	writeSupervisorConfig(t, globalDir, distillProfileConfig)
+	vault := t.TempDir()
+	cmd := &cobra.Command{}
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := runDistillUnattendedGate(cmd, gateOptions{supervisorConfigDir: globalDir, vaultDir: vault}); err != nil {
+		t.Fatalf("error = %v, want pass", err)
+	}
+	if _, err := os.Stat(filepath.Join(vault, ".uf", "dewey", "distill-runs")); !os.IsNotExist(err) {
+		t.Errorf("a passing gate must record no artifact (stat err = %v)", err)
+	}
+	if !strings.Contains(buf.String(), "Distill-unattended gate: PASS") {
+		t.Errorf("verdict output = %q, want PASS", buf.String())
 	}
 }
 
@@ -1708,25 +1814,30 @@ func TestGateDistillUnattended_ArtifactFailureWarnsNotErrors(t *testing.T) {
 
 // TestRenderDistillUnattendedVerdict pins the pass and refusal shapes.
 func TestRenderDistillUnattendedVerdict(t *testing.T) {
-	pass := renderDistillUnattendedVerdict(distillUnattendedVerdict{
-		Pass:       true,
-		ConfigFile: "/home/example/.config/opencode-supervisor/supervisor.yaml",
-	}, "")
-	for _, want := range []string{"Distill-unattended gate: PASS", "Config file: ", "Command profile: dewey-distill-auto"} {
+	const file = "/home/example/.config/opencode/supervisor/config.json"
+	pass := renderDistillUnattendedVerdict(distillUnattendedVerdict{Pass: true, ConfigFile: file}, "")
+	for _, want := range []string{"Distill-unattended gate: PASS", "Config file: " + file, "Command profile: dewey-distill-auto"} {
 		if !strings.Contains(pass, want) {
 			t.Errorf("pass render lacks %q: %q", want, pass)
 		}
 	}
-	if strings.Contains(pass, "Notice:") {
-		t.Errorf("pass render must not carry the notice line: %q", pass)
-	}
 	refusal := renderDistillUnattendedVerdict(distillUnattendedVerdict{
-		Candidates: []string{"/home/example/.config/opencode-supervisor/supervisor.yaml"},
+		ConfigFile: file,
 		Reason:     tools.NoOpReasonSupervisorUnavailable,
+		Fix:        supervisorProfileFix(file),
 	}, "/vault/.uf/dewey/distill-runs/example.json")
-	for _, want := range []string{"Distill-unattended gate: REFUSED", "Checked: ", "Reason: ", "Artifact: ", "Notice: " + supervisorUnavailableNotice} {
+	for _, want := range []string{"Distill-unattended gate: REFUSED", "Checked: " + file, "Reason: " + tools.NoOpReasonSupervisorUnavailable, "Fix: ", "Artifact: "} {
 		if !strings.Contains(refusal, want) {
 			t.Errorf("refusal render lacks %q: %q", want, refusal)
 		}
+	}
+	for _, out := range []string{pass, refusal} {
+		if strings.Contains(out, "Notice:") {
+			t.Errorf("render must not carry a notice line: %q", out)
+		}
+	}
+	unresolved := renderDistillUnattendedVerdict(distillUnattendedVerdict{Reason: "cannot resolve"}, "")
+	if strings.Contains(unresolved, "Checked:") {
+		t.Errorf("an unresolved location must not render a Checked line: %q", unresolved)
 	}
 }

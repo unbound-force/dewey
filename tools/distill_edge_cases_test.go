@@ -1,9 +1,7 @@
 // Edge-case composition coverage (specs/018-weekly-distill-automation
 // T044; spec.md Edge Cases). The focused suites already pin each edge
 // case in isolation — malformed policy entries (TestLoadDistillPolicy_*
-// in scope_test.go), the issue-level dedup invariant
-// (TestDistillWorkflowTemplate_DedupInvariant at the repo root) plus
-// racing runs and leased-push retries (TestManageRollingPRs_* in
+// in scope_test.go), racing runs and leased-push retries (TestManageRollingPRs_* in
 // rolling_pr_test.go), learnings arriving while a PR is under review
 // (TestManageRollingPRs_SecondRunUpdatesPreservesHumanCommit), the
 // degraded non-git-vault fallback (TestComputeScope_NonGitFallsBack-

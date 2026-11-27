@@ -4,8 +4,8 @@ package tools
 // (specs/018-weekly-distill-automation T042; spec.md US6 / SC-007): one
 // fixture repository drives the real MCP tool pipeline in dispatch order —
 // scope → group_learners → rolling_pr — then the two human-side steps the
-// cycle allows (a reviewer's tier: validated suggestion applied by gh-hud's
-// feedback task, and the final merge), and finally verifies the #203 trust
+// cycle allows (a reviewer's tier: validated suggestion applied by a
+// feedback agent, and the final merge), and finally verifies the #203 trust
 // derivation through the exact seam the indexing routes use: a blob
 // resolver built by gitref.NewPageBlobResolver over the
 // ".uf/dewey/compiled" workspace-layout pathspec feeding
@@ -21,10 +21,10 @@ package tools
 // compiled/ and knowledge/ layouts today — this test deliberately does
 // NOT assert that display for workspace-layout articles.
 //
-// The schedule → issue → dispatch trigger stage that precedes the Go
-// pipeline is verified against the shipped workflow template in
-// workflow_template_test.go (TestDistillWorkflowTemplate_DedupInvariant,
-// FR-003/SC-002); the interactive /dewey-distill preservation (both
+// Dewey ships no trigger stage: any scheduler or agent runner invokes
+// /dewey-distill-auto (distill-auto-runner-neutral); the startup gate
+// is verified in gate_test.go. The interactive /dewey-distill
+// preservation (both
 // HUMAN_GATE questions, full curator tool set, FR-018) is verified in
 // cli_test.go (TestDeweyDistill_CuratorBindingAndHumanGates).
 
@@ -167,7 +167,7 @@ func TestSC007_UnattendedCycleYieldsValidatedViaGitVouch(t *testing.T) {
 		}
 	}
 
-	// --- Stage: the reviewer's vouch. gh-hud's feedback task applies
+	// --- Stage: the reviewer's vouch. A feedback agent applies
 	// the tier: validated suggestion on the auth PR branch (T041's
 	// contract); the governance article keeps its draft tier. ---
 	rollingGit(t, vaultDir, "checkout", "-q", authBranch)

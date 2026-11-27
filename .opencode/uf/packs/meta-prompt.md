@@ -97,21 +97,28 @@ mark genuinely optional practice.
 
 ## Workflow Tiers and Artifact Shapes
 
-- **MP-007** [MUST] Route every non-trivial change through a
-  spec workflow tier before implementation: strategic work
-  (three or more user stories, or cross-repo scope) uses
-  Speckit — `specs/NNN-<name>/` artifacts on an `NNN-<name>`
-  branch; tactical work (single repo, fewer than three
-  stories) uses OpenSpec — `openspec/changes/<name>/`
-  artifacts on an `opsx/<name>` branch; trivial fixes use
-  the `quick/<name>` branch created by `/uf.unleash` tier
-  routing. When in doubt, start with OpenSpec.
+- **MP-007** [MUST] Route every change to a workflow tier
+  chosen for its scope and risk before implementation; no
+  single tier is mandatory. Strategic work (three or more user
+  stories, cross-cutting or cross-repo scope) uses Speckit —
+  `specs/NNN-<name>/` artifacts on an `NNN-<name>` branch;
+  tactical work (one or two stories, bounded blast radius)
+  uses OpenSpec — `openspec/changes/<name>/` artifacts on an
+  `opsx/<name>` branch; trivial fixes, chores, and docs
+  changes use Quick — a `quick/<name>` branch with no spec
+  artifacts. `/uf.unleash` applies the `tier-routing` rubric
+  automatically; manual routing applies the same rubric. When
+  signals conflict between adjacent tiers, choose the heavier
+  one.
 
-- **MP-008** [MUST] A spec MUST precede new features,
-  refactoring that changes signatures, test additions across
-  multiple functions, agent changes, CI changes, and
-  data-model changes. Constitution amendments, typo fixes,
-  and emergency hotfixes are exempt; hotfixes MUST be
+- **MP-008** [MUST] A change touching security-sensitive code
+  (secrets, tokens, crypto, permissions), authentication or
+  authorization flows, data-loss paths (migrations,
+  deletions, destructive operations), or a public API
+  contract MUST route to OpenSpec at minimum, never Quick.
+  Every tier, Quick included, MUST pass CI and code review
+  before merge. Constitution amendments and emergency
+  hotfixes are exempt from spec artifacts; hotfixes MUST be
   documented retroactively.
 
 - **MP-009** [MUST] A change MUST escalate its tier when its

@@ -287,6 +287,14 @@ export interface InvokeAgentResult {
    * length policy to non-empty (truncated) runs (RD-FR-060).
    */
   readonly finish_reason?: string | null
+  /**
+   * Name of the child's message error (for example
+   * `MessageAbortedError`), present only on `child_message_error`
+   * failures (delegate-abort-recovery D2, DAR-FR-002). The executor's
+   * own `retryable` value is unchanged; callers that can read durable
+   * state decide whether the abort is resumable.
+   */
+  readonly message_error_name?: string
 }
 
 /** Injected dependencies for the shared executor's child session lifecycle. */
@@ -372,7 +380,19 @@ export function errorText(error: unknown): string {
  * @returns A bounded message safe to retain in invocation provenance.
  */
 export function sanitizeInvocationError(message: string): string {
-  const sanitized = message
+  return redactInvocationText(message).slice(0, MAX_ERROR_LENGTH)
+}
+
+/**
+ * Redacts credentials, bearer values, URL queries, and absolute home
+ * paths without bounding the length (delegate-abort-recovery D4): the
+ * shared redaction behind sanitizeInvocationError, for callers that apply
+ * their own bound.
+ * @param message Untrusted provider, runtime, or child-session text.
+ * @returns The redacted text, unbounded.
+ */
+export function redactInvocationText(message: string): string {
+  return message
     .replace(/\bBearer\s+[^\s,;"']+/gi, "Bearer [REDACTED]")
     .replace(
       /\b(api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|token|secret|password|credential)s?\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;"']+)/gi,
@@ -381,7 +401,6 @@ export function sanitizeInvocationError(message: string): string {
     .replace(/(https?:\/\/[^\s?#]+)\?[^\s#]*/gi, "$1?[REDACTED]")
     .replace(/(?:\/Users|\/home)\/[^/\s]+(?:\/[^\s,;:"']*)?/g, "~/[REDACTED]")
     .replace(/[A-Za-z]:\\+Users\\+[^\\\s]+(?:\\+[^\s,;:"']*)?/g, "~\\[REDACTED]")
-  return sanitized.slice(0, MAX_ERROR_LENGTH)
 }
 
 export function responseFailure(label: string, response: ResponseErrorLike): string {
@@ -913,8 +932,8 @@ export async function executeAgentSession(
     const finishReason = responseFinishReason(prompted.data.parts)
 
     if (prompted.data.info.error !== undefined) {
-      return withChild(
-        failedResult(
+      return withChild({
+        ...failedResult(
           provenance,
           "child_message_error",
           errorText(prompted.data.info.error),
@@ -925,7 +944,8 @@ export async function executeAgentSession(
           text,
           usage,
         ),
-      )
+        message_error_name: prompted.data.info.error.name,
+      })
     }
     // Fail-closed guard (RD-FR-059, design D1): a child whose final text is
     // empty after trimming did not complete its response — including the

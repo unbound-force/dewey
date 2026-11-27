@@ -205,12 +205,18 @@ Insert this verbatim:
 ```markdown
 ## Specification Workflow
 
-All non-trivial changes MUST be preceded by a spec workflow.
+Every change follows a workflow tier chosen for that change's
+scope and risk — no single tier is mandatory. `/uf.unleash`
+picks the tier automatically through the `tier-routing` skill
+when a change starts on `main` or an unrecognized branch (a
+tier-named branch missing its artifacts stops instead); agents
+working by hand apply the same rubric.
 
 | Tier | Tool | When | Artifacts |
 |------|------|------|-----------|
 | Strategic | Speckit | >= 3 stories, cross-repo | `specs/NNN-*/` |
 | Tactical | OpenSpec | < 3 stories, single-repo | `openspec/changes/*/` |
+| Quick | `/uf.unleash` routing | trivial fixes, chores, docs | `quick/<name>` branch |
 
 Pipeline: `constitution → specify → clarify → plan → tasks →
 analyze → checklist → implement`
@@ -220,19 +226,21 @@ before tasks. Tasks before implementation. Spec artifacts MUST
 be committed/pushed before implementation begins.
 
 **Branches**: Speckit: `NNN-<name>`. OpenSpec: `opsx/<name>`.
+Quick: `quick/<name>` (no spec artifacts, full quality gates).
 
 **Task bookkeeping**: Mark checkboxes `[x]` immediately on
 completion. `[P]` marks parallel-eligible tasks.
 
-**When in doubt**: Start with OpenSpec. Escalate to Speckit if
-scope grows beyond 3 stories or crosses repo boundaries.
+**When in doubt**: Choose the heavier of two adjacent tiers.
+Escalate OpenSpec to Speckit if scope grows beyond 3 stories or
+crosses repo boundaries.
 
-**What requires a spec**: New features, refactoring that changes
-signatures, test additions across multiple functions, agent
-changes, CI changes, data model changes.
+**Risk floors** (escalate only): security-sensitive code,
+authentication/authorization flows, data-loss paths, or a
+public API break MUST use OpenSpec at minimum — never Quick.
 
-**Exempt**: Constitution amendments, typo fixes, emergency
-hotfixes (retroactively documented).
+**Quality gates apply to every tier**: Quick skips spec
+artifacts, not review — CI and code review still gate merge.
 ```
 
 #### Section 8: Knowledge Retrieval (verbatim template, conditional)

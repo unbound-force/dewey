@@ -280,6 +280,32 @@ export function computeDiffScope(git: GitExec, cwd: string): DiffScope {
   }
 }
 
+/**
+ * Diff scope against an explicit base commit (review-head-preflight
+ * design D6): the merge-base of `baseSha` and HEAD in `cwd`, then the
+ * diff from it. Default-branch resolution is skipped, so a PR is scoped
+ * against its own base. A shallow clone or a git failure skips the
+ * filter; an empty diff is taken at face value because the base is
+ * explicit.
+ */
+export function computeDiffScopeFromBase(git: GitExec, cwd: string, baseSha: string): DiffScope {
+  let mergeBase: string | null = null
+  try {
+    mergeBase = git(["merge-base", baseSha, "HEAD"], cwd)
+    if (git(["rev-parse", "--is-shallow-repository"], cwd) === "true") {
+      return { files: null, fallback_reason: "shallow clone", base_ref: baseSha, merge_base: mergeBase }
+    }
+    const files = git(["diff", "--name-only", mergeBase], cwd)
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .sort()
+    return { files, fallback_reason: null, base_ref: baseSha, merge_base: mergeBase }
+  } catch {
+    return { files: null, fallback_reason: "git diff failed", base_ref: baseSha, merge_base: mergeBase }
+  }
+}
+
 /** Keep the last `limit` bytes of output, marking the cut. */
 export function tailOutput(output: string, limit: number = OUTPUT_TAIL_BYTES): string {
   const bytes = Buffer.from(output, "utf8")
@@ -368,9 +394,10 @@ async function execute(
 
 /**
  * soft-gate baseline: re-run each failing required check in a detached
- * worktree at the merge-base, executing the branch's own copy of the
+ * worktree at the merge-base, executing the config root's copy of the
  * script (a stealth `.uf/` tree is absent from the worktree) with
- * UF_PREFLIGHT_PROJECT_ROOT pointing at the primary checkout. Baseline
+ * UF_PREFLIGHT_PROJECT_ROOT pointing at the config root. The worktree is
+ * added from `execRoot`, which shares the object store with `cwd`. Baseline
  * pass → branch-caused; baseline fail → pre-existing; no baseline →
  * unknown (treated as branch-caused).
  */
@@ -378,6 +405,7 @@ async function classifyFailures(
   failing: readonly DeclaredCheck[],
   mergeBase: string | null,
   cwd: string,
+  execRoot: string,
   deps: PreflightDeclaredDependencies,
 ): Promise<{ method: "worktree" | "unavailable"; causality: Map<string, Causality> }> {
   const causality = new Map<string, Causality>(failing.map((check) => [check.name, "unknown"]))
@@ -387,7 +415,7 @@ async function classifyFailures(
   let worktree: string | null = null
   try {
     worktree = await deps.makeTempDir()
-    deps.git(["worktree", "add", "--detach", worktree, mergeBase], cwd)
+    deps.git(["worktree", "add", "--detach", worktree, mergeBase], execRoot)
   } catch {
     if (worktree !== null) {
       await deps.removeDir(worktree)
@@ -401,7 +429,7 @@ async function classifyFailures(
     }
   } finally {
     try {
-      deps.git(["worktree", "remove", "--force", worktree], cwd)
+      deps.git(["worktree", "remove", "--force", worktree], execRoot)
     } catch {
       // Fall through to directory removal; `git worktree prune` reclaims the entry.
     }
@@ -413,6 +441,14 @@ async function classifyFailures(
 /**
  * Run every declared check for the repository at `cwd` under `mode`.
  *
+ * `cwd` is the config root: `.uf/preflight.yaml`, each `run` executable,
+ * and UF_PREFLIGHT_PROJECT_ROOT always come from it, so a reviewed tree
+ * cannot rewrite the gate it is judged by. `execRoot` is where checks
+ * run and whose HEAD defines the diff scope and the soft-gate
+ * merge-base (review-head-preflight design D6); it defaults to `cwd`,
+ * which is the behavior before that change. `baseSha`, when given,
+ * scopes against that commit instead of the resolved default branch.
+ *
  * @returns config_present=false (and no checks) when `.uf/preflight.yaml`
  *   is absent.
  * @throws PreflightConfigError when the file is present but invalid; no
@@ -422,7 +458,11 @@ export async function runDeclaredChecks(
   cwd: string,
   deps: PreflightDeclaredDependencies,
   mode: PreflightMode = "hard-gate",
+  execRoot: string = cwd,
+  baseSha?: string,
 ): Promise<DeclaredChecksData> {
+  const scopeOf = (): DiffScope =>
+    baseSha === undefined ? computeDiffScope(deps.git, execRoot) : computeDiffScopeFromBase(deps.git, execRoot, baseSha)
   const configPath = `${cwd}/${PREFLIGHT_CONFIG_PATH}`
   if (!deps.fileExists(configPath)) {
     return {
@@ -447,7 +487,7 @@ export async function runDeclaredChecks(
   const config = parsePreflightConfig(raw)
   const needsDiff = config.checks.some((check) => check.paths.length > 0)
   let scope: DiffScope = needsDiff
-    ? computeDiffScope(deps.git, cwd)
+    ? scopeOf()
     : { files: null, fallback_reason: "no check declares paths", base_ref: null, merge_base: null }
 
   const results: DeclaredCheckResult[] = []
@@ -467,7 +507,7 @@ export async function runDeclaredChecks(
       continue
     }
 
-    const run = await execute(check, cwd, cwd, deps)
+    const run = await execute(check, cwd, execRoot, deps)
     const passed = run.exitCode === 0 && !run.timedOut
     const status: DeclaredCheckStatus =
       check.gate === "advisory" ? (passed ? "ADVISORY PASS" : "ADVISORY FAIL") : passed ? "PASS" : "FAIL"
@@ -489,11 +529,11 @@ export async function runDeclaredChecks(
   if (mode === "soft-gate" && requiredFailures.length > 0) {
     if (!needsDiff) {
       // Only the merge-base is needed; a real fallback reason outranks the no-paths note.
-      const recomputed = computeDiffScope(deps.git, cwd)
+      const recomputed = scopeOf()
       scope = { ...recomputed, files: null, fallback_reason: recomputed.fallback_reason ?? "no check declares paths" }
     }
     const failing = config.checks.filter((check) => requiredFailures.includes(check.name))
-    const classified = await classifyFailures(failing, scope.merge_base, cwd, deps)
+    const classified = await classifyFailures(failing, scope.merge_base, cwd, execRoot, deps)
     baselineMethod = classified.method
     checks = results.map((result) =>
       result.status === "FAIL" ? { ...result, causality: classified.causality.get(result.name) ?? "unknown" } : result,

@@ -20,6 +20,37 @@ an execution policy.
 
 The consuming command specifies which mode to use.
 
+## PR-Mode Inputs (review head root)
+
+A PR-mode consumer (`/uf.review-pr`, `/uf.review-council`
+with a PR) passes the whole `review_head_root` prepare
+result: `root`, `changed_files`, `base_sha`, the
+provenance fields `head_sha`, `method`, `config_sha`, and
+`config_dirty`, and the rendered report lines
+`provenance_line` and `gaze_skip_note`. When `root` is
+supplied:
+
+- Every shell command in Phases 1, 2, and 4 runs with
+  `root` as its working directory. Never read workflows,
+  probe config files, or run tools from the agent's own
+  directory: it may be a different commit.
+- Phase 4a Tier 2 runs `git worktree add` (and `git
+  worktree remove`) from `root`, but runs the failing tools
+  inside the baseline worktree it creates, never in `root`
+  (see Phase 4a). Running them in `root` would re-test the
+  branch and misclassify branch-caused failures as
+  pre-existing.
+- Phase 2a takes `changed_files` as the branch diff (see
+  Phase 2a).
+- Phase 2b and Phase 4a use `base_sha` (see those phases).
+- Phase 5 inserts the prepare result's rendered
+  `provenance_line` verbatim; the tool renders the whole
+  line, e.g. `Gates ran at: <head_sha> (<method>); config
+  from <config_sha>` with ` (dirty)` appended after
+  `<config_sha>` when `config_dirty` is true.
+
+Without `root`, every phase behaves as described below.
+
 ---
 
 ## Phase 1: CI Workflow Parsing
@@ -119,7 +150,8 @@ and proceed to Phase 2b.
 ## Phase 2b: Project-Declared Checks
 
 Call `uf_preflight_declared_checks` with the consuming
-command's `mode`. It runs the checks a project declares in
+command's `mode`, plus `root` and `base_sha` when the
+consumer supplied them. It runs the checks a project declares in
 `.uf/preflight.yaml` (validation, availability, diff scope,
 execution without a shell, and — in `soft-gate` —
 merge-base baseline classification) and returns:
@@ -135,8 +167,9 @@ merge-base baseline classification) and returns:
 
 - `config_present: false`: report "No project-declared
   checks" and continue.
-- Error `INVALID_PREFLIGHT_CONFIG`: report a pre-flight
-  FAIL with the message; no declared check ran.
+- Error `INVALID_PREFLIGHT_CONFIG` or `INVALID_ROOT`:
+  report a pre-flight FAIL with the message; no declared
+  check ran.
 - Otherwise insert `rendered` verbatim into the Phase 5
   Execution Results table (its columns already match the
   mode), insert a non-empty `rendered_output` verbatim as
@@ -197,8 +230,13 @@ directory depth (e.g., `internal/scaffold/foo.go` matches
 
 ### Branch diff computation
 
-Compute the list of files changed on this branch relative
-to the default branch:
+**PR mode**: when the consumer supplies `changed_files`,
+that list *is* the branch diff. Skip the computation and
+the fallbacks below; an empty list means no file-scoped
+tool is in scope.
+
+Otherwise, compute the list of files changed on this
+branch relative to the default branch:
 
 ```bash
 DEFAULT_BRANCH=<detected per Phase 4a: Baseline Establishment, "Detect the default branch" subsection>
@@ -364,6 +402,13 @@ at least one tool failed during Phase 4 execution.
 Establish a baseline for the default branch to determine
 which failures are branch-caused vs pre-existing. Use a
 two-tier strategy: CI API first, local worktree fallback.
+
+**PR mode**: when the consumer supplies `base_sha`, the
+baseline is the PR's base, not the default branch. Skip
+default-branch detection. Tier 1 queries
+`commits/${BASE_SHA}/check-runs`, and Tier 2 adds its
+worktree at `$(git merge-base ${BASE_SHA} HEAD)`, run from
+`root`. Everything else in this phase is unchanged.
 
 ### Detect the default branch
 
@@ -535,6 +580,7 @@ Present results in a standardized format.
 
 ### Verdict
 - **Mode**: hard-gate | ci-aware
+- **Gates ran at**: <provenance_line from the prepare result, verbatim>  (PR mode only)
 - **Result**: PASS | FAIL
 - **Skipped — no in-scope files**: N tools
 - **Failures**: [list if any]
@@ -562,6 +608,7 @@ Present results in a standardized format.
 
 ### Verdict
 - **Mode**: soft-gate
+- **Gates ran at**: <provenance_line from the prepare result, verbatim>  (PR mode only)
 - **Result**: PASS | FAIL (branch-caused)
 - **Skipped — no in-scope files**: N tools
 - **Branch-caused failures**: [list if any]

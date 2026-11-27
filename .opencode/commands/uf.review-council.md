@@ -615,13 +615,66 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
 
 1. **Run local quality gates before delegating to
    council agents.** This step has three phases that
-   MUST execute in order. All three phases apply only
-   to Code Review Mode -- Spec Review Mode skips them.
+   MUST execute in order, preceded for PR input by the
+   Phase 1 head root block. All of it applies only to
+   Code Review Mode -- Spec Review Mode skips it.
+
+   #### Phase 1 head root (PR input only)
+
+   When the resolved input context is `kind: pr`, the local
+   gates in Phases 1a and 1b MUST judge the PR's frozen head,
+   never the agent's own checkout (issue #1204). Before Phase
+   1a, call the `review_head_root` plugin tool once:
+   `{action: "prepare", pr_number: <pr_number>, base_sha: <base_sha>, head_sha: <head_sha>}`.
+   It reuses the current checkout when it is a clean
+   checkout of `head_sha`, and otherwise adds a detached
+   worktree at `head_sha` under `.uf/review-head/`. It never
+   switches, stashes, or modifies the user's branch, index,
+   or working tree. A success looks like:
+
+   ```json
+   {"status":"ok","data":{"root":"/repo/.uf/review-head/k3v9x2qa","head_sha":"<40-hex>","base_sha":"<40-hex>","method":"worktree","created":true,"config_sha":"<40-hex>","config_dirty":false,"provenance_line":"Gates ran at: <40-hex> (worktree); config from <40-hex>","gaze_skip_note":"Gaze skipped: the PR head is in a temporary worktree and gaze-reporter has no root argument","changed_files":["internal/a.go"]}}
+   ```
+
+   On `status: "error"`, do NOT run local gates anywhere.
+   Phase 1a stays mandatory, so every code takes the Phase
+   1a FAIL path (step c below) even though no pre-flight
+   verdict exists: report the code and message as a
+   CRITICAL finding, skip Phases 1a, 1b, and 1c, dispatch
+   no reviewer children, and run only the non-child
+   planning and finalization portions of the shared
+   protocol to record coverage `FAIL`, terminal skipped
+   runs, and failing `INCONCLUSIVE`. Then stop. The codes:
+   - `UNTRUSTED_HEAD`: a fork PR whose author lacks write
+     access. Its code is not fetched or run. The message
+     names the opt-in: check out the head yourself
+     (`gh pr checkout <N>`) and re-run, which takes the
+     reuse path.
+   - `HEAD_MOVED`: the PR's head is no longer the frozen
+     `head_sha` (it was pushed since); re-run the council.
+   - `HEAD_UNAVAILABLE`: no remote names the base
+     repository, or a fetch or `gh` lookup failed.
+   - `WORKTREE_FAILED`: `git worktree add` failed; the
+     message carries git's error.
+   - `REVIEW_HEAD_ROOT_ERROR`: an unexpected tool error; the
+     message carries the detail.
+
+   On success, pass the whole prepare result to Phase 1a. After Phase 1b (or on any
+   STOP after a successful prepare), call `review_head_root`
+   once with `{action: "release", root: <root>}`. No later
+   step reads the root. A release failure is a warning in
+   the final report and never changes the verdict.
+
+   Local and uncommitted input skips this block: Phases 1a
+   and 1b run in the current checkout, as before.
 
    #### Phase 1a -- Pre-flight Checks (mandatory, soft gate)
 
    Load the `pre-flight` skill and run in `soft-gate`
-   mode:
+   mode, passing the whole prepare result (`root`,
+   `changed_files`, `base_sha`, and the provenance fields
+   `head_sha`, `method`, `config_sha`, `config_dirty`) when
+   the Phase 1 head root block prepared it:
 
    a. Invoke the `skill` tool with name `pre-flight` to
       load the shared pre-flight check instructions.
@@ -638,15 +691,17 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
          tools in soft-gate mode (do NOT stop on first
          failure; record all results)
       5. Baseline Establishment (Phase 4a) — if any
-         tools failed, establish a baseline for `main`
-         using the two-tier strategy (CI API first,
+         tools failed, establish a baseline for the base
+         (the PR's `base_sha` in PR mode, else the default
+         branch) using the two-tier strategy (CI API first,
          worktree fallback)
       6. Causality Classification (Phase 4b) — classify
          each failure as branch-caused, pre-existing,
          or unknown
 
    c. **If the pre-flight verdict is FAIL
-      (branch-caused)**: **STOP immediately.** Report
+      (branch-caused), or the Phase 1 head root prepare
+      returned `status: "error"`**: **STOP immediately.** Report
       each branch-caused failure as a CRITICAL finding
       with the full error output. Do NOT proceed to
       Phase 1b, Phase 1c, or child delegation.
@@ -666,6 +721,15 @@ Review the current codebase for compliance with the Behavioral Constraints in `A
    **Checkpoint**: Call `checkpoint` with `command: "uf.review-council"` and `step: "phase-1a-preflight"` before proceeding.
 
    #### Phase 1b -- Gaze Quality Analysis (conditional)
+
+   For PR input whose prepare result carries a
+   `gaze_skip_note` (method `worktree`), skip this phase
+   with that rendered note verbatim — "Gaze skipped: the
+   PR head is in a temporary worktree and gaze-reporter
+   has no root argument" — and proceed. Running Gaze from
+   the agent's checkout would score the wrong code. With
+   `method: "checkout"` (or local input), `gaze_skip_note`
+   is null; continue below.
 
    a. Check if `gaze` is available:
       ```bash

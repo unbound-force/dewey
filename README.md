@@ -353,7 +353,7 @@ Initialize a Dewey configuration in the current directory. Creates `.uf/dewey/` 
 dewey init [--vault PATH]
 ```
 
-When `.opencode/` already exists, `dewey init` also scaffolds the Dewey slash commands (`.opencode/commands/dewey-*.md`) and the `curator` and `distiller` agents (`.opencode/agents/`); it always scaffolds the inert `.github/workflows/dewey-distill.yml.example`. These are **tool-owned** scaffolds, managed by ownership-aware refresh rather than write-once: every write ends with a final-line marker — `<!-- dewey:scaffold <version> sha256:<hex> -->` for markdown, `# dewey:scaffold <version> sha256:<hex>` for YAML — whose digest covers the embedded payload. On re-init, a file whose marker digest still matches its own payload has not been edited since it was scaffolded: it is refreshed to the current embedded content (logged `updated`), or left alone when already current. Missing files are created (logged `scaffolded`). Customized files — a digest mismatch, a malformed marker, marker-less content that differs from the embedded payload, or a symlinked path — are preserved byte-for-byte (logged `skip (customized)`); a concurrent init creating the same path logs `skip (concurrent)`. The user-owned files — the `.uf/dewey/` config files, `.opencode/dcp.jsonc`, `.gitignore` (append-if-missing only) — stay write-once.
+When `.opencode/` already exists, `dewey init` also scaffolds the Dewey slash commands (`.opencode/commands/dewey-*.md`) and the `curator` and `distiller` agents (`.opencode/agents/`). These are **tool-owned** scaffolds, managed by ownership-aware refresh rather than write-once: every write ends with a final-line marker — `<!-- dewey:scaffold <version> sha256:<hex> -->` — whose digest covers the embedded payload. On re-init, a file whose marker digest still matches its own payload has not been edited since it was scaffolded: it is refreshed to the current embedded content (logged `updated`), or left alone when already current. Missing files are created (logged `scaffolded`). Customized files — a digest mismatch, a malformed marker, marker-less content that differs from the embedded payload, or a symlinked path — are preserved byte-for-byte (logged `skip (customized)`); a concurrent init creating the same path logs `skip (concurrent)`. The user-owned files — the `.uf/dewey/` config files, `.opencode/dcp.jsonc`, `.gitignore` (append-if-missing only) — stay write-once.
 
 Scaffolded files written before markers existed are not auto-refreshed: a pre-marker file that has drifted from the current embedded payload is indistinguishable from a user edit, so it is preserved like a customization. To bring such a file current, delete it and re-run `dewey init`; from then on it is marker-managed.
 
@@ -907,48 +907,49 @@ When `dewey serve` starts, the MCP server is ready within 1 second. Vault indexi
 
 ## Weekly Unattended Distill
 
-Dewey ships an opt-in GitHub Actions template that automates the *demotion* side of knowledge curation on a weekly schedule: it computes the deterministic distill scope (uncited learnings), groups them into themes, and opens rolling per-theme review PRs at `tier: draft` — never `tier: validated`. Promotion stays human: the vouch is the merge of a CODEOWNERS-approved PR (#203), and the `human-gate` label keeps tooling hands-off.
+`/dewey-distill-auto` automates the *demotion* side of knowledge curation: it computes the deterministic distill scope (uncited learnings), groups them into themes, and opens rolling per-theme review PRs at `tier: draft` — never `tier: validated`. Promotion stays human: the vouch is the merge of a CODEOWNERS-approved PR (#203), and the `human-gate` label keeps tooling hands-off.
 
 ### Enable
 
-Run `dewey init` in the repository — it scaffolds the inert `.github/workflows/dewey-distill.yml.example` (a tool-owned scaffold: untouched copies are refreshed on re-init, customized copies preserved) — then copy it into place; the copy is the opt-in:
+1. Run `dewey init` in the repository with `.opencode/` present — it scaffolds the `/dewey-distill-auto` command and the `distiller` agent.
+2. Add a profile for the command to your **global** opencode-supervisor config (opencode-supervisor v2.9.1+). The supervisor reads profiles only from `$XDG_CONFIG_HOME/opencode/supervisor/config.json` when `XDG_CONFIG_HOME` is set to a non-blank absolute path, otherwise from `$HOME/.config/opencode/supervisor/config.json`; the file is strict JSON:
 
-```bash
-dewey init   # writes .github/workflows/dewey-distill.yml.example (refreshed on re-init when untouched)
-cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml
-gh label create dewey-distill --color 0E8A16 --description "Unattended weekly distill" 2>/dev/null || true
-gh label create human-gate --color D93F0B --description "Requires code-owner review" 2>/dev/null || true
-```
+   ```json
+   {
+     "profiles": [
+       {
+         "name": "distill",
+         "match": { "command": "dewey-distill-auto" },
+         "traceCheck": { "exemptTools": ["dewey_*", "read", "grep", "glob"] }
+       }
+     ]
+   }
+   ```
 
-The workflow runs every Monday 09:00 UTC (edit the cron to taste) and on manual `workflow_dispatch`. It needs no secrets: it runs on the built-in `github.token` with least-privilege permissions — `contents: read` and `issues: write` only (the job only opens or comments on issues; rolling PRs are opened by the server-side `rolling_pr` tool, not by the workflow). The issue it creates carries no assignee: the `GITHUB_TOKEN` installation identity cannot resolve `@me`, and dispatch keys off the label, not the assignee.
+   Profiles in repository-local config are never honored, so a repository cannot widen the distiller's privileges.
+3. Create the review label once: `gh label create human-gate --color D93F0B --description "Requires code-owner review"`.
 
 Prerequisites (per #194): `CODEOWNERS` must own `.uf/dewey/compiled/**` and the default-branch ruleset (26764121 in this repository) must require code-owner review, so rolling PRs labeled `human-gate` stay blocked until a code owner approves. Without that, PRs still open but nothing enforces the human gate.
 
-Supervisor prerequisite (jflowers/opencode-supervisor#51): unattended mode additionally requires `opencode-supervisor` support for a `command: dewey-distill-auto` profile in global config. Until that ships, the weekly run exits as a no-op — a run artifact with `no_op_reason: supervisor command profile unavailable` plus a notice comment on the dispatch issue — and distills nothing; interactive `/dewey-distill` is unaffected.
+### Scheduling
 
-### gh-hud dispatch contract
+Dewey ships no scheduler, workflow or trigger issue. Run `/dewey-distill-auto` from any scheduler or agent runner — cron, a CI job, a task runner, an agent dispatcher — on whatever cadence you like (weekly suits a steady flow of learnings), in a clean checkout of the knowledge repository on a machine where the global supervisor profile is configured:
 
-The workflow itself only opens or re-triggers a `dewey-distill` issue. Dispatching the run is [gh-hud](https://github.com/jflowers/gh-hud)'s side of the contract (jflowers/gh-hud#28): gh-hud watches issues labeled `dewey-distill` and, observing one, dispatches `/dewey-distill-auto #<issue-number>` as the `autonomy` agent in a TUI pane. Dewey exposes exactly what gh-hud needs:
+```text
+/dewey-distill-auto                                   # steady-state run
+/dewey-distill-auto --dry-run                         # preview: would-create / would-update per theme, mutates nothing
+/dewey-distill-auto --backlog-from 2026-10-25         # one-time backlog bootstrap
+```
 
-| Contract element | Value |
-|---|---|
-| Issue label | `dewey-distill` |
-| Re-trigger marker | comment body starting `<!-- dewey-distill-trigger -->` |
-| Dispatch command | `/dewey-distill-auto #<num>` |
+The command takes no trigger argument; a stray trailing argument (for example a legacy `#N`) is ignored.
 
-Issues carry no assignee — gh-hud keys dispatch off the label.
-
-The dedup invariant (at most one open `dewey-distill` issue at any time) is enforced by the workflow's check-then-create step plus a `concurrency` group that serializes a manual re-trigger racing the schedule; a second trigger posts a re-trigger comment instead of opening a duplicate.
+The first startup gate, `dewey gate auto-answer`, keeps curator questions human. The second, `dewey gate distill-unattended`, checks exactly the supervisor config file above and passes only when it holds a profile whose `match.command` is `dewey-distill-auto` (a leading `/` is ignored). When the file is absent, has no matching profile, or is unreadable or invalid JSON, the gate refuses fail-closed: it records a no-op run artifact (`no_op_reason: supervisor command profile unavailable`) under `.uf/dewey/distill-runs/`, prints the file it checked and how to fix it, and exits 1 — the run stops before scope and distills nothing. Interactive `/dewey-distill` is unaffected.
 
 ### The unattended run
 
-`/dewey-distill-auto` runs as the `distiller` agent (`.opencode/agents/distiller.md`, scaffolded by `dewey init`): deterministic scope from git (`learning` identities minus `compiled` citations via one batch `git ls-tree`, with a filesystem fallback for non-git vaults), theme grouping with supersession co-location and per-decision provenance, and rolling `dewey-distill/<theme>` PRs whose review-queue bodies carry what changed, newly cited identities, supersessions, lint drift, and assignment confidence. The distiller never calls the `question` tool and never writes `tier: validated` — both are rejected server-side and logged, with a fallback to deterministic scope.
+`/dewey-distill-auto` runs as the `distiller` agent (`.opencode/agents/distiller.md`, scaffolded by `dewey init`): deterministic scope from git (`learning` identities minus `compiled` citations via one batch `git ls-tree`, with a filesystem fallback for non-git vaults), theme grouping with supersession co-location and per-decision provenance, and rolling `dewey-distill/<theme>` PRs whose review-queue bodies carry what changed, newly cited identities, supersessions, lint drift, and assignment confidence. The distiller never calls the `question` tool and never writes `tier: validated` — both are rejected server-side and logged, with a fallback to deterministic scope. Its shell allowlist holds only the two startup gates; every git and gh mutation runs server-side inside the `rolling_pr` tool.
 
-An optional `.uf/dewey/distill-policy.yaml` (see `.uf/dewey/distill-policy.yaml.example`) excludes tags or knowledge stores from the weekly scope; when absent, all uncited learnings are in scope. Invalid entries are warned and skipped, never fatal.
-
-```bash
-gh workflow run dewey-distill.yml   # manual trigger
-```
+An optional `.uf/dewey/distill-policy.yaml` (see `.uf/dewey/distill-policy.yaml.example`) excludes tags or knowledge stores from the scope; when absent, all uncited learnings are in scope. Invalid entries are warned and skipped, never fatal.
 
 ## Architecture
 

@@ -26,9 +26,11 @@ const (
 	// and the default form when rendering markers.
 	scaffoldMarkdown scaffoldKind = iota
 
-	// scaffoldYAML is the marker kind for YAML payloads (workflow
-	// templates); an HTML comment would corrupt YAML, so these files
-	// carry a `#` comment instead.
+	// scaffoldYAML is the marker kind for YAML payloads; an HTML comment
+	// would corrupt YAML, so these files carry a `#` comment instead. No
+	// embedded YAML scaffold ships today (distill-auto-runner-neutral
+	// removed the workflow template); the kind stays for the shared
+	// writer and so a previously scaffolded YAML file still classifies.
 	scaffoldYAML
 )
 
@@ -220,7 +222,7 @@ func classifyScaffold(existing []byte, exists bool, embeddedBody []byte) scaffol
 //   - scaffoldCurrent: no write, no event (idempotent silence).
 //
 // label carries the kind context for outcome events ("slash command",
-// "agent", "workflow template example"), keeping the log lines the init
+// "agent"), keeping the log lines the init
 // command already emits for each kind.
 func scaffoldToolOwnedFiles(dir string, files map[string]string, kind scaffoldKind, label string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {

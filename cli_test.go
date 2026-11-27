@@ -444,160 +444,50 @@ func TestInitCmd_ScaffoldsSlashCommands(t *testing.T) {
 	}
 }
 
-// TestInitCmd_ScaffoldsDistillWorkflowExample verifies that dewey init
-// ships the weekly distill workflow template EXAMPLE into the vault —
-// the SC-008 install-from-scratch path: an adopting repository that has
-// run `dewey init` finds `.github/workflows/dewey-distill.yml.example`
-// locally, byte-identical to the payload constructed from the embedded
-// map entry and to the tracked template, and the live workflow is never
-// installed (FR-001: the copy remains the opt-in).
-func TestInitCmd_ScaffoldsDistillWorkflowExample(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
-		t.Fatalf("write .gitignore: %v", err)
-	}
-
-	cmd := newInitCmd()
-	cmd.SetArgs([]string{"--vault", tmpDir})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	examplePath := filepath.Join(tmpDir, ".github", "workflows", "dewey-distill.yml.example")
-	got, err := os.ReadFile(examplePath)
-	if err != nil {
-		t.Fatalf("dewey init did not scaffold the workflow template example at %s: %v", examplePath, err)
-	}
-
-	// The scaffolded example must be byte-identical to the payload
-	// constructed from the embedded map entry — canonical body plus the
-	// trailing ownership marker (design D6: parity compares through
-	// scaffoldPayload, the same constructor the writer uses) — and to the
-	// tracked repository file, so the copies cannot drift.
-	want, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
-	if !ok {
-		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
-	}
-	wantPayload := string(scaffoldPayload([]byte(want), scaffoldYAML))
-	if string(got) != wantPayload {
-		t.Error("scaffolded dewey-distill.yml.example differs from deweyWorkflowTemplates map entry payload (canonical body + marker)")
-	}
-	tracked, err := os.ReadFile(filepath.Join(".github", "workflows", "dewey-distill.yml.example"))
-	if err != nil {
-		t.Fatalf("read tracked workflow template: %v", err)
-	}
-	if string(tracked) != wantPayload {
-		t.Error("tracked .github/workflows/dewey-distill.yml.example differs from deweyWorkflowTemplates map entry payload (canonical body + marker)")
-	}
-
-	// The live workflow must NOT be installed — the copy is the opt-in.
-	installed := filepath.Join(tmpDir, ".github", "workflows", "dewey-distill.yml")
-	if _, err := os.Stat(installed); err == nil {
-		t.Error("dewey init auto-installed .github/workflows/dewey-distill.yml; the copy must be manual (FR-001)")
-	} else if !os.IsNotExist(err) {
-		t.Errorf("stat installed workflow: %v", err)
-	}
-
-	// Scaffolding is idempotent: a re-run never overwrites the user's
-	// customized example.
-	custom := []byte("# user-customized example\n")
-	if err := os.WriteFile(examplePath, custom, 0o644); err != nil {
-		t.Fatalf("customize example: %v", err)
-	}
-	cmd = newInitCmd()
-	cmd.SetArgs([]string{"--vault", tmpDir})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("re-init failed: %v", err)
-	}
-	got, err = os.ReadFile(examplePath)
-	if err != nil {
-		t.Fatalf("re-read example: %v", err)
-	}
-	if string(got) != string(custom) {
-		t.Error("dewey init overwrote an existing workflow template example; user customizations must be preserved")
-	}
-}
-
-// TestDistillWorkflowTemplate_ScaffoldParity asserts the tracked
-// .github/workflows/dewey-distill.yml.example stays byte-identical to the
-// payload constructed from the embedded deweyWorkflowTemplates entry —
-// canonical body plus the trailing ownership marker (design D6: compare
-// through scaffoldPayload, the same constructor the writer uses) — the same
-// parity pattern the agent definitions and slash commands follow, so the
-// scaffolded copy can never drift from the reviewed template.
-func TestDistillWorkflowTemplate_ScaffoldParity(t *testing.T) {
-	want, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
-	if !ok {
-		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
-	}
-	wantPayload := string(scaffoldPayload([]byte(want), scaffoldYAML))
-	tracked, err := os.ReadFile(filepath.Join(".github", "workflows", "dewey-distill.yml.example"))
-	if err != nil {
-		t.Fatalf("read tracked workflow template: %v", err)
-	}
-	if string(tracked) != wantPayload {
-		t.Error("tracked .github/workflows/dewey-distill.yml.example differs from deweyWorkflowTemplates map entry payload (canonical body + marker)")
-	}
-}
-
-// TestInitCmd_DoesNotInstallDistillWorkflow verifies that dewey init never
-// auto-installs the weekly distill workflow (FR-001: the copy is the opt-in)
-// but documents it when the example template ships in the vault.
-func TestInitCmd_DoesNotInstallDistillWorkflow(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Ship a user-owned example template in the vault so the skip-scaffold
-	// and availability-hint paths are exercised (T015).
-	workflowDir := filepath.Join(tmpDir, ".github", "workflows")
-	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
-		t.Fatalf("create workflows dir: %v", err)
-	}
-	examplePath := filepath.Join(workflowDir, "dewey-distill.yml.example")
-	exampleContent := []byte("# example template fixture\n")
-	if err := os.WriteFile(examplePath, exampleContent, 0o644); err != nil {
-		t.Fatalf("write example workflow: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
-		t.Fatalf("write .gitignore: %v", err)
-	}
-
-	// Capture logger output for the availability hint.
-	var logBuf bytes.Buffer
-	logger.SetOutput(&logBuf)
-	defer logger.SetOutput(os.Stderr)
-
-	cmd := newInitCmd()
-	cmd.SetArgs([]string{"--vault", tmpDir})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init failed: %v", err)
-	}
-
-	// The workflow itself must NOT be installed — the copy is the opt-in.
-	installed := filepath.Join(workflowDir, "dewey-distill.yml")
-	if _, err := os.Stat(installed); err == nil {
-		t.Error("dewey init auto-installed .github/workflows/dewey-distill.yml; the copy must be manual (FR-001)")
-	} else if !os.IsNotExist(err) {
-		t.Errorf("stat installed workflow: %v", err)
-	}
-
-	// The example template must be untouched.
-	got, err := os.ReadFile(examplePath)
-	if err != nil {
-		t.Fatalf("read example workflow: %v", err)
-	}
-	if string(got) != string(exampleContent) {
-		t.Error("dewey init modified the example workflow template")
-	}
-
-	// The opt-in copy must be documented in the hint.
-	logs := logBuf.String()
-	if !strings.Contains(logs, "weekly distill workflow template available") {
-		t.Errorf("init should log the template availability hint, got:\n%s", logs)
-	}
-	if !strings.Contains(logs, "cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml") {
-		t.Errorf("init hint should document the opt-in copy command, got:\n%s", logs)
-	}
+// TestInitCmd_ScaffoldsNoWorkflow verifies that dewey init writes nothing
+// under .github/ (distill-auto-runner-neutral, weekly-distill FR-001):
+// unattended distill is runner-neutral, so no scheduled trigger ships.
+// A previously scaffolded example is left exactly as it is — the
+// tool-owned scaffold mechanism has no retirement path (design D6).
+func TestInitCmd_ScaffoldsNoWorkflow(t *testing.T) {
+	t.Run("fresh vault", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(tmpDir, ".opencode"), 0o755); err != nil {
+			t.Fatalf("create .opencode: %v", err)
+		}
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{"--vault", tmpDir})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("init failed: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(tmpDir, ".github")); !os.IsNotExist(err) {
+			t.Errorf("dewey init created .github/ (stat err = %v); no workflow may be scaffolded", err)
+		}
+	})
+	t.Run("previously scaffolded example untouched", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		workflowDir := filepath.Join(tmpDir, ".github", "workflows")
+		if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+			t.Fatalf("create workflows dir: %v", err)
+		}
+		examplePath := filepath.Join(workflowDir, "dewey-distill.yml.example")
+		content := []byte("# example template fixture\n")
+		if err := os.WriteFile(examplePath, content, 0o644); err != nil {
+			t.Fatalf("write example: %v", err)
+		}
+		cmd := newInitCmd()
+		cmd.SetArgs([]string{"--vault", tmpDir})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("init failed: %v", err)
+		}
+		got, err := os.ReadFile(examplePath)
+		if err != nil {
+			t.Fatalf("read example: %v", err)
+		}
+		if string(got) != string(content) {
+			t.Error("dewey init modified a pre-existing workflow example")
+		}
+	})
 }
 
 // TestInitCmd_SkipsExistingSlashCommands verifies that dewey init does
@@ -8223,10 +8113,8 @@ func scaffoldOutcomeEvents(logs string) []string {
 	markers := []string{
 		"scaffolded slash command",
 		"scaffolded agent",
-		"scaffolded workflow template example",
 		"updated slash command",
 		"updated agent",
-		"updated workflow template example",
 		"skip (customized)",
 		"skip (concurrent)",
 	}
@@ -8254,10 +8142,10 @@ func hasOutcomeEvent(events []string, event, path string) bool {
 }
 
 // prepareMixedOutcomeVault builds a vault whose single init run produces
-// outcome events across all three tool-owned kinds: every slash command
-// missing (scaffolded), curator.md an untouched drifted scaffold (updated),
-// distiller.md missing (scaffolded), and a customized workflow template
-// example (skip). The determinism test materializes this same vault state
+// outcome events across both tool-owned kinds and every outcome: every
+// slash command but one missing (scaffolded), dewey-lint.md customized
+// (skip), curator.md an untouched drifted scaffold (updated), and
+// distiller.md missing (scaffolded). The determinism test materializes this same vault state
 // twice — as two identically-prepared vaults — so neither run's writes feed
 // the other's inputs.
 func prepareMixedOutcomeVault(t *testing.T) string {
@@ -8276,12 +8164,16 @@ func prepareMixedOutcomeVault(t *testing.T) string {
 		t.Fatalf("write drifted curator.md: %v", err)
 	}
 
-	workflowsDir := filepath.Join(tmpDir, ".github", "workflows")
-	if err := os.MkdirAll(workflowsDir, 0o755); err != nil {
-		t.Fatalf("create workflows dir: %v", err)
+	cmdDir := filepath.Join(tmpDir, ".opencode", "commands")
+	if err := os.MkdirAll(cmdDir, 0o755); err != nil {
+		t.Fatalf("create commands dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workflowsDir, "dewey-distill.yml.example"), []byte("# user-customized example\n"), 0o644); err != nil {
-		t.Fatalf("write customized workflow example: %v", err)
+	lint, ok := deweySlashCommands["dewey-lint.md"]
+	if !ok {
+		t.Fatal("deweySlashCommands missing dewey-lint.md entry")
+	}
+	if err := os.WriteFile(filepath.Join(cmdDir, "dewey-lint.md"), customizedScaffoldFixture(t, lint, scaffoldMarkdown), 0o644); err != nil {
+		t.Fatalf("write customized dewey-lint.md: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
@@ -8618,20 +8510,15 @@ func TestInitCmd_MalformedMarkerPreserved(t *testing.T) {
 	}
 }
 
-// TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample enforces the
-// DI-FR-002 scenario "Re-init refreshes untouched agents and workflow
-// example": an untouched drifted curator.md and an untouched drifted
-// dewey-distill.yml.example are both rewritten with the current embedded
-// content plus fresh markers (DIO-FR-002).
-func TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample(t *testing.T) {
+// TestInitCmd_RefreshesUntouchedAgent enforces the DI-FR-002 scenario
+// "Re-init refreshes untouched agents": an untouched drifted curator.md
+// is rewritten with the current embedded content plus a fresh marker
+// (DIO-FR-002).
+func TestInitCmd_RefreshesUntouchedAgent(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentsDir := filepath.Join(tmpDir, ".opencode", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
-	}
-	workflowsDir := filepath.Join(tmpDir, ".github", "workflows")
-	if err := os.MkdirAll(workflowsDir, 0o755); err != nil {
-		t.Fatalf("create workflows dir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
@@ -8640,10 +8527,6 @@ func TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample(t *testing.T) {
 	curator, ok := deweyAgentDefinitions["curator.md"]
 	if !ok {
 		t.Fatal("deweyAgentDefinitions missing curator.md entry")
-	}
-	workflow, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
-	if !ok {
-		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
 	}
 
 	type refreshTarget struct {
@@ -8659,12 +8542,6 @@ func TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample(t *testing.T) {
 			path:     filepath.Join(agentsDir, "curator.md"),
 			embedded: curator,
 			kind:     scaffoldMarkdown,
-		},
-		{
-			label:    "workflow template example",
-			path:     filepath.Join(workflowsDir, "dewey-distill.yml.example"),
-			embedded: workflow,
-			kind:     scaffoldYAML,
 		},
 	}
 	for i := range targets {
@@ -8715,8 +8592,7 @@ func TestInitCmd_RefreshesUntouchedAgentAndWorkflowExample(t *testing.T) {
 // TestInitCmd_FirstInitWritesVerifiableMarkers enforces the DI-FR-002
 // scenario "First init is unchanged apart from markers" together with
 // DIO-FR-002: on a first init over a vault with .opencode/ present, every
-// tool-owned file — every slash command, agent definition, and workflow
-// template example — is created in the exact marker-plus-payload form, and
+// tool-owned file — every slash command and agent definition — is created in the exact marker-plus-payload form, and
 // each marker verifies against an independently computed SHA-256 of the
 // payload preceding it.
 func TestInitCmd_FirstInitWritesVerifiableMarkers(t *testing.T) {
@@ -8742,7 +8618,6 @@ func TestInitCmd_FirstInitWritesVerifiableMarkers(t *testing.T) {
 	}{
 		{"slash commands", filepath.Join(".opencode", "commands"), deweySlashCommands, scaffoldMarkdown},
 		{"agent definitions", filepath.Join(".opencode", "agents"), deweyAgentDefinitions, scaffoldMarkdown},
-		{"workflow template examples", filepath.Join(".github", "workflows"), deweyWorkflowTemplates, scaffoldYAML},
 	}
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
@@ -8785,11 +8660,11 @@ func TestInitCmd_FirstInitWritesVerifiableMarkers(t *testing.T) {
 	}
 }
 
-// TestInitCmd_NoOpenCodeDirScaffoldsWorkflowExampleOnly enforces the
-// DI-FR-002 composability guard: when .opencode/ is absent, no command or
-// agent scaffolding runs and .opencode/ itself is not created, while the
-// workflow template example is still scaffolded into .github/workflows/.
-func TestInitCmd_NoOpenCodeDirScaffoldsWorkflowExampleOnly(t *testing.T) {
+// TestInitCmd_NoOpenCodeDirScaffoldsNothing enforces the DI-FR-002
+// composability guard: when .opencode/ is absent, no command or agent
+// scaffolding runs and .opencode/ itself is not created; nothing is
+// written under .github/ either (weekly-distill FR-001).
+func TestInitCmd_NoOpenCodeDirScaffoldsNothing(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
@@ -8815,17 +8690,8 @@ func TestInitCmd_NoOpenCodeDirScaffoldsWorkflowExampleOnly(t *testing.T) {
 		}
 	}
 
-	// The workflow template example is still scaffolded.
-	entry, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
-	if !ok {
-		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
-	}
-	got, err := os.ReadFile(filepath.Join(tmpDir, ".github", "workflows", "dewey-distill.yml.example"))
-	if err != nil {
-		t.Fatalf("workflow template example was not scaffolded without .opencode/: %v", err)
-	}
-	if want := scaffoldPayload([]byte(entry), scaffoldYAML); !bytes.Equal(got, want) {
-		t.Errorf("scaffolded workflow example = %q, want the exact scaffoldPayload %q", got, want)
+	if _, err := os.Stat(filepath.Join(tmpDir, ".github")); !os.IsNotExist(err) {
+		t.Errorf(".github/ must not be created (stat err = %v)", err)
 	}
 }
 
@@ -8896,10 +8762,6 @@ func TestInitCmd_OutcomeEventsObservable(t *testing.T) {
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
 	}
-	workflowsDir := filepath.Join(tmpDir, ".github", "workflows")
-	if err := os.MkdirAll(workflowsDir, 0o755); err != nil {
-		t.Fatalf("create workflows dir: %v", err)
-	}
 	if err := os.WriteFile(filepath.Join(tmpDir, ".gitignore"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write .gitignore: %v", err)
 	}
@@ -8934,11 +8796,6 @@ func TestInitCmd_OutcomeEventsObservable(t *testing.T) {
 	for name, body := range deweyAgentDefinitions {
 		if err := os.WriteFile(filepath.Join(agentsDir, name), scaffoldPayload([]byte(body), scaffoldMarkdown), 0o644); err != nil {
 			t.Fatalf("write agent fixture %s: %v", name, err)
-		}
-	}
-	for name, body := range deweyWorkflowTemplates {
-		if err := os.WriteFile(filepath.Join(workflowsDir, name), scaffoldPayload([]byte(body), scaffoldYAML), 0o644); err != nil {
-			t.Fatalf("write workflow fixture %s: %v", name, err)
 		}
 	}
 
@@ -8983,9 +8840,9 @@ func TestInitCmd_DeterministicIterationOrder(t *testing.T) {
 	first := runOnce()
 	second := runOnce()
 
-	wantTotal := len(deweySlashCommands) + len(deweyAgentDefinitions) + len(deweyWorkflowTemplates)
+	wantTotal := len(deweySlashCommands) + len(deweyAgentDefinitions)
 	if len(first) != wantTotal {
-		t.Fatalf("got %d outcome events, want %d (every command missing, one agent drifted, one agent missing, workflow customized); events:\n%s", len(first), wantTotal, strings.Join(first, "\n"))
+		t.Fatalf("got %d outcome events, want %d (every command but one missing, one command customized, one agent drifted, one agent missing); events:\n%s", len(first), wantTotal, strings.Join(first, "\n"))
 	}
 
 	// The fixture must exercise mixed outcomes, or the ordering comparison
@@ -9030,8 +8887,8 @@ func TestInitCmd_DeterministicIterationOrder(t *testing.T) {
 			}
 		}
 	}
-	if len(commandNames) != len(deweySlashCommands) {
-		t.Fatalf("got %d scaffolded command events, want %d", len(commandNames), len(deweySlashCommands))
+	if want := len(deweySlashCommands) - 1; len(commandNames) != want { // dewey-lint.md is customized, not scaffolded
+		t.Fatalf("got %d scaffolded command events, want %d", len(commandNames), want)
 	}
 	if !slices.IsSorted(commandNames) {
 		t.Errorf("scaffolded command events are not in sorted name order: %v", commandNames)

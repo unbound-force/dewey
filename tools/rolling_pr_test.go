@@ -1353,10 +1353,10 @@ func TestManageRollingPRs_DryRunPreviewMutatesNothing(t *testing.T) {
 }
 
 // TestManageRollingPRs_ReviewerValidatedSuggestionPreserved covers the
-// gh-hud feedback integration for the reviewer vouch (T041, spec.md US6
+// feedback-agent integration for the reviewer vouch (T041, spec.md US6
 // acceptance scenario 3): a reviewer's tier: validated suggestion —
-// applied by gh-hud's feedback task as a frontmatter edit committed on
-// the PR branch — is the only file change the feedback task makes (an
+// applied by a feedback agent as a frontmatter edit committed on
+// the PR branch — is the only file change the feedback agent makes (an
 // unrelated review comment produces none), and the next weekly run
 // refuses to overwrite it (FR-015 regeneration guard): the validated
 // claim survives on the branch, the PR gains needs-human-resolution,
@@ -1385,12 +1385,12 @@ func TestManageRollingPRs_ReviewerValidatedSuggestionPreserved(t *testing.T) {
 	authDraft := remoteFile(t, vault, authBranch, authPath)
 	govDraft := remoteFile(t, vault, govBranch, govPath)
 
-	// gh-hud's feedback task applies the reviewer's tier: validated
+	// A feedback agent applies the reviewer's tier: validated
 	// suggestion on the auth article: a frontmatter edit committed on
 	// the PR branch under the reviewer's identity (any author other
 	// than the distiller is human work the run must preserve). The
 	// unrelated review comment on the governance article ("please
-	// clarify X") is prose on GitHub — the feedback task translates it
+	// clarify X") is prose on GitHub — the feedback agent translates it
 	// into no file edit.
 	rollingGit(t, vault, "checkout", "-q", authBranch)
 	writeFixtureFile(t, vault, authPath, strings.Replace(authDraft, "tier: draft", "tier: validated", 1))

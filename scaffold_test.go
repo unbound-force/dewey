@@ -28,8 +28,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // sha256Hex returns the lowercase hex SHA-256 of b. Tests compute
@@ -442,61 +440,6 @@ func TestClassifyScaffold_VersionIndependence(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// TestScaffoldPayload_WorkflowTemplateRemainsYAML enforces the
-// DIO-FR-002 scenario "Workflow template marker is a YAML comment": the
-// scaffolded form of the real deweyWorkflowTemplates entry —
-// scaffoldPayload with the yaml kind — must remain parseable YAML after
-// the marker append, with the workflow's structure intact, because
-// GitHub Actions consumes the scaffolded example directly.
-func TestScaffoldPayload_WorkflowTemplateRemainsYAML(t *testing.T) {
-	entry, ok := deweyWorkflowTemplates["dewey-distill.yml.example"]
-	if !ok {
-		t.Fatal("deweyWorkflowTemplates missing dewey-distill.yml.example entry")
-	}
-
-	content := scaffoldPayload([]byte(entry), scaffoldYAML)
-
-	// The scaffolded form ends with the `#`-comment marker as its final
-	// line, and that marker verifies against the canonical map value.
-	digest, payload, ok := parseScaffoldMarker(content)
-	if !ok {
-		t.Fatalf("scaffolded workflow template does not end in a parseable marker:\n%s", content)
-	}
-	canonical := canonicalBody(entry)
-	if !bytes.Equal(payload, canonical) {
-		t.Error("workflow template round-trip payload differs from the canonical map value")
-	}
-	if want := sha256Hex(canonical); digest != want {
-		t.Errorf("workflow template marker digest = %q, want independently computed %q", digest, want)
-	}
-	if want := yamlMarkerLine(version, digest) + "\n"; !strings.HasSuffix(string(content), want) {
-		t.Errorf("scaffolded workflow template must end with the yaml-form marker %q", want)
-	}
-
-	// The marked file remains parseable YAML with its structure intact:
-	// the trailing `#` comment is inert to the parser.
-	var wf distillWorkflow
-	if err := yaml.Unmarshal(content, &wf); err != nil {
-		t.Fatalf("scaffolded workflow template is no longer parseable YAML: %v", err)
-	}
-	if wf.Name != "dewey-distill" {
-		t.Errorf("parsed workflow name = %q, want %q", wf.Name, "dewey-distill")
-	}
-	job, ok := wf.Jobs["distill-trigger"]
-	if !ok {
-		t.Fatal("scaffolded workflow template lost the distill-trigger job")
-	}
-	if len(job.Steps) == 0 {
-		t.Error("scaffolded workflow template lost the distill-trigger steps")
-	}
-	// The template's last content lives inside the `run: |` block
-	// scalar; a wrongly indented append would be swallowed into the
-	// script. The marker must stay outside it.
-	if script := job.Steps[0].Run; strings.Contains(script, "dewey:scaffold") {
-		t.Errorf("marker leaked into the run block scalar:\n%s", script)
 	}
 }
 

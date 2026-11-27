@@ -132,7 +132,9 @@ repositories that ran an earlier `dewey init` keep an inert
 `.github/workflows/dewey-distill.yml.example` until they delete it; a
 copied live `dewey-distill.yml` keeps opening issues nobody needs and
 should be deleted by hand. Follow-up: a retired-scaffold list that
-removes untouched (digest-matching) files on re-init.
+removes untouched (digest-matching) files on re-init. The `scaffoldYAML`
+marker kind and its read-side grammar are kept (no embedded YAML scaffold
+remains) so such a follow-up can still classify the old example.
 
 ### D7 Documentation neutrality
 

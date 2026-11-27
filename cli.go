@@ -466,28 +466,6 @@ sources:
 			} else {
 				logger.Info("re-initialized", "path", deweyDir)
 			}
-			// Weekly distill workflow template (T005, FR-001/FR-022):
-			// `dewey init` ships the example into the vault so adopting
-			// repositories can reach the template without a Dewey
-			// checkout; the live workflow is never auto-installed — the
-			// copy is the opt-in. Tool-owned refresh through the shared
-			// scaffold discipline (DI-FR-001/DI-FR-002): an untouched
-			// example is refreshed to the embedded content, a customized
-			// file is preserved, and a write failure fails init naming
-			// the path (design R2).
-			if err := scaffoldToolOwnedFiles(filepath.Join(vaultPath, ".github", "workflows"), deweyWorkflowTemplates, scaffoldYAML, "workflow template example"); err != nil {
-				return err
-			}
-			// The opt-in copy hint: after scaffolding (or when the user
-			// already ships their own example) the template is available
-			// in the vault, and copying it enables the weekly trigger.
-			workflowExample := filepath.Join(vaultPath, ".github", "workflows", "dewey-distill.yml.example")
-			if fileExists(workflowExample) {
-				logger.Info("weekly distill workflow template available",
-					"example", workflowExample,
-					"enable", "cp .github/workflows/dewey-distill.yml.example .github/workflows/dewey-distill.yml")
-			}
-
 			return nil
 		},
 	}

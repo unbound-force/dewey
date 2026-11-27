@@ -236,10 +236,9 @@ const NoOpReasonEmptyScope = "empty scope"
 // NoOpReasonSupervisorUnavailable is the FR-021 no-op reason for a run
 // that never started: the global opencode-supervisor command-scoped
 // profile — the sole authority that may widen the distiller's allowlist
-// (FR-016, jflowers/opencode-supervisor#51) — is unavailable. Until #51
-// ships, every `dewey gate distill-unattended` refusal carries this
-// reason; the fail-closed posture is the specified behavior, not a
-// degradation.
+// (FR-016) — is absent or unverifiable. Every `dewey gate
+// distill-unattended` refusal records this reason; the fail-closed
+// posture is the specified behavior, not a degradation.
 const NoOpReasonSupervisorUnavailable = "supervisor command profile unavailable"
 
 // distillRunRecordSchema is the current DistillRunRecord JSON schema

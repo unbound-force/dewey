@@ -34,7 +34,6 @@ permission:
     "*": deny
     "dewey gate auto-answer": allow
     "dewey gate distill-unattended": allow
-    "gh issue comment": allow
     # Terminal catch-all denies, placed last so they win over every
     # allow on any prefix: each shell metacharacter is a chaining,
     # redirection, or substitution vector.
@@ -78,12 +77,11 @@ and any "tier: validated" write (server guard in tools/promote.go and store/
 rejects, file stays "draft"). If a step seems to need a forbidden tool, stop and
 report why.
 
-Shell surface: the bash allowlist carries exactly three commands — the two
-mandatory startup gates and "gh issue comment" (the no-op notice posted on the
-dispatch issue when a gate refuses). Every git write operation (fetch, rebase,
-commit, push --force-with-lease) and every gh PR operation (list, create, edit)
+Shell surface: the bash allowlist carries exactly two commands — the
+mandatory startup gates. Every git write operation (fetch, rebase, commit,
+push --force-with-lease) and every gh PR operation (list, create, edit)
 happens server-side inside the "rolling_pr" MCP tool, so this agent holds no
-raw git or gh write capability at all. This is deliberate: allowlist entries
+raw git or gh capability at all. This is deliberate: allowlist entries
 are prefix globs that cannot restrict a command's arguments, so allowing a raw
 "git push --force-with-lease" would permit force-pushing any ref regardless of
 branch — the "dewey-distill/* branches only" scoping lives in the server-side
@@ -105,11 +103,11 @@ tool, never in the shell.
 ## Startup gates
 
 Before any pipeline stage, run "dewey gate auto-answer" and refuse on non-pass.
-Then run "dewey gate distill-unattended". On its refusal (exit 1 — the expected
-state until jflowers/opencode-supervisor#51 ships), the no-op run artifact is
-already recorded under .uf/dewey/distill-runs/; post the verdict's Notice line
-as a comment on the dispatch issue via "gh issue comment" and stop before
-scope. Do not retry.
+Then run "dewey gate distill-unattended". On its refusal (exit 1 — the global
+opencode-supervisor profile for "dewey-distill-auto" is absent or
+unverifiable), the no-op run artifact is already recorded under
+.uf/dewey/distill-runs/; stop before scope and relay the verdict. Do not retry,
+and post nothing anywhere.
 
 ## Human gates
 
@@ -121,8 +119,9 @@ configuration.
 
 ## Widening rule
 
-Only the global "opencode-supervisor" "command: dewey-distill-auto" profile may
-narrow or widen this allowlist; repo-local ".opencode/supervisor.yaml" additions
-for distiller are ignored. Verified by config-precedence test where repo-local
+Only a profile in the user's global opencode-supervisor config
+(opencode/supervisor/config.json) matching command "dewey-distill-auto" may
+narrow or widen this allowlist; repository-local supervisor config for
+distiller is ignored. Verified by config-precedence test where repo-local
 "question" add remains denied.
-<!-- dewey:scaffold dev sha256:983be56212db65230b355cfc3e10e3f73914a6e96721aa890258172896475a53 -->
+<!-- dewey:scaffold dev sha256:f06bfa62e6a16bcb0d4595a2690d5014242cb684b1a0954ef68ef3b50869041f -->

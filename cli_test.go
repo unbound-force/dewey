@@ -6985,8 +6985,8 @@ func TestDistillerAgent_QuestionDenied(t *testing.T) {
 // tools registered in server.go, every non-dewey configured MCP server
 // is denied wholesale, and the permission block denies question — the
 // unattended run must never ask (FR-006) — with the bash submap
-// allowing both startup gates and the dispatch-issue comment
-// (DI-FR-004) and ending with the seven terminal metacharacter denies
+// allowing exactly the two startup gates (distill-auto-runner-neutral)
+// and ending with the seven terminal metacharacter denies
 // (scaffold-bash-terminal-denies, DI-FR-003). The same shape
 // assertions run against the deweyAgentDefinitions map entry so both
 // shipped copies carry the boundary.
@@ -7138,9 +7138,10 @@ func assertDistillerFrontmatterShape(t testing.TB, label, content string, server
 		}
 	}
 
-	// The bash permission submap denies everything by default, allows the
-	// documented commands — both startup gates and the dispatch-issue
-	// comment path (DI-FR-004) — and ends with the terminal-deny suffix:
+	// The bash permission submap denies everything by default, allows
+	// exactly the documented commands — the two startup gates; the
+	// distiller holds no gh or git capability (distill-auto-runner-neutral
+	// removed the issue-comment path) — and ends with the terminal-deny suffix:
 	// the seven metacharacter denies are the final entries in the
 	// canonical order (scaffold-bash-terminal-denies, DI-FR-003). Under
 	// the same last-matching-rule-wins ordering the tools block relies
@@ -7159,9 +7160,15 @@ func assertDistillerFrontmatterShape(t testing.TB, label, content string, server
 	if bashByKey["*"] != "deny" {
 		t.Errorf("%s: permission.bash \"*\" = %q, want deny", label, bashByKey["*"])
 	}
-	for _, cmd := range []string{"dewey gate auto-answer", "dewey gate distill-unattended", "gh issue comment"} {
+	wantAllowed := []string{"dewey gate auto-answer", "dewey gate distill-unattended"}
+	for _, cmd := range wantAllowed {
 		if bashByKey[cmd] != "allow" {
-			t.Errorf("%s: permission.bash %q = %q, want allow — the startup gates and the dispatch-issue comment path must stay runnable", label, cmd, bashByKey[cmd])
+			t.Errorf("%s: permission.bash %q = %q, want allow — the startup gates must stay runnable", label, cmd, bashByKey[cmd])
+		}
+	}
+	for _, pair := range bashPairs {
+		if bashByKey[pair.key] == "allow" && !slices.Contains(wantAllowed, pair.key) {
+			t.Errorf("%s: permission.bash allows %q, want only the startup gates %v", label, pair.key, wantAllowed)
 		}
 	}
 
@@ -7202,8 +7209,9 @@ func assertDistillerFrontmatterShape(t testing.TB, label, content string, server
 // inspection — the curator doctored-fixture rationale (design D4) applied
 // to the distiller guard, which had no negative-path coverage of its own
 // (design D5). The fixture drops one terminal deny from the tracked
-// distiller.md, shifting the seven-entry suffix window so the "gh issue
-// comment" allow lands inside it; the last-7 arm must report the mismatch.
+// distiller.md, shifting the seven-entry suffix window so the
+// "dewey gate distill-unattended" allow lands inside it; the last-7 arm
+// must report the mismatch.
 func TestDistillerAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
 	tracked, err := os.ReadFile(filepath.Join(".opencode", "agents", "distiller.md"))
 	if err != nil {
@@ -7218,7 +7226,7 @@ func TestDistillerAgent_GuardsRejectDoctoredDocuments(t *testing.T) {
 		if len(rec.problems) == 0 {
 			t.Fatalf("shape guard accepted a doctored distiller document; expected a terminal-deny suffix mismatch")
 		}
-		const expect = `permission.bash terminal-deny suffix entry 0 = "gh issue comment": "allow", want "*>*": "deny"`
+		const expect = `permission.bash terminal-deny suffix entry 0 = "dewey gate distill-unattended": "allow", want "*>*": "deny"`
 		if !strings.Contains(strings.Join(rec.problems, "\n"), expect) {
 			t.Errorf("shape guard problems = %v, want the terminal-deny suffix mismatch problem", rec.problems)
 		}
@@ -7277,8 +7285,8 @@ func distillerBodyToolNames(body string) []string {
 // .opencode/commands/dewey-distill-auto.md byte-identical to the payload
 // constructed from its deweySlashCommands map entry — canonical body plus
 // the trailing ownership marker (design D6) — and to the tracked command
-// file — without it, the gh-hud dispatch contract (/dewey-distill-auto #N)
-// would invoke a command the adopting repo never received.
+// file — without it, a scheduler or agent runner invoking
+// /dewey-distill-auto would find no command in the adopting repo.
 func TestInitCmd_ScaffoldsDistillAutoCommand(t *testing.T) {
 	tmpDir := t.TempDir()
 

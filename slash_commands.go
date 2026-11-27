@@ -663,7 +663,8 @@ git (` + "`" + `learnings - cited - policy exclusions` + "`" + `), groups uncite
 themes (must-colocate supersessions, embedding/tag assignment with provenance),
 and manages rolling per-theme PRs (` + "`" + `dewey-distill/<sanitized>` + "`" + ` branch, draft
 ` + "`" + `tier: draft` + "`" + ` only, review-queue body). No ` + "`" + `HUMAN_GATE` + "`" + ` questions; no validated
-writes. Triggered via scheduled workflow dispatch (` + "`" + `/dewey-distill-auto #N` + "`" + `).
+writes. Run it from any scheduler or agent runner, on any cadence, in a clean
+checkout; it needs no trigger issue or argument.
 
 Uses MCP tools exclusively, with two documented exceptions: the mandatory startup
 gates run ` + "`" + `dewey gate auto-answer` + "`" + ` and ` + "`" + `dewey gate distill-unattended` + "`" + `, which
@@ -695,7 +696,14 @@ Flags (parsed from the invocation text before any pipeline stage):
   scope. The weekly steady state handles everything created after the
   date.
 
-Triggered by ` + "`" + `gh-hud` + "`" + ` from workflow issue comment ` + "`" + `<!-- dewey-distill-trigger --> /dewey-distill-auto #N` + "`" + `.
+Any other argument is ignored — a caller that still appends a trigger
+reference such as ` + "`" + `#N` + "`" + ` gets exactly the run ` + "`" + `/dewey-distill-auto` + "`" + ` would
+perform.
+
+Prerequisite: the user's global opencode-supervisor config must carry a
+profile matching this command (` + "`" + `"match": {"command": "dewey-distill-auto"}` + "`" + `
+in ` + "`" + `opencode/supervisor/config.json` + "`" + ` under the XDG or home config root);
+` + "`" + `dewey gate distill-unattended` + "`" + ` refuses until it does.
 
 <protect>
 ## Instructions
@@ -705,12 +713,11 @@ Triggered by ` + "`" + `gh-hud` + "`" + ` from workflow issue comment ` + "`" + 
 Before any pipeline stage, run ` + "`" + `dewey gate auto-answer` + "`" + `. Treat non-pass as
 refusal: stop before scope and relay output. Do not retry.
 
-Then run ` + "`" + `dewey gate distill-unattended` + "`" + `. On refusal (exit 1 — the expected
-state until jflowers/opencode-supervisor#51 ships), the no-op run artifact is
-already recorded under ` + "`" + `.uf/dewey/distill-runs/` + "`" + `: post the verdict's Notice
-line (` + "`" + `supervisor command profile unavailable, unattended distill skipped` + "`" + `) as
-a comment on the dispatch issue via ` + "`" + `gh issue comment <N>` + "`" + ` and stop before
-scope. Do not retry.
+Then run ` + "`" + `dewey gate distill-unattended` + "`" + `. On refusal (exit 1 — the global
+opencode-supervisor profile for this command is absent or unverifiable; the
+verdict's Fix says how to add it), the no-op run artifact is already recorded
+under ` + "`" + `.uf/dewey/distill-runs/` + "`" + `: stop before scope and relay the verdict. Do not
+retry, and post nothing anywhere.
 
 ### 1. Scope Computation (Deterministic, No Question)
 

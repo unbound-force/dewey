@@ -14,7 +14,6 @@ import (
 	"unicode"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/unbound-force/dewey/v3/tools"
 )
@@ -64,10 +63,10 @@ type gateOptions struct {
 	// is set. Defaults to os.LookupEnv.
 	lookupEnv func(string) (string, bool)
 	// supervisorConfigDir overrides the opencode-supervisor global
-	// config directory for the distill-unattended gate. When set,
-	// evaluation checks exactly that directory's supervisor.yaml and
-	// skips environment resolution. The repo-local
-	// .opencode/supervisor.yaml is never a candidate in any mode — the
+	// config directory (normally <config root>/opencode/supervisor) for
+	// the distill-unattended gate. When set, evaluation checks exactly
+	// that directory's config.json and skips environment resolution.
+	// Repository-local config is never a candidate in any mode — the
 	// widening rule reads global config only (FR-016).
 	supervisorConfigDir string
 	// vaultDir overrides the vault root for the distill-unattended
@@ -981,29 +980,20 @@ func runAutoAnswerGate(cmd *cobra.Command, opts gateOptions) error {
 	return nil
 }
 
-// --- distill-unattended gate (018-weekly-distill-automation) ---
+// --- distill-unattended gate (018-weekly-distill-automation, distill-auto-runner-neutral) ---
 
-// supervisorConfigDirName is the opencode-supervisor global config
-// directory within an OpenCode global config root. The location is a
-// documented probe contract, not an observed one:
-// jflowers/opencode-supervisor#51 (command-scoped profiles) is
-// unshipped, so no real config exists yet. When #51 ships with a
-// different location, update these candidates — the gate keeps failing
-// closed until then, which is the Assumptions' specified posture, not a
-// defect.
-const supervisorConfigDirName = "opencode-supervisor"
+// supervisorConfigFile is the opencode-supervisor global config file
+// name. opencode-supervisor (v2.9.1+, jflowers/opencode-supervisor#51)
+// reads command-scoped profiles only from this one strict-JSON file in
+// its global config directory (see supervisorConfigPath); profiles in
+// repository-local config are never honored.
+const supervisorConfigFile = "config.json"
 
-// supervisorConfigFile is the supervisor's config file name.
-const supervisorConfigFile = "supervisor.yaml"
-
-// distillCommandProfile is the command-scoped profile key the widening
-// rule recognizes (FR-016): only the global opencode-supervisor profile
-// keyed to this command may narrow or widen the distiller's allowlist.
+// distillCommandProfile is the slash-command name a supervisor profile's
+// match.command must name (FR-016): only a global opencode-supervisor
+// profile matching this command may narrow or widen the distiller's
+// allowlist.
 const distillCommandProfile = "dewey-distill-auto"
-
-// supervisorUnavailableNotice is the notice comment text a refused
-// unattended run posts on the dispatch issue (spec Assumptions).
-const supervisorUnavailableNotice = "supervisor command profile unavailable, unattended distill skipped"
 
 // errDistillUnattendedGateRefused is returned by `gate
 // distill-unattended` when the gate refuses. main() logs it and exits 1;
@@ -1015,13 +1005,10 @@ var errDistillUnattendedGateRefused = errors.New("distill-unattended gate refuse
 // distill-unattended gate.
 type distillUnattendedVerdict struct {
 	Pass bool
-	// Candidates lists every global config file evaluated, in order —
-	// the verdict names them on pass and refusal alike. The repo-local
-	// .opencode/supervisor.yaml is never a candidate (FR-016: only
-	// global config can widen).
-	Candidates []string
-	// ConfigFile names the candidate that holds the command profile
-	// (pass only).
+	// ConfigFile is the one global supervisor config file the gate
+	// checked — named on pass and refusal alike. Empty only when the
+	// location could not be resolved. Repository-local config is never
+	// a candidate (FR-016: only global config can widen).
 	ConfigFile string
 	// Reason carries the refusal cause.
 	Reason string
@@ -1029,104 +1016,131 @@ type distillUnattendedVerdict struct {
 	Fix string
 }
 
-// supervisorConfigCandidates resolves the global opencode-supervisor
-// config candidates: the home-directory file always, plus the XDG file
-// when XDG_CONFIG_HOME resolves to a different directory — the same
-// home-then-XDG convention the auto-answer gate uses, applied to the
-// supervisor's own config directory. As with the plugin candidates,
-// paths compare lexically, never by symlink, and a relative HOME or
-// XDG_CONFIG_HOME fails resolution: it is unverifiable.
-func supervisorConfigCandidates(lookup func(string) (string, bool)) ([]string, error) {
+// supervisorConfigPath resolves the one config file opencode-supervisor
+// reads, exactly as the supervisor resolves it:
+// $XDG_CONFIG_HOME/opencode/supervisor/config.json when XDG_CONFIG_HOME
+// is set, non-blank and absolute; otherwise
+// $HOME/.config/opencode/supervisor/config.json. A blank or relative
+// XDG_CONFIG_HOME is ignored, the same as unset (the supervisor ignores
+// it too). A missing or relative HOME, when the home path is needed, is
+// unverifiable and fails resolution.
+func supervisorConfigPath(lookup func(string) (string, bool)) (string, error) {
+	if xdg, ok := lookup("XDG_CONFIG_HOME"); ok && strings.TrimSpace(xdg) != "" && filepath.IsAbs(xdg) {
+		return filepath.Join(xdg, "opencode", "supervisor", supervisorConfigFile), nil
+	}
 	home, ok := lookup("HOME")
 	if !ok || home == "" {
-		return nil, errors.New("HOME is not set or is empty")
+		return "", errors.New("HOME is not set or is empty")
 	}
 	if !filepath.IsAbs(home) {
-		return nil, fmt.Errorf("HOME %q is not an absolute path", home)
+		return "", fmt.Errorf("HOME %q is not an absolute path", home)
 	}
-	candidates := []string{filepath.Join(home, ".config", supervisorConfigDirName, supervisorConfigFile)}
-	xdg, ok := lookup("XDG_CONFIG_HOME")
-	if !ok || xdg == "" {
-		return candidates, nil
-	}
-	if !filepath.IsAbs(xdg) {
-		return nil, fmt.Errorf("XDG_CONFIG_HOME %q is not an absolute path", xdg)
-	}
-	if xdgPath := filepath.Join(xdg, supervisorConfigDirName, supervisorConfigFile); xdgPath != candidates[0] {
-		candidates = append(candidates, xdgPath)
-	}
-	return candidates, nil
+	return filepath.Join(home, ".config", "opencode", "supervisor", supervisorConfigFile), nil
 }
 
-// supervisorHasDistillProfile reports whether the parsed supervisor
-// config carries the command-scoped dewey-distill-auto profile. The
-// profile's contents are the supervisor's contract (#51), not the
-// gate's — presence alone enables unattended mode.
+// supervisorProfileFix is the remediation for a config that does not
+// carry the distill command profile: it names the file and the minimal
+// profile to add.
+func supervisorProfileFix(path string) string {
+	return fmt.Sprintf(`Add a profile matching the command to %s, e.g. {"profiles": [{"name": "distill", "match": {"command": "%s"}}]}, then re-run /dewey-distill-auto.`, path, distillCommandProfile)
+}
+
+// supervisorHasDistillProfile reports whether the supervisor config
+// carries a profile whose match.command, trimmed and with one leading
+// "/" stripped (the supervisor's own normalization), names
+// dewey-distill-auto. The file must be strict JSON with an object at
+// the top level; a "profiles" key that is present but not an array is
+// an error (fail-closed). An absent or null "profiles" is simply no
+// profile. Elements are decoded leniently — a non-object element or a
+// missing or non-string match.command does not match — so only a match
+// is decisive, mirroring the supervisor's find-first-match. The
+// profile's other contents (traceCheck, ...) are the supervisor's
+// contract, not the gate's.
 func supervisorHasDistillProfile(data []byte) (bool, error) {
-	var cfg struct {
-		Commands map[string]any `yaml:"commands"`
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return false, fmt.Errorf("not valid JSON with an object at the top level: %w", err)
 	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return false, err
+	raw, ok := top["profiles"]
+	if !ok || isJSONNull(raw) {
+		return false, nil
 	}
-	_, ok := cfg.Commands[distillCommandProfile]
-	return ok, nil
+	var profiles []json.RawMessage
+	if err := json.Unmarshal(raw, &profiles); err != nil {
+		return false, errors.New(`"profiles" is not an array`)
+	}
+	for _, p := range profiles {
+		var profile struct {
+			Match struct {
+				Command any `json:"command"`
+			} `json:"match"`
+		}
+		if json.Unmarshal(p, &profile) != nil {
+			continue
+		}
+		command, ok := profile.Match.Command.(string)
+		if !ok {
+			continue
+		}
+		if strings.TrimPrefix(strings.TrimSpace(command), "/") == distillCommandProfile {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // evaluateDistillUnattendedGate deterministically evaluates whether the
-// global opencode-supervisor config carries the command-scoped
-// dewey-distill-auto profile (FR-016). Global candidates only — the
-// repo-local .opencode/supervisor.yaml is never read, so repository
-// content cannot widen the distiller's privileges. Every failure path
-// is fail-closed: an unreadable or unparseable global config refuses,
-// and an absent config — the expected state until
-// jflowers/opencode-supervisor#51 ships — refuses with the
-// supervisor-unavailable reason. An injected
-// gateOptions.supervisorConfigDir collapses evaluation to exactly that
-// directory's supervisor.yaml.
+// global opencode-supervisor config carries a profile matching the
+// dewey-distill-auto command (FR-016). It checks exactly the one file
+// the supervisor reads (supervisorConfigPath) — repository-local config
+// is never read, so repository content cannot widen the distiller's
+// privileges. Every failure path is fail-closed: an absent file or a
+// file without the profile refuses with the supervisor-unavailable
+// reason; an unreadable file, invalid JSON, or a non-array "profiles"
+// refuses naming the file. An injected gateOptions.supervisorConfigDir
+// collapses evaluation to that directory's config.json.
 func evaluateDistillUnattendedGate(opts gateOptions) distillUnattendedVerdict {
 	lookup := opts.lookupEnv
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
-	var candidates []string
+	var path string
 	if opts.supervisorConfigDir != "" {
-		candidates = []string{filepath.Join(opts.supervisorConfigDir, supervisorConfigFile)}
+		path = filepath.Join(opts.supervisorConfigDir, supervisorConfigFile)
 	} else {
 		var err error
-		candidates, err = supervisorConfigCandidates(lookup)
+		path, err = supervisorConfigPath(lookup)
 		if err != nil {
 			return distillUnattendedVerdict{
 				Reason: "cannot resolve the supervisor config location: " + err.Error(),
-				Fix:    "Set HOME to a non-empty absolute path, and XDG_CONFIG_HOME to an absolute path when set, then re-run /dewey-distill-auto.",
+				Fix:    "Set HOME to a non-empty absolute path (or XDG_CONFIG_HOME to an absolute path), then re-run /dewey-distill-auto.",
 			}
 		}
 	}
-	verdict := distillUnattendedVerdict{Candidates: candidates}
-	for _, path := range candidates {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue // absent candidate — the expected state until #51 ships
-			}
-			verdict.Reason = fmt.Sprintf("the supervisor config exists but cannot be read: %v", err)
-			verdict.Fix = fmt.Sprintf("Make %s readable, then re-run /dewey-distill-auto.", path)
+	verdict := distillUnattendedVerdict{ConfigFile: path}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			verdict.Reason = tools.NoOpReasonSupervisorUnavailable
+			verdict.Fix = supervisorProfileFix(path)
 			return verdict
 		}
-		has, err := supervisorHasDistillProfile(data)
-		if err != nil {
-			verdict.Reason = fmt.Sprintf("the supervisor config is not valid YAML: %v", err)
-			verdict.Fix = fmt.Sprintf("Fix the YAML syntax in %s, then re-run /dewey-distill-auto.", path)
-			return verdict
-		}
-		if has {
-			verdict.Pass = true
-			verdict.ConfigFile = path
-			return verdict
-		}
+		verdict.Reason = fmt.Sprintf("the supervisor config exists but cannot be read: %v", err)
+		verdict.Fix = fmt.Sprintf("Make %s readable, then re-run /dewey-distill-auto.", path)
+		return verdict
 	}
-	verdict.Reason = tools.NoOpReasonSupervisorUnavailable
-	verdict.Fix = "Wait for jflowers/opencode-supervisor#51 (command-scoped profiles), then configure the global command: dewey-distill-auto profile."
+	has, err := supervisorHasDistillProfile(data)
+	if err != nil {
+		verdict.Reason = "the supervisor config is invalid: " + err.Error()
+		verdict.Fix = fmt.Sprintf(`Fix %s so it is strict JSON with a "profiles" array, then re-run /dewey-distill-auto.`, path)
+		return verdict
+	}
+	if !has {
+		verdict.Reason = tools.NoOpReasonSupervisorUnavailable
+		verdict.Fix = supervisorProfileFix(path)
+		return verdict
+	}
+	verdict.Pass = true
 	return verdict
 }
 
@@ -1147,8 +1161,8 @@ func recordSupervisorNoOp(vaultDir string) (string, error) {
 // renderDistillUnattendedVerdict renders the tool-owned verdict text.
 // The command relays this verbatim; config-supplied values are
 // sanitized so a pathological entry cannot spoof the output. On
-// refusal the verdict carries the artifact path (when recorded) and
-// the notice comment text the dispatch issue receives.
+// refusal the verdict carries the checked file, reason, fix and the
+// no-op artifact path (when recorded).
 func renderDistillUnattendedVerdict(v distillUnattendedVerdict, artifact string) string {
 	var b strings.Builder
 	if v.Pass {
@@ -1158,8 +1172,8 @@ func renderDistillUnattendedVerdict(v distillUnattendedVerdict, artifact string)
 		return b.String()
 	}
 	b.WriteString("Distill-unattended gate: REFUSED\n")
-	for _, path := range v.Candidates {
-		fmt.Fprintf(&b, "Checked: %s\n", safeValue(path))
+	if v.ConfigFile != "" {
+		fmt.Fprintf(&b, "Checked: %s\n", safeValue(v.ConfigFile))
 	}
 	fmt.Fprintf(&b, "Reason: %s\n", safeValue(v.Reason))
 	if v.Fix != "" {
@@ -1168,7 +1182,6 @@ func renderDistillUnattendedVerdict(v distillUnattendedVerdict, artifact string)
 	if artifact != "" {
 		fmt.Fprintf(&b, "Artifact: %s\n", safeValue(artifact))
 	}
-	fmt.Fprintf(&b, "Notice: %s\n", supervisorUnavailableNotice)
 	return b.String()
 }
 
@@ -1225,18 +1238,27 @@ func newGateDistillUnattendedCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "distill-unattended",
 		Short: "Refuse until the global opencode-supervisor command profile exists",
-		Long: `Evaluate whether the global opencode-supervisor config carries the
-command-scoped dewey-distill-auto profile — the sole authority that may
-widen the distiller agent's allowlist (FR-016).
+		Long: `Evaluate whether the global opencode-supervisor config carries a
+profile matching the dewey-distill-auto command — the sole authority that
+may widen the distiller agent's allowlist (FR-016).
 
-Exit 0 means the profile is present in the global config. Exit 1 means
-the gate refuses: the profile is absent, or the config is unreadable or
-unparseable. Refusal is fail-closed — until
-jflowers/opencode-supervisor#51 ships, unattended mode stays disabled,
-the gate records a no-op run artifact under .uf/dewey/distill-runs/ in
-the working directory, and the verdict carries the notice comment text
-for the dispatch issue. The repo-local .opencode/supervisor.yaml is
-never read: repository content cannot widen the allowlist.`,
+The gate checks exactly the one file the supervisor reads:
+$XDG_CONFIG_HOME/opencode/supervisor/config.json when XDG_CONFIG_HOME is
+set, non-blank and absolute, otherwise
+$HOME/.config/opencode/supervisor/config.json. It passes when that file
+is strict JSON whose "profiles" array holds a profile with
+"match": {"command": "dewey-distill-auto"} (a leading "/" is ignored):
+
+  {"profiles": [{"name": "distill",
+                 "match": {"command": "dewey-distill-auto"},
+                 "traceCheck": {"exemptTools": ["dewey_*", "read", "grep", "glob"]}}]}
+
+Exit 0 means the profile is present. Exit 1 means the gate refuses: the
+file is absent, has no matching profile, or is unreadable or invalid.
+Refusal is fail-closed — unattended mode stays disabled and the gate
+records a no-op run artifact under .uf/dewey/distill-runs/ in the
+working directory. Repository-local config is never read: repository
+content cannot widen the allowlist.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDistillUnattendedGate(cmd, gateOptions{})

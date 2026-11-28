@@ -57,7 +57,7 @@ jobs:
   release:
     name: Release
     needs: validate-branch
-    uses: jflowers/ship/.github/workflows/go-release.yml@01e205c8897d54daac4d30b81710c695bfd1f31b # v0.10.0
+    uses: jflowers/ship/.github/workflows/go-release.yml@3b0ce8bf47183be402df9eaec16644c213eee5f7 # v0.12.0
     with:
       tag: ${{ inputs.tag }}
       ci_checks: '["build-and-test", "MegaLinter"]'
